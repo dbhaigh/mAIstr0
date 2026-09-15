@@ -1,0 +1,16 @@
+# Build outputs and local binaries
+/dist/
+/maistr0.exe
+
+# Local runtime state
+*.db
+*.db-shm
+*.db-wal
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini

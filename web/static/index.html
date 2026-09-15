@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mAIstr0 · Interactive Cluster Orchestrator</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-top">
+      <div>
+        <h1>mAIstr0</h1>
+        <p class="subtitle">Multi-node local LLM cluster orchestrator</p>
+      </div>
+      <div class="header-stats">
+        <span class="stat-pill" id="stat-nodes">Nodes: 0</span>
+        <span class="stat-pill" id="stat-models">Models: 0</span>
+        <span class="stat-pill" id="stat-load">Active Load: 0</span>
+        <span class="stat-pill" id="stat-memory">Memory: 0</span>
+        <span class="stat-pill" id="stat-version">Build -</span>
+      </div>
+    </div>
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="agent-tab">🤖 Interactive Orchestrator</button>
+      <button class="nav-tab" data-tab="cluster-tab">📊 Cluster &amp; Workload</button>
+      <button class="nav-tab" data-tab="memory-tab">🧠 Memory &amp; Learning</button>
+    </nav>
+  </header>
+
+  <!-- TAB 1: Interactive Orchestrator Console -->
+  <section id="agent-tab" class="tab-content active">
+    <div class="agent-layout">
+      <!-- Sidebar / Session List & Tools -->
+      <aside class="agent-sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-header">
+            <h3>Conversations</h3>
+            <button id="new-session-btn" class="icon-button" title="New Session">+ New</button>
+          </div>
+          <div id="session-list" class="session-list"></div>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>Coordinator &amp; Settings</h3>
+          <label class="setting-label">
+            <span>Coordinator Model</span>
+            <select id="agent-model-select">
+              <option value="">Auto (Fastest / Cluster Leader)</option>
+            </select>
+          </label>
+          <label class="setting-label">
+            <span>Max Reasoning Steps</span>
+            <select id="agent-steps-select">
+              <option value="6">6 steps</option>
+              <option value="8" selected>8 steps</option>
+              <option value="12">12 steps</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>Orchestrator Cluster Tools</h3>
+          <div id="agent-tools-list" class="tools-pills"></div>
+        </div>
+      </aside>
+
+      <!-- Main Interactive Chat Area -->
+      <div class="agent-chat-container">
+        <!-- Quick prompt chips -->
+        <div class="quick-prompts">
+          <button class="prompt-chip" data-prompt="Converse with a worker node model using node_converse to design a distributed cache architecture and ask for implementation details.">💬 Converse with Node LLM</button>
+          <button class="prompt-chip" data-prompt="Use node_to_node_conversation to have two different worker node LLMs debate the best concurrency model for this cluster, then summarise what they agreed on.">🔗 Node LLMs Debate</button>
+          <button class="prompt-chip" data-prompt="Call memory_insights and tell me what the cluster has learned so far about which nodes and models perform best.">🧠 What Have We Learned?</button>
+          <button class="prompt-chip" data-prompt="Collaborate with a worker node model using node_collaborate to write and iteratively refine a high-performance Go worker pool.">🤝 Multi-Turn Node Collaboration</button>
+          <button class="prompt-chip" data-prompt="Inspect the cluster status, summarize all healthy nodes, available GPUs, and compute capacity.">🔍 Cluster Status &amp; GPUs</button>
+          <button class="prompt-chip" data-prompt="Fan out a parallel benchmark across all nodes in the cluster using cluster_parallel_dispatch and compare outputs.">⚡ Parallel Dispatch</button>
+        </div>
+
+        <!-- Chat messages container -->
+        <div id="chat-messages" class="chat-messages">
+          <div class="welcome-card">
+            <h2>Welcome to the mAIstr0 Orchestrator</h2>
+            <p>The orchestrator plans and reasons visibly, then spreads LLM workloads across worker nodes while preserving every node response.</p>
+            <ul>
+              <li><strong>Dynamic Workload Balancing:</strong> LLM queries and subtasks are routed to the least-loaded nodes.</li>
+              <li><strong>Parallel Multi-Node Dispatch:</strong> Subtasks can be executed simultaneously across distinct cluster nodes.</li>
+              <li><strong>Interactive ReAct Loop:</strong> Real-time streaming of thoughts, tool calls, and node execution metrics.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Interactive Message Input -->
+        <div class="chat-input-container">
+          <textarea id="chat-input" placeholder="Message the orchestrator... (Enter to send, Shift+Enter for new line)" rows="2"></textarea>
+          <div class="chat-input-actions">
+            <span id="chat-status" class="chat-status"></span>
+            <button id="send-msg-btn" class="primary-btn">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 2: Traditional Cluster & Workload View -->
+  <main id="cluster-tab" class="tab-content">
+    <section id="submit-panel">
+      <h2>Batch Task Submission</h2>
+      <textarea id="task-input" placeholder="Describe the task. Use a numbered or bulleted list to force explicit subtasks."></textarea>
+      <button id="submit-btn" class="primary-btn">Submit Batch Task</button>
+      <div id="submit-status"></div>
+    </section>
+
+    <section id="cluster-map-panel">
+      <div class="section-heading"><div><h2>Cluster topology</h2><p class="panel-caption">Live node roles, workload, routing, and node-to-node conversations</p></div><span id="cluster-map-status" class="panel-caption"></span></div>
+      <div id="cluster-map" class="cluster-map">
+        <svg id="cluster-links" class="cluster-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="cluster-arrow" markerWidth="4" markerHeight="4" refX="3.5" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 z" fill="#5ec2ff"></path></marker></defs></svg>
+        <div id="cluster-nodes" class="cluster-nodes"></div>
+        <div id="cluster-map-empty" class="cluster-map-empty">Waiting for cluster nodes...</div>
+      </div>
+      <div id="cluster-map-legend" class="cluster-map-legend"><span><i class="legend-dot online"></i> online</span><span><i class="legend-line job"></i> job route</span><span><i class="legend-line conversation"></i> conversation</span><span><i class="legend-dot peer"></i> discovered peer</span></div>
+      <div id="cluster-peers" class="cluster-peers"></div>
+    </section>
+
+    <section id="nodes-panel">
+      <div class="section-heading"><h2>Nodes</h2><button id="refresh-all-models-btn" class="icon-button" type="button" title="Refresh model registries on all nodes">↻ Refresh all model registries</button></div>
+      <div id="nodes-list" class="cards"></div>
+    </section>
+
+    <section id="routing-panel">
+      <h2>Job routing &amp; workload</h2>
+      <div id="routing-list" class="cards"></div>
+    </section>
+
+    <section id="discovery-panel">
+      <h2>Local network</h2>
+      <div id="discovery-list" class="cards"></div>
+    </section>
+
+    <section id="tasks-panel">
+      <div class="section-heading"><h2>Tasks</h2><button id="copy-tasks-btn" class="icon-button" type="button" title="Copy all task results" aria-label="Copy all task results">Copy results</button></div>
+      <div id="tasks-list" class="cards"></div>
+    </section>
+  </main>
+
+  <!-- TAB 3: Persistent Memory & Learning -->
+  <main id="memory-tab" class="tab-content memory-grid">
+    <section id="learning-panel">
+      <h2>What the cluster has learned</h2>
+      <div id="learning-summary" class="cards"></div>
+    </section>
+
+    <section id="facts-panel">
+      <div class="section-heading"><h2>Remembered facts</h2></div>
+      <form id="fact-form" class="fact-form">
+        <input id="fact-key" placeholder="key (e.g. preferred-code-model)" />
+        <input id="fact-value" placeholder="what to remember" />
+        <button type="submit" class="primary-btn">Remember</button>
+      </form>
+      <div id="facts-list" class="cards"></div>
+    </section>
+
+    <section id="experiences-panel">
+      <div class="section-heading">
+        <h2>Experience log</h2>
+        <input id="memory-search" class="memory-search" placeholder="Search memory…" />
+      </div>
+      <div id="experiences-list" class="cards"></div>
+    </section>
+
+    <section id="transcripts-panel">
+      <h2>Stored conversations</h2>
+      <div id="transcripts-list" class="cards"></div>
+    </section>
+  </main>
+
+  <div id="node-context-menu" class="context-menu" hidden>
+    <button data-action="properties">Edit host properties</button>
+    <button data-action="open">Open node interface</button>
+    <button data-action="copy">Copy node address</button>
+  </div>
+
+  <div id="node-terminal" class="node-terminal" hidden>
+    <div class="node-terminal-header"><h2 id="node-terminal-title">Node terminal</h2><button id="node-terminal-close" type="button" title="Close terminal">Close</button></div>
+    <div class="node-terminal-toolbar"><label>Model<select id="node-terminal-model"></select></label><span id="node-terminal-status"></span></div>
+    <div id="node-terminal-messages" class="node-terminal-messages"></div>
+    <form id="node-terminal-form" class="node-terminal-form"><textarea id="node-terminal-input" rows="2" placeholder="Send a message to this node..."></textarea><button type="submit">Send</button></form>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
