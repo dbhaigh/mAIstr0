@@ -1,4 +1,4 @@
-package hermes
+package deepseek
 
 import (
 	"context"
@@ -159,7 +159,7 @@ func (t *RememberFactTool) Execute(ctx context.Context, h *Harness, s *Session, 
 		Key:    key,
 		Value:  value,
 		Scope:  scope,
-		Source: "hermes-agent:" + s.ID,
+		Source: "deepseek-agent:" + s.ID,
 	})
 	if err != nil {
 		return nil, "", "", "", err

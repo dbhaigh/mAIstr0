@@ -1,4 +1,4 @@
-package hermes
+package deepseek
 
 import (
 	"encoding/json"
@@ -20,9 +20,9 @@ type ParsedResponse struct {
 	ToolCalls []ToolCall
 }
 
-// ParseHermesResponse extracts thoughts, direct content, and any tool calls
-// formatted according to the Hermes function calling specification or JSON fallbacks.
-func ParseHermesResponse(raw string) ParsedResponse {
+// ParseDeepSeekResponse extracts thoughts, direct content, and tool calls
+// from DeepSeek responses and JSON fallbacks.
+func ParseDeepSeekResponse(raw string) ParsedResponse {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ParsedResponse{}
@@ -31,7 +31,7 @@ func ParseHermesResponse(raw string) ParsedResponse {
 	var toolCalls []ToolCall
 	thoughtParts := []string{}
 
-	// 1. Check for standard Hermes XML tags: <tool_call>...</tool_call>
+	// 1. Check for standard tool-call XML tags: <tool_call>...</tool_call>
 	matches := toolCallTagRegex.FindAllStringSubmatchIndex(raw, -1)
 	if len(matches) > 0 {
 		lastIdx := 0
@@ -93,12 +93,8 @@ func ParseHermesResponse(raw string) ParsedResponse {
 }
 
 // ParseResponse applies the response conventions for the selected harness.
-func ParseResponse(raw, style string) ParsedResponse {
-	if style != "deepseek" {
-		return ParseHermesResponse(raw)
-	}
-
-	parsed := ParseHermesResponse(raw)
+func ParseResponse(raw string) ParsedResponse {
+	parsed := ParseDeepSeekResponse(raw)
 	if matches := thinkTagRegex.FindStringSubmatch(raw); len(matches) == 2 {
 		parsed.Thought = strings.TrimSpace(matches[1])
 		if parsed.Content == strings.TrimSpace(raw) {

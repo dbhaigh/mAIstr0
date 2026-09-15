@@ -31,7 +31,7 @@ func main() {
 	trayMode := flag.String("tray-mode", "", `override tray behavior: "taskbar" or "hidden"`)
 	noBrowser := flag.Bool("no-browser", false, "do not auto-open the dashboard in a browser on startup")
 	noDiscovery := flag.Bool("no-discovery", false, "disable LAN auto-discovery of other orchestrators/nodes")
-	harness := flag.String("harness", "", `override orchestrator harness: "hermes" or "deepseek"`)
+	harness := flag.String("harness", "", `override orchestrator harness: "deepseek"`)
 	memoryPath := flag.String("memory-path", "", "override the cluster memory database file (empty = per-user data dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()

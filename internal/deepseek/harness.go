@@ -1,4 +1,4 @@
-package hermes
+package deepseek
 
 import (
 	"bytes"
@@ -23,7 +23,7 @@ import (
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
-// Harness is the interactive Hermes-style agent execution coordinator.
+// Harness is the interactive DeepSeek agent execution coordinator.
 // It manages multi-turn conversational sessions, plans and reasons with tools,
 // and spreads generation and subtask workloads evenly across the cluster.
 type Harness struct {
@@ -41,11 +41,6 @@ type Harness struct {
 }
 
 func New(registry *cluster.Registry, dispatcher *http.Client) *Harness {
-	return newWithStyle(registry, dispatcher, "hermes")
-}
-
-// NewDeepSeek creates a harness tuned for DeepSeek reasoning models.
-func NewDeepSeek(registry *cluster.Registry, dispatcher *http.Client) *Harness {
 	return newWithStyle(registry, dispatcher, "deepseek")
 }
 
@@ -103,7 +98,7 @@ func (h *Harness) remember(e memory.Experience) {
 		return
 	}
 	if _, err := h.mem.Record(e); err != nil {
-		log.Printf("hermes: memory write failed: %v", err)
+		log.Printf("deepseek: memory write failed: %v", err)
 	}
 }
 
@@ -247,7 +242,7 @@ func (h *Harness) Stats() AgentStats {
 	}
 }
 
-// SendMessage runs the full interactive Hermes agent loop for an incoming user message.
+// SendMessage runs the full interactive DeepSeek agent loop for an incoming user message.
 func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText string, streamChan chan<- StreamEvent) (*Message, error) {
 	s, ok := h.GetSession(sessionID)
 	if !ok {
@@ -313,7 +308,7 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 			return nil, err
 		}
 
-		// Construct the protocol-specific coordinator prompt.
+		// Construct the DeepSeek coordinator prompt.
 		prompt := h.buildPrompt(s)
 
 		stepStart := time.Now()
@@ -329,7 +324,7 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 		}
 
 		// Parse output for thoughts, direct content, or tool calls.
-		parsed := ParseResponse(rawResp, h.style)
+		parsed := ParseResponse(rawResp)
 		sendEvent(StreamEvent{
 			Type:        EventNodeOutput,
 			Step:        step,
@@ -636,7 +631,7 @@ func (h *Harness) buildPrompt(s *Session) string {
 		sb.WriteString("You are DeepSeek, an intelligent reasoning coordinator running on the mAIstr0 multi-node LLM cluster orchestrator.\n")
 		sb.WriteString("Use deliberate reasoning, and use the available tools whenever cluster work is required.\n\n")
 	} else {
-		sb.WriteString("You are Hermes, an intelligent interactive AI coordinator running on the mAIstr0 multi-node LLM cluster orchestrator.\n")
+		sb.WriteString("You are DeepSeek, an intelligent interactive AI coordinator running on the mAIstr0 multi-node LLM orchestrator.\n")
 		sb.WriteString("You have access to distributed worker nodes across the cluster to execute LLM queries, evaluate math, and fan out parallel subtasks.\n\n")
 	}
 

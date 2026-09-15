@@ -1,4 +1,4 @@
-package hermes
+package deepseek
 
 import (
 	"context"
@@ -19,14 +19,14 @@ import (
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
-// ToolDef provides the JSON schema metadata for a tool in the Hermes harness.
+// ToolDef provides the JSON schema metadata for a tool in the DeepSeek harness.
 type ToolDef struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Parameters  map[string]any `json:"parameters"`
 }
 
-// Tool represents an executable tool callable by the Hermes agent harness.
+// Tool represents an executable tool callable by the DeepSeek agent harness.
 type Tool interface {
 	Def() ToolDef
 	Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (output any, nodeID string, nodeAddr string, model string, err error)
@@ -1146,7 +1146,7 @@ func (t *FetchWebTool) Execute(ctx context.Context, h *Harness, s *Session, args
 	if err != nil {
 		return nil, "", "", "", err
 	}
-	req.Header.Set("User-Agent", "mAIstr0-Hermes/1.0")
+	req.Header.Set("User-Agent", "mAIstr0-DeepSeek/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {

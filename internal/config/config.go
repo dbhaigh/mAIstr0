@@ -40,7 +40,7 @@ func DefaultNodeConfig() NodeConfig {
 
 type OrchestratorConfig struct {
 	ListenAddr       string `json:"listen_addr"`
-	Harness          string `json:"harness"` // "hermes" or "deepseek"
+	Harness          string `json:"harness"` // "deepseek"
 	DiscoveryEnabled bool   `json:"discovery_enabled"`
 	AutoOpenBrowser  bool   `json:"auto_open_browser"`
 	TrayMode         string `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)

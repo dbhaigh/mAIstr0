@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
-	"github.com/maistr0/maistr0/internal/hermes"
 )
 
 // newTestServer builds an orchestrator with its memory database isolated to
@@ -82,7 +82,7 @@ func TestOrchestratorAgentAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/agent/tools returned %d", rec.Code)
 	}
-	var tools []hermes.ToolDef
+	var tools []deepseek.ToolDef
 	if err := json.NewDecoder(rec.Body).Decode(&tools); err != nil {
 		t.Fatalf("failed to decode tools: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestOrchestratorAgentAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/agent/models returned %d", rec.Code)
 	}
-	var models []hermes.ModelInfo
+	var models []deepseek.ModelInfo
 	if err := json.NewDecoder(rec.Body).Decode(&models); err != nil {
 		t.Fatalf("failed to decode models: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestOrchestratorAgentAPI(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /api/agent/sessions returned %d", rec.Code)
 	}
-	var createdSession hermes.Session
+	var createdSession deepseek.Session
 	if err := json.NewDecoder(rec.Body).Decode(&createdSession); err != nil {
 		t.Fatalf("failed to decode session: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestOrchestratorAgentAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST message returned %d: %s", rec.Code, rec.Body.String())
 	}
-	var respMsg hermes.Message
+	var respMsg deepseek.Message
 	if err := json.NewDecoder(rec.Body).Decode(&respMsg); err != nil {
 		t.Fatalf("failed to decode msg response: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestDirectNodeLLMModelAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/models returned %d", rec.Code)
 	}
-	var models []hermes.ModelInfo
+	var models []deepseek.ModelInfo
 	if err := json.NewDecoder(rec.Body).Decode(&models); err != nil {
 		t.Fatalf("decode models failed: %v", err)
 	}

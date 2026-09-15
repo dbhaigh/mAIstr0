@@ -1,4 +1,4 @@
-package hermes
+package deepseek
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 
 func newMemoryHarness(t *testing.T) (*Harness, *Session) {
 	t.Helper()
-	store, err := memory.Open(filepath.Join(t.TempDir(), "hermes.db"), "test")
+	store, err := memory.Open(filepath.Join(t.TempDir(), "deepseek.db"), "test")
 	if err != nil {
 		t.Fatalf("open memory: %v", err)
 	}

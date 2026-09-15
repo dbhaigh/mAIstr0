@@ -1,4 +1,4 @@
-package hermes
+package deepseek
 
 import (
 	"context"
@@ -13,14 +13,14 @@ import (
 	"github.com/maistr0/maistr0/internal/hardware"
 )
 
-func TestParseHermesResponse(t *testing.T) {
-	t.Run("Standard Hermes Tool Call", func(t *testing.T) {
+func TestParseDeepSeekThinkingResponse(t *testing.T) {
+	t.Run("Standard DeepSeek Tool Call", func(t *testing.T) {
 		raw := `I will check the cluster status.
 <tool_call>
 {"name": "cluster_status", "arguments": {}}
 </tool_call>`
 
-		parsed := ParseHermesResponse(raw)
+		parsed := ParseDeepSeekResponse(raw)
 		if parsed.Thought != "I will check the cluster status." {
 			t.Errorf("unexpected thought: %q", parsed.Thought)
 		}
@@ -32,7 +32,7 @@ func TestParseHermesResponse(t *testing.T) {
 		}
 	})
 
-	t.Run("Multiple Tool Calls in Hermes format", func(t *testing.T) {
+	t.Run("Multiple Tool Calls in DeepSeek format", func(t *testing.T) {
 		raw := `Let's query two worker nodes.
 <tool_call>
 {"name": "cluster_llm_query", "arguments": {"prompt": "Write hello world in Go", "task_type": "code"}}
@@ -41,7 +41,7 @@ func TestParseHermesResponse(t *testing.T) {
 {"name": "eval_expression", "arguments": {"expression": "25 * 4"}}
 </tool_call>`
 
-		parsed := ParseHermesResponse(raw)
+		parsed := ParseDeepSeekResponse(raw)
 		if len(parsed.ToolCalls) != 2 {
 			t.Fatalf("expected 2 tool calls, got %d", len(parsed.ToolCalls))
 		}
@@ -55,7 +55,7 @@ func TestParseHermesResponse(t *testing.T) {
 
 	t.Run("Markdown Fenced Code Block Fallback", func(t *testing.T) {
 		raw := "```tool_call\n{\"name\": \"eval_expression\", \"arguments\": {\"expression\": \"sqrt(144)\"}}\n```"
-		parsed := ParseHermesResponse(raw)
+		parsed := ParseDeepSeekResponse(raw)
 		if len(parsed.ToolCalls) != 1 {
 			t.Fatalf("expected 1 tool call, got %d", len(parsed.ToolCalls))
 		}
@@ -66,7 +66,7 @@ func TestParseHermesResponse(t *testing.T) {
 
 	t.Run("Direct Conversational Response", func(t *testing.T) {
 		raw := "Hello! I am ready to coordinate the cluster."
-		parsed := ParseHermesResponse(raw)
+		parsed := ParseDeepSeekResponse(raw)
 		if len(parsed.ToolCalls) != 0 {
 			t.Errorf("expected 0 tool calls, got %d", len(parsed.ToolCalls))
 		}
@@ -77,7 +77,7 @@ func TestParseHermesResponse(t *testing.T) {
 }
 
 func TestParseDeepSeekResponse(t *testing.T) {
-	parsed := ParseResponse(`<think>Plan the cluster query.</think>\nThe answer is ready.`, "deepseek")
+	parsed := ParseResponse(`<think>Plan the cluster query.</think>\nThe answer is ready.`)
 	if parsed.Thought != "Plan the cluster query." {
 		t.Fatalf("unexpected DeepSeek thought: %q", parsed.Thought)
 	}
@@ -229,7 +229,7 @@ func TestClusterWorkloadDistribution(t *testing.T) {
 }
 
 func TestInteractiveAgentHarnessLoop(t *testing.T) {
-	// Coordinator server that simulates a Hermes model:
+	// Coordinator server that simulates a DeepSeek model:
 	// Turn 1: Outputs a tool call to eval_expression
 	// Turn 2: Outputs the final answer
 	turn := 0
@@ -244,7 +244,7 @@ func TestInteractiveAgentHarnessLoop(t *testing.T) {
 				"output": "The calculation result is 144.",
 			})
 		} else {
-			// First turn: generate Hermes tool call
+			// First turn: generate DeepSeek tool call
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"output": "I will calculate 12 * 12.\n<tool_call>\n{\"name\": \"eval_expression\", \"arguments\": {\"expression\": \"12 * 12\"}}\n</tool_call>",
 			})
@@ -262,15 +262,15 @@ func TestInteractiveAgentHarnessLoop(t *testing.T) {
 			Score:      100,
 		},
 		Models: []engine.Model{
-			{Name: "hermes-3-8b", Tags: []string{"chat", "reasoning"}},
+			{Name: "deepseek-3-8b", Tags: []string{"chat", "reasoning"}},
 		},
-		DefaultModel: "hermes-3-8b",
+		DefaultModel: "deepseek-3-8b",
 		Healthy:      true,
 		Leader:       true,
 	})
 
 	h := New(reg, http.DefaultClient)
-	s := h.CreateSession("test-calc", SessionConfig{CoordinatorModel: "hermes-3-8b"})
+	s := h.CreateSession("test-calc", SessionConfig{CoordinatorModel: "deepseek-3-8b"})
 
 	events := make([]StreamEvent, 0)
 	streamChan := make(chan StreamEvent, 20)
