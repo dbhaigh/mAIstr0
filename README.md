@@ -1,4 +1,4 @@
-Welcome to mAIstr0 - a managed AI orchestrator and Router
+Welcome to mAIstr0 - a managed AI Orchestrator and Router
 
 It's rough as, It's not quite routing the tasks properly, nor outputting them properly, but it is doing something, and that's a thing :D
 
