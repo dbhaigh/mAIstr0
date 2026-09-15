@@ -1518,14 +1518,7 @@ func (a *Agent) peerAddress(id string) (string, bool) {
 func (a *Agent) handleAPIAgentProxy(w http.ResponseWriter, r *http.Request) {
 	orch := a.getOrchestratorAddr()
 	if orch == "" {
-		if a.isMostCapable() {
-			http.Error(w, "orchestrator unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		orch = a.mostCapableNode().Address
-	}
-	if orch == "" {
-		http.Error(w, "no orchestrator or coordinator found", http.StatusServiceUnavailable)
+		http.Error(w, "orchestrator unavailable; harness requests cannot run on a worker node", http.StatusServiceUnavailable)
 		return
 	}
 	destPath := r.URL.Path

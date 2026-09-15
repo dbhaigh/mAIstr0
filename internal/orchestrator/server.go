@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/hardware"
-	"github.com/maistr0/maistr0/internal/hermes"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
@@ -38,7 +38,7 @@ type Server struct {
 	selfID           string
 	discoveryEnabled bool
 	events           *hub.Hub
-	agent            *hermes.Harness
+	agent            *deepseek.Harness
 	mem              *memory.Store
 	harness          string
 	selfScore        float64 // announced on the LAN for orchestrator election
@@ -65,14 +65,8 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) *Server {
 	if harnessName == "" {
 		harnessName = "deepseek"
 	}
-	var agent *hermes.Harness
-	switch harnessName {
-	case "deepseek":
-		agent = hermes.NewDeepSeek(reg, disp)
-	default:
-		harnessName = "deepseek"
-		agent = hermes.NewDeepSeek(reg, disp)
-	}
+	agent := deepseek.New(reg, disp)
+	harnessName = "deepseek"
 	srv := &Server{
 		registry:         reg,
 		tasks:            taskmgr.NewManager(),
@@ -136,7 +130,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 
-	// Interactive Hermes Agent harness endpoints
+	// Interactive DeepSeek harness endpoints
 	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessionsList)
 	mux.HandleFunc("POST /api/agent/sessions", s.handleAgentSessionsCreate)
 	mux.HandleFunc("GET /api/agent/sessions/{id}", s.handleAgentSessionGet)
@@ -333,7 +327,7 @@ type clusterSnapshot struct {
 	BuildVersion string               `json:"build_version"`
 	LeaderID     string               `json:"leader_id,omitempty"`
 	MemberCount  int                  `json:"member_count"`
-	AgentStats   *hermes.AgentStats   `json:"agent_stats,omitempty"`
+	AgentStats   *deepseek.AgentStats `json:"agent_stats,omitempty"`
 	Memory       *memory.Insights     `json:"memory,omitempty"`
 }
 
@@ -786,7 +780,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
-// --- Interactive Hermes Agent HTTP Handlers ---
+// --- Interactive DeepSeek Harness HTTP Handlers ---
 
 func (s *Server) handleAgentSessionsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.agent.ListSessions())
@@ -805,7 +799,7 @@ func (s *Server) handleAgentSessionsCreate(w http.ResponseWriter, r *http.Reques
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	session := s.agent.CreateSession(req.Title, hermes.SessionConfig{
+	session := s.agent.CreateSession(req.Title, deepseek.SessionConfig{
 		CoordinatorModel: req.CoordinatorModel,
 		MaxSteps:         req.MaxSteps,
 		Temperature:      req.Temperature,
@@ -870,7 +864,7 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		streamChan := make(chan hermes.StreamEvent, 50)
+		streamChan := make(chan deepseek.StreamEvent, 50)
 		go func() {
 			_, _ = s.agent.SendMessage(r.Context(), id, content, streamChan)
 			close(streamChan)
