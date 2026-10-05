@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -19,6 +20,17 @@ type Assignment struct {
 // ErrNoHealthyNodes is returned when the cluster has no node available to
 // take on any work.
 var ErrNoHealthyNodes = errors.New("scheduler: no healthy nodes available")
+
+// UnassignableSubtasksError reports work for which no healthy node advertises
+// a compatible model. Assign is all-or-nothing so callers cannot silently
+// report a partially executed task as complete.
+type UnassignableSubtasksError struct {
+	SubtaskIDs []string
+}
+
+func (e *UnassignableSubtasksError) Error() string {
+	return "scheduler: no compatible model for subtasks: " + strings.Join(e.SubtaskIDs, ", ")
+}
 
 // Experience supplies a learned routing adjustment for a node+model+task
 // pairing, derived from the cluster's recorded history.
@@ -55,9 +67,11 @@ func AssignWithExperience(subtasks []Subtask, nodes []cluster.NodeStatus, exp Ex
 	}
 
 	assignments := make([]Assignment, 0, len(subtasks))
+	var unassignable []string
 	for _, st := range subtasks {
 		bestNode, bestModel, bestScore := pickBest(st, healthy, simulatedLoad, exp)
 		if bestNode == nil {
+			unassignable = append(unassignable, st.ID)
 			continue
 		}
 		simulatedLoad[bestNode.ID]++
@@ -68,6 +82,9 @@ func AssignWithExperience(subtasks []Subtask, nodes []cluster.NodeStatus, exp Ex
 			Model:   bestModel,
 			Score:   bestScore,
 		})
+	}
+	if len(unassignable) > 0 {
+		return nil, &UnassignableSubtasksError{SubtaskIDs: unassignable}
 	}
 	return assignments, nil
 }
@@ -107,6 +124,10 @@ func bestModelFor(st Subtask, models []engine.Model, defaultModel string) (strin
 	bestName := ""
 	bestScore := -1.0
 	for _, m := range models {
+		if st.TaskType != "general" && hasSpecialtyTag(m.Tags) &&
+			!containsTag(m.Tags, st.TaskType) && !containsTag(m.Tags, "general") {
+			continue
+		}
 		score := 0.0
 		if m.Name == defaultModel {
 			score += 1.0
@@ -129,4 +150,23 @@ func bestModelFor(st Subtask, models []engine.Model, defaultModel string) (strin
 		return "", 0
 	}
 	return bestName, bestScore
+}
+
+func hasSpecialtyTag(tags []string) bool {
+	for _, tag := range tags {
+		switch tag {
+		case "code", "summarize", "translate", "math", "vision", "creative":
+			return true
+		}
+	}
+	return false
+}
+
+func containsTag(tags []string, target string) bool {
+	for _, tag := range tags {
+		if tag == target {
+			return true
+		}
+	}
+	return false
 }

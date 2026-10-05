@@ -196,6 +196,7 @@ func TestDirectNodeLLMModelAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/models returned %d", rec.Code)
 	}
+
 	var models []deepseek.ModelInfo
 	if err := json.NewDecoder(rec.Body).Decode(&models); err != nil {
 		t.Fatalf("decode models failed: %v", err)
@@ -280,5 +281,84 @@ func TestDirectNodeLLMModelAPI(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /api/nodes/worker-alpha/chat returned %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOpenAIStreamingPreservesOptionsAndMessageRoles(t *testing.T) {
+	type generatePayload struct {
+		Prompt      string  `json:"prompt"`
+		Temperature float64 `json:"temperature"`
+		MaxTokens   int     `json:"max_tokens"`
+	}
+	var received generatePayload
+	mockWorker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/generate" || r.URL.Query().Get("stream") != "true" {
+			t.Errorf("unexpected worker request: %s %s", r.Method, r.URL.String())
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode node request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"output\":\"Hello \"}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte("data: {\"output\":\"world\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"output\":\"\",\"done\":true}\n\n"))
+	}))
+	defer mockWorker.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "stream-worker", Address: mockWorker.URL, Healthy: true,
+		Models:       []engine.Model{{Name: "general-model", Tags: []string{"general"}}},
+		DefaultModel: "general-model",
+	})
+	requestBody, err := json.Marshal(map[string]any{
+		"model": "general-model", "stream": true, "temperature": 0.35, "max_tokens": 64,
+		"messages": []map[string]string{
+			{"role": "system", "content": "Follow the instructions"},
+			{"role": "user", "content": "Say hello"},
+			{"role": "assistant", "content": "I will use a tool"},
+			{"role": "tool", "content": "Tool result"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(requestBody)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stream endpoint returned %d: %s", rec.Code, rec.Body.String())
+	}
+	if received.Temperature != 0.35 || received.MaxTokens != 64 {
+		t.Fatalf("generation options not forwarded: %+v", received)
+	}
+	for _, expected := range []string{`"content":"Hello "`, `"content":"world"`, "data: [DONE]"} {
+		if !strings.Contains(rec.Body.String(), expected) {
+			t.Errorf("stream response is missing %q: %s", expected, rec.Body.String())
+		}
+	}
+	for _, expected := range []string{"<|im_start|>assistant\nI will use a tool<|im_end|>", "<|im_start|>tool\nTool result<|im_end|>"} {
+		if !strings.Contains(received.Prompt, expected) {
+			t.Errorf("forwarded prompt is missing %q: %s", expected, received.Prompt)
+		}
+	}
+}
+
+func TestCreateTaskRejectsPartiallyAssignableWork(t *testing.T) {
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "code-worker", Address: "http://worker", Healthy: true,
+		Models: []engine.Model{{Name: "code-model", Tags: []string{"code"}}},
+	})
+	body := bytes.NewBufferString(`{"description":"Write code. Inspect this image."}`)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tasks", body))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("task creation returned %d, want %d: %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+	if tasks := srv.tasks.All(); len(tasks) != 0 {
+		t.Fatalf("task created despite unassignable work: %+v", tasks)
 	}
 }

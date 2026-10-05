@@ -4,6 +4,7 @@ package scheduler
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -66,10 +67,10 @@ func idFor(i int) string {
 	if i < len(letters) {
 		return "sub-" + string(letters[i])
 	}
-	return "sub-" + string(rune('0'+i))
+	return "sub-" + strconv.FormatInt(int64(i), 36)
 }
 
-var sentenceSplit = regexp.MustCompile(`(?:\.|;)\s+`)
+var sentenceSplit = regexp.MustCompile(`[.!?;]\s+`)
 
 func splitSentences(s string) []string {
 	raw := sentenceSplit.Split(s, -1)

@@ -1138,11 +1138,22 @@ function renderTasks(tasks) {
       )
       .join("");
     card.innerHTML = `
-      <h3>${escapeHtml(t.id)} <span class="badge ${t.status}">${t.status}</span></h3>
+      <h3>${escapeHtml(t.id)} <span class="badge ${t.status}">${t.status}</span>${t.status === "running" ? ` <button class="cancel-task-btn" type="button" data-task-id="${escapeHtml(t.id)}">Cancel</button>` : ""}</h3>
       <div class="row"><span colspan="2">${escapeHtml(t.description)}</span></div>
+      ${t.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(t.error)}</div>` : ""}
       ${subtaskHTML}
+      ${t.result ? `<div class="subtask-output-wrap"><strong>Task result</strong><div class="subtask-output">${escapeHtml(t.result)}</div></div>` : ""}
     `;
     tasksList.appendChild(card);
+    card.querySelector(".cancel-task-btn")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
+      } catch (err) {
+        if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err.message}`;
+      }
+    });
     card.querySelectorAll("[data-copy-output]").forEach((button) => {
       button.addEventListener("click", () => copyText(decodeURIComponent(button.dataset.copyOutput), button));
     });
