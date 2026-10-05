@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -92,10 +93,11 @@ func (o *Ollama) ListModels() ([]Model, error) {
 }
 
 type ollamaGenerateRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	Stream bool   `json:"stream"`
-	Raw    bool   `json:"raw,omitempty"`
+	Model   string         `json:"model"`
+	Prompt  string         `json:"prompt"`
+	Stream  bool           `json:"stream"`
+	Raw     bool           `json:"raw,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
 }
 
 type ollamaGenerateResponse struct {
@@ -103,14 +105,33 @@ type ollamaGenerateResponse struct {
 }
 
 func (o *Ollama) Generate(model, prompt string) (string, error) {
+	return o.GenerateWithOptions(context.Background(), model, prompt, GenerationOptions{})
+}
+
+func (o *Ollama) GenerateWithOptions(ctx context.Context, model, prompt string, options GenerationOptions) (string, error) {
+	var engineOptions map[string]any
+	if options.Temperature != 0 || options.MaxTokens > 0 {
+		engineOptions = make(map[string]any)
+		if options.Temperature != 0 {
+			engineOptions["temperature"] = options.Temperature
+		}
+		if options.MaxTokens > 0 {
+			engineOptions["num_predict"] = options.MaxTokens
+		}
+	}
 	// If the prompt contains explicit ChatML / template control tokens, pass raw=true
 	// so Ollama feeds the exact tokens without re-wrapping in another template.
 	raw := strings.Contains(prompt, "<|im_start|>") || strings.Contains(prompt, "<|start_header_id|>") || strings.Contains(prompt, "[INST]")
-	body, err := json.Marshal(ollamaGenerateRequest{Model: model, Prompt: prompt, Stream: false, Raw: raw})
+	body, err := json.Marshal(ollamaGenerateRequest{Model: model, Prompt: prompt, Stream: false, Raw: raw, Options: engineOptions})
 	if err != nil {
 		return "", err
 	}
-	resp, err := o.genClient.Post(o.baseURL+"/api/generate", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := o.genClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -124,6 +145,63 @@ func (o *Ollama) Generate(model, prompt string) (string, error) {
 		return "", err
 	}
 	return out.Response, nil
+}
+
+func (o *Ollama) GenerateStream(ctx context.Context, model, prompt string, options GenerationOptions, onDelta func(string) error) error {
+	var engineOptions map[string]any
+	if options.Temperature != 0 || options.MaxTokens > 0 {
+		engineOptions = make(map[string]any)
+		if options.Temperature != 0 {
+			engineOptions["temperature"] = options.Temperature
+		}
+		if options.MaxTokens > 0 {
+			engineOptions["num_predict"] = options.MaxTokens
+		}
+	}
+	raw := strings.Contains(prompt, "<|im_start|>") || strings.Contains(prompt, "<|start_header_id|>") || strings.Contains(prompt, "[INST]")
+	body, err := json.Marshal(ollamaGenerateRequest{Model: model, Prompt: prompt, Stream: true, Raw: raw, Options: engineOptions})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := o.genClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("ollama generate failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var chunk struct {
+			Response string `json:"response"`
+			Done     bool   `json:"done"`
+			Error    string `json:"error"`
+		}
+		if err := decoder.Decode(&chunk); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		if chunk.Error != "" {
+			return fmt.Errorf("ollama stream failed: %s", chunk.Error)
+		}
+		if chunk.Response != "" {
+			if err := onDelta(chunk.Response); err != nil {
+				return err
+			}
+		}
+		if chunk.Done {
+			return nil
+		}
+	}
 }
 
 type ollamaChatRequest struct {

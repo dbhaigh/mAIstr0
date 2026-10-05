@@ -3,13 +3,12 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$versionFile = "dist/version.txt"
-if (Test-Path $versionFile) {
-	$previous = [decimal](Get-Content $versionFile -Raw).Trim()
-	$version = ($previous + [decimal]"0.0001").ToString("0.0000", [Globalization.CultureInfo]::InvariantCulture)
-} else {
-	$version = "0.0001"
+$versionSource = Get-Content "internal/version/version.go" -Raw
+if ($versionSource -notmatch 'var Value = "([^"]+)"') {
+	throw "Could not read release version from internal/version/version.go"
 }
+$version = $Matches[1]
+$versionFile = "dist/version.txt"
 New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 Set-Content -Path $versionFile -Value $version -NoNewline
 $ldflags = "-s -w -X github.com/maistr0/maistr0/internal/version.Value=$version"

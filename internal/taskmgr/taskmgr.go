@@ -3,6 +3,9 @@
 package taskmgr
 
 import (
+	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +19,7 @@ const (
 	StatusRunning   Status = "running"
 	StatusCompleted Status = "completed"
 	StatusFailed    Status = "failed"
+	StatusCancelled Status = "cancelled"
 )
 
 // SubtaskResult tracks one assignment's execution outcome.
@@ -32,8 +36,12 @@ type Task struct {
 	Description string          `json:"description"`
 	Status      Status          `json:"status"`
 	Subtasks    []SubtaskResult `json:"subtasks"`
+	Result      string          `json:"result,omitempty"`
+	Error       string          `json:"error,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // Manager is a thread-safe in-memory store of tasks.
@@ -58,6 +66,7 @@ func (m *Manager) Create(description string, assignments []scheduler.Assignment)
 		results = append(results, SubtaskResult{Assignment: a, Status: StatusPending})
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	t := &Task{
 		ID:          id,
 		Description: description,
@@ -65,16 +74,55 @@ func (m *Manager) Create(description string, assignments []scheduler.Assignment)
 		Subtasks:    results,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	if len(results) == 0 {
+		t.Status = StatusFailed
+		t.Error = "task has no assigned subtasks"
 	}
 	m.tasks[id] = t
-	return t
+	return cloneTask(t)
 }
 
 func (m *Manager) Get(id string) (*Task, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	t, ok := m.tasks[id]
-	return t, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneTask(t), true
+}
+
+func (m *Manager) Context(id string) (context.Context, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return nil, false
+	}
+	return t.ctx, true
+}
+
+func (m *Manager) Cancel(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok || t.Status == StatusCompleted || t.Status == StatusFailed || t.Status == StatusCancelled {
+		return false
+	}
+	t.cancel()
+	t.Status = StatusCancelled
+	t.Error = "task cancelled"
+	for i := range t.Subtasks {
+		if t.Subtasks[i].Status == StatusPending || t.Subtasks[i].Status == StatusRunning {
+			t.Subtasks[i].Status = StatusCancelled
+			t.Subtasks[i].Error = "task cancelled"
+		}
+	}
+	t.UpdatedAt = time.Now()
+	return true
 }
 
 func (m *Manager) All() []*Task {
@@ -82,7 +130,7 @@ func (m *Manager) All() []*Task {
 	defer m.mu.RUnlock()
 	out := make([]*Task, 0, len(m.tasks))
 	for _, t := range m.tasks {
-		out = append(out, t)
+		out = append(out, cloneTask(t))
 	}
 	return out
 }
@@ -92,6 +140,9 @@ func (m *Manager) StartSubtask(taskID, subtaskID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if t, ok := m.tasks[taskID]; ok {
+		if t.Status == StatusCancelled {
+			return
+		}
 		for i := range t.Subtasks {
 			if t.Subtasks[i].Subtask.ID == subtaskID {
 				t.Subtasks[i].Status = StatusRunning
@@ -111,10 +162,15 @@ func (m *Manager) CompleteSubtask(taskID, subtaskID string, output string, taskE
 	if !ok {
 		return
 	}
+	if t.Status == StatusCancelled {
+		return
+	}
+	found := false
 	for i := range t.Subtasks {
 		if t.Subtasks[i].Subtask.ID != subtaskID {
 			continue
 		}
+		found = true
 		if taskErr != nil {
 			t.Subtasks[i].Status = StatusFailed
 			t.Subtasks[i].Error = taskErr.Error()
@@ -123,6 +179,9 @@ func (m *Manager) CompleteSubtask(taskID, subtaskID string, output string, taskE
 			t.Subtasks[i].Output = output
 		}
 		break
+	}
+	if !found {
+		return
 	}
 
 	allDone := true
@@ -138,11 +197,36 @@ func (m *Manager) CompleteSubtask(taskID, subtaskID string, output string, taskE
 	if allDone {
 		if anyFailed {
 			t.Status = StatusFailed
+			t.Error = "one or more subtasks failed"
 		} else {
 			t.Status = StatusCompleted
 		}
+		t.Result = aggregateOutputs(t.Subtasks)
 	}
 	t.UpdatedAt = time.Now()
+}
+
+func cloneTask(t *Task) *Task {
+	cloned := *t
+	cloned.Subtasks = append([]SubtaskResult(nil), t.Subtasks...)
+	for i := range cloned.Subtasks {
+		cloned.Subtasks[i].Subtask.Tags = append([]string(nil), t.Subtasks[i].Subtask.Tags...)
+	}
+	return &cloned
+}
+
+func aggregateOutputs(subtasks []SubtaskResult) string {
+	var result strings.Builder
+	for _, subtask := range subtasks {
+		if subtask.Status != StatusCompleted || strings.TrimSpace(subtask.Output) == "" {
+			continue
+		}
+		if result.Len() > 0 {
+			result.WriteString("\n\n")
+		}
+		fmt.Fprintf(&result, "## %s\n%s", subtask.Assignment.Subtask.Description, strings.TrimSpace(subtask.Output))
+	}
+	return result.String()
 }
 
 func genID(seq int) string {

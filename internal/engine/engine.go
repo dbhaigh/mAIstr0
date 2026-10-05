@@ -5,6 +5,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,6 +27,11 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
+type GenerationOptions struct {
+	Temperature float64
+	MaxTokens   int
+}
+
 // Engine is a local LLM serving backend (Ollama, llama.cpp server, ...).
 type Engine interface {
 	Name() string
@@ -37,6 +43,18 @@ type Engine interface {
 	Generate(model, prompt string) (string, error)
 	// Chat runs a multi-turn conversation against the given model and returns the assistant response.
 	Chat(model string, messages []ChatMessage) (string, error)
+}
+
+// EngineWithOptions is implemented by engines that support generation
+// parameters without changing the base Engine contract.
+type EngineWithOptions interface {
+	GenerateWithOptions(ctx context.Context, model, prompt string, options GenerationOptions) (string, error)
+}
+
+// StreamingEngine is implemented by engines that can return generated text
+// incrementally.
+type StreamingEngine interface {
+	GenerateStream(ctx context.Context, model, prompt string, options GenerationOptions, onDelta func(string) error) error
 }
 
 // ModelManager is implemented by engines that can download models.

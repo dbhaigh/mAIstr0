@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,7 @@ type Server struct {
 	tasks            *taskmgr.Manager
 	client           *http.Client // short timeout, for node proxy/status calls
 	dispatcher       *http.Client // long timeout, subtask execution can cold-load a model
+	dispatchSlots    chan struct{}
 	discovery        *discovery.Listener
 	selfID           string
 	discoveryEnabled bool
@@ -72,6 +74,7 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) *Server {
 		tasks:            taskmgr.NewManager(),
 		client:           &http.Client{Timeout: 10 * time.Second},
 		dispatcher:       disp,
+		dispatchSlots:    make(chan struct{}, 16),
 		selfID:           selfID,
 		selfScore:        cluster.SelfScore(hardware.Detect()),
 		discoveryEnabled: true,
@@ -129,6 +132,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
 
 	// Interactive DeepSeek harness endpoints
 	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessionsList)
@@ -670,19 +674,38 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
+		var unassignable *scheduler.UnassignableSubtasksError
+		if errors.As(err, &unassignable) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(assignments) != len(subtasks) {
+		http.Error(w, "scheduler returned an incomplete assignment", http.StatusServiceUnavailable)
 		return
 	}
 
 	task := s.tasks.Create(req.Description, assignments)
 	for _, a := range assignments {
-		s.registry.IncrementLoad(a.NodeID, 1)
 		go s.dispatch(task.ID, a)
 	}
 	writeJSON(w, http.StatusAccepted, task)
 }
 
 func (s *Server) dispatch(taskID string, a scheduler.Assignment) {
+	ctx, ok := s.tasks.Context(taskID)
+	if !ok {
+		return
+	}
+	select {
+	case s.dispatchSlots <- struct{}{}:
+	case <-ctx.Done():
+		return
+	}
+	defer func() { <-s.dispatchSlots }()
+	s.registry.IncrementLoad(a.NodeID, 1)
 	defer s.registry.IncrementLoad(a.NodeID, -1)
 	s.tasks.StartSubtask(taskID, a.Subtask.ID)
 	if node, ok := s.registry.Get(a.NodeID); !ok || !node.Healthy || node.Address != a.Address {
@@ -698,7 +721,13 @@ func (s *Server) dispatch(taskID string, a scheduler.Assignment) {
 	})
 
 	start := time.Now()
-	resp, err := s.dispatcher.Post(a.Address+"/execute", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.Address+"/execute", bytes.NewReader(body))
+	if err != nil {
+		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.dispatcher.Do(req)
 	if err != nil {
 		s.recordDispatch(a, "", err, time.Since(start))
 		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", err)
@@ -778,6 +807,21 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	_, ok := s.tasks.Get(id)
+	if !ok {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	if !s.tasks.Cancel(id) {
+		http.Error(w, "task is already complete", http.StatusConflict)
+		return
+	}
+	cancelled, _ := s.tasks.Get(id)
+	writeJSON(w, http.StatusOK, cancelled)
 }
 
 // --- Interactive DeepSeek Harness HTTP Handlers ---
@@ -915,6 +959,7 @@ type generateAPIRequest struct {
 	System      string  `json:"system,omitempty"`
 	TaskType    string  `json:"task_type,omitempty"`
 	Temperature float64 `json:"temperature,omitempty"`
+	MaxTokens   int     `json:"max_tokens,omitempty"`
 }
 
 type generateAPIResponse struct {
@@ -1013,9 +1058,13 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	s.registry.IncrementLoad(targetNode.ID, 1)
 	defer s.registry.IncrementLoad(targetNode.ID, -1)
+	if strings.EqualFold(r.URL.Query().Get("stream"), "true") {
+		s.streamNodeGenerate(w, r, targetNode.Address, targetModel, req, fullPrompt)
+		return
+	}
 
 	start := time.Now()
-	output, err := s.callNodeGenerate(targetNode.Address, targetModel, fullPrompt)
+	output, err := s.callNodeGenerateWithOptions(targetNode.Address, targetModel, fullPrompt, req.Temperature, req.MaxTokens)
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -1036,6 +1085,73 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		Output:      output,
 		DurationMs:  duration,
 	})
+}
+
+func (s *Server) streamNodeGenerate(w http.ResponseWriter, r *http.Request, address, model string, genReq generateAPIRequest, prompt string) {
+	body, err := marshalGeneratePayload(model, prompt, genReq.Temperature, genReq.MaxTokens)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, generateAPIResponse{Error: err.Error()})
+		return
+	}
+	nodeReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/generate?stream=true", bytes.NewReader(body))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, generateAPIResponse{Error: err.Error()})
+		return
+	}
+	nodeReq.Header.Set("Content-Type", "application/json")
+	resp, err := s.dispatcher.Do(nodeReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, generateAPIResponse{Error: err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		writeJSON(w, resp.StatusCode, generateAPIResponse{Error: strings.TrimSpace(string(errBody))})
+		return
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		var out generateAPIResponse
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			writeJSON(w, http.StatusBadGateway, generateAPIResponse{Error: "invalid response from node: " + err.Error()})
+			return
+		}
+		data, err := json.Marshal(map[string]string{"output": out.Output})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, generateAPIResponse{Error: err.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		if out.Error != "" {
+			errData, _ := json.Marshal(map[string]string{"error": out.Error})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", errData)
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 4096), 1024*1024)
+	for scanner.Scan() {
+		if _, err := fmt.Fprintln(w, scanner.Text()); err != nil {
+			return
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("orchestrator: stream from node %s failed: %v", address, err)
+	}
 }
 
 func (s *Server) handleNodeGenerate(w http.ResponseWriter, r *http.Request) {
@@ -1103,11 +1219,15 @@ func (s *Server) handleNodeModelTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) callNodeGenerate(nodeAddr, model, prompt string) (string, error) {
+	return s.callNodeGenerateWithOptions(nodeAddr, model, prompt, 0, 0)
+}
+
+func (s *Server) callNodeGenerateWithOptions(nodeAddr, model, prompt string, temperature float64, maxTokens int) (string, error) {
 	// Try /generate first, fallback to /execute
-	genPayload, _ := json.Marshal(map[string]string{
-		"model":  model,
-		"prompt": prompt,
-	})
+	genPayload, err := marshalGeneratePayload(model, prompt, temperature, maxTokens)
+	if err != nil {
+		return "", err
+	}
 
 	resp, err := s.dispatcher.Post(nodeAddr+"/generate", "application/json", bytes.NewReader(genPayload))
 	if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -1155,6 +1275,17 @@ func (s *Server) callNodeGenerate(nodeAddr, model, prompt string) (string, error
 	return out.Output, nil
 }
 
+func marshalGeneratePayload(model, prompt string, temperature float64, maxTokens int) ([]byte, error) {
+	payload := map[string]any{"model": model, "prompt": prompt}
+	if temperature != 0 {
+		payload["temperature"] = temperature
+	}
+	if maxTokens > 0 {
+		payload["max_tokens"] = maxTokens
+	}
+	return json.Marshal(payload)
+}
+
 // --- OpenAI-Compatible Gateway Handlers ---
 
 type openAIModelObj struct {
@@ -1198,6 +1329,7 @@ type openAIChatRequest struct {
 	Messages    []openAIChatMessage `json:"messages"`
 	Stream      bool                `json:"stream"`
 	Temperature float64             `json:"temperature"`
+	MaxTokens   int                 `json:"max_tokens,omitempty"`
 }
 
 func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -1212,15 +1344,12 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Reconstruct prompt from messages
+	// Preserve every message role supported by the engine prompt format.
 	var sb strings.Builder
 	for _, m := range req.Messages {
-		if m.Role == "system" {
-			sb.WriteString("<|im_start|>system\n" + m.Content + "<|im_end|>\n")
-		} else if m.Role == "user" {
-			sb.WriteString("<|im_start|>user\n" + m.Content + "<|im_end|>\n")
-		} else if m.Role == "assistant" {
-			sb.WriteString("<|im_start|>assistant\n" + m.Content + "<|im_end|>\n")
+		switch m.Role {
+		case "system", "user", "assistant", "tool":
+			sb.WriteString("<|im_start|>" + m.Role + "\n" + m.Content + "<|im_end|>\n")
 		}
 	}
 	sb.WriteString("<|im_start|>assistant\n")
@@ -1229,10 +1358,21 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		Model:       req.Model,
 		Prompt:      sb.String(),
 		Temperature: req.Temperature,
+		MaxTokens:   req.MaxTokens,
 	}
 
 	genBody, _ := json.Marshal(genReq)
-	fakeReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, "/api/generate", bytes.NewReader(genBody))
+	generateURL := "/api/generate"
+	if req.Stream {
+		generateURL += "?stream=true"
+	}
+	fakeReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, generateURL, bytes.NewReader(genBody))
+	if req.Stream {
+		streamWriter := newOpenAIStreamWriter(w, req.Model)
+		s.handleGenerate(streamWriter, fakeReq)
+		streamWriter.finish()
+		return
+	}
 	rec := &responseCapture{header: make(http.Header), body: new(bytes.Buffer)}
 	s.handleGenerate(rec, fakeReq)
 
@@ -1245,33 +1385,6 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 
 	var genResp generateAPIResponse
 	_ = json.Unmarshal(rec.body.Bytes(), &genResp)
-
-	if req.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		flusher, _ := w.(http.Flusher)
-
-		chunk := map[string]any{
-			"id":      "chatcmpl-" + genResp.NodeID,
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   genResp.Model,
-			"choices": []map[string]any{
-				{
-					"index":         0,
-					"delta":         map[string]string{"content": genResp.Output},
-					"finish_reason": "stop",
-				},
-			},
-		}
-		data, _ := json.Marshal(chunk)
-		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", data)
-		if flusher != nil {
-			flusher.Flush()
-		}
-		return
-	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                 "chatcmpl-" + genResp.NodeID,
@@ -1301,6 +1414,7 @@ type openAICompletionRequest struct {
 	Model       string  `json:"model"`
 	Prompt      string  `json:"prompt"`
 	Temperature float64 `json:"temperature"`
+	MaxTokens   int     `json:"max_tokens,omitempty"`
 }
 
 func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request) {
@@ -1314,6 +1428,7 @@ func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request)
 		Model:       req.Model,
 		Prompt:      req.Prompt,
 		Temperature: req.Temperature,
+		MaxTokens:   req.MaxTokens,
 	}
 
 	genBody, _ := json.Marshal(genReq)
@@ -1360,6 +1475,117 @@ func (r *responseCapture) Write(b []byte) (int, error) {
 	return r.body.Write(b)
 }
 func (r *responseCapture) WriteHeader(status int) { r.status = status }
+
+type openAIStreamWriter struct {
+	target  http.ResponseWriter
+	header  http.Header
+	model   string
+	status  int
+	buffer  strings.Builder
+	flusher http.Flusher
+}
+
+func newOpenAIStreamWriter(target http.ResponseWriter, model string) *openAIStreamWriter {
+	flusher, _ := target.(http.Flusher)
+	return &openAIStreamWriter{target: target, header: make(http.Header), model: model, flusher: flusher}
+}
+
+func (w *openAIStreamWriter) Header() http.Header { return w.header }
+
+func (w *openAIStreamWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	for key, values := range w.header {
+		for _, value := range values {
+			w.target.Header().Add(key, value)
+		}
+	}
+	if status < 400 {
+		w.target.Header().Set("Content-Type", "text/event-stream")
+		w.target.Header().Set("Cache-Control", "no-cache")
+		w.target.Header().Set("Connection", "keep-alive")
+	}
+	w.target.WriteHeader(status)
+}
+
+func (w *openAIStreamWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.status >= 400 {
+		return w.target.Write(data)
+	}
+	w.buffer.Write(data)
+	for {
+		buffer := w.buffer.String()
+		newline := strings.IndexByte(buffer, '\n')
+		if newline < 0 {
+			break
+		}
+		line := buffer[:newline]
+		w.buffer.Reset()
+		w.buffer.WriteString(buffer[newline+1:])
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		var event struct {
+			Output string `json:"output"`
+			Error  string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			return len(data), err
+		}
+		if event.Error != "" {
+			if err := w.writeChunk(map[string]any{"error": map[string]string{"message": event.Error, "type": "server_error"}}); err != nil {
+				return len(data), err
+			}
+		}
+		if event.Output != "" {
+			chunk := map[string]any{
+				"id": "chatcmpl-maistr0", "object": "chat.completion.chunk",
+				"created": time.Now().Unix(), "model": w.model,
+				"choices": []map[string]any{{"index": 0, "delta": map[string]string{"content": event.Output}, "finish_reason": nil}},
+			}
+			if err := w.writeChunk(chunk); err != nil {
+				return len(data), err
+			}
+		}
+	}
+	return len(data), nil
+}
+
+func (w *openAIStreamWriter) writeChunk(chunk any) error {
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w.target, "data: %s\n\n", data); err != nil {
+		return err
+	}
+	if w.flusher != nil {
+		w.flusher.Flush()
+	}
+	return nil
+}
+
+func (w *openAIStreamWriter) finish() {
+	if w.status >= 400 {
+		return
+	}
+	_ = w.writeChunk(map[string]any{
+		"id": "chatcmpl-maistr0", "object": "chat.completion.chunk",
+		"created": time.Now().Unix(), "model": w.model,
+		"choices": []map[string]any{{"index": 0, "delta": map[string]string{}, "finish_reason": "stop"}},
+	})
+	_, _ = fmt.Fprint(w.target, "data: [DONE]\n\n")
+	if w.flusher != nil {
+		w.flusher.Flush()
+	}
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

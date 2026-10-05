@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -60,7 +62,50 @@ func (v *VLLM) ListModels() ([]Model, error) {
 }
 
 func (v *VLLM) Generate(model, prompt string) (string, error) {
-	return v.Chat(model, []ChatMessage{{Role: "user", Content: prompt}})
+	return v.GenerateWithOptions(context.Background(), model, prompt, GenerationOptions{})
+}
+
+func (v *VLLM) GenerateWithOptions(ctx context.Context, model, prompt string, options GenerationOptions) (string, error) {
+	payload := map[string]any{
+		"model":    model,
+		"messages": []ChatMessage{{Role: "user", Content: prompt}},
+	}
+	if options.Temperature != 0 {
+		payload["temperature"] = options.Temperature
+	}
+	if options.MaxTokens > 0 {
+		payload["max_tokens"] = options.MaxTokens
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("vllm chat failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	var result struct {
+		Choices []struct {
+			Message ChatMessage `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("vllm returned no choices")
+	}
+	return result.Choices[0].Message.Content, nil
 }
 
 func (v *VLLM) Chat(model string, messages []ChatMessage) (string, error) {
@@ -89,4 +134,67 @@ func (v *VLLM) Chat(model string, messages []ChatMessage) (string, error) {
 		return "", fmt.Errorf("vllm returned no choices")
 	}
 	return result.Choices[0].Message.Content, nil
+}
+
+func (v *VLLM) GenerateStream(ctx context.Context, model, prompt string, options GenerationOptions, onDelta func(string) error) error {
+	payload := map[string]any{
+		"model":    model,
+		"messages": []ChatMessage{{Role: "user", Content: prompt}},
+		"stream":   true,
+	}
+	if options.Temperature != 0 {
+		payload["temperature"] = options.Temperature
+	}
+	if options.MaxTokens > 0 {
+		payload["max_tokens"] = options.MaxTokens
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("vllm chat stream failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 4096), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			return nil
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return err
+		}
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" {
+				if err := onDelta(choice.Delta.Content); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return scanner.Err()
 }
