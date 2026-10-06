@@ -110,8 +110,47 @@ header h1 {
 }
 
 #cluster-tab.tab-content.active {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem 1.5rem;
 }
+
+.cluster-workspace-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.4rem;
+  overflow-x: auto;
+  border-bottom: 1px solid #2a3350;
+}
+
+.cluster-workspace-tab {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0.55rem 0.9rem;
+  margin: 0;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.cluster-workspace-tab:hover { filter: none; color: var(--text); }
+.cluster-workspace-tab.active { color: var(--accent); border-color: #2a3350; border-bottom-color: var(--accent); background: var(--panel); }
+
+.cluster-window {
+  display: none;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.cluster-window.active { display: flex; }
+.cluster-window[hidden] { display: none !important; }
 
 #memory-tab.tab-content.active {
   display: grid;
@@ -808,6 +847,10 @@ button:hover { filter: brightness(1.1); }
   background: #142038;
 }
 
+.session-info { display: flex; flex-direction: column; min-width: 0; }
+.session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-harness { color: var(--muted); font-size: 0.68rem; }
+
 .session-del-btn {
   background: transparent;
   border: none;
@@ -817,6 +860,8 @@ button:hover { filter: brightness(1.1); }
   margin: 0;
   cursor: pointer;
 }
+
+.session-item .session-del-btn { width: auto; }
 
 .session-del-btn:hover {
   color: var(--bad);
@@ -829,6 +874,12 @@ button:hover { filter: brightness(1.1); }
   font-size: 0.8rem;
   color: var(--muted);
   margin-bottom: 0.65rem;
+}
+
+.setting-help {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
 }
 
 .setting-label select {

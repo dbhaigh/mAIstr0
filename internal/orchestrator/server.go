@@ -14,16 +14,18 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/cluster"
-	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/piagent"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/version"
@@ -40,35 +42,55 @@ type Server struct {
 	selfID           string
 	discoveryEnabled bool
 	events           *hub.Hub
-	agent            *deepseek.Harness
+	agentMu          sync.RWMutex
+	agents           map[string]agent.Backend
+	activeHarness    string
+	sessionHarnesses map[string]string
 	mem              *memory.Store
-	harness          string
 	selfScore        float64 // announced on the LAN for orchestrator election
 	leaderMu         sync.Mutex
 	lastLeaderID     string // last announced leader, to log transitions once
 	discoveredNodes  map[string]bool
 }
 
-func New() *Server { return NewWithMemory("") }
+func New() (*Server, error) { return NewWithMemory("") }
 
 // NewWithMemory builds an orchestrator backed by a persistent memory
 // database at memoryPath (empty selects the default per-user location).
-func NewWithMemory(memoryPath string) *Server {
-	return NewWithMemoryAndHarness(memoryPath, "deepseek")
+func NewWithMemory(memoryPath string) (*Server, error) {
+	return NewWithMemoryAndHarness(memoryPath, "pi")
 }
 
 // NewWithMemoryAndHarness builds an orchestrator using the requested agent
-// harness. Unknown names fall back to DeepSeek, the default harness.
-func NewWithMemoryAndHarness(memoryPath, harnessName string) *Server {
+// backend. The returned error identifies unsupported backend names.
+func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
+	return NewWithMemoryAndHarnessAndPiConfig(memoryPath, harnessName, piagent.OpenAICompatibleConfig{})
+}
+
+func NewWithMemoryAndHarnessAndPiConfig(memoryPath, harnessName string, piConfig piagent.OpenAICompatibleConfig) (*Server, error) {
 	reg := cluster.NewRegistry()
 	disp := &http.Client{Timeout: 10 * time.Minute}
 	selfID := "orchestrator-" + discovery.OutboundIP()
 	harnessName = strings.ToLower(strings.TrimSpace(harnessName))
 	if harnessName == "" {
-		harnessName = "deepseek"
+		harnessName = "pi"
 	}
-	agent := deepseek.New(reg, disp)
-	harnessName = "deepseek"
+	events := hub.New()
+	store, err := memory.Open(memoryPath, selfID)
+	if err != nil {
+		log.Printf("orchestrator: memory unavailable, running stateless: %v", err)
+	}
+	deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
+	if harnessName != "deepseek" && harnessName != "pi" {
+		if store != nil {
+			_ = store.Close()
+		}
+		return nil, fmt.Errorf("unknown agent backend %q (want deepseek or pi)", harnessName)
+	}
+	backends := map[string]agent.Backend{
+		"deepseek": deepseekBackend,
+		"pi":       piagent.New(piagent.NewOpenAICompatibleProvider(piConfig), deepseekBackend),
+	}
 	srv := &Server{
 		registry:         reg,
 		tasks:            taskmgr.NewManager(),
@@ -78,24 +100,120 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) *Server {
 		selfID:           selfID,
 		selfScore:        cluster.SelfScore(hardware.Detect()),
 		discoveryEnabled: true,
-		events:           hub.New(),
+		events:           events,
 		discoveredNodes:  make(map[string]bool),
-		agent:            agent,
-		harness:          harnessName,
+		agents:           backends,
+		activeHarness:    harnessName,
+		sessionHarnesses: make(map[string]string),
+		mem:              store,
 	}
-	if store, err := memory.Open(memoryPath, selfID); err != nil {
-		log.Printf("orchestrator: memory unavailable, running stateless: %v", err)
-	} else {
-		srv.mem = store
-		srv.agent.SetMemory(store)
+	if store != nil {
 		log.Printf("orchestrator: memory store at %s", store.Path())
 	}
-	srv.agent.SetEventsHub(srv.events)
-	return srv
+	return srv, nil
 }
 
-// HarnessName reports the configured interactive agent harness.
-func (s *Server) HarnessName() string { return s.harness }
+// HarnessName reports the configured interactive agent backend.
+func (s *Server) HarnessName() string {
+	s.agentMu.RLock()
+	defer s.agentMu.RUnlock()
+	return s.activeHarness
+}
+
+func (s *Server) currentAgent() (string, agent.Backend) {
+	s.agentMu.RLock()
+	defer s.agentMu.RUnlock()
+	return s.activeHarness, s.agents[s.activeHarness]
+}
+
+func (s *Server) agentForSession(id string) (string, agent.Backend, bool) {
+	s.agentMu.RLock()
+	defer s.agentMu.RUnlock()
+	name, ok := s.sessionHarnesses[id]
+	if !ok {
+		return "", nil, false
+	}
+	backend, ok := s.agents[name]
+	return name, backend, ok
+}
+
+func (s *Server) selectHarness(name string) bool {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	if _, ok := s.agents[name]; !ok {
+		return false
+	}
+	s.activeHarness = name
+	return true
+}
+
+func (s *Server) listAgentSessions() []*agent.Session {
+	s.agentMu.RLock()
+	owners := make(map[string]string, len(s.sessionHarnesses))
+	backends := make(map[string]agent.Backend, len(s.agents))
+	for id, name := range s.sessionHarnesses {
+		owners[id] = name
+	}
+	for name, backend := range s.agents {
+		backends[name] = backend
+	}
+	s.agentMu.RUnlock()
+
+	sessions := make([]*agent.Session, 0, len(owners))
+	for id, name := range owners {
+		session, ok := backends[name].GetSession(id)
+		if !ok {
+			continue
+		}
+		session.Harness = name
+		sessions = append(sessions, session)
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
+	})
+	return sessions
+}
+
+func (s *Server) agentStats() agent.AgentStats {
+	_, activeBackend := s.currentAgent()
+	stats := activeBackend.Stats()
+	stats.TotalSessions = 0
+	stats.ActiveSessions = 0
+	stats.TotalMessages = 0
+	stats.TotalToolCalls = 0
+	for _, session := range s.listAgentSessions() {
+		stats.TotalSessions++
+		if session.Active {
+			stats.ActiveSessions++
+		}
+		stats.TotalMessages += len(session.Messages)
+		for _, message := range session.Messages {
+			stats.TotalToolCalls += len(message.ToolCalls)
+		}
+	}
+	return stats
+}
+
+func (s *Server) Close() error {
+	s.agentMu.RLock()
+	backends := make([]agent.Backend, 0, len(s.agents))
+	for _, backend := range s.agents {
+		backends = append(backends, backend)
+	}
+	s.agentMu.RUnlock()
+	var agentErr error
+	for _, backend := range backends {
+		if err := backend.Close(); err != nil && agentErr == nil {
+			agentErr = err
+		}
+	}
+	if s.mem != nil {
+		if err := s.mem.Close(); agentErr == nil {
+			agentErr = err
+		}
+	}
+	return agentErr
+}
 
 // Memory exposes the orchestrator's persistent knowledge store (nil when
 // the database could not be opened).
@@ -134,7 +252,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
 
-	// Interactive DeepSeek harness endpoints
+	// Interactive agent backend endpoints
 	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessionsList)
 	mux.HandleFunc("POST /api/agent/sessions", s.handleAgentSessionsCreate)
 	mux.HandleFunc("GET /api/agent/sessions/{id}", s.handleAgentSessionGet)
@@ -143,7 +261,8 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/agent/tools", s.handleAgentToolsList)
 	mux.HandleFunc("GET /api/agent/models", s.handleAgentModelsList)
 	mux.HandleFunc("GET /api/agent/stats", s.handleAgentStatsGet)
-
+	mux.HandleFunc("GET /api/agent/backend", s.handleAgentBackendGet)
+	mux.HandleFunc("PATCH /api/agent/backend", s.handleAgentBackendPatch)
 	// Direct cluster & node LLM model invocation endpoints
 	mux.HandleFunc("GET /api/models", s.handleListAllModels)
 	mux.HandleFunc("POST /api/generate", s.handleGenerate)
@@ -351,7 +470,7 @@ type clusterSnapshot struct {
 	BuildVersion string               `json:"build_version"`
 	LeaderID     string               `json:"leader_id,omitempty"`
 	MemberCount  int                  `json:"member_count"`
-	AgentStats   *deepseek.AgentStats `json:"agent_stats,omitempty"`
+	AgentStats   *agent.AgentStats    `json:"agent_stats,omitempty"`
 	Memory       *memory.Insights     `json:"memory,omitempty"`
 }
 
@@ -376,7 +495,7 @@ func (s *Server) snapshot() clusterSnapshot {
 		s.lastLeaderID = leaderID
 	}
 	s.leaderMu.Unlock()
-	stats := s.agent.Stats()
+	stats := s.agentStats()
 	snap := clusterSnapshot{
 		Nodes:        nodes,
 		Tasks:        s.tasks.All(),
@@ -844,10 +963,10 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cancelled)
 }
 
-// --- Interactive DeepSeek Harness HTTP Handlers ---
+// --- Interactive Agent Backend HTTP Handlers ---
 
 func (s *Server) handleAgentSessionsList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.agent.ListSessions())
+	writeJSON(w, http.StatusOK, s.listAgentSessions())
 }
 
 type createSessionRequest struct {
@@ -861,34 +980,58 @@ type createSessionRequest struct {
 func (s *Server) handleAgentSessionsCreate(w http.ResponseWriter, r *http.Request) {
 	var req createSessionRequest
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
-	session := s.agent.CreateSession(req.Title, deepseek.SessionConfig{
+	harness, backend := s.currentAgent()
+	session, err := backend.CreateSession(req.Title, agent.SessionConfig{
 		CoordinatorModel: req.CoordinatorModel,
 		MaxSteps:         req.MaxSteps,
 		Temperature:      req.Temperature,
 		SystemPrompt:     req.SystemPrompt,
 	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	session.Harness = harness
+	s.agentMu.Lock()
+	s.sessionHarnesses[session.ID] = harness
+	s.agentMu.Unlock()
 	s.publishSnapshot()
 	writeJSON(w, http.StatusCreated, session)
 }
 
 func (s *Server) handleAgentSessionGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	session, ok := s.agent.GetSession(id)
+	harness, backend, exists := s.agentForSession(id)
+	if !exists {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	session, ok := backend.GetSession(id)
 	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+	session.Harness = harness
 	writeJSON(w, http.StatusOK, session)
 }
 
 func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.agent.DeleteSession(id) {
+	harness, backend, exists := s.agentForSession(id)
+	if !exists || !backend.DeleteSession(id) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+	s.agentMu.Lock()
+	if s.sessionHarnesses[id] == harness {
+		delete(s.sessionHarnesses, id)
+	}
+	s.agentMu.Unlock()
 	s.publishSnapshot()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -900,6 +1043,11 @@ type agentMessageRequest struct {
 
 func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	_, backend, exists := s.agentForSession(id)
+	if !exists {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 	var req agentMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -928,9 +1076,9 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		streamChan := make(chan deepseek.StreamEvent, 50)
+		streamChan := make(chan agent.StreamEvent, 50)
 		go func() {
-			_, _ = s.agent.SendMessage(r.Context(), id, content, streamChan)
+			_, _ = backend.SendMessage(r.Context(), id, content, streamChan)
 			close(streamChan)
 		}()
 
@@ -945,7 +1093,7 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	msg, err := s.agent.SendMessage(r.Context(), id, content, nil)
+	msg, err := backend.SendMessage(r.Context(), id, content, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -955,21 +1103,48 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleAgentToolsList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.agent.ListTools())
+	_, backend := s.currentAgent()
+	writeJSON(w, http.StatusOK, backend.ListTools())
 }
 
 func (s *Server) handleAgentModelsList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.agent.ListClusterModels())
+	_, backend := s.currentAgent()
+	writeJSON(w, http.StatusOK, backend.ListClusterModels())
 }
 
 func (s *Server) handleAgentStatsGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.agent.Stats())
+	writeJSON(w, http.StatusOK, s.agentStats())
+}
+
+func (s *Server) handleAgentBackendGet(w http.ResponseWriter, r *http.Request) {
+	harness, _ := s.currentAgent()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": harness, "harnesses": []string{"pi", "deepseek"},
+		"supports_coordinator_model": harness == "deepseek",
+	})
+}
+
+func (s *Server) handleAgentBackendPatch(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Harness string `json:"harness"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	request.Harness = strings.ToLower(strings.TrimSpace(request.Harness))
+	if !s.selectHarness(request.Harness) {
+		http.Error(w, `unsupported harness (want "pi" or "deepseek")`, http.StatusBadRequest)
+		return
+	}
+	s.handleAgentBackendGet(w, r)
 }
 
 // --- Direct Node & Cluster LLM Model Invocation Handlers ---
 
 func (s *Server) handleListAllModels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.agent.ListClusterModels())
+	_, backend := s.currentAgent()
+	writeJSON(w, http.StatusOK, backend.ListClusterModels())
 }
 
 type generateAPIRequest struct {
@@ -1316,7 +1491,8 @@ type openAIModelObj struct {
 }
 
 func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
-	models := s.agent.ListClusterModels()
+	_, backend := s.currentAgent()
+	models := backend.ListClusterModels()
 	list := make([]openAIModelObj, 0, len(models))
 	seen := make(map[string]bool)
 	now := time.Now().Unix()

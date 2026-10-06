@@ -114,6 +114,42 @@ func (h *Harness) ListTools() []ToolDef {
 	return defs
 }
 
+// ExecuteTool runs a registered tool outside the harness-owned agent loop.
+// It is used by other agent backends that share mAIstr0's cluster tools.
+func (h *Harness) ExecuteTool(ctx context.Context, sessionID, name string, args map[string]any) (*ToolResponse, error) {
+	s, ok := h.GetSession(sessionID)
+	if !ok {
+		return nil, errors.New("session not found: " + sessionID)
+	}
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
+	h.toolsMu.RLock()
+	tool, ok := h.tools[name]
+	h.toolsMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown tool: %s", name)
+	}
+	start := time.Now()
+	output, nodeID, nodeAddr, model, err := tool.Execute(ctx, h, s, args)
+	response := &ToolResponse{
+		ToolCallID: generateID("call_"), Name: name, Output: output,
+		NodeID: nodeID, NodeAddr: nodeAddr, Model: model,
+		DurationMs: time.Since(start).Milliseconds(),
+	}
+	if err != nil {
+		response.Error = err.Error()
+	}
+	argsJSON, _ := json.Marshal(args)
+	call := ToolCall{Name: name, Arguments: args, RawArgs: string(argsJSON)}
+	h.remember(memory.Experience{
+		Kind: "tool_call", TaskType: toolTaskType(call), Description: describeToolCall(call), Prompt: string(argsJSON),
+		Output: renderToolOutput(response.Output), NodeID: nodeID, Model: model,
+		Tool: name, SessionID: sessionID, Success: err == nil, DurationMs: response.DurationMs,
+		Error: response.Error, Tags: []string{"agent", name},
+	})
+	return response, err
+}
+
 // ModelInfo describes an LLM model available on a specific cluster node.
 type ModelInfo struct {
 	NodeID   string   `json:"node_id"`
