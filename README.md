@@ -28,6 +28,25 @@ The default ports are `7450` for the orchestrator and `7451` for a node. Use
 the dashboard automatically. Node and orchestrator JSON configuration paths
 can be set with `--node-config` and `--orchestrator-config`.
 
+## Dashboard
+
+The dashboard provides three views:
+
+- **Interactive Orchestrator** for conversational requests, tool activity, and
+  cluster-aware model selection.
+- **Cluster & Workload** for node health, discovered LAN peers, model lists,
+  active tasks, and routing. Open a node's terminal to chat with its models.
+- **Memory & Learning** for cluster experience, recommendations, and learned
+  facts.
+
+Use **Refresh all model registries** in the Nodes section to refresh model
+lists across the cluster, or refresh an individual node. Registries are also
+refreshed automatically by nodes. To edit a node's properties, right-click its
+node in the topology or its card in the Nodes section. The properties dialog
+can change its model engine and URL, default and disabled models, advertised
+and orchestrator addresses, discovery, tray and browser behavior, and memory
+path. Node identity and listen address are shown as read-only settings.
+
 ## Model engines
 
 Nodes detect local Ollama and FastFlowLM services by default. Configure
@@ -75,5 +94,13 @@ Run the test suite with:
 go test ./...
 ```
 
-Build scripts are in [`build/`](./build/). Tests use isolated temporary data
-stores; normal runs store persistent memory in the per-user data directory.
+On Windows, cross-compile the release binaries for Windows and Linux with:
+
+```powershell
+.\build\build.ps1
+```
+
+On Linux or macOS, use `./build/build.sh`. Both scripts write versioned
+binaries to `dist/windows-amd64/`, `dist/linux-amd64/`, and
+`dist/linux-ubuntu-amd64/`. Tests use isolated temporary data stores; normal
+runs store persistent memory in the per-user data directory.

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Dashboard views for the interactive orchestrator, cluster workload, and
+  persistent memory and learning.
+- Node properties dialog for configuring model engines, default and disabled
+  models, network discovery, tray/browser behavior, and memory location.
+- Controls to refresh one or all nodes' model registries and visibility for
+  discovered LAN peers in the cluster topology.
+
+### Changed
+
+- Refresh node model registries automatically so newly available models are
+  reflected without restarting the node.
+- Expand the README with dashboard workflows and Windows/Linux build commands.
+
 ## 0.0.1 - 2026-10-05
 
 ### Added
