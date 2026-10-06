@@ -56,7 +56,6 @@ const pendingDefaultModel = new Map();
 const lastFetchedModels = new Map();
 let contextNode = null;
 let currentNodes = [];
-let propertyNodeId = null;
 const nodeProperties = new Map();
 let terminalNode = null;
 let terminalDialogueId = null;
@@ -708,7 +707,6 @@ function renderNodes(nodes) {
     const modelTags = (n.models || [])
       .map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}">⚡ ${escapeHtml(m.name)}</button>`)
       .join("");
-    const propOpen = propertyNodeId === n.id;
     card.innerHTML = `
       <h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3>
       ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
@@ -727,23 +725,10 @@ function renderNodes(nodes) {
       <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Refresh local registry</button>
       <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>
       <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
-      ${propOpen ? `<div class="node-property-panel"><label>Advertised address<input value="${escapeHtml(n.address)}" data-prop="address" /></label><label>Default model<input value="${escapeHtml(n.default_model || "")}" data-prop="default_model" /></label><label>Model server<select data-prop="engine_name"><option value="ollama">Ollama</option><option value="vllm">vLLM</option></select></label><label>Server URL<input value="http://127.0.0.1:11434" data-prop="engine_url" /></label><div class="node-property-actions"><button data-node="${escapeHtml(n.id)}" class="node-property-save">Save node properties</button><input placeholder="model name to pull" data-prop="pull_model" /><button data-node="${escapeHtml(n.id)}" class="node-model-pull">Pull model</button></div><span class="node-property-status"></span></div>` : ""}
     `;
     nodesList.appendChild(card);
     card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
     card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
-    if (propOpen) {
-      const props = nodeProperties.get(n.id);
-      if (props) {
-        const server = card.querySelector('[data-prop="engine_name"]');
-        const url = card.querySelector('[data-prop="engine_url"]');
-        if (server && props.engine_name) server.value = props.engine_name;
-        if (url && props.engine_url) url.value = props.engine_url;
-      }
-      card.querySelector(".node-property-save")?.addEventListener("click", () => saveNodeProperties(n.id, card));
-      card.querySelector(".node-model-pull")?.addEventListener("click", () => pullNodeModel(n.id, card));
-      loadNodeProperties(n.id, card);
-    }
     card.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       contextNode = n;
@@ -855,38 +840,63 @@ document.getElementById("node-terminal-form")?.addEventListener("submit", async 
   }
 });
 
-async function loadNodeProperties(nodeId, card) {
+async function openNodeProperties(node) {
+  const modal = document.getElementById("node-properties-modal");
+  const form = document.getElementById("node-properties-form");
+  const status = document.getElementById("node-properties-status");
+  if (!modal || !form) return;
+  contextNode = node;
+  status.textContent = "Loading properties...";
+  modal.hidden = false;
   try {
-    const props = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/properties`);
-    nodeProperties.set(nodeId, props);
-    const server = card.querySelector('[data-prop="engine_name"]');
-    const url = card.querySelector('[data-prop="engine_url"]');
-    if (server && props.engine_name) server.value = props.engine_name;
-    if (url && props.engine_url) url.value = props.engine_url;
-  } catch (err) { card.querySelector(".node-property-status").textContent = err.message; }
+    const props = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/properties`);
+    nodeProperties.set(node.id, props);
+    for (const [name, value] of Object.entries(props)) {
+      const field = form.elements.namedItem(name);
+      if (!field) continue;
+      if (field.type === "checkbox") field.checked = Boolean(value);
+      else if (name === "disabled_models") field.value = (value || []).join("\n");
+      else field.value = value ?? "";
+    }
+    document.getElementById("node-properties-title").textContent = `${node.id} properties`;
+    document.getElementById("node-properties-subtitle").textContent = "Edit runtime settings. Identity and listen address apply after restart.";
+    status.textContent = "";
+    form.elements.namedItem("advertise_addr")?.focus();
+  } catch (err) {
+    status.textContent = "Unable to load properties: " + err.message;
+  }
 }
 
-async function saveNodeProperties(nodeId, card) {
-  const value = (name) => card.querySelector(`[data-prop="${name}"]`)?.value.trim() || "";
-  const status = card.querySelector(".node-property-status");
+function closeNodeProperties() {
+  const modal = document.getElementById("node-properties-modal");
+  if (modal) modal.hidden = true;
+}
+
+async function saveNodeProperties(nodeId, form) {
+  const status = document.getElementById("node-properties-status");
+  const value = (name) => form.elements.namedItem(name)?.value.trim() || "";
+  status.textContent = "Saving...";
   try {
-    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/properties`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ advertise_addr: value("address"), default_model: value("default_model"), engine_name: value("engine_name"), engine_url: value("engine_url") }) });
+    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/properties`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        advertise_addr: value("advertise_addr"),
+        orchestrator_addr: value("orchestrator_addr"),
+        default_model: value("default_model"),
+        engine_name: value("engine_name"),
+        engine_url: value("engine_url"),
+        disabled_models: value("disabled_models").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+        discovery_enabled: form.elements.namedItem("discovery_enabled").checked,
+        auto_open_browser: form.elements.namedItem("auto_open_browser").checked,
+        tray_mode: value("tray_mode"),
+        memory_path: value("memory_path"),
+      }),
+    });
     status.textContent = "Saved";
-    refresh();
+    await refresh();
+    setTimeout(closeNodeProperties, 500);
   } catch (err) { status.textContent = "Error: " + err.message; }
-}
-
-async function pullNodeModel(nodeId, card) {
-  const model = card.querySelector('[data-prop="pull_model"]').value.trim();
-  const status = card.querySelector(".node-property-status");
-  if (!model) { status.textContent = "Enter a model name"; return; }
-  status.textContent = "Pulling...";
-  try {
-    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/pull`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) });
-    status.textContent = `Pulled ${model}`;
-    lastFetchedModels.delete(nodeId);
-    refresh();
-  } catch (err) { status.textContent = "Pull failed: " + err.message; }
 }
 
 async function refreshNodeModels(nodeId) {
@@ -943,13 +953,25 @@ document.getElementById("node-context-menu")?.addEventListener("click", async (e
   const node = contextNode;
   hideNodeMenu();
   if (action === "properties") {
-    propertyNodeId = node.id;
-    renderNodes(currentNodes);
+    openNodeProperties(node);
   } else if (action === "open") {
     window.open(node.address, "_blank", "noopener");
   } else if (action === "copy") {
     await navigator.clipboard?.writeText(node.address);
   }
+});
+
+document.getElementById("node-properties-close")?.addEventListener("click", closeNodeProperties);
+document.getElementById("node-properties-cancel")?.addEventListener("click", closeNodeProperties);
+document.getElementById("node-properties-form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (contextNode) saveNodeProperties(contextNode.id, event.currentTarget);
+});
+document.getElementById("node-properties-modal")?.addEventListener("click", (event) => {
+  if (event.target.id === "node-properties-modal") closeNodeProperties();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeNodeProperties();
 });
 
 function cssId(nodeId) {
