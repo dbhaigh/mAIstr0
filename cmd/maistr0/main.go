@@ -17,6 +17,7 @@ import (
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/nodeagent"
 	"github.com/maistr0/maistr0/internal/orchestrator"
+	"github.com/maistr0/maistr0/internal/piagent"
 	"github.com/maistr0/maistr0/internal/trayapp"
 	buildversion "github.com/maistr0/maistr0/internal/version"
 )
@@ -31,7 +32,10 @@ func main() {
 	trayMode := flag.String("tray-mode", "", `override tray behavior: "taskbar" or "hidden"`)
 	noBrowser := flag.Bool("no-browser", false, "do not auto-open the dashboard in a browser on startup")
 	noDiscovery := flag.Bool("no-discovery", false, "disable LAN auto-discovery of other orchestrators/nodes")
-	harness := flag.String("harness", "", `override orchestrator harness: "deepseek"`)
+	harness := flag.String("harness", "", `override orchestrator agent backend: "deepseek" or "pi"`)
+	piBaseURL := flag.String("pi-base-url", "", "OpenAI-compatible model API base URL for the Pi agent")
+	piModel := flag.String("pi-model", "", "model name used by the Pi agent")
+	piAPIKeyEnv := flag.String("pi-api-key-env", "", "environment variable containing the Pi provider API key")
 	memoryPath := flag.String("memory-path", "", "override the cluster memory database file (empty = per-user data dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -58,6 +62,7 @@ func main() {
 
 	var dashboardURL, effectiveTrayMode string
 	var autoOpen bool
+	var closeOrchestrator func()
 
 	switch *role {
 	case "orchestrator":
@@ -68,7 +73,26 @@ func main() {
 		if *harness != "" {
 			cfg.Harness = *harness
 		}
-		srv := orchestrator.NewWithMemoryAndHarness(cfg.MemoryPath, cfg.Harness)
+		if *piBaseURL != "" {
+			cfg.PiBaseURL = *piBaseURL
+		}
+		if *piModel != "" {
+			cfg.PiModel = *piModel
+		}
+		if *piAPIKeyEnv != "" {
+			cfg.PiAPIKeyEnv = *piAPIKeyEnv
+		}
+		srv, err := orchestrator.NewWithMemoryAndHarnessAndPiConfig(cfg.MemoryPath, cfg.Harness, piagent.OpenAICompatibleConfig{
+			BaseURL: cfg.PiBaseURL, Model: cfg.PiModel, APIKey: os.Getenv(cfg.PiAPIKeyEnv),
+		})
+		if err != nil {
+			log.Fatalf("failed to configure orchestrator agent: %v", err)
+		}
+		closeOrchestrator = func() {
+			if err := srv.Close(); err != nil {
+				log.Printf("orchestrator shutdown: %v", err)
+			}
+		}
 		srv.SetDiscoveryEnabled(cfg.DiscoveryEnabled)
 		if cfg.DiscoveryEnabled {
 			srv.SetDiscovery(discovery.Listen(srv.SelfID()))
@@ -108,8 +132,26 @@ func main() {
 		if *harness != "" {
 			orchCfg.Harness = *harness
 		}
-
-		srv := orchestrator.NewWithMemoryAndHarness(orchCfg.MemoryPath, orchCfg.Harness)
+		if *piBaseURL != "" {
+			orchCfg.PiBaseURL = *piBaseURL
+		}
+		if *piModel != "" {
+			orchCfg.PiModel = *piModel
+		}
+		if *piAPIKeyEnv != "" {
+			orchCfg.PiAPIKeyEnv = *piAPIKeyEnv
+		}
+		srv, err := orchestrator.NewWithMemoryAndHarnessAndPiConfig(orchCfg.MemoryPath, orchCfg.Harness, piagent.OpenAICompatibleConfig{
+			BaseURL: orchCfg.PiBaseURL, Model: orchCfg.PiModel, APIKey: os.Getenv(orchCfg.PiAPIKeyEnv),
+		})
+		if err != nil {
+			log.Fatalf("failed to configure orchestrator agent: %v", err)
+		}
+		closeOrchestrator = func() {
+			if err := srv.Close(); err != nil {
+				log.Printf("orchestrator shutdown: %v", err)
+			}
+		}
 		srv.SetDiscoveryEnabled(orchCfg.DiscoveryEnabled)
 		agent := nodeagent.New(nodeCfg)
 
@@ -149,7 +191,12 @@ func main() {
 		Title:        "mAIstr0 (" + *role + ")",
 		Mode:         effectiveTrayMode,
 		DashboardURL: dashboardURL,
-		OnQuit:       func() { os.Exit(0) },
+		OnQuit: func() {
+			if closeOrchestrator != nil {
+				closeOrchestrator()
+			}
+			os.Exit(0)
+		},
 	})
 }
 

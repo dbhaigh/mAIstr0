@@ -19,30 +19,106 @@ import (
 // the test's temp directory so runs never touch the real user store.
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
-	srv := NewWithMemory(filepath.Join(t.TempDir(), "orch.db"))
+	srv, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "orch.db"), "deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
-		if srv.mem != nil {
-			_ = srv.mem.Close()
-		}
+		_ = srv.Close()
 	})
 	return srv
 }
 
 func TestHarnessSelection(t *testing.T) {
-	deepseek := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "deepseek.db"), "deepseek")
+	defaultAgent, err := NewWithMemory(filepath.Join(t.TempDir(), "default.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultAgent.HarnessName() != "pi" {
+		t.Fatalf("default backend = %q, want pi", defaultAgent.HarnessName())
+	}
+	defer defaultAgent.Close()
+
+	deepseek, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "deepseek.db"), "deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if deepseek.HarnessName() != "deepseek" {
 		t.Fatalf("expected deepseek harness, got %q", deepseek.HarnessName())
 	}
-	if deepseek.mem != nil {
-		defer deepseek.mem.Close()
+	defer deepseek.Close()
+
+	pi, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "pi.db"), "pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pi.HarnessName() != "pi" {
+		t.Fatalf("expected pi backend, got %q", pi.HarnessName())
+	}
+	defer pi.Close()
+
+	if _, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "unknown.db"), "unknown"); err == nil {
+		t.Fatal("expected unknown backend to return an error")
+	}
+}
+
+func TestHarnessCanChangeWithoutMovingExistingSessions(t *testing.T) {
+	srv := newTestServer(t)
+	mux := srv.Mux()
+
+	create := func(title string) map[string]any {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"title": title})
+		request := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", bytes.NewReader(body))
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create session returned %d: %s", response.Code, response.Body.String())
+		}
+		var session map[string]any
+		if err := json.NewDecoder(response.Body).Decode(&session); err != nil {
+			t.Fatal(err)
+		}
+		return session
+	}
+	original := create("DeepSeek session")
+	if original["harness"] != "deepseek" {
+		t.Fatalf("new session harness = %#v, want deepseek", original["harness"])
 	}
 
-	unknown := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "unknown.db"), "unknown")
-	if unknown.HarnessName() != "deepseek" {
-		t.Fatalf("expected unknown harness to fall back to deepseek, got %q", unknown.HarnessName())
+	request := httptest.NewRequest(http.MethodPatch, "/api/agent/backend", strings.NewReader(`{"harness":"pi"}`))
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("switch harness returned %d: %s", response.Code, response.Body.String())
 	}
-	if unknown.mem != nil {
-		defer unknown.mem.Close()
+	var backend struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&backend); err != nil {
+		t.Fatal(err)
+	}
+	if backend.Name != "pi" || srv.HarnessName() != "pi" {
+		t.Fatalf("active harness = %q, response = %#v", srv.HarnessName(), backend)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+original["id"].(string), nil)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("get existing session returned %d", response.Code)
+	}
+	var existing map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&existing); err != nil {
+		t.Fatal(err)
+	}
+	if existing["harness"] != "deepseek" {
+		t.Fatalf("existing session moved harnesses: %#v", existing["harness"])
+	}
+
+	newSession := create("Pi session")
+	if newSession["harness"] != "pi" {
+		t.Fatalf("new session after switch uses %v, want pi", newSession["harness"])
 	}
 }
 
@@ -88,6 +164,23 @@ func TestOrchestratorAgentAPI(t *testing.T) {
 	}
 	if len(tools) == 0 {
 		t.Errorf("expected tools list, got empty")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/agent/backend", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/agent/backend returned %d", rec.Code)
+	}
+	var backendInfo struct {
+		Name                     string `json:"name"`
+		SupportsCoordinatorModel bool   `json:"supports_coordinator_model"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&backendInfo); err != nil {
+		t.Fatalf("failed to decode backend info: %v", err)
+	}
+	if backendInfo.Name != "deepseek" || !backendInfo.SupportsCoordinatorModel {
+		t.Fatalf("unexpected backend info: %#v", backendInfo)
 	}
 
 	// 2. Test GET /api/agent/models

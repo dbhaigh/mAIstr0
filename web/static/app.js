@@ -23,6 +23,8 @@ const statMemory = document.getElementById("stat-memory");
 const statVersion = document.getElementById("stat-version");
 const navTabs = document.querySelectorAll(".nav-tab");
 const tabContents = document.querySelectorAll(".tab-content");
+const clusterWorkspaceTabs = document.querySelectorAll(".cluster-workspace-tab");
+const clusterWindows = document.querySelectorAll(".cluster-window");
 
 // Memory & learning elements
 const learningSummary = document.getElementById("learning-summary");
@@ -37,8 +39,11 @@ const memorySearch = document.getElementById("memory-search");
 // Agent Console Elements
 const sessionListEl = document.getElementById("session-list");
 const newSessionBtn = document.getElementById("new-session-btn");
+const agentHarnessSelect = document.getElementById("agent-harness-select");
+const agentHarnessStatus = document.getElementById("agent-harness-status");
 const agentModelSelect = document.getElementById("agent-model-select");
 const agentStepsSelect = document.getElementById("agent-steps-select");
+const agentSettingsTitle = document.getElementById("agent-settings-title");
 const agentToolsList = document.getElementById("agent-tools-list");
 const chatMessagesEl = document.getElementById("chat-messages");
 const chatInput = document.getElementById("chat-input");
@@ -50,6 +55,8 @@ const promptChips = document.querySelectorAll(".prompt-chip");
 let activeSessionId = null;
 let currentSessions = [];
 let isSending = false;
+let streamingAssistantEl = null;
+let currentAgentHarness = "pi";
 const modelPanelOpen = new Set();
 const pendingModelState = new Map();
 const pendingDefaultModel = new Map();
@@ -69,6 +76,22 @@ navTabs.forEach((tab) => {
     const target = document.getElementById(tab.dataset.tab);
     if (target) target.classList.add("active");
     if (tab.dataset.tab === "memory-tab") refreshMemory();
+  });
+});
+
+clusterWorkspaceTabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const targetID = tab.dataset.window;
+    clusterWorkspaceTabs.forEach((item) => {
+      const active = item === tab;
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-selected", String(active));
+    });
+    clusterWindows.forEach((panel) => {
+      const active = panel.id === targetID;
+      panel.classList.toggle("active", active);
+      panel.hidden = !active;
+    });
   });
 });
 
@@ -106,6 +129,49 @@ async function loadAgentTools() {
     console.error("failed to load agent tools", err);
   }
 }
+
+async function loadAgentBackend() {
+  try {
+    applyAgentBackend(await fetchJSON("/api/agent/backend"));
+  } catch (err) {
+    console.error("failed to load agent backend", err);
+    if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not load harness: ${err.message}`;
+  }
+}
+
+function applyAgentBackend(backend) {
+  currentAgentHarness = backend.name;
+  if (agentHarnessSelect) agentHarnessSelect.value = backend.name;
+  if (agentSettingsTitle) {
+    agentSettingsTitle.textContent = `${backend.name === "pi" ? "Pi" : "DeepSeek"} Agent Settings`;
+  }
+  const modelLabel = agentModelSelect?.closest("label");
+  const stepsLabel = agentStepsSelect?.closest("label");
+  if (modelLabel) modelLabel.hidden = !backend.supports_coordinator_model;
+  if (stepsLabel) stepsLabel.hidden = !backend.supports_coordinator_model;
+  if (agentHarnessStatus) {
+    agentHarnessStatus.textContent = `New conversations use ${backend.name === "pi" ? "Pi" : "DeepSeek"}; existing conversations stay on their harness.`;
+  }
+}
+
+agentHarnessSelect?.addEventListener("change", async () => {
+  const requested = agentHarnessSelect.value;
+  agentHarnessSelect.disabled = true;
+  if (agentHarnessStatus) agentHarnessStatus.textContent = "Switching default harness…";
+  try {
+    const backend = await fetchJSON("/api/agent/backend", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ harness: requested }),
+    });
+    applyAgentBackend(backend);
+  } catch (err) {
+    agentHarnessSelect.value = currentAgentHarness;
+    if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not switch harness: ${err.message}`;
+  } finally {
+    agentHarnessSelect.disabled = false;
+  }
+});
 
 async function loadClusterModels() {
   try {
@@ -149,7 +215,10 @@ function renderSessionList() {
     const div = document.createElement("div");
     div.className = "session-item" + (s.id === activeSessionId ? " active" : "");
     div.innerHTML = `
-      <span class="session-title">${escapeHtml(s.title || "Session " + s.id.slice(-4))}</span>
+      <span class="session-info">
+        <span class="session-title">${escapeHtml(s.title || "Session " + s.id.slice(-4))}</span>
+        <small class="session-harness">${s.harness === "deepseek" ? "DeepSeek" : "Pi"}</small>
+      </span>
       <button class="session-del-btn" data-del="${s.id}" title="Delete session">&times;</button>
     `;
     div.addEventListener("click", (e) => {
@@ -182,7 +251,7 @@ async function createNewSession(title = "") {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: title || `Session ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-        coordinator_model: agentModelSelect?.value || "",
+        coordinator_model: currentAgentHarness === "deepseek" ? agentModelSelect?.value || "" : "",
         max_steps: parseInt(agentStepsSelect?.value || "8", 10),
       }),
     });
@@ -332,6 +401,7 @@ function appendMessageToChat(msg) {
 async function sendInteractiveMessage(text) {
   if (!text || !activeSessionId || isSending) return;
   isSending = true;
+  streamingAssistantEl = null;
   if (sendMsgBtn) sendMsgBtn.disabled = true;
   if (chatStatus) chatStatus.textContent = "⚡ Reasoning & dispatching across cluster...";
 
@@ -409,7 +479,26 @@ function handleStreamEvent(event) {
   } else if (event.type === "tool_response" && event.tool_resp) {
     appendMessageToChat({ role: "tool", tool_response: event.tool_resp });
   } else if (event.type === "final_message" && event.message) {
+    if (streamingAssistantEl) {
+      streamingAssistantEl.remove();
+      streamingAssistantEl = null;
+    }
     appendMessageToChat(event.message);
+  } else if (event.type === "text_delta" && event.content) {
+    if (!streamingAssistantEl) {
+      streamingAssistantEl = document.createElement("div");
+      streamingAssistantEl.className = "chat-msg assistant";
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+      meta.textContent = "🤖 Pi";
+      const bubble = document.createElement("div");
+      bubble.className = "msg-bubble";
+      streamingAssistantEl.append(meta, bubble);
+      chatMessagesEl.appendChild(streamingAssistantEl);
+    }
+    const bubble = streamingAssistantEl.querySelector(".msg-bubble");
+    if (bubble) bubble.textContent += event.content;
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "error") {
     if (chatStatus) chatStatus.textContent = `Error: ${event.error}`;
   }
@@ -1280,6 +1369,7 @@ submitBtn?.addEventListener("click", async () => {
 
 // Initialization
 loadAgentTools();
+loadAgentBackend();
 loadClusterModels();
 loadSessions();
 refresh();
