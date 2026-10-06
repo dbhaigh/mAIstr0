@@ -187,6 +187,42 @@
     <form id="node-terminal-form" class="node-terminal-form"><textarea id="node-terminal-input" rows="2" placeholder="Send a message to this node..."></textarea><button type="submit">Send</button></form>
   </div>
 
+  <div id="node-properties-modal" class="node-properties-modal" hidden>
+    <div class="node-properties-dialog" role="dialog" aria-modal="true" aria-labelledby="node-properties-title">
+      <div class="node-properties-header"><div><h2 id="node-properties-title">Node properties</h2><p id="node-properties-subtitle" class="panel-caption"></p></div><button id="node-properties-close" class="dialog-close" type="button" title="Close properties">Close</button></div>
+      <form id="node-properties-form" class="node-properties-form">
+        <div class="node-properties-section">
+          <h3>Identity and network</h3>
+          <div class="node-properties-grid">
+            <label>Node ID<input name="id" readonly /></label>
+            <label>Listen address<input name="listen_addr" readonly /></label>
+            <label>Advertised address<input name="advertise_addr" required /></label>
+            <label>Orchestrator address<input name="orchestrator_addr" placeholder="Auto-discover on LAN" /></label>
+          </div>
+        </div>
+        <div class="node-properties-section">
+          <h3>Model service</h3>
+          <div class="node-properties-grid">
+            <label>Default model<input name="default_model" placeholder="Automatic best match" /></label>
+            <label>Engine<select name="engine_name"><option value="ollama">Ollama</option><option value="vllm">vLLM</option><option value="fastflowlm">FastFlowLM</option></select></label>
+            <label class="wide-field">Engine URL<input name="engine_url" placeholder="http://127.0.0.1:11434" /></label>
+            <label class="wide-field">Disabled models<textarea name="disabled_models" rows="2" placeholder="One model per line"></textarea></label>
+          </div>
+        </div>
+        <div class="node-properties-section">
+          <h3>Node behavior</h3>
+          <div class="node-properties-grid">
+            <label>Tray mode<select name="tray_mode"><option value="taskbar">Taskbar</option><option value="hidden">Hidden</option></select></label>
+            <label>Memory path<input name="memory_path" placeholder="Default user data path" /></label>
+            <label class="checkbox-field"><input name="discovery_enabled" type="checkbox" /> Enable LAN discovery</label>
+            <label class="checkbox-field"><input name="auto_open_browser" type="checkbox" /> Open browser on startup</label>
+          </div>
+        </div>
+        <div class="node-properties-footer"><span id="node-properties-status" class="node-property-status"></span><button id="node-properties-cancel" type="button" class="secondary-button">Cancel</button><button type="submit" class="primary-btn">Save properties</button></div>
+      </form>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>

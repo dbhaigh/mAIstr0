@@ -219,23 +219,43 @@ func (s *Server) discoverySyncLoop() {
 			continue
 		}
 		visibleNodes := make(map[string]bool)
+		type discoveryResult struct {
+			peer   discovery.Peer
+			status []cluster.NodeStatus
+		}
+		results := make(chan discoveryResult)
+		var probes sync.WaitGroup
 		for _, peer := range s.discovery.Snapshot() {
 			if peer.HTTPAddr == "" {
 				continue
 			}
-			if peer.Role == "node" {
-				visibleNodes[peer.ID] = true
-				s.discoveredNodes[peer.ID] = true
-				status, err := s.discoveredNodeStatus(peer.HTTPAddr)
-				if err == nil {
-					s.registry.Upsert(status)
-				}
+			if peer.Role != "node" && peer.Role != "orchestrator" {
 				continue
 			}
-			if peer.Role == "orchestrator" {
-				for _, status := range s.discoveredClusterNodes(peer.HTTPAddr) {
-					s.registry.Upsert(status)
+			probes.Add(1)
+			go func(peer discovery.Peer) {
+				defer probes.Done()
+				if peer.Role == "node" {
+					status, err := s.discoveredNodeStatus(peer.HTTPAddr)
+					if err == nil {
+						results <- discoveryResult{peer: peer, status: []cluster.NodeStatus{status}}
+					}
+					return
 				}
+				results <- discoveryResult{peer: peer, status: s.discoveredClusterNodes(peer.HTTPAddr)}
+			}(peer)
+		}
+		go func() {
+			probes.Wait()
+			close(results)
+		}()
+		for result := range results {
+			if result.peer.Role == "node" {
+				visibleNodes[result.peer.ID] = true
+				s.discoveredNodes[result.peer.ID] = true
+			}
+			for _, status := range result.status {
+				s.registry.Upsert(status)
 			}
 		}
 		for id := range s.discoveredNodes {

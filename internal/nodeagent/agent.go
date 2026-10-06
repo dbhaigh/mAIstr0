@@ -37,6 +37,7 @@ import (
 type Agent struct {
 	cfg               config.NodeConfig
 	engines           []engine.Engine
+	enginesMu         sync.RWMutex
 	enginesConfigured bool
 	hw                hardware.Info
 
@@ -210,15 +211,22 @@ func fastScore(hw hardware.Info) float64 {
 
 func (a *Agent) enabledModels() []engine.Model {
 	a.refreshDetectedEngines()
+	engines := a.engineSnapshot()
+	a.mu.Lock()
+	disabled := make(map[string]bool, len(a.disabledModels))
+	for name, isDisabled := range a.disabledModels {
+		disabled[name] = isDisabled
+	}
+	a.mu.Unlock()
 	var out []engine.Model
-	for _, e := range a.engines {
+	for _, e := range engines {
 		models, err := e.ListModels()
 		if err != nil {
 			log.Printf("nodeagent: list models for engine %s failed: %v", e.Name(), err)
 			continue
 		}
 		for _, m := range models {
-			if !a.disabledModels[m.Name] {
+			if !disabled[m.Name] {
 				out = append(out, m)
 			}
 		}
@@ -233,12 +241,28 @@ func (a *Agent) refreshDetectedEngines() {
 	if a.enginesConfigured {
 		return
 	}
-	if len(a.engines) == 0 {
-		a.engines = engine.DetectAll()
-		if a.hw.HasNPU {
-			a.engines = prioritizeNPUEngines(a.engines)
-		}
+	a.enginesMu.RLock()
+	needsDetection := len(a.engines) == 0
+	a.enginesMu.RUnlock()
+	if !needsDetection {
+		return
 	}
+	engines := engine.DetectAll()
+	if a.hw.HasNPU {
+		engines = prioritizeNPUEngines(engines)
+	}
+	a.enginesMu.Lock()
+	if len(a.engines) == 0 {
+		a.engines = engines
+	}
+	a.enginesMu.Unlock()
+}
+
+func (a *Agent) engineSnapshot() []engine.Engine {
+	a.enginesMu.RLock()
+	engines := append([]engine.Engine(nil), a.engines...)
+	a.enginesMu.RUnlock()
+	return engines
 }
 
 // ModelState pairs a discovered model with whether it is currently enabled
@@ -259,7 +283,7 @@ func (a *Agent) allModelsWithState() []ModelState {
 	a.mu.Unlock()
 
 	var out []ModelState
-	for _, e := range a.engines {
+	for _, e := range a.engineSnapshot() {
 		models, err := e.ListModels()
 		if err != nil {
 			log.Printf("nodeagent: list models for engine %s failed: %v", e.Name(), err)
@@ -290,12 +314,29 @@ func (a *Agent) status() statusResponse {
 
 func (a *Agent) reportedModelList() []engine.Model {
 	a.modelMu.Lock()
-	defer a.modelMu.Unlock()
-	if time.Since(a.reportedAt) >= 10*time.Second || a.reportedModels == nil {
-		a.reportedModels = a.enabledModels()
-		a.reportedAt = time.Now()
+	models := append([]engine.Model(nil), a.reportedModels...)
+	a.modelMu.Unlock()
+	return models
+}
+
+// refreshReportedModels updates the status cache without holding modelMu while
+// contacting an LLM server. Status and registration must stay responsive even
+// when a local model is loading or the engine is unavailable.
+func (a *Agent) refreshReportedModels() {
+	models := a.enabledModels()
+	a.modelMu.Lock()
+	a.reportedModels = models
+	a.reportedAt = time.Now()
+	a.modelMu.Unlock()
+}
+
+func (a *Agent) modelRefreshLoop() {
+	a.refreshReportedModels()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.refreshReportedModels()
 	}
-	return append([]engine.Model(nil), a.reportedModels...)
 }
 
 func (a *Agent) defaultModelName() string {
@@ -306,7 +347,7 @@ func (a *Agent) defaultModelName() string {
 
 func (a *Agent) engineFor(model string) engine.Engine {
 	a.refreshDetectedEngines()
-	for _, e := range a.engines {
+	for _, e := range a.engineSnapshot() {
 		models, err := e.ListModels()
 		if err != nil {
 			continue
@@ -730,11 +771,18 @@ type modelsPatchRequest struct {
 }
 
 type nodeProperties struct {
-	ID            string `json:"id"`
-	AdvertiseAddr string `json:"advertise_addr"`
-	DefaultModel  string `json:"default_model"`
-	EngineName    string `json:"engine_name,omitempty"`
-	EngineURL     string `json:"engine_url,omitempty"`
+	ID               string   `json:"id"`
+	ListenAddr       string   `json:"listen_addr"`
+	AdvertiseAddr    string   `json:"advertise_addr"`
+	OrchestratorAddr string   `json:"orchestrator_addr"`
+	DefaultModel     string   `json:"default_model"`
+	DisabledModels   []string `json:"disabled_models"`
+	EngineName       string   `json:"engine_name,omitempty"`
+	EngineURL        string   `json:"engine_url,omitempty"`
+	DiscoveryEnabled bool     `json:"discovery_enabled"`
+	AutoOpenBrowser  bool     `json:"auto_open_browser"`
+	TrayMode         string   `json:"tray_mode"`
+	MemoryPath       string   `json:"memory_path"`
 }
 
 type engineInfo struct {
@@ -746,11 +794,22 @@ type engineInfo struct {
 func (a *Agent) handleProperties(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		a.mu.Lock()
-		props := nodeProperties{ID: a.cfg.NodeID, AdvertiseAddr: a.cfg.AdvertiseAddr, DefaultModel: a.defaultModel}
+		disabledModels := make([]string, 0, len(a.disabledModels))
+		for model, disabled := range a.disabledModels {
+			if disabled {
+				disabledModels = append(disabledModels, model)
+			}
+		}
 		a.mu.Unlock()
-		if len(a.engines) > 0 {
-			props.EngineName = a.engines[0].Name()
-			switch typed := a.engines[0].(type) {
+		a.orchMu.RLock()
+		orchestratorAddr := a.orchestratorAddr
+		a.orchMu.RUnlock()
+		props := nodeProperties{ID: a.cfg.NodeID, ListenAddr: a.cfg.ListenAddr, AdvertiseAddr: a.cfg.AdvertiseAddr, OrchestratorAddr: orchestratorAddr, DefaultModel: a.defaultModel, DisabledModels: disabledModels, DiscoveryEnabled: a.cfg.DiscoveryEnabled, AutoOpenBrowser: a.cfg.AutoOpenBrowser, TrayMode: a.cfg.TrayMode, MemoryPath: a.cfg.MemoryPath}
+		a.mu.Unlock()
+		engines := a.engineSnapshot()
+		if len(engines) > 0 {
+			props.EngineName = engines[0].Name()
+			switch typed := engines[0].(type) {
 			case *engine.Ollama:
 				props.EngineURL = typed.URL()
 			case *engine.VLLM:
@@ -769,14 +828,41 @@ func (a *Agent) handleProperties(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.AdvertiseAddr) != "" {
 		a.cfg.AdvertiseAddr = strings.TrimRight(req.AdvertiseAddr, "/")
 	}
+	a.cfg.DiscoveryEnabled = req.DiscoveryEnabled
+	a.cfg.AutoOpenBrowser = req.AutoOpenBrowser
+	if req.TrayMode != "" {
+		a.cfg.TrayMode = req.TrayMode
+	}
+	if req.MemoryPath != "" {
+		a.cfg.MemoryPath = req.MemoryPath
+	}
 	if req.DefaultModel != "" {
 		a.defaultModel = req.DefaultModel
 	}
-	props := nodeProperties{ID: a.cfg.NodeID, AdvertiseAddr: a.cfg.AdvertiseAddr, DefaultModel: a.defaultModel}
+	a.mu.Unlock()
+	a.orchMu.Lock()
+	a.orchestratorAddr = strings.TrimRight(strings.TrimSpace(req.OrchestratorAddr), "/")
+	a.orchMu.Unlock()
+	if req.DisabledModels != nil {
+		disabled := make(map[string]bool, len(req.DisabledModels))
+		for _, model := range req.DisabledModels {
+			disabled[strings.TrimSpace(model)] = true
+		}
+		a.mu.Lock()
+		a.disabledModels = disabled
+		a.mu.Unlock()
+	}
+	a.mu.Lock()
+	a.orchMu.RLock()
+	orchestratorAddr := a.orchestratorAddr
+	a.orchMu.RUnlock()
+	props := nodeProperties{ID: a.cfg.NodeID, ListenAddr: a.cfg.ListenAddr, AdvertiseAddr: a.cfg.AdvertiseAddr, OrchestratorAddr: orchestratorAddr, DefaultModel: a.defaultModel, DiscoveryEnabled: a.cfg.DiscoveryEnabled, AutoOpenBrowser: a.cfg.AutoOpenBrowser, TrayMode: a.cfg.TrayMode, MemoryPath: a.cfg.MemoryPath}
 	a.mu.Unlock()
 	if req.EngineName != "" && req.EngineURL != "" {
 		if configured := engine.NewConfigured(strings.ToLower(req.EngineName), req.EngineURL); configured != nil {
+			a.enginesMu.Lock()
 			a.engines = []engine.Engine{configured}
+			a.enginesMu.Unlock()
 			a.modelMu.Lock()
 			a.reportedModels = nil
 			a.reportedAt = time.Time{}
@@ -787,8 +873,9 @@ func (a *Agent) handleProperties(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleEngineInfo(w http.ResponseWriter, r *http.Request) {
-	result := make([]engineInfo, 0, len(a.engines))
-	for _, e := range a.engines {
+	engines := a.engineSnapshot()
+	result := make([]engineInfo, 0, len(engines))
+	for _, e := range engines {
 		url := ""
 		switch typed := e.(type) {
 		case *engine.Ollama:
@@ -811,7 +898,7 @@ func (a *Agent) handleModelPull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "model is required", http.StatusBadRequest)
 		return
 	}
-	for _, e := range a.engines {
+	for _, e := range a.engineSnapshot() {
 		if manager, ok := e.(engine.ModelManager); ok {
 			if err := manager.Pull(req.Model); err != nil {
 				writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
@@ -840,7 +927,13 @@ func (a *Agent) handleModelsAllGet(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {
 	if !a.enginesConfigured {
-		a.engines = engine.DetectAll()
+		engines := engine.DetectAll()
+		if a.hw.HasNPU {
+			engines = prioritizeNPUEngines(engines)
+		}
+		a.enginesMu.Lock()
+		a.engines = engines
+		a.enginesMu.Unlock()
 	}
 	a.modelMu.Lock()
 	a.reportedModels = nil
@@ -987,6 +1080,7 @@ func (a *Agent) Run() error {
 		}, 5*time.Second, nil)
 	}
 	go a.resolveOrchestratorAndRegister()
+	go a.modelRefreshLoop()
 	go a.peerPollLoop()
 	go a.sseSubscribeLoop()
 	go a.broadcastLoop()
