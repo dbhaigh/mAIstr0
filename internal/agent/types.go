@@ -1,11 +1,10 @@
-package deepseek
+package agent
 
 import (
-	"sync"
+	"context"
 	"time"
 )
 
-// MessageRole represents the author of a message in a conversation.
 type MessageRole string
 
 const (
@@ -15,7 +14,6 @@ const (
 	RoleTool      MessageRole = "tool"
 )
 
-// ToolCall represents a structured tool invocation requested by the agent.
 type ToolCall struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -23,7 +21,6 @@ type ToolCall struct {
 	RawArgs   string         `json:"raw_args,omitempty"`
 }
 
-// ToolResponse holds the execution outcome of a tool call.
 type ToolResponse struct {
 	ToolCallID string `json:"tool_call_id"`
 	Name       string `json:"name"`
@@ -35,7 +32,6 @@ type ToolResponse struct {
 	DurationMs int64  `json:"duration_ms,omitempty"`
 }
 
-// Message is a single entry in the interactive session history.
 type Message struct {
 	ID           string        `json:"id"`
 	Role         MessageRole   `json:"role"`
@@ -51,7 +47,6 @@ type Message struct {
 	DurationMs   int64         `json:"duration_ms,omitempty"`
 }
 
-// SessionConfig tunes the agent harness behavior for a session.
 type SessionConfig struct {
 	CoordinatorModel string  `json:"coordinator_model,omitempty"`
 	MaxSteps         int     `json:"max_steps,omitempty"`
@@ -59,24 +54,10 @@ type SessionConfig struct {
 	SystemPrompt     string  `json:"system_prompt,omitempty"`
 }
 
-// Session represents an interactive multi-turn conversation with memory and history.
 type Session struct {
 	ID        string            `json:"id"`
 	Title     string            `json:"title"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
-	Messages  []Message         `json:"messages"`
-	Memory    map[string]string `json:"memory"`
-	Config    SessionConfig     `json:"config"`
-	Active    bool              `json:"active"`
-
-	mu     sync.RWMutex
-	toolMu sync.Mutex
-}
-
-type SessionSnapshot struct {
-	ID        string            `json:"id"`
-	Title     string            `json:"title"`
+	Harness   string            `json:"harness,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 	Messages  []Message         `json:"messages"`
@@ -85,23 +66,23 @@ type SessionSnapshot struct {
 	Active    bool              `json:"active"`
 }
 
-func (s *Session) Snapshot() SessionSnapshot {
-	s.toolMu.Lock()
-	defer s.toolMu.Unlock()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	snapshot := SessionSnapshot{
-		ID: s.ID, Title: s.Title, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
-		Memory: make(map[string]string, len(s.Memory)), Config: s.Config, Active: s.Active,
-		Messages: append([]Message(nil), s.Messages...),
-	}
-	for key, value := range s.Memory {
-		snapshot.Memory[key] = value
-	}
-	return snapshot
+type ToolDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
-// AgentStats summarizes interactive harness activity across the cluster.
+type ModelInfo struct {
+	NodeID   string   `json:"node_id"`
+	NodeAddr string   `json:"node_address"`
+	Name     string   `json:"name"`
+	Engine   string   `json:"engine"`
+	Tags     []string `json:"tags"`
+	SizeGB   float64  `json:"size_gb,omitempty"`
+	Default  bool     `json:"default"`
+	Healthy  bool     `json:"healthy"`
+}
+
 type AgentStats struct {
 	TotalSessions  int            `json:"total_sessions"`
 	ActiveSessions int            `json:"active_sessions"`
@@ -110,7 +91,6 @@ type AgentStats struct {
 	DispatchedLoad map[string]int `json:"dispatched_load"`
 }
 
-// StreamEventType defines the stage of real-time agent execution.
 type StreamEventType string
 
 const (
@@ -122,16 +102,16 @@ const (
 	EventFinalMessage StreamEventType = "final_message"
 	EventError        StreamEventType = "error"
 	EventDone         StreamEventType = "done"
+	EventTextDelta    StreamEventType = "text_delta"
 )
 
-// StreamEvent is sent over SSE streams during interactive execution.
 type StreamEvent struct {
 	Type        StreamEventType `json:"type"`
 	SessionID   string          `json:"session_id"`
 	Step        int             `json:"step,omitempty"`
 	Message     *Message        `json:"message,omitempty"`
 	ToolCall    *ToolCall       `json:"tool_call,omitempty"`
-	ToolResp    *ToolResponse   `json:"tool_response,omitempty"`
+	ToolResp    *ToolResponse   `json:"tool_resp,omitempty"`
 	NodeID      string          `json:"node_id,omitempty"`
 	NodeAddr    string          `json:"node_addr,omitempty"`
 	Model       string          `json:"model,omitempty"`
@@ -139,4 +119,26 @@ type StreamEvent struct {
 	Coordinator string          `json:"coordinator,omitempty"`
 	Content     string          `json:"content,omitempty"`
 	Error       string          `json:"error,omitempty"`
+}
+
+type ToolResult struct {
+	Output     any
+	NodeID     string
+	NodeAddr   string
+	Model      string
+	DurationMs int64
+}
+
+type Backend interface {
+	Name() string
+	CreateSession(title string, cfg SessionConfig) (*Session, error)
+	GetSession(id string) (*Session, bool)
+	ListSessions() []*Session
+	DeleteSession(id string) bool
+	SendMessage(ctx context.Context, sessionID, userText string, streamChan chan<- StreamEvent) (*Message, error)
+	ListTools() []ToolDef
+	ListClusterModels() []ModelInfo
+	Stats() AgentStats
+	ExecuteTool(ctx context.Context, sessionID, name string, args map[string]any) (ToolResult, error)
+	Close() error
 }

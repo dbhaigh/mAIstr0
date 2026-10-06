@@ -42,7 +42,15 @@
         </div>
 
         <div class="sidebar-section">
-          <h3>Coordinator &amp; Settings</h3>
+          <h3 id="agent-settings-title">Coordinator &amp; Settings</h3>
+          <label class="setting-label">
+            <span>Default harness for new conversations</span>
+            <select id="agent-harness-select">
+              <option value="pi">Pi (Go)</option>
+              <option value="deepseek">DeepSeek</option>
+            </select>
+            <small id="agent-harness-status" class="setting-help">Existing conversations stay on their current harness.</small>
+          </label>
           <label class="setting-label">
             <span>Coordinator Model</span>
             <select id="agent-model-select">
@@ -102,16 +110,25 @@
     </div>
   </section>
 
-  <!-- TAB 2: Traditional Cluster & Workload View -->
+  <!-- TAB 2: Cluster & Workload Workspace -->
   <main id="cluster-tab" class="tab-content">
-    <section id="submit-panel">
+    <nav class="cluster-workspace-tabs" role="tablist" aria-label="Cluster workspace windows">
+      <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-submit-tab" aria-controls="submit-panel" aria-selected="false" data-window="submit-panel">Batch submit</button>
+      <button class="cluster-workspace-tab active" type="button" role="tab" id="cluster-map-tab" aria-controls="cluster-map-panel" aria-selected="true" data-window="cluster-map-panel">Topology</button>
+      <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-nodes-tab" aria-controls="nodes-panel" aria-selected="false" data-window="nodes-panel">Nodes</button>
+      <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-routing-tab" aria-controls="routing-panel" aria-selected="false" data-window="routing-panel">Workload</button>
+      <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-discovery-tab" aria-controls="discovery-panel" aria-selected="false" data-window="discovery-panel">Local network</button>
+      <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-tasks-tab" aria-controls="tasks-panel" aria-selected="false" data-window="tasks-panel">Tasks</button>
+    </nav>
+
+    <section id="submit-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-submit-tab" hidden>
       <h2>Batch Task Submission</h2>
       <textarea id="task-input" placeholder="Describe the task. Use a numbered or bulleted list to force explicit subtasks."></textarea>
       <button id="submit-btn" class="primary-btn">Submit Batch Task</button>
       <div id="submit-status"></div>
     </section>
 
-    <section id="cluster-map-panel">
+    <section id="cluster-map-panel" class="cluster-window active" role="tabpanel" aria-labelledby="cluster-map-tab">
       <div class="section-heading"><div><h2>Cluster topology</h2><p class="panel-caption">Live node roles, workload, routing, and node-to-node conversations</p></div><span id="cluster-map-status" class="panel-caption"></span></div>
       <div id="cluster-map" class="cluster-map">
         <svg id="cluster-links" class="cluster-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="cluster-arrow" markerWidth="4" markerHeight="4" refX="3.5" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 z" fill="#5ec2ff"></path></marker></defs></svg>
@@ -122,22 +139,22 @@
       <div id="cluster-peers" class="cluster-peers"></div>
     </section>
 
-    <section id="nodes-panel">
+    <section id="nodes-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-nodes-tab" hidden>
       <div class="section-heading"><h2>Nodes</h2><button id="refresh-all-models-btn" class="icon-button" type="button" title="Refresh model registries on all nodes">↻ Refresh all model registries</button></div>
       <div id="nodes-list" class="cards"></div>
     </section>
 
-    <section id="routing-panel">
+    <section id="routing-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-routing-tab" hidden>
       <h2>Job routing &amp; workload</h2>
       <div id="routing-list" class="cards"></div>
     </section>
 
-    <section id="discovery-panel">
+    <section id="discovery-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-discovery-tab" hidden>
       <h2>Local network</h2>
       <div id="discovery-list" class="cards"></div>
     </section>
 
-    <section id="tasks-panel">
+    <section id="tasks-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-tasks-tab" hidden>
       <div class="section-heading"><h2>Tasks</h2><button id="copy-tasks-btn" class="icon-button" type="button" title="Copy all task results" aria-label="Copy all task results">Copy results</button></div>
       <div id="tasks-list" class="cards"></div>
     </section>

@@ -40,7 +40,10 @@ func DefaultNodeConfig() NodeConfig {
 
 type OrchestratorConfig struct {
 	ListenAddr       string `json:"listen_addr"`
-	Harness          string `json:"harness"` // "deepseek"
+	Harness          string `json:"harness"` // "deepseek" or "pi"
+	PiBaseURL        string `json:"pi_base_url,omitempty"`
+	PiModel          string `json:"pi_model,omitempty"`
+	PiAPIKeyEnv      string `json:"pi_api_key_env,omitempty"`
 	DiscoveryEnabled bool   `json:"discovery_enabled"`
 	AutoOpenBrowser  bool   `json:"auto_open_browser"`
 	TrayMode         string `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
@@ -50,7 +53,10 @@ type OrchestratorConfig struct {
 func DefaultOrchestratorConfig() OrchestratorConfig {
 	return OrchestratorConfig{
 		ListenAddr:       ":7450",
-		Harness:          "deepseek",
+		Harness:          "pi",
+		PiBaseURL:        "https://api.openai.com/v1",
+		PiModel:          "gpt-4.1-mini",
+		PiAPIKeyEnv:      "OPENAI_API_KEY",
 		DiscoveryEnabled: true,
 		AutoOpenBrowser:  true,
 		TrayMode:         "taskbar",

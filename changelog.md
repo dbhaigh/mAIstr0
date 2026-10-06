@@ -1,9 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.0.2 - 2026-10-06
 
 ### Added
 
+- Native Go Pi agent runtime as the default interactive orchestrator harness,
+  with DeepSeek retained as an alternative.
+- Runtime harness selector that applies to new conversations while preserving
+  the harness for existing conversations.
+- Tabbed workspace panels for batch submission, topology, nodes, workload,
+  local network, and tasks.
 - Dashboard views for the interactive orchestrator, cluster workload, and
   persistent memory and learning.
 - Node properties dialog for configuring model engines, default and disabled
@@ -16,6 +22,8 @@
 - Refresh node model registries automatically so newly available models are
   reflected without restarting the node.
 - Expand the README with dashboard workflows and Windows/Linux build commands.
+- Document Pi runtime scope, harness configuration, workspace tabs, and
+  versioned release builds.
 
 ## 0.0.1 - 2026-10-05
 
