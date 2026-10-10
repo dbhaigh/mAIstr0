@@ -7,7 +7,7 @@ import (
 )
 
 // Value is replaced by the build scripts with the release number.
-var Value = "0.0.2"
+var Value = "0.0.3"
 
 func Number() float64 {
 	return numericVersion(Value)

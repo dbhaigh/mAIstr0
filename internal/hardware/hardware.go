@@ -3,23 +3,50 @@
 package hardware
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 )
+
+// GPUUsageSample is one five-second GPU telemetry snapshot. Utilization is
+// aggregated across detected NVIDIA GPUs and is only meaningful when Available.
+type GPUUsageSample struct {
+	Timestamp   time.Time `json:"timestamp"`
+	Available   bool      `json:"available"`
+	Utilization int       `json:"utilization_percent"`
+}
+
+// SystemUsageSample is a five-second sample of host CPU and memory pressure.
+type SystemUsageSample struct {
+	Timestamp         time.Time `json:"timestamp"`
+	CPUAvailable      bool      `json:"cpu_available"`
+	CPUUtilization    int       `json:"cpu_utilization_percent"`
+	MemoryAvailable   bool      `json:"memory_available"`
+	MemoryUtilization int       `json:"memory_usage_percent"`
+}
 
 // Info describes the detected capabilities of the host machine.
 type Info struct {
-	OS         string  `json:"os"`
-	Arch       string  `json:"arch"`
-	CPUCores   int     `json:"cpu_cores"`
-	TotalRAMMB uint64  `json:"total_ram_mb"`
-	HasGPU     bool    `json:"has_gpu"`
-	GPUVendor  string  `json:"gpu_vendor,omitempty"`
-	HasNPU     bool    `json:"has_npu"`
-	NPUVendor  string  `json:"npu_vendor,omitempty"`
-	Score      float64 `json:"score"`
+	OS                   string  `json:"os"`
+	Arch                 string  `json:"arch"`
+	CPUCores             int     `json:"cpu_cores"`
+	CPUStatsAvailable    bool    `json:"cpu_stats_available"`
+	CPUUtilization       int     `json:"cpu_utilization_percent,omitempty"`
+	TotalRAMMB           uint64  `json:"total_ram_mb"`
+	MemoryStatsAvailable bool    `json:"memory_stats_available"`
+	MemoryUsage          int     `json:"memory_usage_percent,omitempty"`
+	HasGPU               bool    `json:"has_gpu"`
+	GPUVendor            string  `json:"gpu_vendor,omitempty"`
+	GPUStatsAvailable    bool    `json:"gpu_stats_available"`
+	GPUUtilization       int     `json:"gpu_utilization_percent,omitempty"`
+	GPUMemoryFreeMB      uint64  `json:"gpu_memory_free_mb,omitempty"`
+	HasNPU               bool    `json:"has_npu"`
+	NPUVendor            string  `json:"npu_vendor,omitempty"`
+	Score                float64 `json:"score"`
 }
 
 // Detect gathers hardware information about the current host.
@@ -34,6 +61,63 @@ func Detect() Info {
 	info.HasNPU, info.NPUVendor = detectNPU()
 	info.Score = computeScore(info)
 	return info
+}
+
+// CurrentGPUUsage returns current NVIDIA GPU utilization and free memory when
+// nvidia-smi is available. Other GPU vendors remain unknown rather than being
+// reported as idle.
+func CurrentGPUUsage() (utilization int, freeMemoryMB uint64, available bool) {
+	if _, err := exec.LookPath("nvidia-smi"); err != nil {
+		return 0, 0, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=utilization.gpu,memory.free", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	return parseNVIDIAUsage(string(out))
+}
+
+// CurrentSystemUsage returns host CPU and memory utilization where the
+// operating system exposes reliable counters.
+func CurrentSystemUsage() (cpuUtilization int, cpuAvailable bool, memoryUtilization int, memoryAvailable bool) {
+	return currentSystemUsage()
+}
+
+func percentUsed(total, available uint64) (int, bool) {
+	if total == 0 || available > total {
+		return 0, false
+	}
+	return int((total - available) * 100 / total), true
+}
+
+func parseNVIDIAUsage(output string) (int, uint64, bool) {
+	maxUtilization := 0
+	maxFreeMemory := uint64(0)
+	found := false
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		fields := strings.Split(line, ",")
+		if len(fields) != 2 {
+			continue
+		}
+		util, err := strconv.Atoi(strings.TrimSpace(fields[0]))
+		if err != nil || util < 0 || util > 100 {
+			continue
+		}
+		free, err := strconv.ParseUint(strings.TrimSpace(fields[1]), 10, 64)
+		if err != nil {
+			continue
+		}
+		if !found || util > maxUtilization {
+			maxUtilization = util
+		}
+		if !found || free > maxFreeMemory {
+			maxFreeMemory = free
+		}
+		found = true
+	}
+	return maxUtilization, maxFreeMemory, found
 }
 
 // computeScore produces a single relative capability score used by the

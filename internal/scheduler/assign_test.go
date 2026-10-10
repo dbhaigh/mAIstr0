@@ -6,6 +6,7 @@ import (
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/hardware"
 )
 
 func TestAssignRejectsUnassignableSubtasks(t *testing.T) {
@@ -41,5 +42,27 @@ func TestAssignAllowsGeneralCapableModelForSpecificTask(t *testing.T) {
 	}
 	if len(assignments) != 1 || assignments[0].Model != "general-model" {
 		t.Fatalf("unexpected assignments: %+v", assignments)
+	}
+}
+
+func TestAssignPrefersLowerLiveGPUUtilization(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "busy", Address: "http://busy", Healthy: true,
+			Hardware: hardware.Info{Score: 50, GPUStatsAvailable: true, GPUUtilization: 90},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+		{
+			ID: "free", Address: "http://free", Healthy: true,
+			Hardware: hardware.Info{Score: 50, GPUStatsAvailable: true, GPUUtilization: 10},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+	}
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignments[0].NodeID != "free" {
+		t.Fatalf("assigned to %q, want the less-loaded GPU node", assignments[0].NodeID)
 	}
 }

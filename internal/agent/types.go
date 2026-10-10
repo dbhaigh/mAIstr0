@@ -142,3 +142,7 @@ type Backend interface {
 	ExecuteTool(ctx context.Context, sessionID, name string, args map[string]any) (ToolResult, error)
 	Close() error
 }
+
+type SessionRestorer interface {
+	RestoreSession(session *Session) error
+}

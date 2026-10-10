@@ -28,6 +28,7 @@ import (
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/version"
@@ -39,7 +40,11 @@ type Agent struct {
 	engines           []engine.Engine
 	enginesMu         sync.RWMutex
 	enginesConfigured bool
+	hwMu              sync.RWMutex
 	hw                hardware.Info
+	gpuHistory        []hardware.GPUUsageSample
+	systemHistory     []hardware.SystemUsageSample
+	identity          *peeridentity.Identity
 
 	discoveryListener *discovery.Listener
 	events            *hub.Hub
@@ -51,6 +56,7 @@ type Agent struct {
 
 	orchMu           sync.RWMutex
 	orchestratorAddr string
+	orchestratorID   string
 
 	mu             sync.Mutex
 	disabledModels map[string]bool
@@ -79,12 +85,24 @@ type Dialogue struct {
 	UpdatedAt time.Time            `json:"updated_at"`
 }
 
+func (a *Agent) getOrchestratorID() string {
+	a.orchMu.RLock()
+	defer a.orchMu.RUnlock()
+	return a.orchestratorID
+}
+
+func (a *Agent) setOrchestratorID(id string) {
+	a.orchMu.Lock()
+	a.orchestratorID = id
+	a.orchMu.Unlock()
+}
+
 func New(cfg config.NodeConfig) *Agent {
 	if cfg.NodeID == "" {
 		cfg.NodeID = DefaultNodeID()
 	}
 	if cfg.AdvertiseAddr == "" {
-		cfg.AdvertiseAddr = "http://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr)
+		cfg.AdvertiseAddr = "https://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr)
 	}
 	disabled := make(map[string]bool, len(cfg.DisabledModels))
 	for _, m := range cfg.DisabledModels {
@@ -147,6 +165,129 @@ func prioritizeNPUEngines(engines []engine.Engine) []engine.Engine {
 // database could not be opened).
 func (a *Agent) Memory() *memory.Store { return a.mem }
 
+// InitializeIdentity loads the node's persistent TLS identity before serving.
+func (a *Agent) InitializeIdentity() error {
+	if a.identity != nil {
+		return nil
+	}
+	path := peeridentity.DefaultPath(a.cfg.NodeID)
+	if a.cfg.MemoryPath != "" {
+		path = a.cfg.MemoryPath + ".identity"
+	}
+	identity, err := peeridentity.Open(path, a.cfg.NodeID)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(strings.ToLower(a.cfg.AdvertiseAddr), "https://") {
+		return fmt.Errorf("node advertised address must use https for paired cluster traffic")
+	}
+	a.identity = identity
+	a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: identity.ClientTransport()}
+	a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: identity.ClientTransport()}
+	a.streamClient = &http.Client{Transport: identity.ClientTransport()}
+	return nil
+}
+
+func (a *Agent) IdentityCertificate() (string, error) {
+	if a.identity == nil {
+		return "", errors.New("node identity is not initialized")
+	}
+	return a.identity.CertificatePEM(), nil
+}
+
+// PairLocalOrchestrator establishes mutual certificate pins for a combined
+// orchestrator and worker running in one process.
+func (a *Agent) PairLocalOrchestrator(orchestratorID, certificatePEM, address string) error {
+	if a.identity == nil {
+		return errors.New("node identity is not initialized")
+	}
+	if err := a.identity.TrustPeerDetails(orchestratorID, certificatePEM, "orchestrator", address); err != nil {
+		return err
+	}
+	a.setOrchestratorAddr(address)
+	a.setOrchestratorID(orchestratorID)
+	return nil
+}
+
+type nodePairingRequest struct {
+	ID             string `json:"id"`
+	Role           string `json:"role"`
+	PIN            string `json:"pin"`
+	CertificatePEM string `json:"certificate_pem"`
+}
+
+type nodePairingResponse struct {
+	ID             string            `json:"id"`
+	Role           string            `json:"role"`
+	CertificatePEM string            `json:"certificate_pem"`
+	Peers          map[string]string `json:"peers"`
+}
+
+func (a *Agent) pairOrchestrator(candidate orchestratorCandidate) error {
+	return a.pairWithAddress(candidate.address, candidate.id, a.cfg.PairingPIN)
+}
+
+// PairWithOrchestrator enrolls this node at a user-selected orchestrator
+// using its one-use out-of-band PIN.
+func (a *Agent) PairWithOrchestrator(address, pin string) error {
+	parsed, err := url.Parse(strings.TrimSpace(address))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("orchestrator address must be an https URL without user information")
+	}
+	return a.pairWithAddress("https://"+parsed.Host, "", strings.TrimSpace(pin))
+}
+
+func (a *Agent) pairWithAddress(address, expectedID, pin string) error {
+	if a.identity == nil {
+		return errors.New("node identity is not initialized")
+	}
+	if pin == "" {
+		return errors.New("pairing PIN is required")
+	}
+	body, err := json.Marshal(nodePairingRequest{
+		ID: a.cfg.NodeID, Role: "node", PIN: pin, CertificatePEM: a.identity.CertificatePEM(),
+	})
+	if err != nil {
+		return fmt.Errorf("encode pairing request: %w", err)
+	}
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: a.identity.BootstrapTransport(),
+	}
+	resp, err := client.Post(address+"/api/pairing/join", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("pair with orchestrator at %s: %w", address, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("pairing rejected by orchestrator at %s: %s: %s", address, resp.Status, strings.TrimSpace(string(message)))
+	}
+	var result nodePairingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode pairing response: %w", err)
+	}
+	if result.Role != "orchestrator" || result.ID == "" || (expectedID != "" && result.ID != expectedID) {
+		return fmt.Errorf("pairing server identity %q does not match discovered orchestrator %q", result.ID, expectedID)
+	}
+	if err := a.identity.TrustPeerDetails(result.ID, result.CertificatePEM, "orchestrator", address); err != nil {
+		return err
+	}
+	for id, certificate := range result.Peers {
+		if id == a.cfg.NodeID {
+			continue
+		}
+		if err := a.identity.TrustPeer(id, certificate); err != nil {
+			return fmt.Errorf("trust paired peer %q: %w", id, err)
+		}
+	}
+	a.cfg.PairingPIN = ""
+	a.setOrchestratorAddr(address)
+	a.setOrchestratorID(result.ID)
+	return nil
+}
+
 // remember persists one unit of local LLM work so the cluster can learn
 // which models on this node actually perform well.
 func (a *Agent) remember(e memory.Experience) {
@@ -195,14 +336,16 @@ type executeResponse struct {
 }
 
 type statusResponse struct {
-	ID           string         `json:"id"`
-	Version      string         `json:"version"`
-	Address      string         `json:"address"`
-	Hardware     hardware.Info  `json:"hardware"`
-	Models       []engine.Model `json:"models"`
-	DefaultModel string         `json:"default_model,omitempty"`
-	FastScore    float64        `json:"fast_score"`
-	ActiveTasks  int            `json:"active_tasks"`
+	ID            string                       `json:"id"`
+	Version       string                       `json:"version"`
+	Address       string                       `json:"address"`
+	Hardware      hardware.Info                `json:"hardware"`
+	GPUHistory    []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
+	SystemHistory []hardware.SystemUsageSample `json:"system_history,omitempty"`
+	Models        []engine.Model               `json:"models"`
+	DefaultModel  string                       `json:"default_model,omitempty"`
+	FastScore     float64                      `json:"fast_score"`
+	ActiveTasks   int                          `json:"active_tasks"`
 }
 
 func fastScore(hw hardware.Info) float64 {
@@ -248,7 +391,7 @@ func (a *Agent) refreshDetectedEngines() {
 		return
 	}
 	engines := engine.DetectAll()
-	if a.hw.HasNPU {
+	if a.hardwareSnapshot().HasNPU {
 		engines = prioritizeNPUEngines(engines)
 	}
 	a.enginesMu.Lock()
@@ -300,16 +443,90 @@ func (a *Agent) status() statusResponse {
 	a.mu.Lock()
 	active := a.activeTasks
 	a.mu.Unlock()
+	hw := a.hardwareSnapshot()
 	return statusResponse{
-		ID:           a.cfg.NodeID,
-		Version:      version.String(),
-		Address:      a.cfg.AdvertiseAddr,
-		Hardware:     a.hw,
-		Models:       a.reportedModelList(),
-		DefaultModel: a.defaultModelName(),
-		FastScore:    fastScore(a.hw),
-		ActiveTasks:  active,
+		ID:            a.cfg.NodeID,
+		Version:       version.String(),
+		Address:       a.cfg.AdvertiseAddr,
+		Hardware:      hw,
+		GPUHistory:    a.gpuHistorySnapshot(),
+		SystemHistory: a.systemHistorySnapshot(),
+		Models:        a.reportedModelList(),
+		DefaultModel:  a.defaultModelName(),
+		FastScore:     fastScore(hw),
+		ActiveTasks:   active,
 	}
+}
+
+func (a *Agent) hardwareSnapshot() hardware.Info {
+	a.hwMu.RLock()
+	defer a.hwMu.RUnlock()
+	return a.hw
+}
+
+func (a *Agent) hardwareUsageLoop() {
+	refresh := func() {
+		utilization, freeMemoryMB, available := hardware.CurrentGPUUsage()
+		cpuUtilization, cpuAvailable, memoryUsage, memoryAvailable := hardware.CurrentSystemUsage()
+		sample := hardware.GPUUsageSample{
+			Timestamp: time.Now().UTC(), Available: available, Utilization: utilization,
+		}
+		systemSample := hardware.SystemUsageSample{
+			Timestamp: time.Now().UTC(), CPUAvailable: cpuAvailable, CPUUtilization: cpuUtilization,
+			MemoryAvailable: memoryAvailable, MemoryUtilization: memoryUsage,
+		}
+		a.hwMu.Lock()
+		a.hw.GPUStatsAvailable = available
+		a.hw.GPUUtilization = utilization
+		a.hw.GPUMemoryFreeMB = freeMemoryMB
+		a.gpuHistory = appendGPUUsageSample(a.gpuHistory, sample)
+		a.hw.CPUStatsAvailable = cpuAvailable
+		a.hw.CPUUtilization = cpuUtilization
+		a.hw.MemoryStatsAvailable = memoryAvailable
+		a.hw.MemoryUsage = memoryUsage
+		a.systemHistory = appendSystemUsageSample(a.systemHistory, systemSample)
+		a.hwMu.Unlock()
+	}
+	refresh()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		refresh()
+	}
+}
+
+const gpuHistoryLimit = 60
+
+const systemHistoryLimit = 60
+
+func appendGPUUsageSample(history []hardware.GPUUsageSample, sample hardware.GPUUsageSample) []hardware.GPUUsageSample {
+	if len(history) < gpuHistoryLimit {
+		return append(history, sample)
+	}
+	copy(history, history[1:])
+	history[len(history)-1] = sample
+	return history
+}
+
+func appendSystemUsageSample(history []hardware.SystemUsageSample, sample hardware.SystemUsageSample) []hardware.SystemUsageSample {
+	if len(history) < systemHistoryLimit {
+		return append(history, sample)
+	}
+	copy(history, history[1:])
+	history[len(history)-1] = sample
+	return history
+}
+
+func (a *Agent) gpuHistorySnapshot() []hardware.GPUUsageSample {
+	a.hwMu.RLock()
+	defer a.hwMu.RUnlock()
+	return append([]hardware.GPUUsageSample(nil), a.gpuHistory...)
+}
+
+func (a *Agent) systemHistorySnapshot() []hardware.SystemUsageSample {
+	a.hwMu.RLock()
+	defer a.hwMu.RUnlock()
+	return append([]hardware.SystemUsageSample(nil), a.systemHistory...)
 }
 
 func (a *Agent) reportedModelList() []engine.Model {
@@ -785,6 +1002,36 @@ type nodeProperties struct {
 	MemoryPath       string   `json:"memory_path"`
 }
 
+func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
+	orchestratorID := a.getOrchestratorID()
+	trusted := orchestratorID != "" && a.identity != nil && a.identity.IsTrustedID(orchestratorID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"role":              "node",
+		"orchestrator_addr": a.getOrchestratorAddr(),
+		"trusted":           trusted,
+		"joined":            a.isJoined(),
+	})
+}
+
+func (a *Agent) handlePairingConnect(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Address string `json:"address"`
+		PIN     string `json:"pin"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
+		http.Error(w, "invalid pairing request", http.StatusBadRequest)
+		return
+	}
+	if err := a.PairWithOrchestrator(request.Address, request.PIN); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"orchestrator_addr": a.getOrchestratorAddr(),
+		"orchestrator_id":   a.getOrchestratorID(),
+	})
+}
+
 type engineInfo struct {
 	Name    string `json:"name"`
 	URL     string `json:"url"`
@@ -928,7 +1175,7 @@ func (a *Agent) handleModelsAllGet(w http.ResponseWriter, r *http.Request) {
 func (a *Agent) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {
 	if !a.enginesConfigured {
 		engines := engine.DetectAll()
-		if a.hw.HasNPU {
+		if a.hardwareSnapshot().HasNPU {
 			engines = prioritizeNPUEngines(engines)
 		}
 		a.enginesMu.Lock()
@@ -987,11 +1234,16 @@ func portSuffix(listenAddr string) string {
 // Run starts the node's HTTP server and its background registration loop
 // with the orchestrator. It blocks until the server stops.
 func (a *Agent) Run() error {
+	if err := a.InitializeIdentity(); err != nil {
+		return fmt.Errorf("nodeagent: initialize cluster identity: %w", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", a.handleStatus)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version.String()})
 	})
+	mux.HandleFunc("GET /api/pairing/status", a.handlePairingStatus)
+	mux.HandleFunc("POST /api/pairing/connect", a.handlePairingConnect)
 	mux.HandleFunc("/execute", a.handleExecute)
 	mux.HandleFunc("POST /generate", a.handleGenerate)
 	mux.HandleFunc("POST /chat", a.handleChat)
@@ -1076,9 +1328,15 @@ func (a *Agent) Run() error {
 		// Announce continuously: before joining this is how the cluster finds
 		// us, and after joining it keeps us visible in every LAN panel.
 		go discovery.Beacon(func() discovery.Announcement {
-			return discovery.Announcement{Role: "node", ID: a.cfg.NodeID, HTTPAddr: a.cfg.AdvertiseAddr, Score: cluster.SelfScore(a.hw)}
+			return discovery.Announcement{
+				Role: "node", ID: a.cfg.NodeID,
+				HTTPAddr: "http://" + discovery.OutboundIP() + portSuffix(a.cfg.ListenAddr),
+				PeerAddr: a.cfg.AdvertiseAddr,
+				Score:    cluster.SelfScore(a.hardwareSnapshot()),
+			}
 		}, 5*time.Second, nil)
 	}
+	go a.hardwareUsageLoop()
 	go a.resolveOrchestratorAndRegister()
 	go a.modelRefreshLoop()
 	go a.peerPollLoop()
@@ -1087,7 +1345,12 @@ func (a *Agent) Run() error {
 	go a.syncMemoryToOrchestrator()
 
 	log.Printf("node agent %q listening on %s (advertised as %s)", a.cfg.NodeID, a.cfg.ListenAddr, a.cfg.AdvertiseAddr)
-	return http.ListenAndServe(a.cfg.ListenAddr, mux)
+	return peeridentity.ServeDual(
+		a.cfg.ListenAddr,
+		peeridentity.LoopbackOnly(mux),
+		a.identity.RequireTrustedPeer(mux),
+		a.identity.ServerTLSConfig(),
+	)
 }
 
 func (a *Agent) getOrchestratorAddr() string {
@@ -1123,7 +1386,6 @@ func (a *Agent) resolveOrchestratorAndRegister() {
 }
 
 func (a *Agent) registrationLoop() {
-	client := &http.Client{Timeout: 1500 * time.Millisecond}
 	register := func() {
 		candidates := a.orchestratorCandidates()
 		if len(candidates) == 0 {
@@ -1140,11 +1402,22 @@ func (a *Agent) registrationLoop() {
 			return
 		}
 		for _, candidate := range candidates {
-			resp, postErr := client.Post(candidate.address+"/api/nodes/register", "application/json", bytes.NewReader(body))
+			if !strings.HasPrefix(strings.ToLower(candidate.address), "https://") {
+				log.Printf("nodeagent: refusing insecure orchestrator address %q; use https", candidate.address)
+				continue
+			}
+			if !a.identity.IsTrustedID(candidate.id) {
+				if pairErr := a.pairOrchestrator(candidate); pairErr != nil {
+					log.Printf("nodeagent: pairing candidate %s failed: %v", candidate.id, pairErr)
+					continue
+				}
+			}
+			resp, postErr := a.peerClient.Post(candidate.address+"/api/nodes/register", "application/json", bytes.NewReader(body))
 			if postErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				resp.Body.Close()
 				previous := a.getOrchestratorAddr()
 				a.setOrchestratorAddr(candidate.address)
+				a.setOrchestratorID(candidate.id)
 				a.markJoined()
 				if previous != candidate.address {
 					log.Printf("nodeagent: election winner is %s at %s, switching orchestrator", candidate.id, candidate.address)
@@ -1195,18 +1468,22 @@ func (a *Agent) orchestratorCandidates() []orchestratorCandidate {
 		if colon := strings.LastIndex(host, ":"); colon >= 0 {
 			host = host[:colon]
 		}
+		id := a.getOrchestratorID()
+		if id == "" {
+			id = "orchestrator-" + host
+		}
 		// A configured/local address is only a fallback until discovery proves
 		// which orchestrator currently owns the cluster.
-		byAddress[current] = orchestratorCandidate{id: "orchestrator-" + host, address: current, score: -1}
+		byAddress[current] = orchestratorCandidate{id: id, address: current, score: -1}
 	}
 	if a.discoveryListener != nil {
 		for _, peer := range a.discoveryListener.Snapshot() {
-			if peer.Role != "orchestrator" || peer.HTTPAddr == "" {
+			if peer.Role != "orchestrator" || peer.PeerAddr == "" {
 				continue
 			}
-			candidate := orchestratorCandidate{id: peer.ID, address: peer.HTTPAddr, score: peer.Score, members: peer.Members, elected: peer.Elected}
-			if existing, ok := byAddress[peer.HTTPAddr]; !ok || candidate.score > existing.score || (candidate.score == existing.score && candidate.id < existing.id) {
-				byAddress[peer.HTTPAddr] = candidate
+			candidate := orchestratorCandidate{id: peer.ID, address: peer.PeerAddr, score: peer.Score, members: peer.Members, elected: peer.Elected}
+			if existing, ok := byAddress[peer.PeerAddr]; !ok || candidate.score > existing.score || (candidate.score == existing.score && candidate.id < existing.id) {
+				byAddress[peer.PeerAddr] = candidate
 			}
 		}
 	}
@@ -1252,6 +1529,39 @@ func (a *Agent) peerPollLoop() {
 		a.mu.Lock()
 		a.peers = nodes
 		a.mu.Unlock()
+		rosterResp, err := a.peerClient.Get(addr + "/api/pairing/roster")
+		if err != nil {
+			log.Printf("nodeagent: paired-peer roster refresh failed: %v", err)
+		} else {
+			var roster map[string]string
+			decodeErr := json.NewDecoder(rosterResp.Body).Decode(&roster)
+			_ = rosterResp.Body.Close()
+			if decodeErr != nil {
+				log.Printf("nodeagent: decode paired-peer roster: %v", decodeErr)
+			} else {
+				orchestratorID := a.getOrchestratorID()
+				for id, certificate := range roster {
+					if id == a.cfg.NodeID {
+						continue
+					}
+					if err := a.identity.TrustPeer(id, certificate); err != nil {
+						log.Printf("nodeagent: trust paired peer %q: %v", id, err)
+					}
+				}
+				if orchestratorID != "" {
+					for _, id := range a.identity.TrustedIDs() {
+						if id == orchestratorID {
+							continue
+						}
+						if _, ok := roster[id]; !ok {
+							if err := a.identity.RemovePeer(id); err != nil {
+								log.Printf("nodeagent: revoke stale peer %q: %v", id, err)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Give the orchestrator (often starting concurrently in the same
@@ -1501,11 +1811,12 @@ func (a *Agent) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 // a peer with the leader flag is authoritative; local scoring is only the
 // bootstrap fallback before the first snapshot arrives.
 func (a *Agent) mostCapableNode() cluster.NodeStatus {
+	hw := a.hardwareSnapshot()
 	self := cluster.NodeStatus{
 		ID:           a.cfg.NodeID,
 		Address:      a.cfg.AdvertiseAddr,
-		Hardware:     a.hw,
-		FastScore:    fastScore(a.hw),
+		Hardware:     hw,
+		FastScore:    fastScore(hw),
 		DefaultModel: a.defaultModelName(),
 		ActiveTasks:  a.activeTaskCount(),
 		Healthy:      true,
@@ -1530,11 +1841,12 @@ func (a *Agent) mostCapableNode() cluster.NodeStatus {
 }
 
 func (a *Agent) fastestNode() cluster.NodeStatus {
+	hw := a.hardwareSnapshot()
 	self := cluster.NodeStatus{
 		ID:           a.cfg.NodeID,
 		Address:      a.cfg.AdvertiseAddr,
-		Hardware:     a.hw,
-		FastScore:    fastScore(a.hw),
+		Hardware:     hw,
+		FastScore:    fastScore(hw),
 		DefaultModel: a.defaultModelName(),
 		ActiveTasks:  a.activeTaskCount(),
 		Healthy:      true,

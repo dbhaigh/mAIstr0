@@ -17,7 +17,6 @@ import (
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/nodeagent"
 	"github.com/maistr0/maistr0/internal/orchestrator"
-	"github.com/maistr0/maistr0/internal/piagent"
 	"github.com/maistr0/maistr0/internal/trayapp"
 	buildversion "github.com/maistr0/maistr0/internal/version"
 )
@@ -29,13 +28,12 @@ func main() {
 	nodeListenAddr := flag.String("node-listen", "", "override node listen address, e.g. :7451")
 	orchListenAddr := flag.String("orchestrator-listen", "", "override orchestrator listen address, e.g. :7450")
 	orchestratorAddr := flag.String("orchestrator-addr", "", "override the orchestrator address the node registers with (empty = auto-discover on the LAN)")
+	pairTo := flag.String("pair-to", "", "pair this orchestrator with another at an HTTPS address; provide its active PIN with --pairing-pin")
+	pairingPIN := flag.String("pairing-pin", "", "one-time PIN displayed by the orchestrator accepting a node or orchestrator pairing")
 	trayMode := flag.String("tray-mode", "", `override tray behavior: "taskbar" or "hidden"`)
 	noBrowser := flag.Bool("no-browser", false, "do not auto-open the dashboard in a browser on startup")
 	noDiscovery := flag.Bool("no-discovery", false, "disable LAN auto-discovery of other orchestrators/nodes")
 	harness := flag.String("harness", "", `override orchestrator agent backend: "deepseek" or "pi"`)
-	piBaseURL := flag.String("pi-base-url", "", "OpenAI-compatible model API base URL for the Pi agent")
-	piModel := flag.String("pi-model", "", "model name used by the Pi agent")
-	piAPIKeyEnv := flag.String("pi-api-key-env", "", "environment variable containing the Pi provider API key")
 	memoryPath := flag.String("memory-path", "", "override the cluster memory database file (empty = per-user data dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -45,7 +43,9 @@ func main() {
 		return
 	}
 	if *role == "auto" {
-		if *orchestratorAddr != "" {
+		if *pairTo != "" {
+			*role = "orchestrator"
+		} else if *orchestratorAddr != "" {
 			*role = "node"
 		} else {
 			probe := discovery.Listen("startup-probe-" + discovery.OutboundIP())
@@ -57,6 +57,9 @@ func main() {
 			} else {
 				*role = "both"
 			}
+		}
+		if *pairTo != "" && *role != "orchestrator" && *role != "both" {
+			log.Fatal("--pair-to can only be used with --role orchestrator or --role both")
 		}
 	}
 
@@ -73,18 +76,7 @@ func main() {
 		if *harness != "" {
 			cfg.Harness = *harness
 		}
-		if *piBaseURL != "" {
-			cfg.PiBaseURL = *piBaseURL
-		}
-		if *piModel != "" {
-			cfg.PiModel = *piModel
-		}
-		if *piAPIKeyEnv != "" {
-			cfg.PiAPIKeyEnv = *piAPIKeyEnv
-		}
-		srv, err := orchestrator.NewWithMemoryAndHarnessAndPiConfig(cfg.MemoryPath, cfg.Harness, piagent.OpenAICompatibleConfig{
-			BaseURL: cfg.PiBaseURL, Model: cfg.PiModel, APIKey: os.Getenv(cfg.PiAPIKeyEnv),
-		})
+		srv, err := orchestrator.NewWithMemoryAndHarness(cfg.MemoryPath, cfg.Harness)
 		if err != nil {
 			log.Fatalf("failed to configure orchestrator agent: %v", err)
 		}
@@ -97,12 +89,29 @@ func main() {
 		if cfg.DiscoveryEnabled {
 			srv.SetDiscovery(discovery.Listen(srv.SelfID()))
 		}
+		if *pairTo != "" {
+			if *pairingPIN == "" {
+				log.Fatal("--pairing-pin is required with --pair-to")
+			}
+			if err := srv.SetAdvertiseAddress("https://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr)); err != nil {
+				log.Fatalf("invalid orchestrator advertised address: %v", err)
+			}
+			if err := srv.InitializeIdentity(); err != nil {
+				log.Fatalf("failed to initialize orchestrator identity: %v", err)
+			}
+			if err := srv.PairWithOrchestrator(*pairTo, *pairingPIN); err != nil {
+				log.Fatalf("failed to pair orchestrator: %v", err)
+			}
+		}
 		dashboardURL = localURL(cfg.ListenAddr)
 		effectiveTrayMode, autoOpen = cfg.TrayMode, cfg.AutoOpenBrowser
 		go runOrchestrator(srv, cfg.ListenAddr)
 
 	case "node":
 		cfg := loadNodeConfig(*nodeConfigPath, *nodeListenAddr, *orchestratorAddr, *noDiscovery)
+		if *pairingPIN != "" {
+			cfg.PairingPIN = *pairingPIN
+		}
 		if *memoryPath != "" {
 			cfg.MemoryPath = *memoryPath
 		}
@@ -117,12 +126,15 @@ func main() {
 	case "both":
 		orchCfg := loadOrchestratorConfig(*orchConfigPath, *orchListenAddr, *noDiscovery)
 		nodeCfg := loadNodeConfig(*nodeConfigPath, *nodeListenAddr, *orchestratorAddr, *noDiscovery)
+		if *pairingPIN != "" {
+			nodeCfg.PairingPIN = *pairingPIN
+		}
 
 		// Same-process pairing doesn't need discovery, but wire the node to
 		// the orchestrator's LAN address (not 127.0.0.1) so registrations
 		// and logs always reference an address other machines can reach.
 		if nodeCfg.OrchestratorAddr == "" {
-			nodeCfg.OrchestratorAddr = "http://" + discovery.OutboundIP() + portSuffix(orchCfg.ListenAddr)
+			nodeCfg.OrchestratorAddr = "https://" + discovery.OutboundIP() + portSuffix(orchCfg.ListenAddr)
 		}
 
 		// Both roles share one process but need separate database files.
@@ -132,18 +144,7 @@ func main() {
 		if *harness != "" {
 			orchCfg.Harness = *harness
 		}
-		if *piBaseURL != "" {
-			orchCfg.PiBaseURL = *piBaseURL
-		}
-		if *piModel != "" {
-			orchCfg.PiModel = *piModel
-		}
-		if *piAPIKeyEnv != "" {
-			orchCfg.PiAPIKeyEnv = *piAPIKeyEnv
-		}
-		srv, err := orchestrator.NewWithMemoryAndHarnessAndPiConfig(orchCfg.MemoryPath, orchCfg.Harness, piagent.OpenAICompatibleConfig{
-			BaseURL: orchCfg.PiBaseURL, Model: orchCfg.PiModel, APIKey: os.Getenv(orchCfg.PiAPIKeyEnv),
-		})
+		srv, err := orchestrator.NewWithMemoryAndHarness(orchCfg.MemoryPath, orchCfg.Harness)
 		if err != nil {
 			log.Fatalf("failed to configure orchestrator agent: %v", err)
 		}
@@ -154,6 +155,37 @@ func main() {
 		}
 		srv.SetDiscoveryEnabled(orchCfg.DiscoveryEnabled)
 		agent := nodeagent.New(nodeCfg)
+		if err := srv.InitializeIdentity(); err != nil {
+			log.Fatalf("failed to initialize orchestrator identity: %v", err)
+		}
+		if *pairTo != "" {
+			if *pairingPIN == "" {
+				log.Fatal("--pairing-pin is required with --pair-to")
+			}
+			if err := srv.SetAdvertiseAddress("https://" + discovery.OutboundIP() + portSuffix(orchCfg.ListenAddr)); err != nil {
+				log.Fatalf("invalid orchestrator advertised address: %v", err)
+			}
+			if err := srv.PairWithOrchestrator(*pairTo, *pairingPIN); err != nil {
+				log.Fatalf("failed to pair orchestrator: %v", err)
+			}
+		}
+		if err := agent.InitializeIdentity(); err != nil {
+			log.Fatalf("failed to initialize node identity: %v", err)
+		}
+		orchestratorCertificate, err := srv.IdentityCertificate()
+		if err != nil {
+			log.Fatalf("failed to read orchestrator identity: %v", err)
+		}
+		nodeCertificate, err := agent.IdentityCertificate()
+		if err != nil {
+			log.Fatalf("failed to read node identity: %v", err)
+		}
+		if err := agent.PairLocalOrchestrator(srv.SelfID(), orchestratorCertificate, nodeCfg.OrchestratorAddr); err != nil {
+			log.Fatalf("failed to pair local node with orchestrator: %v", err)
+		}
+		if err := srv.TrustPeer(agent.ID(), nodeCertificate); err != nil {
+			log.Fatalf("failed to pair orchestrator with local node: %v", err)
+		}
 
 		// A single process running both roles must share one UDP discovery
 		// socket instead of each binding its own (which would conflict).

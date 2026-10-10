@@ -27,13 +27,21 @@ type piSession struct {
 
 func New(provider Provider, toolHost agent.Backend) *Backend {
 	if provider == nil {
-		provider = NewOpenAICompatibleProvider(OpenAICompatibleConfig{})
+		provider = unavailableProvider{}
 	}
 	return &Backend{
 		provider: provider,
 		toolHost: toolHost,
 		sessions: make(map[string]*piSession),
 	}
+}
+
+type unavailableProvider struct{}
+
+func (unavailableProvider) Name() string { return "unconfigured" }
+
+func (unavailableProvider) Complete(context.Context, CompletionRequest, func(string)) (*Completion, error) {
+	return nil, errors.New("Pi requires an explicitly configured local cluster provider")
 }
 
 func (b *Backend) Name() string { return "pi" }
@@ -54,6 +62,36 @@ func (b *Backend) CreateSession(title string, cfg agent.SessionConfig) (*agent.S
 	b.sessions[state.session.ID] = state
 	b.mu.Unlock()
 	return cloneSession(state.session), nil
+}
+
+func (b *Backend) RestoreSession(session *agent.Session) error {
+	if session == nil || session.ID == "" {
+		return errors.New("agent session and ID are required")
+	}
+	b.mu.RLock()
+	_, exists := b.sessions[session.ID]
+	b.mu.RUnlock()
+	if exists {
+		return fmt.Errorf("session %q already exists", session.ID)
+	}
+	if _, exists := b.toolHost.GetSession(session.ID); !exists {
+		restorer, ok := b.toolHost.(agent.SessionRestorer)
+		if !ok {
+			return errors.New("tool backend does not support session restoration")
+		}
+		if err := restorer.RestoreSession(session); err != nil {
+			return fmt.Errorf("restore tool session: %w", err)
+		}
+	}
+	restored := cloneSession(session)
+	restored.Active = false
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.sessions[restored.ID]; exists {
+		return fmt.Errorf("session %q already exists", restored.ID)
+	}
+	b.sessions[restored.ID] = &piSession{session: restored}
+	return nil
 }
 
 func (b *Backend) GetSession(id string) (*agent.Session, bool) {

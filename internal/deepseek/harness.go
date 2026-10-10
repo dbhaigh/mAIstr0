@@ -210,6 +210,41 @@ func (h *Harness) CreateSession(title string, cfg SessionConfig) *Session {
 	return s
 }
 
+// RestoreSession adds a saved session to the harness without replacing an
+// existing session with the same ID.
+func (h *Harness) RestoreSession(snapshot SessionSnapshot) error {
+	if snapshot.ID == "" {
+		return errors.New("session ID is required")
+	}
+	if snapshot.Config.MaxSteps <= 0 {
+		snapshot.Config.MaxSteps = 8
+	}
+	if snapshot.Memory == nil {
+		snapshot.Memory = make(map[string]string)
+	}
+	if snapshot.Messages == nil {
+		snapshot.Messages = make([]Message, 0)
+	}
+	snapshot.Messages = append([]Message(nil), snapshot.Messages...)
+	memory := make(map[string]string, len(snapshot.Memory))
+	for key, value := range snapshot.Memory {
+		memory[key] = value
+	}
+	session := &Session{
+		ID: snapshot.ID, Title: snapshot.Title, CreatedAt: snapshot.CreatedAt,
+		UpdatedAt: snapshot.UpdatedAt, Messages: snapshot.Messages, Memory: memory,
+		Config: snapshot.Config, Active: false,
+	}
+
+	h.sessionsMu.Lock()
+	defer h.sessionsMu.Unlock()
+	if _, exists := h.sessions[session.ID]; exists {
+		return fmt.Errorf("session %q already exists", session.ID)
+	}
+	h.sessions[session.ID] = session
+	return nil
+}
+
 // GetSession fetches a session by its unique ID.
 func (h *Harness) GetSession(id string) (*Session, bool) {
 	h.sessionsMu.RLock()
@@ -604,7 +639,7 @@ func (h *Harness) selectCoordinator(s *Session) (*cluster.NodeStatus, string, er
 		if m == "" {
 			continue
 		}
-		score := n.FastScore - float64(n.ActiveTasks)*8.0
+		score := n.FastScore - float64(n.ActiveTasks)*8.0 - cluster.GPUUtilizationPenalty(n.Hardware)
 		if score > bestScore {
 			bestScore = score
 			bestNode = n
@@ -783,6 +818,7 @@ func (h *Harness) pickBestNodeForSubtask(st scheduler.Subtask, modelPref string,
 		}
 		hwScore := n.Hardware.Score
 		loadPenalty := float64(load[n.ID]) * 8.0
+		gpuPenalty := cluster.GPUUtilizationPenalty(n.Hardware)
 
 		// Past results shift routing: pairings that historically succeeded
 		// here get promoted, ones that failed or ran slow get demoted.
@@ -791,7 +827,7 @@ func (h *Harness) pickBestNodeForSubtask(st scheduler.Subtask, modelPref string,
 			learned = h.mem.LearnedBias(n.ID, model, st.TaskType)
 		}
 
-		totalScore := matchScore*10.0 + hwScore*0.3 - loadPenalty + learned
+		totalScore := matchScore*10.0 + hwScore*0.3 - loadPenalty - gpuPenalty + learned
 		if totalScore > bestScore {
 			bestScore = totalScore
 			best = n
