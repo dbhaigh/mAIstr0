@@ -11,10 +11,10 @@ import (
 )
 
 var (
-	user32                  = syscall.NewLazyDLL("user32.dll")
-	kernel32                = syscall.NewLazyDLL("kernel32.dll")
-	procShowWindow          = user32.NewProc("ShowWindow")
-	procGetConsoleWindow    = kernel32.NewProc("GetConsoleWindow")
+	user32               = syscall.NewLazyDLL("user32.dll")
+	kernel32             = syscall.NewLazyDLL("kernel32.dll")
+	procShowWindow       = user32.NewProc("ShowWindow")
+	procGetConsoleWindow = kernel32.NewProc("GetConsoleWindow")
 )
 
 const (
@@ -56,6 +56,8 @@ func Run(opts Options) {
 		systray.SetTooltip(opts.Title)
 
 		mOpen := systray.AddMenuItem("Open Dashboard", "Open the mAIstr0 dashboard in your browser")
+		mLogs := systray.AddMenuItem("View Logs", "Open the mAIstr0 application log")
+		mLogFolder := systray.AddMenuItem("Open Logs Folder", "Open current and archived mAIstr0 logs")
 		mToggle := systray.AddMenuItem("Hide Console", "Toggle the console window")
 		if !consoleVisible {
 			mToggle.SetTitle("Show Console")
@@ -68,6 +70,10 @@ func Run(opts Options) {
 				select {
 				case <-mOpen.ClickedCh:
 					openBrowser(opts.DashboardURL)
+				case <-mLogs.ClickedCh:
+					openLogFile(opts.LogFilePath)
+				case <-mLogFolder.ClickedCh:
+					openLogDirectory(opts.LogDirectory)
 				case <-mToggle.ClickedCh:
 					consoleVisible = !consoleVisible
 					setConsoleVisible(consoleVisible)
@@ -87,4 +93,24 @@ func Run(opts Options) {
 			opts.OnQuit()
 		}
 	})
+}
+
+func openLogFile(path string) {
+	if path == "" {
+		log.Printf("trayapp: cannot open application log: log file path is unavailable")
+		return
+	}
+	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", path).Start(); err != nil {
+		log.Printf("trayapp: failed to open application log %q: %v", path, err)
+	}
+}
+
+func openLogDirectory(path string) {
+	if path == "" {
+		log.Printf("trayapp: cannot open application log directory: path is unavailable")
+		return
+	}
+	if err := exec.Command("explorer.exe", path).Start(); err != nil {
+		log.Printf("trayapp: failed to open application log directory %q: %v", path, err)
+	}
 }

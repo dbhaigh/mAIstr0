@@ -14,6 +14,10 @@ type Options struct {
 	Mode string
 	// DashboardURL is opened by the "Open Dashboard" menu item.
 	DashboardURL string
+	// LogFilePath is opened by the "View Logs" menu item.
+	LogFilePath string
+	// LogDirectory is opened by the "Open Logs Folder" menu item.
+	LogDirectory string
 	// OnQuit is called when the user chooses Quit from the tray menu.
 	OnQuit func()
 }

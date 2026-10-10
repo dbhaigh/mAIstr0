@@ -4,6 +4,8 @@
 
 ### Added
 
+- Persistent application logging with pairing/TLS diagnostics, daily rotation,
+  seven-day retention, and tray-menu access to current and archived logs.
 - Unified cluster overview showing current and recent tasks alongside their
   assigned nodes, with assignment selection highlighting the execution node.
 - Offline member visibility, last-seen information, and CPU/memory utilization

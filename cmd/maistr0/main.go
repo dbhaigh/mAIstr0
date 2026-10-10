@@ -6,15 +6,19 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/nodeagent"
 	"github.com/maistr0/maistr0/internal/orchestrator"
 	"github.com/maistr0/maistr0/internal/trayapp"
@@ -42,6 +46,11 @@ func main() {
 		log.Printf("maistr0 %s", buildversion.String())
 		return
 	}
+	logFile, logFilePath, err := configureLogging()
+	if err != nil {
+		log.Fatalf("failed to initialize application log: %v", err)
+	}
+	defer logFile.Close()
 	if *role == "auto" {
 		if *pairTo != "" {
 			*role = "orchestrator"
@@ -223,6 +232,8 @@ func main() {
 		Title:        "mAIstr0 (" + *role + ")",
 		Mode:         effectiveTrayMode,
 		DashboardURL: dashboardURL,
+		LogFilePath:  logFilePath,
+		LogDirectory: filepath.Dir(logFilePath),
 		OnQuit: func() {
 			if closeOrchestrator != nil {
 				closeOrchestrator()
@@ -230,6 +241,26 @@ func main() {
 			os.Exit(0)
 		},
 	})
+}
+
+func configureLogging() (*logging.DailyFile, string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return nil, "", fmt.Errorf("locate user config directory: %w", err)
+	}
+	logDir := filepath.Join(configDir, "maistr0")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return nil, "", fmt.Errorf("create log directory: %w", err)
+	}
+	path := filepath.Join(logDir, "maistr0.log")
+	file, err := logging.OpenDailyFile(path, 7)
+	if err != nil {
+		return nil, "", fmt.Errorf("open rolling log %s: %w", path, err)
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, file))
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.Printf("maistr0: logging to %s", path)
+	return file, path, nil
 }
 
 func loadOrchestratorConfig(path, listenOverride string, noDiscovery bool) config.OrchestratorConfig {

@@ -235,16 +235,23 @@ func (a *Agent) PairWithOrchestrator(address, pin string) error {
 		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return errors.New("orchestrator address must be an https URL without user information")
 	}
-	return a.pairWithAddress("https://"+parsed.Host, "", strings.TrimSpace(pin))
+	address = "https://" + parsed.Host
+	return a.pairWithAddress(address, "", strings.TrimSpace(pin))
 }
 
-func (a *Agent) pairWithAddress(address, expectedID, pin string) error {
+func (a *Agent) pairWithAddress(address, expectedID, pin string) (resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			log.Printf("nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
+		}
+	}()
 	if a.identity == nil {
 		return errors.New("node identity is not initialized")
 	}
 	if pin == "" {
 		return errors.New("pairing PIN is required")
 	}
+	log.Printf("nodeagent: starting pairing with orchestrator at %s", address)
 	body, err := json.Marshal(nodePairingRequest{
 		ID: a.cfg.NodeID, Role: "node", PIN: pin, CertificatePEM: a.identity.CertificatePEM(),
 	})
@@ -285,6 +292,7 @@ func (a *Agent) pairWithAddress(address, expectedID, pin string) error {
 	a.cfg.PairingPIN = ""
 	a.setOrchestratorAddr(address)
 	a.setOrchestratorID(result.ID)
+	log.Printf("nodeagent: successfully paired with orchestrator %s at %s", result.ID, address)
 	return nil
 }
 

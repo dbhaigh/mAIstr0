@@ -46,6 +46,12 @@ setting. Paired peers exchange certificate pins over the authenticated
 connection. Plain HTTP is restricted to loopback for the local dashboard;
 use HTTPS for configured cluster addresses. The combined `--role both` mode
 pairs its local worker automatically.
+Application logs are appended to `maistr0.log` in the user's configuration
+directory (`%APPDATA%\maistr0\maistr0.log` on Windows). Choose **View Logs**
+from the tray icon's right-click menu to inspect pairing and TLS diagnostics,
+including when the console is hidden. Logs roll over daily; dated archives are
+kept for seven calendar days and are available through **Open Logs Folder** in
+the same menu.
 Orchestrators that share a paired trust roster securely exchange cluster
 membership over mutual TLS. Pairing initiated from one side establishes trust
 in both directions; use the receiving orchestrator's current PIN.

@@ -561,6 +561,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.TLS == nil {
+		log.Printf("orchestrator: rejected plaintext pairing request from %s", r.RemoteAddr)
 		http.Error(w, "pairing requires HTTPS", http.StatusUpgradeRequired)
 		return
 	}
@@ -570,34 +571,41 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Role != "node" && request.Role != "orchestrator" {
+		log.Printf("orchestrator: rejected pairing request from %s: invalid peer role", r.RemoteAddr)
 		http.Error(w, "role must be node or orchestrator", http.StatusBadRequest)
 		return
 	}
 	if request.ID == "" || request.ID == s.selfID {
+		log.Printf("orchestrator: rejected pairing request from %s: invalid peer identity", r.RemoteAddr)
 		http.Error(w, "invalid peer identity", http.StatusBadRequest)
 		return
 	}
 	if err := s.identity.ValidatePeer(request.ID, request.CertificatePEM); err != nil {
+		log.Printf("orchestrator: rejected pairing request from %s: invalid peer certificate: %v", r.RemoteAddr, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if request.Role == "orchestrator" {
 		for id, certificate := range request.Peers {
 			if id == "" || id == s.selfID {
+				log.Printf("orchestrator: rejected federation pairing request from %s: invalid peer roster identity", r.RemoteAddr)
 				http.Error(w, "invalid peer roster identity", http.StatusBadRequest)
 				return
 			}
 			if err := s.identity.ValidatePeer(id, certificate); err != nil {
+				log.Printf("orchestrator: rejected federation pairing request from %s: invalid roster certificate: %v", r.RemoteAddr, err)
 				http.Error(w, "invalid peer roster certificate: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 		}
 	}
 	if !s.identity.ConsumePairingPIN(request.PIN) {
+		log.Printf("orchestrator: rejected pairing request from %s: PIN invalid, expired, or already used", r.RemoteAddr)
 		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
 		return
 	}
 	if err := s.identity.TrustPeerDetails(request.ID, request.CertificatePEM, request.Role, request.PeerAddr); err != nil {
+		log.Printf("orchestrator: failed to save paired peer from %s: %v", r.RemoteAddr, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -623,6 +631,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", nextPIN)
+	log.Printf("orchestrator: successfully paired peer role=%s from %s", request.Role, r.RemoteAddr)
 	writeJSON(w, http.StatusOK, pairingJoinResponse{
 		ID: s.selfID, Role: "orchestrator", CertificatePEM: s.identity.CertificatePEM(),
 		Peers: s.identity.TrustedPeers(),
@@ -631,7 +640,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 
 // PairWithOrchestrator enrolls this orchestrator with another using its
 // one-use out-of-band PIN, then pins the returned identity and trusted roster.
-func (s *Server) PairWithOrchestrator(address, pin string) error {
+func (s *Server) PairWithOrchestrator(address, pin string) (resultErr error) {
 	if s.identity == nil {
 		return errors.New("orchestrator identity is not initialized")
 	}
@@ -643,6 +652,12 @@ func (s *Server) PairWithOrchestrator(address, pin string) error {
 	if pin == "" {
 		return errors.New("pairing PIN is required")
 	}
+	log.Printf("orchestrator: starting federation pairing with %s", "https://"+parsed.Host)
+	defer func() {
+		if resultErr != nil {
+			log.Printf("orchestrator: federation pairing with %s failed: %v", "https://"+parsed.Host, resultErr)
+		}
+	}()
 	body, err := json.Marshal(pairingJoinRequest{
 		ID: s.selfID, Role: "orchestrator", PeerAddr: s.advertiseAddr,
 		PIN: pin, CertificatePEM: s.identity.CertificatePEM(), Peers: s.identity.TrustedPeers(),
