@@ -159,3 +159,41 @@ func TestOpenAICompatibleProviderReportsHTTPFailures(t *testing.T) {
 		t.Fatalf("expected provider error, got %v", err)
 	}
 }
+
+func TestOpenAICompatibleProviderDoesNotDefaultToCloud(t *testing.T) {
+	provider := NewOpenAICompatibleProvider(OpenAICompatibleConfig{})
+	if _, err := provider.Complete(context.Background(), CompletionRequest{}, nil); err == nil ||
+		!strings.Contains(err.Error(), "local cluster") {
+		t.Fatalf("expected missing local provider configuration error, got %v", err)
+	}
+}
+
+func TestOpenAICompatibleProviderReportsStreamErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintln(w, `data: {"error":{"message":"model is unavailable"}}`)
+		_, _ = fmt.Fprintln(w)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(OpenAICompatibleConfig{BaseURL: server.URL})
+	_, err := provider.Complete(context.Background(), CompletionRequest{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "model is unavailable") {
+		t.Fatalf("expected stream provider error, got %v", err)
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsEmptyStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
+		_, _ = fmt.Fprintln(w)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(OpenAICompatibleConfig{BaseURL: server.URL})
+	_, err := provider.Complete(context.Background(), CompletionRequest{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty completion") {
+		t.Fatalf("expected empty completion error, got %v", err)
+	}
+}

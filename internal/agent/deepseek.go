@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -50,6 +51,41 @@ func (d *DeepSeek) ListSessions() []*Session {
 }
 
 func (d *DeepSeek) DeleteSession(id string) bool { return d.harness.DeleteSession(id) }
+
+func (d *DeepSeek) RestoreSession(session *Session) error {
+	if session == nil || session.ID == "" {
+		return errors.New("agent session and ID are required")
+	}
+	snapshot := deepseek.SessionSnapshot{
+		ID: session.ID, Title: session.Title, CreatedAt: session.CreatedAt,
+		UpdatedAt: session.UpdatedAt, Memory: session.Memory,
+		Config: deepseek.SessionConfig{
+			CoordinatorModel: session.Config.CoordinatorModel,
+			MaxSteps:         session.Config.MaxSteps,
+			Temperature:      session.Config.Temperature,
+			SystemPrompt:     session.Config.SystemPrompt,
+		},
+		Active: false,
+	}
+	snapshot.Messages = make([]deepseek.Message, 0, len(session.Messages))
+	for _, message := range session.Messages {
+		restored := deepseek.Message{
+			ID: message.ID, Role: deepseek.MessageRole(message.Role), Content: message.Content,
+			RawOutput: message.RawOutput, Thought: message.Thought, NodeID: message.NodeID,
+			Model: message.Model, Coordinator: message.Coordinator,
+			Timestamp: message.Timestamp, DurationMs: message.DurationMs,
+		}
+		for _, call := range message.ToolCalls {
+			restored.ToolCalls = append(restored.ToolCalls, deepseek.ToolCall(call))
+		}
+		if message.ToolResponse != nil {
+			response := deepseek.ToolResponse(*message.ToolResponse)
+			restored.ToolResponse = &response
+		}
+		snapshot.Messages = append(snapshot.Messages, restored)
+	}
+	return d.harness.RestoreSession(snapshot)
+}
 
 func (d *DeepSeek) SendMessage(ctx context.Context, id, text string, events chan<- StreamEvent) (*Message, error) {
 	var deepseekEvents chan deepseek.StreamEvent

@@ -102,13 +102,14 @@ func pickBest(st Subtask, nodes []cluster.NodeStatus, load map[string]int, exp E
 		}
 		hardwareScore := n.Hardware.Score
 		loadPenalty := float64(load[n.ID]) * 8.0
+		gpuPenalty := cluster.GPUUtilizationPenalty(n.Hardware)
 
 		learned := 0.0
 		if exp != nil {
 			learned = exp.LearnedBias(n.ID, model, st.TaskType)
 		}
 
-		score := matchScore*10.0 + hardwareScore*0.3 - loadPenalty + learned
+		score := matchScore*10.0 + hardwareScore*0.3 - loadPenalty - gpuPenalty + learned
 		if score > bestScore {
 			bestScore = score
 			best = n

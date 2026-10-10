@@ -22,7 +22,8 @@ const peerTTL = 15 * time.Second
 type Announcement struct {
 	Role     string  `json:"role"` // "orchestrator" or "node"
 	ID       string  `json:"id"`
-	HTTPAddr string  `json:"http_addr"`
+	HTTPAddr string  `json:"http_addr"`       // plaintext pairing bootstrap, loopback clients only after pairing
+	PeerAddr string  `json:"peer_addr"`       // mutual-TLS address used for cluster traffic
 	Score    float64 `json:"score,omitempty"` // capability score, used for orchestrator election
 	Members  int     `json:"members,omitempty"`
 	Elected  bool    `json:"elected,omitempty"`
@@ -188,13 +189,13 @@ func (l *Listener) Snapshot() []Peer {
 }
 
 // FirstOrchestrator blocks (up to timeout) waiting for an orchestrator to be
-// discovered, returning its HTTP address. Returns "" if none is found in time.
+// discovered, returning its mutual-TLS address. Returns "" if none is found.
 func (l *Listener) FirstOrchestrator(timeout time.Duration) string {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		for _, p := range l.Snapshot() {
 			if p.Role == "orchestrator" {
-				return p.HTTPAddr
+				return p.PeerAddr
 			}
 		}
 		time.Sleep(250 * time.Millisecond)

@@ -6,6 +6,7 @@ package orchestrator
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,9 +23,11 @@ import (
 	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/piagent"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
@@ -33,24 +36,29 @@ import (
 )
 
 type Server struct {
-	registry         *cluster.Registry
-	tasks            *taskmgr.Manager
-	client           *http.Client // short timeout, for node proxy/status calls
-	dispatcher       *http.Client // long timeout, subtask execution can cold-load a model
-	dispatchSlots    chan struct{}
-	discovery        *discovery.Listener
-	selfID           string
-	discoveryEnabled bool
-	events           *hub.Hub
-	agentMu          sync.RWMutex
-	agents           map[string]agent.Backend
-	activeHarness    string
-	sessionHarnesses map[string]string
-	mem              *memory.Store
-	selfScore        float64 // announced on the LAN for orchestrator election
-	leaderMu         sync.Mutex
-	lastLeaderID     string // last announced leader, to log transitions once
-	discoveredNodes  map[string]bool
+	registry            *cluster.Registry
+	tasks               *taskmgr.Manager
+	client              *http.Client // short timeout, for node proxy/status calls
+	dispatcher          *http.Client // long timeout, subtask execution can cold-load a model
+	dispatchSlots       chan struct{}
+	discovery           *discovery.Listener
+	selfID              string
+	discoveryEnabled    bool
+	events              *hub.Hub
+	agentMu             sync.RWMutex
+	agents              map[string]agent.Backend
+	activeHarness       string
+	sessionHarnesses    map[string]string
+	mem                 *memory.Store
+	selfScore           float64 // announced on the LAN for orchestrator election
+	leaderMu            sync.Mutex
+	lastLeaderID        string // last announced leader, to log transitions once
+	discoveredNodes     map[string]bool
+	identityPath        string
+	identity            *peeridentity.Identity
+	advertiseAddr       string
+	peerMu              sync.RWMutex
+	pairedOrchestrators map[string]string
 }
 
 func New() (*Server, error) { return NewWithMemory("") }
@@ -64,10 +72,6 @@ func NewWithMemory(memoryPath string) (*Server, error) {
 // NewWithMemoryAndHarness builds an orchestrator using the requested agent
 // backend. The returned error identifies unsupported backend names.
 func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
-	return NewWithMemoryAndHarnessAndPiConfig(memoryPath, harnessName, piagent.OpenAICompatibleConfig{})
-}
-
-func NewWithMemoryAndHarnessAndPiConfig(memoryPath, harnessName string, piConfig piagent.OpenAICompatibleConfig) (*Server, error) {
 	reg := cluster.NewRegistry()
 	disp := &http.Client{Timeout: 10 * time.Minute}
 	selfID := "orchestrator-" + discovery.OutboundIP()
@@ -80,32 +84,54 @@ func NewWithMemoryAndHarnessAndPiConfig(memoryPath, harnessName string, piConfig
 	if err != nil {
 		log.Printf("orchestrator: memory unavailable, running stateless: %v", err)
 	}
+	taskPath := taskmgr.DefaultPath(selfID)
+	if memoryPath != "" {
+		taskPath = memoryPath + ".tasks"
+	}
+	tasks, err := taskmgr.OpenManager(taskPath, nil)
+	if err != nil {
+		if store != nil {
+			_ = store.Close()
+		}
+		return nil, fmt.Errorf("orchestrator: open task history: %w", err)
+	}
 	deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
 	if harnessName != "deepseek" && harnessName != "pi" {
 		if store != nil {
 			_ = store.Close()
 		}
+		_ = tasks.Close()
 		return nil, fmt.Errorf("unknown agent backend %q (want deepseek or pi)", harnessName)
 	}
-	backends := map[string]agent.Backend{
-		"deepseek": deepseekBackend,
-		"pi":       piagent.New(piagent.NewOpenAICompatibleProvider(piConfig), deepseekBackend),
-	}
+	backends := map[string]agent.Backend{"deepseek": deepseekBackend}
 	srv := &Server{
-		registry:         reg,
-		tasks:            taskmgr.NewManager(),
-		client:           &http.Client{Timeout: 10 * time.Second},
-		dispatcher:       disp,
-		dispatchSlots:    make(chan struct{}, 16),
-		selfID:           selfID,
-		selfScore:        cluster.SelfScore(hardware.Detect()),
-		discoveryEnabled: true,
-		events:           events,
-		discoveredNodes:  make(map[string]bool),
-		agents:           backends,
-		activeHarness:    harnessName,
-		sessionHarnesses: make(map[string]string),
-		mem:              store,
+		registry:            reg,
+		client:              &http.Client{Timeout: 10 * time.Second},
+		dispatcher:          disp,
+		dispatchSlots:       make(chan struct{}, 16),
+		selfID:              selfID,
+		selfScore:           cluster.SelfScore(hardware.Detect()),
+		discoveryEnabled:    true,
+		events:              events,
+		discoveredNodes:     make(map[string]bool),
+		pairedOrchestrators: make(map[string]string),
+		agents:              backends,
+		activeHarness:       harnessName,
+		sessionHarnesses:    make(map[string]string),
+		tasks:               tasks,
+		mem:                 store,
+		identityPath:        peeridentity.DefaultPath(selfID),
+	}
+	srv.agents["pi"] = piagent.New(&localPiProvider{server: srv}, deepseekBackend)
+	if memoryPath != "" {
+		srv.identityPath = memoryPath + ".identity"
+	}
+	srv.tasks.SetFinalizer(srv.synthesizeTask)
+	if err := srv.restoreAgentSessions(); err != nil {
+		if closeErr := srv.Close(); closeErr != nil {
+			log.Printf("orchestrator: cleanup after session restore failure: %v", closeErr)
+		}
+		return nil, fmt.Errorf("orchestrator: restore agent sessions: %w", err)
 	}
 	if store != nil {
 		log.Printf("orchestrator: memory store at %s", store.Path())
@@ -174,6 +200,63 @@ func (s *Server) listAgentSessions() []*agent.Session {
 	return sessions
 }
 
+func (s *Server) restoreAgentSessions() error {
+	if s.mem == nil {
+		return nil
+	}
+	records, err := s.mem.AgentSessions()
+	if err != nil {
+		return err
+	}
+	sessions := make([]*agent.Session, 0, len(records))
+	for _, record := range records {
+		var session agent.Session
+		if err := json.Unmarshal(record, &session); err != nil {
+			return fmt.Errorf("decode persisted session: %w", err)
+		}
+		if session.ID == "" || session.Harness == "" {
+			return errors.New("persisted agent session is missing its ID or harness")
+		}
+		session.Active = false
+		sessions = append(sessions, &session)
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].Harness != sessions[j].Harness {
+			return sessions[i].Harness == "deepseek"
+		}
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
+	})
+	for _, session := range sessions {
+		backend, exists := s.agents[session.Harness]
+		if !exists {
+			return fmt.Errorf("persisted session %q has unsupported harness %q", session.ID, session.Harness)
+		}
+		restorer, ok := backend.(agent.SessionRestorer)
+		if !ok {
+			return fmt.Errorf("agent backend %q cannot restore sessions", session.Harness)
+		}
+		if err := restorer.RestoreSession(session); err != nil {
+			return fmt.Errorf("restore session %q for %s: %w", session.ID, session.Harness, err)
+		}
+		s.sessionHarnesses[session.ID] = session.Harness
+	}
+	return nil
+}
+
+func (s *Server) persistAgentSession(session *agent.Session) error {
+	if s.mem == nil {
+		return nil
+	}
+	if session == nil || session.ID == "" || session.Harness == "" {
+		return errors.New("session ID and harness are required")
+	}
+	encoded, err := json.Marshal(session)
+	if err != nil {
+		return fmt.Errorf("encode agent session: %w", err)
+	}
+	return s.mem.SaveAgentSession(session.Harness, session.ID, encoded)
+}
+
 func (s *Server) agentStats() agent.AgentStats {
 	_, activeBackend := s.currentAgent()
 	stats := activeBackend.Stats()
@@ -212,6 +295,9 @@ func (s *Server) Close() error {
 			agentErr = err
 		}
 	}
+	if err := s.tasks.Close(); agentErr == nil {
+		agentErr = err
+	}
 	return agentErr
 }
 
@@ -231,11 +317,66 @@ func (s *Server) SetDiscovery(l *discovery.Listener) { s.discovery = l }
 // SelfID returns the ID this orchestrator announces itself as on the LAN.
 func (s *Server) SelfID() string { return s.selfID }
 
+func (s *Server) SetAdvertiseAddress(address string) error {
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("orchestrator advertised address must be an https URL without user information")
+	}
+	s.advertiseAddr = "https://" + parsed.Host
+	return nil
+}
+
+// InitializeIdentity loads the persistent TLS identity and creates a
+// temporary pairing PIN for first-time node enrollment.
+func (s *Server) InitializeIdentity() error {
+	if s.identity != nil {
+		return nil
+	}
+	identity, err := peeridentity.Open(s.identityPath, s.selfID)
+	if err != nil {
+		return err
+	}
+	pin, err := identity.NewPairingPIN()
+	if err != nil {
+		return err
+	}
+	s.identity = identity
+	s.client.Transport = identity.ClientTransport()
+	s.dispatcher.Transport = identity.ClientTransport()
+	s.peerMu.Lock()
+	for id, address := range identity.PairedOrchestratorAddresses() {
+		s.pairedOrchestrators[id] = address
+	}
+	s.peerMu.Unlock()
+	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", pin)
+	return nil
+}
+
+func (s *Server) IdentityCertificate() (string, error) {
+	if s.identity == nil {
+		return "", errors.New("orchestrator identity is not initialized")
+	}
+	return s.identity.CertificatePEM(), nil
+}
+
+func (s *Server) TrustPeer(id, certificatePEM string) error {
+	if s.identity == nil {
+		return errors.New("orchestrator identity is not initialized")
+	}
+	return s.identity.TrustPeer(id, certificatePEM)
+}
+
 func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pairing/join", s.handlePairingJoin)
+	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
+	mux.HandleFunc("POST /api/pairing/connect", s.handlePairingConnect)
+	mux.HandleFunc("GET /api/pairing/roster", s.handlePairingRoster)
 	mux.HandleFunc("POST /api/nodes/register", s.handleRegister)
 	mux.HandleFunc("POST /api/nodes/{id}/eject", s.handleEject)
 	mux.HandleFunc("GET /api/nodes", s.handleListNodes)
+	mux.HandleFunc("GET /api/nodes/all", s.handleListAllNodes)
 	mux.HandleFunc("POST /api/nodes/models/refresh", s.handleRefreshAllNodeModels)
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/nodes/{id}/models", s.handleNodeModelsGet)
@@ -265,7 +406,9 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("PATCH /api/agent/backend", s.handleAgentBackendPatch)
 	// Direct cluster & node LLM model invocation endpoints
 	mux.HandleFunc("GET /api/models", s.handleListAllModels)
-	mux.HandleFunc("POST /api/generate", s.handleGenerate)
+	mux.HandleFunc("POST /api/generate", s.handleOllamaGenerate)
+	mux.HandleFunc("GET /api/tags", s.handleOllamaTags)
+	mux.HandleFunc("POST /api/chat", s.handleOllamaChat)
 	mux.HandleFunc("POST /api/nodes/{id}/generate", s.handleNodeGenerate)
 	mux.HandleFunc("POST /api/nodes/{id}/chat", s.handleNodeChat)
 	mux.HandleFunc("POST /api/nodes/{id}/dialogues", s.handleNodeDialoguesProxy)
@@ -278,6 +421,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /v1/models", s.handleOpenAIModels)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleOpenAIChatCompletions)
 	mux.HandleFunc("POST /v1/completions", s.handleOpenAICompletions)
+	mux.HandleFunc("POST /v1/messages", s.handleAnthropicMessages)
 
 	// Cluster memory / learning endpoints
 	mux.HandleFunc("GET /api/memory/experiences", s.handleMemoryExperiences)
@@ -309,6 +453,14 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 // Run starts the health-sweep loop and the HTTP server. It blocks.
 func (s *Server) Run(listenAddr string) error {
+	if s.advertiseAddr == "" {
+		if err := s.SetAdvertiseAddress("https://" + discovery.OutboundIP() + portSuffix(listenAddr)); err != nil {
+			return fmt.Errorf("orchestrator: configure pairing address: %w", err)
+		}
+	}
+	if err := s.InitializeIdentity(); err != nil {
+		return fmt.Errorf("orchestrator: initialize cluster identity: %w", err)
+	}
 	go s.healthSweepLoop()
 	go s.broadcastLoop()
 	if s.discoveryEnabled {
@@ -316,101 +468,335 @@ func (s *Server) Run(listenAddr string) error {
 			s.discovery = discovery.Listen(s.selfID)
 		}
 		selfAddr := "http://" + discovery.OutboundIP() + portSuffix(listenAddr)
+		peerAddr := "https://" + discovery.OutboundIP() + portSuffix(listenAddr)
 		go discovery.Beacon(func() discovery.Announcement {
 			members := s.registry.Active()
 			_, elected := s.registry.Leader()
 			return discovery.Announcement{
-				Role: "orchestrator", ID: s.selfID, HTTPAddr: selfAddr,
+				Role: "orchestrator", ID: s.selfID, HTTPAddr: selfAddr, PeerAddr: peerAddr,
 				Score: s.selfScore, Members: len(members), Elected: elected,
 			}
 		}, 5*time.Second, nil)
 	}
 	go s.discoverySyncLoop()
 	log.Printf("orchestrator listening on %s", listenAddr)
-	return http.ListenAndServe(listenAddr, s.Mux())
+	mux := s.Mux()
+	secure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/pairing/join" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		s.identity.RequireTrustedPeer(mux).ServeHTTP(w, r)
+	})
+	return peeridentity.ServeDual(
+		listenAddr,
+		peeridentity.LoopbackOnly(mux),
+		secure,
+		s.identity.ServerTLSConfig(),
+	)
+}
+
+type pairingJoinRequest struct {
+	ID             string            `json:"id"`
+	Role           string            `json:"role"`
+	PeerAddr       string            `json:"peer_addr,omitempty"`
+	PIN            string            `json:"pin"`
+	CertificatePEM string            `json:"certificate_pem"`
+	Peers          map[string]string `json:"peers,omitempty"`
+}
+
+type pairingJoinResponse struct {
+	ID             string            `json:"id"`
+	Role           string            `json:"role"`
+	CertificatePEM string            `json:"certificate_pem"`
+	Peers          map[string]string `json:"peers"`
+}
+
+func (s *Server) handlePairingRoster(w http.ResponseWriter, _ *http.Request) {
+	if s.identity == nil {
+		http.Error(w, "identity is not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.identity.TrustedPeers())
+}
+
+func (s *Server) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.identity == nil {
+		http.Error(w, "pairing is not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	status := map[string]any{"role": "orchestrator", "address": s.advertiseAddr}
+	if pin, expiresAt, ok := s.identity.ActivePairingPIN(); ok {
+		status["pin"] = pin
+		status["expires_at"] = expiresAt
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handlePairingConnect(w http.ResponseWriter, r *http.Request) {
+	if s.identity == nil {
+		http.Error(w, "pairing is not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	var request struct {
+		Address string `json:"address"`
+		PIN     string `json:"pin"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
+		http.Error(w, "invalid pairing request", http.StatusBadRequest)
+		return
+	}
+	if err := s.PairWithOrchestrator(strings.TrimSpace(request.Address), strings.TrimSpace(request.PIN)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"paired_orchestrator": strings.TrimSpace(request.Address),
+	})
+}
+
+func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
+	if s.identity == nil {
+		http.Error(w, "pairing is not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	if r.TLS == nil {
+		http.Error(w, "pairing requires HTTPS", http.StatusUpgradeRequired)
+		return
+	}
+	var request pairingJoinRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
+		http.Error(w, "invalid pairing request", http.StatusBadRequest)
+		return
+	}
+	if request.Role != "node" && request.Role != "orchestrator" {
+		http.Error(w, "role must be node or orchestrator", http.StatusBadRequest)
+		return
+	}
+	if request.ID == "" || request.ID == s.selfID {
+		http.Error(w, "invalid peer identity", http.StatusBadRequest)
+		return
+	}
+	if err := s.identity.ValidatePeer(request.ID, request.CertificatePEM); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.Role == "orchestrator" {
+		for id, certificate := range request.Peers {
+			if id == "" || id == s.selfID {
+				http.Error(w, "invalid peer roster identity", http.StatusBadRequest)
+				return
+			}
+			if err := s.identity.ValidatePeer(id, certificate); err != nil {
+				http.Error(w, "invalid peer roster certificate: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	if !s.identity.ConsumePairingPIN(request.PIN) {
+		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
+		return
+	}
+	if err := s.identity.TrustPeerDetails(request.ID, request.CertificatePEM, request.Role, request.PeerAddr); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.Role == "orchestrator" && request.PeerAddr != "" {
+		s.peerMu.Lock()
+		s.pairedOrchestrators[request.ID] = request.PeerAddr
+		s.peerMu.Unlock()
+	}
+	if request.Role == "orchestrator" {
+		for id, certificate := range request.Peers {
+			if id == request.ID {
+				continue
+			}
+			if err := s.identity.TrustPeer(id, certificate); err != nil {
+				http.Error(w, "orchestrator paired but could not trust peer "+id+": "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	nextPIN, err := s.identity.NewPairingPIN()
+	if err != nil {
+		http.Error(w, "peer paired but could not create the next pairing PIN", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", nextPIN)
+	writeJSON(w, http.StatusOK, pairingJoinResponse{
+		ID: s.selfID, Role: "orchestrator", CertificatePEM: s.identity.CertificatePEM(),
+		Peers: s.identity.TrustedPeers(),
+	})
+}
+
+// PairWithOrchestrator enrolls this orchestrator with another using its
+// one-use out-of-band PIN, then pins the returned identity and trusted roster.
+func (s *Server) PairWithOrchestrator(address, pin string) error {
+	if s.identity == nil {
+		return errors.New("orchestrator identity is not initialized")
+	}
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("pairing address must be an https URL without user information")
+	}
+	if pin == "" {
+		return errors.New("pairing PIN is required")
+	}
+	body, err := json.Marshal(pairingJoinRequest{
+		ID: s.selfID, Role: "orchestrator", PeerAddr: s.advertiseAddr,
+		PIN: pin, CertificatePEM: s.identity.CertificatePEM(), Peers: s.identity.TrustedPeers(),
+	})
+	if err != nil {
+		return fmt.Errorf("encode orchestrator pairing request: %w", err)
+	}
+	address = "https://" + parsed.Host
+	client := &http.Client{Timeout: 10 * time.Second, Transport: s.identity.BootstrapTransport()}
+	resp, err := client.Post(address+"/api/pairing/join", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("pair with orchestrator at %s: %w", address, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("orchestrator pairing rejected: %s: %s", resp.Status, strings.TrimSpace(string(message)))
+	}
+	var result pairingJoinResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode orchestrator pairing response: %w", err)
+	}
+	if result.Role != "orchestrator" || result.ID == "" || result.ID == s.selfID {
+		return fmt.Errorf("pairing endpoint returned invalid orchestrator identity %q with role %q", result.ID, result.Role)
+	}
+	if err := s.identity.ValidatePeer(result.ID, result.CertificatePEM); err != nil {
+		return err
+	}
+	if s.discovery != nil {
+		for _, peer := range s.discovery.Snapshot() {
+			if peer.Role == "orchestrator" && peer.PeerAddr == address && peer.ID != result.ID {
+				return fmt.Errorf("pairing endpoint identity %q does not match discovered identity %q", result.ID, peer.ID)
+			}
+		}
+	}
+	if err := s.identity.TrustPeerDetails(result.ID, result.CertificatePEM, "orchestrator", address); err != nil {
+		return err
+	}
+	for id, certificate := range result.Peers {
+		if id == s.selfID {
+			continue
+		}
+		if err := s.identity.TrustPeer(id, certificate); err != nil {
+			return fmt.Errorf("trust paired roster member %q: %w", id, err)
+		}
+	}
+	s.peerMu.Lock()
+	s.pairedOrchestrators[result.ID] = address
+	s.peerMu.Unlock()
+	log.Printf("orchestrator: paired with orchestrator %s at %s", result.ID, address)
+	return nil
 }
 
 func (s *Server) discoverySyncLoop() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		if s.discovery == nil {
-			continue
-		}
-		visibleNodes := make(map[string]bool)
-		type discoveryResult struct {
-			peer   discovery.Peer
-			status []cluster.NodeStatus
-		}
-		results := make(chan discoveryResult)
-		var probes sync.WaitGroup
-		for _, peer := range s.discovery.Snapshot() {
-			if peer.HTTPAddr == "" {
-				continue
-			}
-			if peer.Role != "node" && peer.Role != "orchestrator" {
-				continue
-			}
-			probes.Add(1)
-			go func(peer discovery.Peer) {
-				defer probes.Done()
-				if peer.Role == "node" {
-					status, err := s.discoveredNodeStatus(peer.HTTPAddr)
-					if err == nil {
-						results <- discoveryResult{peer: peer, status: []cluster.NodeStatus{status}}
-					}
-					return
-				}
-				results <- discoveryResult{peer: peer, status: s.discoveredClusterNodes(peer.HTTPAddr)}
-			}(peer)
-		}
-		go func() {
-			probes.Wait()
-			close(results)
-		}()
-		for result := range results {
-			if result.peer.Role == "node" {
-				visibleNodes[result.peer.ID] = true
-				s.discoveredNodes[result.peer.ID] = true
-			}
-			for _, status := range result.status {
-				s.registry.Upsert(status)
-			}
-		}
-		for id := range s.discoveredNodes {
-			if visibleNodes[id] {
-				continue
-			}
-			if _, ok := s.registry.Get(id); ok {
-				s.registry.Remove(id)
-				s.notifyOrchestratorsOfEjection(id)
-				log.Printf("orchestrator: ejected node %s after its LAN announcement expired", id)
-			}
-			delete(s.discoveredNodes, id)
-		}
-		s.publishSnapshot()
+		s.syncDiscoveredPeers()
 	}
 }
 
-func (s *Server) discoveredClusterNodes(addr string) []cluster.NodeStatus {
-	client := &http.Client{Timeout: 1500 * time.Millisecond}
+func (s *Server) syncDiscoveredPeers() {
+	visibleNodes := make(map[string]bool)
+	type discoveryResult struct {
+		peer   discovery.Peer
+		status []cluster.NodeStatus
+	}
+	results := make(chan discoveryResult)
+	var probes sync.WaitGroup
+	peers := make(map[string]discovery.Peer)
+	if s.discovery != nil {
+		for _, peer := range s.discovery.Snapshot() {
+			peers[peer.ID] = peer
+		}
+	}
+	s.peerMu.RLock()
+	for id, address := range s.pairedOrchestrators {
+		peers[id] = discovery.Peer{Announcement: discovery.Announcement{
+			Role: "orchestrator", ID: id, PeerAddr: address,
+		}}
+	}
+	s.peerMu.RUnlock()
+	for _, peer := range peers {
+		if peer.PeerAddr == "" || !s.identity.IsTrustedID(peer.ID) {
+			continue
+		}
+		if peer.Role != "node" && peer.Role != "orchestrator" {
+			continue
+		}
+		probes.Add(1)
+		go func(peer discovery.Peer) {
+			defer probes.Done()
+			if peer.Role == "node" {
+				status, err := s.discoveredNodeStatus(peer.PeerAddr)
+				if err != nil {
+					log.Printf("orchestrator: secure status probe for paired node %s failed: %v", peer.ID, err)
+					return
+				}
+				results <- discoveryResult{peer: peer, status: []cluster.NodeStatus{status}}
+				return
+			}
+			nodes, err := s.fetchDiscoveredClusterNodes(peer.PeerAddr)
+			if err != nil {
+				log.Printf("orchestrator: secure cluster sync with paired orchestrator %s failed: %v", peer.ID, err)
+				return
+			}
+			results <- discoveryResult{peer: peer, status: nodes}
+		}(peer)
+	}
+	go func() {
+		probes.Wait()
+		close(results)
+	}()
+	for result := range results {
+		if result.peer.Role == "node" {
+			visibleNodes[result.peer.ID] = true
+			s.discoveredNodes[result.peer.ID] = true
+		}
+		for _, status := range result.status {
+			s.registry.Upsert(status)
+		}
+	}
+	for id := range s.discoveredNodes {
+		if visibleNodes[id] {
+			continue
+		}
+		if _, ok := s.registry.Get(id); ok {
+			s.registry.MarkUnhealthy(id)
+			log.Printf("orchestrator: node %s is offline after its LAN announcement expired", id)
+		}
+		delete(s.discoveredNodes, id)
+	}
+	s.publishSnapshot()
+}
+
+func (s *Server) fetchDiscoveredClusterNodes(addr string) ([]cluster.NodeStatus, error) {
+	client := &http.Client{Timeout: 1500 * time.Millisecond, Transport: s.identity.ClientTransport()}
 	resp, err := client.Get(addr + "/api/nodes")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil
+		return nil, fmt.Errorf("cluster status endpoint returned %s", resp.Status)
 	}
 	var nodes []cluster.NodeStatus
 	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode cluster status: %w", err)
 	}
-	return nodes
+	return nodes, nil
 }
 
 func (s *Server) discoveredNodeStatus(addr string) (cluster.NodeStatus, error) {
-	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	client := &http.Client{Timeout: 1500 * time.Millisecond, Transport: s.identity.ClientTransport()}
 	resp, err := client.Get(addr + "/status")
 	if err != nil {
 		return cluster.NodeStatus{}, err
@@ -451,10 +837,9 @@ func (s *Server) healthSweepLoop() {
 	defer ticker.Stop()
 	for range ticker.C {
 		for _, n := range s.registry.All() {
-			if time.Since(n.LastSeen) > 30*time.Second {
-				s.registry.Remove(n.ID)
-				s.notifyOrchestratorsOfEjection(n.ID)
-				log.Printf("orchestrator: ejected unavailable node %s from the cluster", n.ID)
+			if n.Healthy && time.Since(n.LastSeen) > 30*time.Second {
+				s.registry.MarkUnhealthy(n.ID)
+				log.Printf("orchestrator: node %s is offline after missing heartbeats", n.ID)
 			}
 		}
 		s.publishSnapshot()
@@ -479,9 +864,13 @@ func (s *Server) snapshot() clusterSnapshot {
 	if s.discovery != nil {
 		disc = s.discovery.Snapshot()
 	}
-	nodes := s.registry.Active()
+	nodes := s.registry.All()
+	activeNodes := 0
 	leaderID := ""
 	for _, n := range nodes {
+		if n.Healthy {
+			activeNodes++
+		}
 		if n.Leader {
 			leaderID = n.ID
 			break
@@ -498,11 +887,11 @@ func (s *Server) snapshot() clusterSnapshot {
 	stats := s.agentStats()
 	snap := clusterSnapshot{
 		Nodes:        nodes,
-		Tasks:        s.tasks.All(),
+		Tasks:        s.tasks.Recent(50),
 		Discovery:    disc,
 		BuildVersion: version.String(),
 		LeaderID:     leaderID,
-		MemberCount:  len(nodes),
+		MemberCount:  activeNodes,
 		AgentStats:   &stats,
 	}
 	if s.mem != nil {
@@ -563,17 +952,33 @@ func (s *Server) handleEject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "node id is required", http.StatusBadRequest)
 		return
 	}
+	if s.identity != nil {
+		if err := s.identity.RemovePeer(id); err != nil {
+			http.Error(w, "could not revoke node certificate: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	s.registry.Remove(id)
 	s.publishSnapshot()
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) notifyOrchestratorsOfEjection(nodeID string) {
-	if s.discovery == nil {
-		return
+	addresses := make(map[string]string)
+	if s.discovery != nil {
+		for _, peer := range s.discovery.Snapshot() {
+			if peer.Role == "orchestrator" && peer.ID != s.selfID && peer.PeerAddr != "" {
+				addresses[peer.ID] = peer.PeerAddr
+			}
+		}
 	}
-	for _, peer := range s.discovery.Snapshot() {
-		if peer.Role != "orchestrator" || peer.ID == s.selfID || peer.HTTPAddr == "" {
+	s.peerMu.RLock()
+	for id, address := range s.pairedOrchestrators {
+		addresses[id] = address
+	}
+	s.peerMu.RUnlock()
+	for id, address := range addresses {
+		if s.identity == nil || !s.identity.IsTrustedID(id) {
 			continue
 		}
 		go func(addr string) {
@@ -585,12 +990,16 @@ func (s *Server) notifyOrchestratorsOfEjection(nodeID string) {
 			if err == nil {
 				resp.Body.Close()
 			}
-		}(peer.HTTPAddr)
+		}(address)
 	}
 }
 
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.registry.Active())
+}
+
+func (s *Server) handleListAllNodes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.registry.All())
 }
 
 func (s *Server) handleRefreshAllNodeModels(w http.ResponseWriter, r *http.Request) {
@@ -791,7 +1200,8 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 }
 
 type createTaskRequest struct {
-	Description string `json:"description"`
+	Description string              `json:"description"`
+	Subtasks    []scheduler.Subtask `json:"subtasks,omitempty"`
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -800,10 +1210,18 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(req.Description) == "" {
+		http.Error(w, "description is required", http.StatusBadRequest)
+		return
+	}
 
-	subtasks := scheduler.Decompose(req.Description)
+	subtasks := req.Subtasks
 	if len(subtasks) == 0 {
-		http.Error(w, "description produced no subtasks", http.StatusBadRequest)
+		subtasks = scheduler.Decompose(req.Description)
+	}
+	subtasks, err := scheduler.ValidatePlan(subtasks)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -826,7 +1244,11 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task := s.tasks.Create(req.Description, assignments)
+	task, err := s.tasks.CreateChecked(req.Description, assignments)
+	if err != nil {
+		http.Error(w, "could not persist task: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	for _, a := range assignments {
 		go s.dispatch(task.ID, a)
 	}
@@ -838,66 +1260,128 @@ func (s *Server) dispatch(taskID string, a scheduler.Assignment) {
 	if !ok {
 		return
 	}
+	if !s.tasks.WaitForDependencies(ctx, taskID, a.Subtask.ID) {
+		if ctx.Err() == nil {
+			s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", errors.New("a required subtask did not complete"))
+		}
+		return
+	}
 	select {
 	case s.dispatchSlots <- struct{}{}:
 	case <-ctx.Done():
 		return
 	}
 	defer func() { <-s.dispatchSlots }()
-	s.registry.IncrementLoad(a.NodeID, 1)
-	defer s.registry.IncrementLoad(a.NodeID, -1)
-	s.tasks.StartSubtask(taskID, a.Subtask.ID)
-	if node, ok := s.registry.Get(a.NodeID); !ok || !node.Healthy || node.Address != a.Address {
-		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", errors.New("node was ejected before dispatch"))
+	if err := s.tasks.StartSubtaskChecked(taskID, a.Subtask.ID); err != nil {
+		log.Printf("orchestrator: could not persist start of subtask %s: %v", a.Subtask.ID, err)
+		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", err)
 		return
 	}
 
-	body, _ := json.Marshal(map[string]string{
-		"subtask_id": a.Subtask.ID,
-		"model":      a.Model,
-		"prompt":     a.Subtask.Description,
-		"task_type":  a.Subtask.TaskType,
-	})
-
-	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.Address+"/execute", bytes.NewReader(body))
-	if err != nil {
-		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", err)
+	prompt, ok := s.tasks.InputForSubtask(taskID, a.Subtask.ID)
+	if !ok {
+		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", errors.New("subtask prerequisites are not available"))
 		return
+	}
+	current := a
+	alreadyTried := map[string]bool{a.NodeID: true}
+	for attempt := 0; attempt < 2; attempt++ {
+		node, healthy := s.registry.Get(current.NodeID)
+		var output string
+		var attemptErr error
+		retryable := true
+		if !healthy || !node.Healthy || node.Address != current.Address {
+			attemptErr = errors.New("node was ejected before dispatch")
+		} else {
+			s.registry.IncrementLoad(current.NodeID, 1)
+			started := time.Now()
+			output, attemptErr, retryable = s.executeSubtask(ctx, current, prompt)
+			s.registry.IncrementLoad(current.NodeID, -1)
+			s.recordDispatch(current, output, attemptErr, time.Since(started))
+		}
+		if attemptErr == nil {
+			s.tasks.CompleteSubtask(taskID, a.Subtask.ID, output, nil)
+			return
+		}
+		if !retryable || attempt == 1 || ctx.Err() != nil {
+			s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", attemptErr)
+			return
+		}
+
+		alreadyTried[current.NodeID] = true
+		retry, err := s.retryAssignment(a.Subtask, alreadyTried)
+		if err != nil {
+			log.Printf("orchestrator: subtask %s retry unavailable after %v: %v", a.Subtask.ID, attemptErr, err)
+			s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", attemptErr)
+			return
+		}
+		log.Printf("orchestrator: retrying subtask %s on node %s after node %s failed: %v",
+			a.Subtask.ID, retry.NodeID, current.NodeID, attemptErr)
+		if err := s.tasks.ReassignSubtaskChecked(taskID, a.Subtask.ID, retry); err != nil {
+			log.Printf("orchestrator: could not persist retry assignment for subtask %s: %v", a.Subtask.ID, err)
+			s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", err)
+			return
+		}
+		current = retry
+	}
+}
+
+func (s *Server) executeSubtask(ctx context.Context, assignment scheduler.Assignment, prompt string) (string, error, bool) {
+	body, err := json.Marshal(map[string]string{
+		"subtask_id": assignment.Subtask.ID,
+		"model":      assignment.Model,
+		"prompt":     prompt,
+		"task_type":  assignment.Subtask.TaskType,
+	})
+	if err != nil {
+		return "", err, false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, assignment.Address+"/execute", bytes.NewReader(body))
+	if err != nil {
+		return "", err, false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.dispatcher.Do(req)
 	if err != nil {
-		s.recordDispatch(a, "", err, time.Since(start))
-		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", err)
-		return
+		return "", err, true
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		failure := errors.New("node returned " + resp.Status + ": " + string(errBody))
-		s.recordDispatch(a, "", failure, time.Since(start))
-		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", failure)
-		return
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		if readErr != nil {
+			return "", fmt.Errorf("read node error response: %w", readErr), true
+		}
+		return "", errors.New("node returned " + resp.Status + ": " + string(errBody)), resp.StatusCode >= 500
 	}
-
 	var out struct {
 		Output string `json:"output"`
 		Error  string `json:"error,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		s.recordDispatch(a, "", err, time.Since(start))
-		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", err)
-		return
+		return "", err, true
 	}
 	if out.Error != "" {
-		failure := errors.New(out.Error)
-		s.recordDispatch(a, "", failure, time.Since(start))
-		s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", failure)
-		return
+		return "", errors.New(out.Error), true
 	}
-	s.recordDispatch(a, out.Output, nil, time.Since(start))
-	s.tasks.CompleteSubtask(taskID, a.Subtask.ID, out.Output, nil)
+	return out.Output, nil, false
+}
+
+func (s *Server) retryAssignment(subtask scheduler.Subtask, excluded map[string]bool) (scheduler.Assignment, error) {
+	nodes := s.registry.Active()
+	eligible := make([]cluster.NodeStatus, 0, len(nodes))
+	for _, node := range nodes {
+		if !excluded[node.ID] {
+			eligible = append(eligible, node)
+		}
+	}
+	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{subtask}, eligible, s.experience())
+	if err != nil {
+		return scheduler.Assignment{}, err
+	}
+	if len(assignments) != 1 {
+		return scheduler.Assignment{}, errors.New("scheduler returned no retry assignment")
+	}
+	return assignments[0], nil
 }
 
 // experience exposes the memory store to the scheduler, or nil when memory
@@ -955,7 +1439,12 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
-	if !s.tasks.Cancel(id) {
+	cancelledOK, err := s.tasks.CancelChecked(id)
+	if err != nil {
+		http.Error(w, "could not persist cancellation: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !cancelledOK {
 		http.Error(w, "task is already complete", http.StatusConflict)
 		return
 	}
@@ -997,6 +1486,11 @@ func (s *Server) handleAgentSessionsCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	session.Harness = harness
+	if err := s.persistAgentSession(session); err != nil {
+		backend.DeleteSession(session.ID)
+		http.Error(w, "could not persist agent session: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	s.agentMu.Lock()
 	s.sessionHarnesses[session.ID] = harness
 	s.agentMu.Unlock()
@@ -1023,7 +1517,17 @@ func (s *Server) handleAgentSessionGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	harness, backend, exists := s.agentForSession(id)
-	if !exists || !backend.DeleteSession(id) {
+	if !exists {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if s.mem != nil {
+		if err := s.mem.DeleteAgentSession(harness, id); err != nil {
+			http.Error(w, "could not delete persisted agent session: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if !backend.DeleteSession(id) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
@@ -1043,7 +1547,7 @@ type agentMessageRequest struct {
 
 func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	_, backend, exists := s.agentForSession(id)
+	harness, backend, exists := s.agentForSession(id)
 	if !exists {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -1078,7 +1582,10 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 
 		streamChan := make(chan agent.StreamEvent, 50)
 		go func() {
-			_, _ = backend.SendMessage(r.Context(), id, content, streamChan)
+			_, sendErr := backend.SendMessage(r.Context(), id, content, streamChan)
+			if sendErr != nil {
+				streamChan <- agent.StreamEvent{Type: agent.EventError, SessionID: id, Error: sendErr.Error()}
+			}
 			close(streamChan)
 		}()
 
@@ -1089,17 +1596,53 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 				flusher.Flush()
 			}
 		}
+		session, ok := backend.GetSession(id)
+		if !ok {
+			err := errors.New("agent session disappeared while processing the message")
+			log.Printf("orchestrator: persist streamed agent session %s: %v", id, err)
+			writeAgentStreamError(w, flusher, id, err)
+		} else {
+			session.Harness = harness
+			if err := s.persistAgentSession(session); err != nil {
+				log.Printf("orchestrator: persist streamed agent session %s: %v", id, err)
+				writeAgentStreamError(w, flusher, id, err)
+			}
+		}
 		s.publishSnapshot()
 		return
 	}
 
-	msg, err := backend.SendMessage(r.Context(), id, content, nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	msg, sendErr := backend.SendMessage(r.Context(), id, content, nil)
+	session, ok := backend.GetSession(id)
+	if !ok {
+		http.Error(w, "agent session disappeared while processing the message", http.StatusInternalServerError)
+		return
+	}
+	session.Harness = harness
+	if err := s.persistAgentSession(session); err != nil {
+		if sendErr != nil {
+			log.Printf("orchestrator: persist failed agent session %s: %v", id, err)
+		}
+		http.Error(w, "could not persist agent session: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.publishSnapshot()
+	if sendErr != nil {
+		http.Error(w, sendErr.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, msg)
+}
+
+func writeAgentStreamError(w http.ResponseWriter, flusher http.Flusher, sessionID string, err error) {
+	event := agent.StreamEvent{Type: agent.EventError, SessionID: sessionID, Error: "could not persist agent session: " + err.Error()}
+	data, marshalErr := json.Marshal(event)
+	if marshalErr != nil {
+		log.Printf("orchestrator: encode agent stream error: %v", marshalErr)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+	flusher.Flush()
 }
 
 func (s *Server) handleAgentToolsList(w http.ResponseWriter, r *http.Request) {
@@ -1120,7 +1663,7 @@ func (s *Server) handleAgentBackendGet(w http.ResponseWriter, r *http.Request) {
 	harness, _ := s.currentAgent()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": harness, "harnesses": []string{"pi", "deepseek"},
-		"supports_coordinator_model": harness == "deepseek",
+		"supports_coordinator_model": true,
 	})
 }
 
@@ -1183,68 +1726,55 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var targetNode *cluster.NodeStatus
-	var targetModel string
-
+	candidates := nodes
 	if req.NodeID != "" {
 		n, ok := s.registry.Get(req.NodeID)
 		if !ok || !n.Healthy {
 			writeJSON(w, http.StatusNotFound, generateAPIResponse{Error: "node not found or offline: " + req.NodeID})
 			return
 		}
-		targetNode = &n
-		if req.Model != "" {
-			targetModel = req.Model
-		} else if n.DefaultModel != "" {
-			targetModel = n.DefaultModel
-		} else if len(n.Models) > 0 {
-			targetModel = n.Models[0].Name
-		}
-	} else if req.Model != "" {
-		// Find healthy node hosting this model, pick least loaded
-		bestLoad := 999999
-		for i := range nodes {
-			n := &nodes[i]
-			for _, m := range n.Models {
-				if strings.EqualFold(m.Name, req.Model) {
-					if n.ActiveTasks < bestLoad {
-						bestLoad = n.ActiveTasks
-						targetNode = n
-						targetModel = m.Name
-					}
-					break
+		candidates = []cluster.NodeStatus{n}
+	}
+	if req.Model != "" {
+		hasModel := false
+		for i := range candidates {
+			var compatible []engine.Model
+			for _, model := range candidates[i].Models {
+				if strings.EqualFold(model.Name, req.Model) {
+					compatible = append(compatible, model)
+					hasModel = true
 				}
 			}
+			candidates[i].Models = compatible
 		}
-		if targetNode == nil {
+		if !hasModel {
 			writeJSON(w, http.StatusNotFound, generateAPIResponse{Error: "model not found on any cluster node: " + req.Model})
 			return
 		}
-	} else {
-		// Auto select best node based on task type / load
-		taskType := req.TaskType
-		if taskType == "" {
-			taskType = "general"
-		}
-		bestLoad := 999999
-		for i := range nodes {
-			n := &nodes[i]
-			if len(n.Models) > 0 && n.ActiveTasks < bestLoad {
-				bestLoad = n.ActiveTasks
-				targetNode = n
-				if n.DefaultModel != "" {
-					targetModel = n.DefaultModel
-				} else {
-					targetModel = n.Models[0].Name
-				}
-			}
-		}
 	}
 
-	if targetNode == nil || targetModel == "" {
+	taskType := strings.TrimSpace(req.TaskType)
+	if taskType == "" {
+		taskType = "general"
+	}
+	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{{
+		ID: "generate", Description: req.Prompt, TaskType: taskType,
+	}}, candidates, s.experience())
+	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, generateAPIResponse{Error: "could not assign request to a healthy node"})
 		return
 	}
+	if len(assignments) != 1 {
+		writeJSON(w, http.StatusServiceUnavailable, generateAPIResponse{Error: "scheduler returned no assignment"})
+		return
+	}
+	assignment := assignments[0]
+	targetNode, ok := s.registry.Get(assignment.NodeID)
+	if !ok || !targetNode.Healthy || targetNode.Address != assignment.Address {
+		writeJSON(w, http.StatusServiceUnavailable, generateAPIResponse{Error: "selected node is no longer healthy"})
+		return
+	}
+	targetModel := assignment.Model
 
 	fullPrompt := req.Prompt
 	if req.System != "" {
@@ -1418,13 +1948,22 @@ func (s *Server) callNodeGenerate(nodeAddr, model, prompt string) (string, error
 }
 
 func (s *Server) callNodeGenerateWithOptions(nodeAddr, model, prompt string, temperature float64, maxTokens int) (string, error) {
+	return s.callNodeGenerateWithOptionsContext(context.Background(), nodeAddr, model, prompt, temperature, maxTokens)
+}
+
+func (s *Server) callNodeGenerateWithOptionsContext(ctx context.Context, nodeAddr, model, prompt string, temperature float64, maxTokens int) (string, error) {
 	// Try /generate first, fallback to /execute
 	genPayload, err := marshalGeneratePayload(model, prompt, temperature, maxTokens)
 	if err != nil {
 		return "", err
 	}
 
-	resp, err := s.dispatcher.Post(nodeAddr+"/generate", "application/json", bytes.NewReader(genPayload))
+	genReq, err := http.NewRequestWithContext(ctx, http.MethodPost, nodeAddr+"/generate", bytes.NewReader(genPayload))
+	if err != nil {
+		return "", err
+	}
+	genReq.Header.Set("Content-Type", "application/json")
+	resp, err := s.dispatcher.Do(genReq)
 	if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		defer resp.Body.Close()
 		var res struct {
@@ -1448,7 +1987,12 @@ func (s *Server) callNodeGenerateWithOptions(nodeAddr, model, prompt string, tem
 		"model":      model,
 		"prompt":     prompt,
 	})
-	resp, err = s.dispatcher.Post(nodeAddr+"/execute", "application/json", bytes.NewReader(execPayload))
+	execReq, err := http.NewRequestWithContext(ctx, http.MethodPost, nodeAddr+"/execute", bytes.NewReader(execPayload))
+	if err != nil {
+		return "", err
+	}
+	execReq.Header.Set("Content-Type", "application/json")
+	resp, err = s.dispatcher.Do(execReq)
 	if err != nil {
 		return "", err
 	}

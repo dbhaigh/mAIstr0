@@ -65,13 +65,7 @@ type OpenAICompatibleProvider struct {
 
 func NewOpenAICompatibleProvider(cfg OpenAICompatibleConfig) *OpenAICompatibleProvider {
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
 	model := strings.TrimSpace(cfg.Model)
-	if model == "" {
-		model = "gpt-4.1-mini"
-	}
 	return &OpenAICompatibleProvider{
 		baseURL: baseURL,
 		apiKey:  cfg.APIKey,
@@ -85,6 +79,9 @@ func (p *OpenAICompatibleProvider) Name() string { return "openai-compatible" }
 func (p *OpenAICompatibleProvider) Model() string { return p.model }
 
 func (p *OpenAICompatibleProvider) Complete(ctx context.Context, request CompletionRequest, onDelta func(string)) (*Completion, error) {
+	if p.baseURL == "" {
+		return nil, errors.New("model provider base URL must be explicitly configured; the mAIstr0 Pi backend uses the local cluster")
+	}
 	model := strings.TrimSpace(request.Model)
 	if model == "" {
 		model = p.model
@@ -139,6 +136,9 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, request Complet
 }
 
 type streamChunk struct {
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 	Choices []struct {
 		Delta struct {
 			Content   string `json:"content"`
@@ -177,6 +177,9 @@ func readCompletionStream(body io.Reader, onDelta func(string)) (*Completion, er
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return nil, fmt.Errorf("decode model stream chunk: %w", err)
 		}
+		if chunk.Error != nil {
+			return nil, fmt.Errorf("model provider stream error: %s", chunk.Error.Message)
+		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
 				result.Content += choice.Delta.Content
@@ -212,6 +215,9 @@ func readCompletionStream(body io.Reader, onDelta func(string)) (*Completion, er
 			}
 			result.ToolCalls = append(result.ToolCalls, *call)
 		}
+	}
+	if result.Content == "" && len(result.ToolCalls) == 0 {
+		return nil, errors.New("model provider returned an empty completion")
 	}
 	return result, nil
 }

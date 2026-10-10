@@ -157,11 +157,50 @@ func TestDialoguePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dialogue: %v", err)
 	}
+
 	if len(d.Turns) != 2 || len(d.Participants) != 2 {
 		t.Errorf("unexpected dialogue: %+v", d)
 	}
 	if list := s.Dialogues(10); len(list) != 1 {
 		t.Errorf("expected 1 stored dialogue, got %d", len(list))
+	}
+}
+
+func TestAgentSessionPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := Open(path, "test-owner")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	payload := []byte(`{"id":"session-1","harness":"pi","messages":[]}`)
+	if err := store.SaveAgentSession("pi", "session-1", payload); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	store, err = Open(path, "test-owner")
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store.Close()
+	sessions, err := store.AgentSessions()
+	if err != nil {
+		t.Fatalf("load sessions: %v", err)
+	}
+	if len(sessions) != 1 || string(sessions[0]) != string(payload) {
+		t.Fatalf("restored sessions = %q, want %q", sessions, payload)
+	}
+	if err := store.DeleteAgentSession("pi", "session-1"); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	sessions, err = store.AgentSessions()
+	if err != nil {
+		t.Fatalf("list sessions after delete: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("sessions after delete = %d, want 0", len(sessions))
 	}
 }
 

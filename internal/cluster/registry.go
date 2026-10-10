@@ -3,6 +3,7 @@
 package cluster
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -14,18 +15,20 @@ import (
 // NodeStatus is the snapshot a node agent reports about itself, either on
 // registration or on every heartbeat poll from the orchestrator.
 type NodeStatus struct {
-	ID           string         `json:"id"`
-	Version      string         `json:"version"`
-	Address      string         `json:"address"` // base URL the orchestrator can reach the node at
-	Hardware     hardware.Info  `json:"hardware"`
-	Models       []engine.Model `json:"models"`
-	DefaultModel string         `json:"default_model,omitempty"`
-	FastScore    float64        `json:"fast_score"`
-	ActiveTasks  int            `json:"active_tasks"`
-	LastSeen     time.Time      `json:"last_seen"`
-	Healthy      bool           `json:"healthy"`
-	Leader       bool           `json:"leader"` // elected cluster leader (most capable healthy node)
-	VersionError string         `json:"version_error,omitempty"`
+	ID            string                       `json:"id"`
+	Version       string                       `json:"version"`
+	Address       string                       `json:"address"` // base URL the orchestrator can reach the node at
+	Hardware      hardware.Info                `json:"hardware"`
+	Models        []engine.Model               `json:"models"`
+	GPUHistory    []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
+	SystemHistory []hardware.SystemUsageSample `json:"system_history,omitempty"`
+	DefaultModel  string                       `json:"default_model,omitempty"`
+	FastScore     float64                      `json:"fast_score"`
+	ActiveTasks   int                          `json:"active_tasks"`
+	LastSeen      time.Time                    `json:"last_seen"`
+	Healthy       bool                         `json:"healthy"`
+	Leader        bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
+	VersionError  string                       `json:"version_error,omitempty"`
 }
 
 // Registry is a thread-safe store of known nodes.
@@ -97,6 +100,7 @@ func (r *Registry) All() []NodeStatus {
 		out = append(out, *n)
 	}
 	r.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 
 	healthy := 0
 	for i := range out {
@@ -144,6 +148,15 @@ func CapabilityScore(n NodeStatus) float64 {
 		return n.FastScore + float64(n.Hardware.CPUCores)*1.5
 	}
 	return n.Hardware.Score + n.FastScore*0.75
+}
+
+// GPUUtilizationPenalty converts live GPU activity into the scheduler's
+// existing score scale. Missing telemetry is neutral, not interpreted as idle.
+func GPUUtilizationPenalty(hw hardware.Info) float64 {
+	if !hw.GPUStatsAvailable {
+		return 0
+	}
+	return float64(hw.GPUUtilization) * 0.1
 }
 
 // FastScore is the coordination-speed metric, shared so every process

@@ -2,17 +2,28 @@ package orchestrator
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/peeridentity"
+	"github.com/maistr0/maistr0/internal/piagent"
+	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/taskmgr"
+	"sync/atomic"
 )
 
 // newTestServer builds an orchestrator with its memory database isolated to
@@ -27,6 +38,101 @@ func newTestServer(t *testing.T) *Server {
 		_ = srv.Close()
 	})
 	return srv
+}
+
+func TestNodeRegistrationPreservesGPUHistory(t *testing.T) {
+	srv := newTestServer(t)
+	sample := hardware.GPUUsageSample{
+		Timestamp: time.Date(2026, time.October, 9, 12, 0, 0, 0, time.UTC),
+		Available: true, Utilization: 73,
+	}
+	body, err := json.Marshal(cluster.NodeStatus{
+		ID: "telemetry-node", Address: "https://127.0.0.1:7451",
+		GPUHistory: []hardware.GPUUsageSample{sample},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/nodes/register", bytes.NewReader(body)))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("registration returned %d: %s", response.Code, response.Body.String())
+	}
+	registered, ok := srv.registry.Get("telemetry-node")
+	if !ok || len(registered.GPUHistory) != 1 || registered.GPUHistory[0] != sample {
+		t.Fatalf("registered GPU history = %#v", registered.GPUHistory)
+	}
+}
+
+func TestNodeRegistrationPreservesSystemHistory(t *testing.T) {
+	srv := newTestServer(t)
+	sample := hardware.SystemUsageSample{
+		Timestamp:    time.Date(2026, time.October, 9, 12, 0, 0, 0, time.UTC),
+		CPUAvailable: true, CPUUtilization: 42, MemoryAvailable: true, MemoryUtilization: 67,
+	}
+	body, err := json.Marshal(cluster.NodeStatus{
+		ID: "system-history-node", Address: "https://127.0.0.1:7452",
+		SystemHistory: []hardware.SystemUsageSample{sample},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/nodes/register", bytes.NewReader(body)))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("registration returned %d: %s", response.Code, response.Body.String())
+	}
+	registered, ok := srv.registry.Get("system-history-node")
+	if !ok || len(registered.SystemHistory) != 1 || registered.SystemHistory[0] != sample {
+		t.Fatalf("registered system history = %#v", registered.SystemHistory)
+	}
+}
+
+func TestClusterViewsRetainOfflineMembers(t *testing.T) {
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{ID: "online", Address: "https://online"})
+	srv.registry.Upsert(cluster.NodeStatus{ID: "offline", Address: "https://offline"})
+	srv.registry.MarkUnhealthy("offline")
+
+	activeResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(activeResponse, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
+	if activeResponse.Code != http.StatusOK {
+		t.Fatalf("GET /api/nodes returned %d: %s", activeResponse.Code, activeResponse.Body.String())
+	}
+	var active []cluster.NodeStatus
+	if err := json.Unmarshal(activeResponse.Body.Bytes(), &active); err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].ID != "online" {
+		t.Fatalf("active nodes = %#v, want only the online member", active)
+	}
+
+	allResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(allResponse, httptest.NewRequest(http.MethodGet, "/api/nodes/all", nil))
+	if allResponse.Code != http.StatusOK {
+		t.Fatalf("GET /api/nodes/all returned %d: %s", allResponse.Code, allResponse.Body.String())
+	}
+	var all []cluster.NodeStatus
+	if err := json.Unmarshal(allResponse.Body.Bytes(), &all); err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all nodes = %#v, want online and offline members", all)
+	}
+	foundOffline := false
+	for _, member := range all {
+		if member.ID == "offline" && !member.Healthy {
+			foundOffline = true
+		}
+	}
+	if !foundOffline {
+		t.Fatalf("offline member missing or marked healthy: %#v", all)
+	}
+
+	snapshot := srv.snapshot()
+	if snapshot.MemberCount != 1 || len(snapshot.Nodes) != 2 {
+		t.Fatalf("snapshot has %d members and %d nodes, want 1 online member and 2 known nodes", snapshot.MemberCount, len(snapshot.Nodes))
+	}
 }
 
 func TestHarnessSelection(t *testing.T) {
@@ -59,6 +165,479 @@ func TestHarnessSelection(t *testing.T) {
 
 	if _, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "unknown.db"), "unknown"); err == nil {
 		t.Fatal("expected unknown backend to return an error")
+	}
+}
+
+func TestPiProviderRoutesToLocalClusterAndParsesTools(t *testing.T) {
+	toolOutput := `<tool_call>{"name":"cluster_status","arguments":{}}</tool_call>`
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/generate" || r.URL.Query().Get("stream") != "true" {
+			http.NotFound(w, r)
+			return
+		}
+		var request generateAPIRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if request.Model != "local-model" {
+			http.Error(w, "unexpected model "+request.Model, http.StatusBadRequest)
+			return
+		}
+		payload, _ := json.Marshal(map[string]string{"output": toolOutput})
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+	}))
+	defer worker.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "local-worker", Address: worker.URL, Healthy: true, FastScore: 100,
+		Models:       []engine.Model{{Name: "local-model", Tags: []string{"general"}}},
+		DefaultModel: "local-model",
+	})
+	provider := &localPiProvider{server: srv}
+	var streamed strings.Builder
+	completion, err := provider.Complete(context.Background(), piagent.CompletionRequest{
+		Model: "local-model",
+		Messages: []piagent.ChatMessage{
+			{Role: "system", Content: "Coordinate local cluster work."},
+			{Role: "user", Content: "Check cluster status."},
+		},
+		Tools: []agent.ToolDef{{
+			Name: "cluster_status", Description: "Inspect cluster health",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+	}, func(delta string) { streamed.WriteString(delta) })
+	if err != nil {
+		t.Fatalf("complete with local cluster: %v", err)
+	}
+	if streamed.String() != toolOutput {
+		t.Fatalf("streamed output = %q, want %q", streamed.String(), toolOutput)
+	}
+	if completion.Content != "" || len(completion.ToolCalls) != 1 ||
+		completion.ToolCalls[0].Function.Name != "cluster_status" {
+		t.Fatalf("local completion = %+v", completion)
+	}
+}
+
+func TestPiExecutesClusterToolsAndReceivesResults(t *testing.T) {
+	var generation int
+	var toolNames []string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/generate" {
+			http.NotFound(w, r)
+			return
+		}
+		var request generateAPIRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		generation++
+		output := `<tool_call>{"name":"cluster_status","arguments":{}}</tool_call>`
+		if generation == 1 {
+			for _, name := range toolNames {
+				if !strings.Contains(request.Prompt, name) {
+					t.Errorf("Pi prompt omitted registered tool %q", name)
+				}
+			}
+			for _, guidance := range []string{
+				"`cluster_status`:", "`node_converse`:", "`cluster_parallel_dispatch`:",
+				"`recall_memory`:", "`remember_fact`:",
+			} {
+				if !strings.Contains(request.Prompt, guidance) {
+					t.Errorf("Pi prompt omitted tool usage guidance %q", guidance)
+				}
+			}
+		} else {
+			if !strings.Contains(request.Prompt, "<tool_response>") ||
+				!strings.Contains(request.Prompt, "Tool call ID: call_") ||
+				!strings.Contains(request.Prompt, `"total_nodes":1`) {
+				t.Errorf("Pi follow-up prompt omitted tool result: %s", request.Prompt)
+			}
+			output = "The cluster has one available worker."
+		}
+		payload, err := json.Marshal(map[string]string{"output": output})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+	}))
+	defer worker.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "local-worker", Address: worker.URL, Healthy: true, FastScore: 100,
+		Models:       []engine.Model{{Name: "local-model", Tags: []string{"general"}}},
+		DefaultModel: "local-model",
+	})
+	backend := srv.agents["pi"]
+	toolSet := make(map[string]bool)
+	for _, tool := range backend.ListTools() {
+		toolNames = append(toolNames, tool.Name)
+		toolSet[tool.Name] = true
+	}
+	for _, name := range []string{
+		"cluster_status", "list_node_models", "node_converse", "node_collaborate",
+		"cluster_converse", "node_llm_query", "cluster_llm_query", "cluster_parallel_dispatch",
+		"test_node_model", "list_node_dialogues", "get_node_dialogue", "eval_expression",
+		"fetch_web", "session_memory", "recall_memory", "remember_fact", "memory_insights",
+		"node_to_node_conversation",
+	} {
+		if !toolSet[name] {
+			t.Errorf("Pi tool catalog is missing %q", name)
+		}
+	}
+	if piTools, deepSeekTools := backend.ListTools(), srv.agents["deepseek"].ListTools(); !reflect.DeepEqual(piTools, deepSeekTools) {
+		t.Fatalf("Pi tools differ from DeepSeek tools:\nPi: %#v\nDeepSeek: %#v", piTools, deepSeekTools)
+	}
+	if piTools, deepSeekTools := backend.ListTools(), srv.agents["deepseek"].ListTools(); !reflect.DeepEqual(piTools, deepSeekTools) {
+		t.Fatalf("Pi tools differ from DeepSeek tools:\nPi: %#v\nDeepSeek: %#v", piTools, deepSeekTools)
+	}
+	session, err := backend.CreateSession("tool access", agent.SessionConfig{CoordinatorModel: "local-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := backend.SendMessage(context.Background(), session.ID, "Check the cluster status.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Content != "The cluster has one available worker." || generation != 2 {
+		t.Fatalf("Pi final response = %q after %d generations", final.Content, generation)
+	}
+}
+
+func TestAgentSessionHistoryRestoredAfterRestart(t *testing.T) {
+	for _, harness := range []string{"pi", "deepseek"} {
+		t.Run(harness, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "orch.db")
+			first, err := NewWithMemoryAndHarness(path, harness)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstOpen := true
+			t.Cleanup(func() {
+				if firstOpen {
+					_ = first.Close()
+				}
+			})
+
+			request := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(`{"title":"Persist me"}`))
+			response := httptest.NewRecorder()
+			first.Mux().ServeHTTP(response, request)
+			if response.Code != http.StatusCreated {
+				t.Fatalf("create session returned %d: %s", response.Code, response.Body.String())
+			}
+			var created agent.Session
+			if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+				t.Fatalf("decode created session: %v", err)
+			}
+			created.Messages = []agent.Message{
+				{Role: agent.RoleUser, Content: "remember this"},
+				{Role: agent.RoleAssistant, Content: "I will"},
+			}
+			if err := first.persistAgentSession(&created); err != nil {
+				t.Fatalf("persist transcript: %v", err)
+			}
+			if err := first.Close(); err != nil {
+				t.Fatalf("close first orchestrator: %v", err)
+			}
+			firstOpen = false
+
+			restarted, err := NewWithMemoryAndHarness(path, harness)
+			if err != nil {
+				t.Fatalf("restart orchestrator: %v", err)
+			}
+			defer restarted.Close()
+			request = httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID, nil)
+			response = httptest.NewRecorder()
+			restarted.Mux().ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("get restored session returned %d: %s", response.Code, response.Body.String())
+			}
+			var restored agent.Session
+			if err := json.Unmarshal(response.Body.Bytes(), &restored); err != nil {
+				t.Fatalf("decode restored session: %v", err)
+			}
+			if restored.Harness != harness || len(restored.Messages) != 2 || restored.Messages[0].Content != "remember this" {
+				t.Fatalf("restored session = %+v", restored)
+			}
+		})
+	}
+}
+
+func TestOllamaAndAnthropicMessagesCompatibility(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/generate" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "compatibility response"})
+	}))
+	defer worker.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "compat-worker", Address: worker.URL, Healthy: true,
+		Models:       []engine.Model{{Name: "compat-model", Tags: []string{"general"}}},
+		DefaultModel: "compat-model",
+	})
+	mux := srv.Mux()
+
+	tests := []struct {
+		path string
+		body string
+		want string
+	}{
+		{
+			path: "/api/chat",
+			body: `{"model":"compat-model","messages":[{"role":"user","content":"hello"}],"stream":false}`,
+			want: `"message":{"role":"assistant","content":"compatibility response"}`,
+		},
+		{
+			path: "/api/generate",
+			body: `{"model":"compat-model","prompt":"hello","stream":false}`,
+			want: `"response":"compatibility response"`,
+		},
+		{
+			path: "/v1/messages",
+			body: `{"model":"compat-model","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`,
+			want: `"type":"message"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s returned %d: %s", test.path, response.Code, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), test.want) {
+				t.Fatalf("%s response %q does not contain %q", test.path, response.Body.String(), test.want)
+			}
+		})
+	}
+
+	streamTests := []struct {
+		path string
+		body string
+		want string
+	}{
+		{
+			path: "/api/chat",
+			body: `{"model":"compat-model","messages":[{"role":"user","content":"hello"}],"stream":true}`,
+			want: `"done":false`,
+		},
+		{
+			path: "/v1/messages",
+			body: `{"model":"compat-model","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hello"}]}`,
+			want: "event: content_block_delta",
+		},
+	}
+	for _, test := range streamTests {
+		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), test.want) {
+			t.Fatalf("streaming %s returned %d: %s", test.path, response.Code, response.Body.String())
+		}
+	}
+
+	tags := httptest.NewRecorder()
+	mux.ServeHTTP(tags, httptest.NewRequest(http.MethodGet, "/api/tags", nil))
+	if tags.Code != http.StatusOK || !strings.Contains(tags.Body.String(), `"name":"compat-model"`) {
+		t.Fatalf("GET /api/tags returned %d: %s", tags.Code, tags.Body.String())
+	}
+}
+
+func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
+	srv := newTestServer(t)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.identity = identity
+	pin, err := identity.NewPairingPIN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(statusResponse, httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil))
+	var pairingStatus struct {
+		Role string `json:"role"`
+		PIN  string `json:"pin"`
+	}
+	if statusResponse.Code != http.StatusOK ||
+		json.Unmarshal(statusResponse.Body.Bytes(), &pairingStatus) != nil ||
+		pairingStatus.Role != "orchestrator" || pairingStatus.PIN != pin {
+		t.Fatalf("pairing status returned %d: %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "node.json"), "pairing-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(pairingJoinRequest{
+		ID: node.ID(), Role: "node", PIN: pin, CertificatePEM: node.CertificatePEM(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
+	request.TLS = &tls.ConnectionState{}
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("pairing returned %d: %s", response.Code, response.Body.String())
+	}
+	if !identity.IsTrustedID(node.ID()) {
+		t.Fatal("node certificate was not pinned by orchestrator")
+	}
+	var joined pairingJoinResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &joined); err != nil {
+		t.Fatal(err)
+	}
+	if joined.ID != srv.selfID || joined.Peers[node.ID()] != node.CertificatePEM() {
+		t.Fatalf("pairing response did not return the trusted roster: %#v", joined)
+	}
+
+	replay := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
+	replay.TLS = &tls.ConnectionState{}
+	replayResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(replayResponse, replay)
+	if replayResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed PIN returned %d, want 401", replayResponse.Code)
+	}
+
+	plaintext := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(plaintext, httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body)))
+	if plaintext.Code != http.StatusUpgradeRequired {
+		t.Fatalf("plaintext pairing returned %d, want 426", plaintext.Code)
+	}
+}
+
+func TestOrchestratorsPairAndAuthenticateFederationRequests(t *testing.T) {
+	left := newTestServer(t)
+	right := newTestServer(t)
+	left.selfID = "orchestrator-left"
+	right.selfID = "orchestrator-right"
+	if err := left.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "federated-node.json"), "federated-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := left.identity.TrustPeer(node.ID(), node.CertificatePEM()); err != nil {
+		t.Fatal(err)
+	}
+	if err := left.SetAdvertiseAddress("https://left.example:7450"); err != nil {
+		t.Fatal(err)
+	}
+	rightPIN, err := right.identity.NewPairingPIN()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rightMux := right.Mux()
+	rightServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/pairing/join" {
+			rightMux.ServeHTTP(w, r)
+			return
+		}
+		right.identity.RequireTrustedPeer(rightMux).ServeHTTP(w, r)
+	}))
+	rightServer.TLS = right.identity.ServerTLSConfig()
+	rightServer.StartTLS()
+	defer rightServer.Close()
+
+	connectBody, err := json.Marshal(map[string]string{"address": rightServer.URL, "pin": rightPIN})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectResponse := httptest.NewRecorder()
+	left.Mux().ServeHTTP(connectResponse, httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(connectBody)))
+	if connectResponse.Code != http.StatusOK {
+		t.Fatalf("POST /api/pairing/connect returned %d: %s", connectResponse.Code, connectResponse.Body.String())
+	}
+	var connectResult map[string]string
+	if err := json.Unmarshal(connectResponse.Body.Bytes(), &connectResult); err != nil {
+		t.Fatal(err)
+	}
+	if connectResult["paired_orchestrator"] != rightServer.URL {
+		t.Fatalf("paired address = %q, want %q", connectResult["paired_orchestrator"], rightServer.URL)
+	}
+	if !left.identity.IsTrustedID(right.selfID) || !right.identity.IsTrustedID(left.selfID) {
+		t.Fatal("pairing did not establish reciprocal orchestrator trust")
+	}
+	if !right.identity.IsTrustedID(node.ID()) {
+		t.Fatal("federation did not transfer the joining orchestrator's trusted node certificate")
+	}
+	if right.identity.PairedOrchestratorAddresses()[left.selfID] != "https://left.example:7450" {
+		t.Fatal("receiving orchestrator did not persist the joining orchestrator address")
+	}
+	if err := node.TrustPeer(right.selfID, right.identity.CertificatePEM()); err != nil {
+		t.Fatal(err)
+	}
+	nodeClient := &http.Client{Timeout: 3 * time.Second, Transport: node.ClientTransport()}
+	rosterResponse, err := nodeClient.Get(rightServer.URL + "/api/pairing/roster")
+	if err != nil {
+		t.Fatalf("federated node mTLS request failed: %v", err)
+	}
+	rosterResponse.Body.Close()
+	if rosterResponse.StatusCode != http.StatusOK {
+		t.Fatalf("federated node mTLS request returned %s, want 200", rosterResponse.Status)
+	}
+	right.registry.Upsert(cluster.NodeStatus{
+		ID: "federated-worker", Address: "https://worker.example:7451", Healthy: true,
+		Models: []engine.Model{{Name: "shared-model", Tags: []string{"general"}}},
+	})
+	left.syncDiscoveredPeers()
+	if node, ok := left.registry.Get("federated-worker"); !ok || node.Address != "https://worker.example:7451" {
+		t.Fatalf("paired orchestrator cluster state was not synchronized: %#v, found=%v", node, ok)
+	}
+	left.peerMu.RLock()
+	pairedAddress := left.pairedOrchestrators[right.selfID]
+	left.peerMu.RUnlock()
+	if pairedAddress != rightServer.URL {
+		t.Fatalf("paired address = %q, want %q", pairedAddress, rightServer.URL)
+	}
+	reloadedLeft, err := peeridentity.Open(left.identityPath, left.selfID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloadedLeft.PairedOrchestratorAddresses()[right.selfID] != rightServer.URL {
+		t.Fatal("initiating orchestrator address did not survive identity reload")
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second, Transport: left.identity.ClientTransport()}
+	response, err := client.Get(rightServer.URL + "/api/pairing/roster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated federation request returned %d, want 200", response.StatusCode)
+	}
+
+	unpaired, err := peeridentity.Open(filepath.Join(t.TempDir(), "unpaired.json"), "unpaired-orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpairedClient := &http.Client{Timeout: 3 * time.Second, Transport: unpaired.BootstrapTransport()}
+	response, err = unpairedClient.Get(rightServer.URL + "/api/pairing/roster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("unpaired federation request returned %d, want 403", response.StatusCode)
 	}
 }
 
@@ -453,5 +1032,48 @@ func TestCreateTaskRejectsPartiallyAssignableWork(t *testing.T) {
 	}
 	if tasks := srv.tasks.All(); len(tasks) != 0 {
 		t.Fatalf("task created despite unassignable work: %+v", tasks)
+	}
+}
+
+func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
+	var firstCalls, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "retry succeeded"})
+	}))
+	defer second.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-a", Address: first.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Tags: []string{"general"}}},
+	})
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-b", Address: second.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "sub-a", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: first.URL, Model: "general",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusCompleted {
+		t.Fatalf("retried task did not complete: %+v", completed)
+	}
+	if completed.Subtasks[0].NodeID != "node-b" || completed.Subtasks[0].Output != "retry succeeded" {
+		t.Fatalf("retry placement/output not recorded: %+v", completed.Subtasks[0])
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("dispatch attempts = (%d, %d), want (1, 1)", firstCalls.Load(), secondCalls.Load())
 	}
 }

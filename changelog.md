@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.0.3 - 2026-10-10
+
+### Added
+
+- Unified cluster overview showing current and recent tasks alongside their
+  assigned nodes, with assignment selection highlighting the execution node.
+- Offline member visibility, last-seen information, and CPU/memory utilization
+  history alongside existing GPU telemetry.
+- Pi access to the same cluster, model, task, web, math, and memory tools as
+  the DeepSeek harness.
+
+### Changed
+
+- Classify pending, running, completed, failed, cancelled, and unknown subtasks
+  explicitly; no longer count pending or cancelled work as running.
+- Replace inferred worker-to-worker topology edges with explicit
+  task/subtask-to-node assignments.
+- Keep scheduling APIs restricted to healthy nodes while exposing known
+  offline members in dashboard snapshots.
+- Limit event snapshots to the 50 most recently updated tasks and avoid
+  rebuilding dashboard sections when their displayed data has not changed.
+- Refresh the displayed tool catalog when switching agent harnesses.
+
+### Validation
+
+- `go test ./...`
+- `node --check web/static/app.js`
+- Windows and macOS hardware-package cross-compilation
+
 ## 0.0.2 - 2026-10-06
 
 ### Added

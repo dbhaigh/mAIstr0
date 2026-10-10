@@ -3,6 +3,7 @@
 package scheduler
 
 import (
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,9 +15,11 @@ type Subtask struct {
 	Description string   `json:"description"`
 	TaskType    string   `json:"task_type"` // e.g. code, summarize, translate, math, creative, general
 	Tags        []string `json:"tags"`
+	DependsOn   []string `json:"depends_on,omitempty"`
 }
 
 var listItemPattern = regexp.MustCompile(`(?m)^\s*(?:[-*]|\d+[.)])\s+`)
+var dependencyPrefix = regexp.MustCompile(`(?i)^(?:then\b|after(?:wards| that)?\b|once\b|using (?:the )?(?:previous|prior|above|result)\b|based on (?:the )?(?:previous|prior|above|result)\b)`)
 
 // Decompose splits a free-form task description into an ordered list of
 // subtasks. It recognises explicit numbered/bulleted lists first; failing
@@ -52,14 +55,106 @@ func Decompose(description string) []Subtask {
 	subtasks := make([]Subtask, 0, len(parts))
 	for i, p := range parts {
 		taskType := classify(p)
-		subtasks = append(subtasks, Subtask{
+		subtask := Subtask{
 			ID:          idFor(i),
 			Description: p,
 			TaskType:    taskType,
 			Tags:        tagsFor(taskType),
-		})
+		}
+		if i > 0 && dependencyPrefix.MatchString(p) {
+			subtask.DependsOn = []string{idFor(i - 1)}
+		}
+		subtasks = append(subtasks, subtask)
 	}
 	return subtasks
+}
+
+// ValidatePlan normalizes caller-provided subtasks and verifies that their
+// dependency graph refers only to known subtasks and contains no cycles.
+func ValidatePlan(subtasks []Subtask) ([]Subtask, error) {
+	if len(subtasks) == 0 {
+		return nil, errors.New("scheduler: plan must contain at least one subtask")
+	}
+	if len(subtasks) > 64 {
+		return nil, errors.New("scheduler: plan cannot contain more than 64 subtasks")
+	}
+
+	out := make([]Subtask, len(subtasks))
+	positions := make(map[string]int, len(subtasks))
+	for i, subtask := range subtasks {
+		subtask.ID = strings.TrimSpace(subtask.ID)
+		if subtask.ID == "" {
+			subtask.ID = idFor(i)
+		}
+		if _, exists := positions[subtask.ID]; exists {
+			return nil, errors.New("scheduler: duplicate subtask id " + subtask.ID)
+		}
+		subtask.Description = strings.TrimSpace(subtask.Description)
+		if subtask.Description == "" {
+			return nil, errors.New("scheduler: subtask " + subtask.ID + " has no description")
+		}
+		subtask.TaskType = strings.ToLower(strings.TrimSpace(subtask.TaskType))
+		if subtask.TaskType == "" {
+			subtask.TaskType = classify(subtask.Description)
+		}
+		if len(subtask.Tags) == 0 {
+			subtask.Tags = tagsFor(subtask.TaskType)
+		} else {
+			subtask.Tags = append([]string(nil), subtask.Tags...)
+		}
+		subtask.DependsOn = uniqueStrings(subtask.DependsOn)
+		positions[subtask.ID] = i
+		out[i] = subtask
+	}
+
+	for _, subtask := range out {
+		for _, dependency := range subtask.DependsOn {
+			if dependency == subtask.ID {
+				return nil, errors.New("scheduler: subtask " + subtask.ID + " cannot depend on itself")
+			}
+			if _, exists := positions[dependency]; !exists {
+				return nil, errors.New("scheduler: subtask " + subtask.ID + " depends on unknown subtask " + dependency)
+			}
+		}
+	}
+
+	state := make(map[string]uint8, len(out))
+	var visit func(string) error
+	visit = func(id string) error {
+		switch state[id] {
+		case 1:
+			return errors.New("scheduler: plan contains a dependency cycle at " + id)
+		case 2:
+			return nil
+		}
+		state[id] = 1
+		for _, dependency := range out[positions[id]].DependsOn {
+			if err := visit(dependency); err != nil {
+				return err
+			}
+		}
+		state[id] = 2
+		return nil
+	}
+	for _, subtask := range out {
+		if err := visit(subtask.ID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func idFor(i int) string {

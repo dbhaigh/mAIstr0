@@ -23,11 +23,12 @@ import (
 )
 
 var (
-	bucketExperiences = []byte("experiences")
-	bucketFacts       = []byte("facts")
-	bucketPerf        = []byte("performance")
-	bucketDialogues   = []byte("dialogues")
-	bucketMeta        = []byte("meta")
+	bucketExperiences   = []byte("experiences")
+	bucketFacts         = []byte("facts")
+	bucketPerf          = []byte("performance")
+	bucketDialogues     = []byte("dialogues")
+	bucketMeta          = []byte("meta")
+	bucketAgentSessions = []byte("agent_sessions")
 )
 
 // ErrNotFound is returned when a requested record does not exist.
@@ -248,7 +249,7 @@ func Open(path, owner string) (*Store, error) {
 	}
 
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketExperiences, bucketFacts, bucketPerf, bucketDialogues, bucketMeta} {
+		for _, b := range [][]byte{bucketExperiences, bucketFacts, bucketPerf, bucketDialogues, bucketMeta, bucketAgentSessions} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -563,6 +564,44 @@ func (s *Store) DeleteFact(scope, key string) error {
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketFacts).Delete([]byte(scope + "|" + key))
+	})
+}
+
+// SaveAgentSession stores an opaque serialized agent session by backend and ID.
+func (s *Store) SaveAgentSession(harness, id string, session []byte) error {
+	if harness == "" || id == "" {
+		return errors.New("memory: agent session harness and id are required")
+	}
+	if len(session) == 0 {
+		return errors.New("memory: agent session payload is required")
+	}
+	key := []byte(harness + "\x00" + id)
+	value := append([]byte(nil), session...)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketAgentSessions).Put(key, value)
+	})
+}
+
+// AgentSessions returns all persisted agent session payloads.
+func (s *Store) AgentSessions() ([][]byte, error) {
+	var sessions [][]byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketAgentSessions).ForEach(func(_, value []byte) error {
+			sessions = append(sessions, append([]byte(nil), value...))
+			return nil
+		})
+	})
+	return sessions, err
+}
+
+// DeleteAgentSession removes one persisted agent session.
+func (s *Store) DeleteAgentSession(harness, id string) error {
+	if harness == "" || id == "" {
+		return errors.New("memory: agent session harness and id are required")
+	}
+	key := []byte(harness + "\x00" + id)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketAgentSessions).Delete(key)
 	})
 }
 

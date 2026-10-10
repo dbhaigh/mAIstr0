@@ -8,12 +8,29 @@ const submitBtn = document.getElementById("submit-btn");
 const submitStatus = document.getElementById("submit-status");
 const copyTasksBtn = document.getElementById("copy-tasks-btn");
 const refreshAllModelsBtn = document.getElementById("refresh-all-models-btn");
-const clusterMap = document.getElementById("cluster-map");
-const clusterLinks = document.getElementById("cluster-links");
-const clusterNodes = document.getElementById("cluster-nodes");
-const clusterMapEmpty = document.getElementById("cluster-map-empty");
-const clusterMapStatus = document.getElementById("cluster-map-status");
+const overviewActivity = document.getElementById("overview-activity");
+const overviewNodes = document.getElementById("overview-nodes");
+const clusterOverviewStatus = document.getElementById("cluster-overview-status");
 const clusterPeers = document.getElementById("cluster-peers");
+const setupCheckBtn = document.getElementById("setup-check-btn");
+const setupNodesBtn = document.getElementById("setup-nodes-btn");
+const setupStatus = document.getElementById("setup-status");
+const setupResults = document.getElementById("setup-results");
+const pairingPinView = document.getElementById("pairing-pin-view");
+const pairingPin = document.getElementById("pairing-pin");
+const pairingPinExpiry = document.getElementById("pairing-pin-expiry");
+const pairingAddressDisplay = document.getElementById("pairing-address-display");
+const pairingConnectForm = document.getElementById("pairing-connect-form");
+const pairingAddress = document.getElementById("pairing-address");
+const pairingCode = document.getElementById("pairing-code");
+const pairingConnectButton = document.getElementById("pairing-connect-button");
+const pairingStatus = document.getElementById("pairing-status");
+const peerPairingModal = document.getElementById("peer-pairing-modal");
+const peerPairingForm = document.getElementById("peer-pairing-form");
+const peerPairingAddress = document.getElementById("peer-pairing-address");
+const peerPairingPin = document.getElementById("peer-pairing-pin");
+const peerPairingStatus = document.getElementById("peer-pairing-status");
+const peerPairingSubmit = document.getElementById("peer-pairing-submit");
 
 // Header stats & navigation
 const statNodes = document.getElementById("stat-nodes");
@@ -41,6 +58,7 @@ const sessionListEl = document.getElementById("session-list");
 const newSessionBtn = document.getElementById("new-session-btn");
 const agentHarnessSelect = document.getElementById("agent-harness-select");
 const agentHarnessStatus = document.getElementById("agent-harness-status");
+const agentTabs = document.querySelectorAll(".agent-tab");
 const agentModelSelect = document.getElementById("agent-model-select");
 const agentStepsSelect = document.getElementById("agent-steps-select");
 const agentSettingsTitle = document.getElementById("agent-settings-title");
@@ -53,6 +71,7 @@ const promptChips = document.querySelectorAll(".prompt-chip");
 
 // State
 let activeSessionId = null;
+const activeSessionIds = new Map();
 let currentSessions = [];
 let isSending = false;
 let streamingAssistantEl = null;
@@ -94,6 +113,172 @@ clusterWorkspaceTabs.forEach((tab) => {
     });
   });
 });
+
+setupNodesBtn?.addEventListener("click", () => {
+  document.querySelector('[data-window="nodes-panel"]')?.click();
+});
+
+setupCheckBtn?.addEventListener("click", checkSetupReadiness);
+
+async function loadPairingStatus() {
+  try {
+    const status = await fetchJSON("/api/pairing/status");
+    if (status.role === "orchestrator") {
+      if (pairingPinView) pairingPinView.hidden = false;
+      if (pairingConnectForm) pairingConnectForm.hidden = true;
+      if (pairingAddressDisplay) pairingAddressDisplay.textContent = status.address || "HTTPS address unavailable";
+      if (pairingPin) pairingPin.textContent = status.pin || "Expired";
+      if (pairingPinExpiry) {
+        pairingPinExpiry.textContent = status.expires_at
+          ? `Expires ${new Date(status.expires_at).toLocaleTimeString()}. The PIN can be used once.`
+          : "No active PIN. Restart the orchestrator to create a new one.";
+      }
+      if (pairingStatus) pairingStatus.textContent = "Show this PIN only to the node you intend to pair.";
+      return;
+    }
+    if (status.role === "node") {
+      if (pairingPinView) pairingPinView.hidden = true;
+      if (pairingConnectForm) pairingConnectForm.hidden = false;
+      if (status.orchestrator_addr && pairingAddress && !pairingAddress.value) {
+        pairingAddress.value = status.orchestrator_addr;
+      }
+      if (pairingStatus) {
+        pairingStatus.textContent = status.joined
+          ? `Connected to ${status.orchestrator_addr || "an orchestrator"}. You can pair with another orchestrator below.`
+          : status.trusted
+            ? "Pairing succeeded. Waiting for the node to register with the orchestrator…"
+          : "This node is not connected. Enter the orchestrator HTTPS address and its one-use PIN.";
+      }
+    }
+
+  } catch (err) {
+    if (pairingStatus) pairingStatus.textContent = `Could not load pairing status: ${err.message}`;
+  }
+}
+
+async function activateAgentTab(harness) {
+  if (isSending) return;
+  if (newSessionBtn) newSessionBtn.disabled = true;
+  if (agentHarnessSelect) agentHarnessSelect.disabled = true;
+  agentTabs.forEach((tab) => {
+    const active = tab.dataset.agent === harness;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.disabled = true;
+  });
+  try {
+    if (currentAgentHarness !== harness) {
+      const backend = await fetchJSON("/api/agent/backend", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ harness }),
+      });
+      applyAgentBackend(backend);
+      await loadAgentTools();
+    }
+    const sessions = sessionsForHarness(harness);
+    const rememberedID = activeSessionIds.get(harness);
+    const sessionID = sessions.some((session) => session.id === rememberedID)
+      ? rememberedID
+      : sessions[0]?.id;
+    if (sessionID) await selectSession(sessionID);
+    else await createNewSession();
+  } catch (err) {
+    console.error("failed to switch agent tab", err);
+    if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not switch agent: ${err.message}`;
+    agentTabs.forEach((tab) => {
+      const active = tab.dataset.agent === currentAgentHarness;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+    });
+  } finally {
+    agentTabs.forEach((tab) => { tab.disabled = false; });
+    if (newSessionBtn) newSessionBtn.disabled = false;
+    if (agentHarnessSelect) agentHarnessSelect.disabled = false;
+    renderSessionList();
+  }
+}
+
+agentTabs.forEach((tab) => {
+  tab.addEventListener("click", () => activateAgentTab(tab.dataset.agent));
+});
+
+pairingConnectForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!pairingConnectButton || !pairingAddress || !pairingCode) return;
+  pairingConnectButton.disabled = true;
+  pairingStatus.textContent = "Connecting securely…";
+  try {
+    const result = await fetchJSON("/api/pairing/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address: pairingAddress.value.trim(), pin: pairingCode.value.trim() }),
+    });
+    pairingCode.value = "";
+    pairingStatus.textContent = `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}. Connecting to the cluster…`;
+    await loadPairingStatus();
+    await refresh();
+  } catch (err) {
+    pairingStatus.textContent = `Pairing failed: ${err.message}`;
+  } finally {
+    pairingConnectButton.disabled = false;
+  }
+});
+
+async function checkSetupReadiness() {
+  if (setupCheckBtn) setupCheckBtn.disabled = true;
+  if (setupStatus) setupStatus.textContent = "Checking node engines and refreshing empty model registries…";
+  try {
+    const nodes = await fetchJSON("/api/nodes");
+    if (!nodes.length) {
+      if (setupStatus) setupStatus.textContent = "No nodes are registered. Start a node and pair it with this orchestrator first.";
+      if (setupResults) setupResults.innerHTML = "";
+      return;
+    }
+    const results = await Promise.all(nodes.map(async (node) => {
+      try {
+        const engines = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/engines`);
+        let refreshed = false;
+        if (engines.length && !(node.models || []).length) {
+          await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/models/refresh`, { method: "POST" });
+          refreshed = true;
+        }
+        return { node, engines, refreshed, error: "" };
+      } catch (err) {
+        return { node, engines: [], refreshed: false, error: err.message };
+      }
+    }));
+    const latestNodes = await fetchJSON("/api/nodes");
+    const latestByID = new Map(latestNodes.map((node) => [node.id, node]));
+    let readyCount = 0;
+    if (setupResults) {
+      setupResults.innerHTML = results.map(({ node, engines, refreshed, error }) => {
+        const current = latestByID.get(node.id) || node;
+        const modelCount = (current.models || []).length;
+        const ready = !error && engines.length > 0 && modelCount > 0;
+        if (ready) readyCount += 1;
+        const state = error
+          ? `Could not inspect node: ${escapeHtml(error)}`
+          : !engines.length
+            ? "No inference engine detected. Configure an engine in node settings."
+            : modelCount
+              ? `${modelCount} model${modelCount === 1 ? "" : "s"} ready${refreshed ? " (registry refreshed)" : ""}.`
+              : "Engine detected, but no models are available yet.";
+        return `<article class="setup-card"><h3>${escapeHtml(node.id)}</h3><p>Engines: ${engines.length ? engines.map((engine) => escapeHtml(engine.name)).join(", ") : "none"}</p><p>Models: ${modelCount}</p><p>${state}</p></article>`;
+      }).join("");
+    }
+    if (setupStatus) {
+      setupStatus.textContent = readyCount === nodes.length
+        ? `All ${nodes.length} node${nodes.length === 1 ? "" : "s"} are ready for inference.`
+        : `${readyCount} of ${nodes.length} nodes are ready. Use node settings to configure engines or select models.`;
+    }
+    await refresh();
+  } catch (err) {
+    if (setupStatus) setupStatus.textContent = `Readiness check failed: ${err.message}`;
+  } finally {
+    if (setupCheckBtn) setupCheckBtn.disabled = false;
+  }
+}
 
 async function fetchJSON(url, opts) {
   const resp = await fetch(url, opts);
@@ -141,6 +326,11 @@ async function loadAgentBackend() {
 
 function applyAgentBackend(backend) {
   currentAgentHarness = backend.name;
+  agentTabs.forEach((tab) => {
+    const active = tab.dataset.agent === backend.name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
   if (agentHarnessSelect) agentHarnessSelect.value = backend.name;
   if (agentSettingsTitle) {
     agentSettingsTitle.textContent = `${backend.name === "pi" ? "Pi" : "DeepSeek"} Agent Settings`;
@@ -156,21 +346,7 @@ function applyAgentBackend(backend) {
 
 agentHarnessSelect?.addEventListener("change", async () => {
   const requested = agentHarnessSelect.value;
-  agentHarnessSelect.disabled = true;
-  if (agentHarnessStatus) agentHarnessStatus.textContent = "Switching default harness…";
-  try {
-    const backend = await fetchJSON("/api/agent/backend", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ harness: requested }),
-    });
-    applyAgentBackend(backend);
-  } catch (err) {
-    agentHarnessSelect.value = currentAgentHarness;
-    if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not switch harness: ${err.message}`;
-  } finally {
-    agentHarnessSelect.disabled = false;
-  }
+  await activateAgentTab(requested);
 });
 
 async function loadClusterModels() {
@@ -198,9 +374,14 @@ async function loadSessions() {
   try {
     currentSessions = await fetchJSON("/api/agent/sessions");
     renderSessionList();
-    if (!activeSessionId && currentSessions.length > 0) {
-      selectSession(currentSessions[0].id);
-    } else if (currentSessions.length === 0) {
+    const sessions = sessionsForHarness(currentAgentHarness);
+    const preferredID = activeSessionIds.get(currentAgentHarness);
+    const sessionID = sessions.some((session) => session.id === preferredID)
+      ? preferredID
+      : sessions[0]?.id;
+    if (sessionID) {
+      await selectSession(sessionID);
+    } else {
       await createNewSession("New Interactive Session");
     }
   } catch (err) {
@@ -208,12 +389,19 @@ async function loadSessions() {
   }
 }
 
+function sessionsForHarness(harness) {
+  return currentSessions.filter((session) => (session.harness || "pi") === harness);
+}
+
 function renderSessionList() {
   if (!sessionListEl) return;
   sessionListEl.innerHTML = "";
-  for (const s of currentSessions) {
+  for (const s of sessionsForHarness(currentAgentHarness)) {
     const div = document.createElement("div");
     div.className = "session-item" + (s.id === activeSessionId ? " active" : "");
+    div.setAttribute("role", "button");
+    div.tabIndex = 0;
+    div.setAttribute("aria-current", String(s.id === activeSessionId));
     div.innerHTML = `
       <span class="session-info">
         <span class="session-title">${escapeHtml(s.title || "Session " + s.id.slice(-4))}</span>
@@ -222,12 +410,18 @@ function renderSessionList() {
       <button class="session-del-btn" data-del="${s.id}" title="Delete session">&times;</button>
     `;
     div.addEventListener("click", (e) => {
-      if (e.target.dataset.del) return;
+      if (isSending || e.target.dataset.del) return;
       selectSession(s.id);
+    });
+    div.addEventListener("keydown", (e) => {
+      if (!isSending && (e.key === "Enter" || e.key === " ")) {
+        e.preventDefault();
+        selectSession(s.id);
+      }
     });
     div.querySelector(".session-del-btn")?.addEventListener("click", async (e) => {
       e.stopPropagation();
-      await deleteSession(s.id);
+      if (!isSending) await deleteSession(s.id);
     });
     sessionListEl.appendChild(div);
   }
@@ -235,27 +429,31 @@ function renderSessionList() {
 
 async function selectSession(id) {
   activeSessionId = id;
+  const sessionInfo = currentSessions.find((session) => session.id === id);
+  if (sessionInfo) activeSessionIds.set(sessionInfo.harness || "pi", id);
   renderSessionList();
   try {
     const session = await fetchJSON(`/api/agent/sessions/${encodeURIComponent(id)}`);
-    renderChatMessages(session);
+    if (activeSessionId === id) renderChatMessages(session);
   } catch (err) {
     console.error("failed to load session", id, err);
   }
 }
 
 async function createNewSession(title = "") {
+  if (isSending) return;
   try {
     const session = await fetchJSON("/api/agent/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: title || `Session ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-        coordinator_model: currentAgentHarness === "deepseek" ? agentModelSelect?.value || "" : "",
+        coordinator_model: agentModelSelect?.value || "",
         max_steps: parseInt(agentStepsSelect?.value || "8", 10),
       }),
     });
     currentSessions.unshift(session);
+    activeSessionIds.set(currentAgentHarness, session.id);
     await selectSession(session.id);
   } catch (err) {
     console.error("failed to create session", err);
@@ -267,9 +465,12 @@ async function deleteSession(id) {
     await fetch(`/api/agent/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
     currentSessions = currentSessions.filter((s) => s.id !== id);
     if (activeSessionId === id) {
-      activeSessionId = currentSessions[0]?.id || null;
+      const sessions = sessionsForHarness(currentAgentHarness);
+      activeSessionId = sessions[0]?.id || null;
+      if (activeSessionId) activeSessionIds.set(currentAgentHarness, activeSessionId);
+      else activeSessionIds.delete(currentAgentHarness);
       if (activeSessionId) {
-        selectSession(activeSessionId);
+        await selectSession(activeSessionId);
       } else {
         await createNewSession();
       }
@@ -403,6 +604,9 @@ async function sendInteractiveMessage(text) {
   isSending = true;
   streamingAssistantEl = null;
   if (sendMsgBtn) sendMsgBtn.disabled = true;
+  if (newSessionBtn) newSessionBtn.disabled = true;
+  if (agentHarnessSelect) agentHarnessSelect.disabled = true;
+  agentTabs.forEach((tab) => { tab.disabled = true; });
   if (chatStatus) chatStatus.textContent = "⚡ Reasoning & dispatching across cluster...";
 
   // Optimistically append user message
@@ -424,6 +628,7 @@ async function sendInteractiveMessage(text) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let streamError = "";
 
     while (true) {
       const { done, value } = await reader.read();
@@ -439,14 +644,16 @@ async function sendInteractiveMessage(text) {
         try {
           const event = JSON.parse(jsonStr);
           handleStreamEvent(event);
+          if (event.type === "error") streamError = event.error || "Agent request failed";
         } catch (e) {
           console.error("stream parse error", e, jsonStr);
         }
       }
     }
 
-    if (chatStatus) chatStatus.textContent = "";
     await selectSession(activeSessionId);
+    if (streamError) throw new Error(streamError);
+    if (chatStatus) chatStatus.textContent = "";
   } catch (err) {
     if (chatStatus) chatStatus.textContent = "Error: " + err.message;
     appendMessageToChat({
@@ -456,6 +663,9 @@ async function sendInteractiveMessage(text) {
   } finally {
     isSending = false;
     if (sendMsgBtn) sendMsgBtn.disabled = false;
+    if (newSessionBtn) newSessionBtn.disabled = false;
+    if (agentHarnessSelect) agentHarnessSelect.disabled = false;
+    agentTabs.forEach((tab) => { tab.disabled = false; });
   }
 }
 
@@ -686,14 +896,7 @@ memorySearch?.addEventListener("input", () => {
   memorySearchTimer = setTimeout(refreshMemory, 300);
 });
 
-// --- Existing Cluster & Routing Views ---
-
-function staticNodePosition(nodeId) {
-  const hash = [...nodeId].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-  const x = 18 + ((hash % 7) * 11) + 10;
-  const y = 20 + ((hash % 5) * 16) + 10;
-  return { x: Math.min(Math.max(x, 18), 82), y: Math.min(Math.max(y, 18), 82) };
-}
+// --- Cluster Overview & Routing ---
 
 function sortNodesByCapability(nodes) {
   return [...nodes].sort((a, b) => {
@@ -707,75 +910,224 @@ function sortNodesByCapability(nodes) {
   });
 }
 
-function renderClusterMap(nodes, tasks, peers) {
-  if (!clusterMap || !clusterLinks || !clusterNodes) return;
-  clusterLinks.innerHTML = "";
-  clusterLinks.innerHTML = '<defs><marker id="cluster-arrow" markerWidth="4" markerHeight="4" refX="3.5" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 z" fill="#5ec2ff"></path></marker></defs>';
-  clusterNodes.innerHTML = "";
-  if (clusterPeers) clusterPeers.innerHTML = "";
-  const ordered = sortNodesByCapability(nodes || []);
-  if (clusterMapEmpty) clusterMapEmpty.hidden = ordered.length > 0;
-  if (clusterMapStatus) clusterMapStatus.textContent = `${ordered.length} nodes · ${(tasks || []).length} jobs`;
-  if (!ordered.length) return;
+function gpuGaugeMarkup(node, size = 40) {
+  const hardware = node.hardware || {};
+  const utilization = Number(hardware.gpu_utilization_percent);
+  if (!hardware.gpu_stats_available || !Number.isFinite(utilization)) {
+    if (!hardware.has_gpu) return `<span class="gpu-gauge-unavailable" role="img" aria-label="No GPU detected">CPU node</span>`;
+    return `<span class="gpu-gauge-unavailable" role="img" aria-label="GPU utilization unavailable">GPU n/a</span>`;
+  }
+  const value = Math.max(0, Math.min(100, utilization));
+  const radius = 15;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - value / 100);
+  return `
+    <span class="node-gpu-gauge" role="img" aria-label="GPU utilization ${value}%">
+      <svg width="${size}" height="${size}" viewBox="0 0 36 36" aria-hidden="true">
+        <circle class="node-gpu-gauge-track" cx="18" cy="18" r="${radius}"></circle>
+        <circle class="node-gpu-gauge-value" cx="18" cy="18" r="${radius}"
+          stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
+      </svg>
+      <span>${value}%</span>
+    </span>`;
+}
 
-  const positions = new Map();
-  ordered.forEach((node, index) => {
-    const angle = (index / Math.max(ordered.length, 1)) * Math.PI * 2 - Math.PI / 2;
-    const radius = ordered.length === 1 ? 0 : Math.min(31, 12 + ordered.length * 2.2);
-    positions.set(node.id, { x: 50 + Math.cos(angle) * radius, y: 50 + Math.sin(angle) * radius });
+function gpuHistoryMarkup(node) {
+  const history = (node.gpu_history || []).slice(-60);
+  const points = history
+    .map((sample, index) => ({
+      index,
+      value: Number(sample.utilization_percent),
+      available: sample.available,
+    }))
+    .filter((sample) => sample.available && Number.isFinite(sample.value));
+  if (!points.length) {
+    const message = node.hardware?.has_gpu ? "GPU telemetry unavailable" : "No GPU detected";
+    return `<div class="gpu-history-empty">${message}</div>`;
+  }
+
+  const width = 180;
+  const height = 48;
+  const left = 10;
+  const right = 176;
+  const top = 5;
+  const bottom = 39;
+  const denominator = Math.max(history.length - 1, 1);
+  const x = (index) => left + (index / denominator) * (right - left);
+  const y = (value) => bottom - (Math.max(0, Math.min(100, value)) / 100) * (bottom - top);
+  const segments = [];
+  let segment = [];
+  history.forEach((sample, index) => {
+    const value = Number(sample.utilization_percent);
+    if (!sample.available || !Number.isFinite(value)) {
+      if (segment.length) segments.push(segment);
+      segment = [];
+      return;
+    }
+    segment.push({ x: x(index), y: y(value) });
   });
+  if (segment.length) segments.push(segment);
+  const paths = segments
+    .filter((items) => items.length > 1)
+    .map((items) => `<path class="gpu-history-line" d="${items.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}"></path>`)
+    .join("");
+  const isolatedPoints = segments
+    .filter((items) => items.length === 1)
+    .map(([point]) => `<circle class="gpu-history-point" cx="${point.x}" cy="${point.y}" r="2.5"></circle>`)
+    .join("");
+  const latest = points[points.length - 1];
+  const lastPoint = { x: x(latest.index), y: y(latest.value) };
+  const latestPoint = segments.some((items) => items.length === 1 && items[0].x === lastPoint.x)
+    ? ""
+    : `<circle class="gpu-history-point" cx="${lastPoint.x}" cy="${lastPoint.y}" r="2.5"></circle>`;
+  return `
+    <div class="gpu-history">
+      <div class="gpu-history-heading"><span>GPU utilization</span><strong>${Math.round(latest.value)}%</strong></div>
+      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="GPU utilization history for ${escapeHtml(node.id)}">
+        <path class="gpu-history-grid" d="M${left},${top}H${right} M${left},${(top + bottom) / 2}H${right} M${left},${bottom}H${right}"></path>
+        ${paths}
+        ${isolatedPoints}
+        ${latestPoint}
+      </svg>
+      <small>Recent samples · up to 5-minute window</small>
+    </div>`;
+}
 
-  const links = [];
+function systemHistoryMarkup(node) {
+  const history = (node.system_history || []).slice(-60);
+  if (!history.length) {
+    return '<div class="system-history-empty">CPU and memory history is warming up.</div>';
+  }
+  const line = (availableKey, valueKey, className) => {
+    const points = history.flatMap((sample, index) => {
+      const value = Number(sample[valueKey]);
+      return sample[availableKey] && Number.isFinite(value)
+        ? [{ x: 8 + index * 164 / Math.max(history.length - 1, 1), y: 39 - Math.max(0, Math.min(100, value)) * 0.32 }]
+        : [];
+    });
+    if (points.length < 2) return "";
+    return `<path class="${className}" d="${points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}"></path>`;
+  };
+  const cpuValue = node.hardware?.cpu_stats_available ? `${node.hardware.cpu_utilization_percent}%` : "n/a";
+  const memoryValue = node.hardware?.memory_stats_available ? `${node.hardware.memory_usage_percent}%` : "n/a";
+  return `<div class="system-history">
+    <div class="gpu-history-heading"><span>CPU ${cpuValue} · RAM ${memoryValue}</span><span>Recent</span></div>
+    <svg viewBox="0 0 180 48" role="img" aria-label="CPU and memory utilization history for ${escapeHtml(node.id)}">
+      <path class="gpu-history-grid" d="M8,7H172 M8,23H172 M8,39H172"></path>
+      ${line("cpu_available", "cpu_utilization_percent", "system-history-cpu")}
+      ${line("memory_available", "memory_usage_percent", "system-history-memory")}
+    </svg>
+    <small>CPU · RAM · up to 5-minute window</small>
+  </div>`;
+}
+
+const TASK_ACTIVE_STATES = new Set(["pending", "running", "synthesizing"]);
+const TASK_STATES = new Set([...TASK_ACTIVE_STATES, "completed", "failed", "cancelled"]);
+const SUBTASK_STATES = new Set(["pending", "running", "completed", "failed", "cancelled"]);
+
+function knownStatus(status, states) {
+  return states.has(status) ? status : "unknown";
+}
+
+function formatRelativeTime(value) {
+  if (!value) return "time unavailable";
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "time unavailable";
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return new Date(timestamp).toLocaleDateString();
+}
+
+function nodeAssignments(tasks) {
+  const assigned = new Map();
   for (const task of tasks || []) {
-    const subtasks = (task.subtasks || []).filter((item) => positions.has(item.node_id));
-    for (let index = 1; index < subtasks.length; index++) {
-      const from = subtasks[index - 1];
-      const to = subtasks[index];
-      if (from.node_id === to.node_id) continue;
-      const typeText = `${task.description || ""} ${from.subtask?.task_type || ""} ${to.subtask?.task_type || ""}`.toLowerCase();
-      links.push({ from: from.node_id, to: to.node_id, label: task.id, conversation: /conversation|collaborat|dialog|debate|chat/.test(typeText) });
+    if (!TASK_ACTIVE_STATES.has(task.status)) continue;
+    for (const subtask of task.subtasks || []) {
+      if (!["pending", "running"].includes(subtask.status) || !subtask.node_id) continue;
+      const entries = assigned.get(subtask.node_id) || [];
+      entries.push({ taskID: task.id, status: subtask.status });
+      assigned.set(subtask.node_id, entries);
     }
   }
-  for (const link of links) {
-    const from = positions.get(link.from);
-    const to = positions.get(link.to);
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", from.x); line.setAttribute("y1", from.y);
-    line.setAttribute("x2", to.x); line.setAttribute("y2", to.y);
-    line.setAttribute("class", link.conversation ? "cluster-link conversation" : "cluster-link job");
-    clusterLinks.appendChild(line);
-    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", (from.x + to.x) / 2); label.setAttribute("y", (from.y + to.y) / 2 - 1.5);
-    label.setAttribute("class", "cluster-link-label"); label.textContent = link.conversation ? "conversation" : link.label;
-    clusterLinks.appendChild(label);
+  return assigned;
+}
+
+function renderOverview(nodes, tasks, peers, parts = {}) {
+  const nodeList = sortNodesByCapability(nodes || []);
+  const taskList = [...(tasks || [])].sort((a, b) =>
+    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+  );
+  const activeTasks = taskList.filter((task) => TASK_ACTIVE_STATES.has(task.status));
+  const recentTasks = taskList.filter((task) => !TASK_ACTIVE_STATES.has(task.status)).slice(0, 8);
+  const assignments = nodeAssignments(activeTasks);
+  const online = nodeList.filter((node) => node.healthy).length;
+  const offline = nodeList.length - online;
+  if (clusterOverviewStatus) {
+    clusterOverviewStatus.textContent = `${online} online · ${offline} offline · ${activeTasks.length} active tasks`;
   }
 
-  const leaderID = ordered.find((node) => node.leader)?.id;
-  ordered.forEach((node, index) => {
-    const position = positions.get(node.id);
-    const load = Math.min(100, (node.active_tasks || 0) * 25);
-    const entity = document.createElement("button");
-    entity.type = "button";
-    entity.className = `cluster-node-entity ${node.healthy ? "online" : "offline"}${node.id === leaderID ? " leader" : ""}`;
-    entity.style.left = `${position.x}%`; entity.style.top = `${position.y}%`;
-    entity.innerHTML = `<span class="cluster-node-orbit"></span><strong>${escapeHtml(node.id)}</strong><span class="cluster-node-role">${node.id === leaderID ? "coordinator" : node.healthy ? "worker" : "offline"}</span><span class="cluster-node-load"><i style="width:${load}%"></i></span><small>${node.active_tasks || 0} active · ${(node.models || []).length} models</small>`;
-    entity.title = "Right-click to edit node properties";
-    entity.addEventListener("click", () => openNodeTerminal(node));
-    entity.addEventListener("contextmenu", (event) => {
-      event.preventDefault(); contextNode = node; showNodeMenu(event.clientX, event.clientY);
-    });
-    clusterNodes.appendChild(entity);
-  });
+  if (parts.activity !== false && overviewActivity) {
+    const renderTask = (task) => {
+      const taskStatus = knownStatus(task.status, TASK_STATES);
+      const subtasks = (task.subtasks || []).map((subtask) => {
+        const status = knownStatus(subtask.status, SUBTASK_STATES);
+        const target = subtask.node_id
+          ? `<button class="activity-assignment" type="button" data-target-node="${escapeHtml(subtask.node_id)}">${escapeHtml(subtask.node_id)}</button>`
+          : '<span class="activity-unassigned">unassigned</span>';
+        return `<div class="activity-subtask"><span>${escapeHtml(subtask.subtask?.id || "subtask")} · ${escapeHtml(subtask.subtask?.task_type || "work")}</span><span class="badge ${status}">${status}</span><span class="activity-target">→ ${target}</span></div>`;
+      }).join("");
+      return `<article class="activity-card ${TASK_ACTIVE_STATES.has(task.status) ? "active" : "history"}" data-task-id="${escapeHtml(task.id)}">
+        <div class="activity-card-heading"><strong>${escapeHtml(task.id)}</strong><span class="badge ${taskStatus}">${taskStatus}</span></div>
+        <p>${escapeHtml(task.description || "No task description")}</p>
+        <small>${TASK_ACTIVE_STATES.has(task.status) ? "Updated" : "Finished"} ${formatRelativeTime(task.updated_at || task.created_at)}</small>
+        <div class="activity-subtasks">${subtasks || '<span class="activity-unassigned">No assigned subtasks</span>'}</div>
+      </article>`;
+    };
+    overviewActivity.innerHTML = activeTasks.length || recentTasks.length
+      ? `${activeTasks.length ? `<h4 class="activity-group-heading">Active · ${activeTasks.length}</h4>${activeTasks.map(renderTask).join("")}` : ""}
+         ${recentTasks.length ? `<h4 class="activity-group-heading">Recent</h4>${recentTasks.map(renderTask).join("")}` : ""}`
+      : '<p class="overview-empty">No task activity yet.</p>';
+  }
 
-  const peerCount = (peers || []).filter((peer) => peer.role && peer.role !== "node").length;
-  if (clusterMapStatus && peerCount) clusterMapStatus.textContent += ` · ${peerCount} discovered peers`;
-  if (clusterPeers) {
+  if (parts.nodes !== false && overviewNodes) {
+    const leaderID = nodeList.find((node) => node.leader)?.id;
+    overviewNodes.innerHTML = nodeList.length
+      ? nodeList.map((node) => {
+          const nodeTasks = assignments.get(node.id) || [];
+          const state = node.healthy ? "online" : "offline";
+          const lastSeen = node.last_seen ? `Last seen ${formatRelativeTime(node.last_seen)}` : "Last seen unavailable";
+          return `<article class="overview-node ${state}" data-node-id="${escapeHtml(node.id)}">
+            <div class="overview-node-heading"><span class="legend-dot ${state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${state}</span></div>
+            <div class="overview-node-meta">${node.id === leaderID ? "Cluster leader · " : ""}${node.active_tasks || 0} active load · ${(node.models || []).length} models</div>
+            <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
+            <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
+            ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
+          </article>`;
+        }).join("")
+      : '<p class="overview-empty">No known cluster members.</p>';
+  }
+
+  if (parts.peers !== false && clusterPeers) {
     const discovered = (peers || []).filter((peer) => peer.role && peer.role !== "node");
     clusterPeers.innerHTML = discovered.length
-      ? `<span class="cluster-peers-label">Local network</span>${discovered.map((peer) => `<span class="cluster-peer"><i class="legend-dot peer"></i><strong>${escapeHtml(peer.id || "unknown")}</strong><small>${escapeHtml(peer.role)} · ${escapeHtml(peer.http_addr || "address unavailable")}</small></span>`).join("")}`
-      : '<span class="cluster-peers-label">Local network</span><span class="panel-caption">No additional peers discovered</span>';
+      ? `<span class="cluster-peers-label">Discovered peers</span>${discovered.map((peer) => `<span class="cluster-peer"><i class="legend-dot peer"></i><strong>${escapeHtml(peer.id || "unknown")}</strong><small>${escapeHtml(peer.role)} · ${escapeHtml(peer.http_addr || "address unavailable")}</small></span>`).join("")}`
+      : "";
   }
 }
+
+overviewActivity?.addEventListener("click", (event) => {
+  const target = event.target.closest("[data-target-node]");
+  if (!target || !overviewNodes) return;
+  const node = [...overviewNodes.querySelectorAll("[data-node-id]")].find(
+    (item) => item.dataset.nodeId === target.dataset.targetNode
+  );
+  if (!node) return;
+  node.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  node.classList.add("highlighted");
+  setTimeout(() => node.classList.remove("highlighted"), 1200);
+});
 
 function renderNodes(nodes) {
   currentNodes = nodes || [];
@@ -793,11 +1145,17 @@ function renderNodes(nodes) {
   for (const n of ordered) {
     const card = document.createElement("div");
     card.className = "card" + (n.id === leaderID ? " leader" : "");
+    const gpuGauge = gpuGaugeMarkup(n, 46);
     const modelTags = (n.models || [])
-      .map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}">⚡ ${escapeHtml(m.name)}</button>`)
+      .map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`)
       .join("");
+    const nodeActions = n.healthy
+      ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
+         <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Refresh local registry</button>
+         <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>`
+      : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
     card.innerHTML = `
-      <h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3>
+      <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3>${gpuGauge}</div>
       ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
       <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ''}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ''}</div>
       <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
@@ -805,24 +1163,27 @@ function renderNodes(nodes) {
       <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
       <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
       <div class="row"><span>GPU</span><span>${n.hardware.has_gpu ? escapeHtml(n.hardware.gpu_vendor || "enabled") : "none"}</span></div>
+      ${gpuHistoryMarkup(n)}
+      ${systemHistoryMarkup(n)}
+      ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
       <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
       <div class="row"><span>Score</span><span>${n.hardware.score.toFixed(1)}</span></div>
       <div class="row"><span>Fast score</span><span>${(n.fast_score || 0).toFixed(1)}</span></div>
       <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
       <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
-      <button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
-      <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Refresh local registry</button>
-      <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>
+      ${nodeActions}
       <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
     `;
     nodesList.appendChild(card);
     card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
     card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
-    card.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      contextNode = n;
-      showNodeMenu(event.clientX, event.clientY);
-    });
+    if (n.healthy) {
+      card.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        contextNode = n;
+        showNodeMenu(event.clientX, event.clientY);
+      });
+    }
 
     // Wire model direct test buttons
     card.querySelectorAll(".model-tag-btn").forEach((btn) => {
@@ -1155,29 +1516,32 @@ function renderRouting(nodes, tasks) {
     return;
   }
 
-  const byNode = new Map(nodes.map((n) => [n.id, { node: n, completed: 0, failed: 0, running: 0, recent: [] }]));
-  const sortedTasks = [...(tasks || [])].sort((a, b) => (a.id < b.id ? 1 : -1));
+  const byNode = new Map(nodes.map((n) => [n.id, {
+    node: n, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0, unknown: 0, recent: [],
+  }]));
+  const sortedTasks = [...(tasks || [])].sort((a, b) =>
+    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+  );
   for (const t of sortedTasks) {
     for (const s of t.subtasks || []) {
       const bucket = byNode.get(s.node_id);
       if (!bucket) continue;
-      if (s.status === "completed") bucket.completed++;
-      else if (s.status === "failed") bucket.failed++;
-      else bucket.running++;
+      const status = knownStatus(s.status, SUBTASK_STATES);
+      bucket[status]++;
       if (bucket.recent.length < 5) {
-        bucket.recent.push({ taskId: t.id, subtaskId: s.subtask.id, model: s.model, status: s.status, taskType: s.subtask.task_type });
+        bucket.recent.push({ taskId: t.id, subtaskId: s.subtask?.id || "subtask", model: s.model, status, taskType: s.subtask?.task_type || "work" });
       }
     }
   }
 
   const workload = [...byNode.values()].sort((a, b) => {
     if ((b.node.active_tasks || 0) !== (a.node.active_tasks || 0)) return (b.node.active_tasks || 0) - (a.node.active_tasks || 0);
-    return (b.running + b.completed + b.failed) - (a.running + a.completed + a.failed);
+    return (b.running + b.pending) - (a.running + a.pending);
   });
-  for (const { node, completed, failed, running, recent } of workload) {
+  for (const { node, pending, running, completed, failed, cancelled, unknown, recent } of workload) {
     const card = document.createElement("div");
     card.className = "card";
-    const total = completed + failed + running;
+    const total = pending + running + completed + failed + cancelled + unknown;
     const pct = (n) => (total === 0 ? 0 : Math.round((n / total) * 100));
     const recentHTML = recent.length
       ? recent
@@ -1188,14 +1552,18 @@ function renderRouting(nodes, tasks) {
       : '<p style="color:var(--muted);font-size:0.8rem">No jobs routed yet.</p>';
     card.innerHTML = `
       <h3>${escapeHtml(node.id)} <span class="badge ${node.healthy ? "healthy" : "unhealthy"}">${node.active_tasks} active</span></h3>
-      <div class="workload-bar">
+      <div class="workload-bar" role="img" aria-label="${pending} pending, ${running} running, ${completed} completed, ${failed} failed, ${cancelled} cancelled">
+        <div class="workload-seg workload-pending" style="width:${pct(pending)}%"></div>
         <div class="workload-seg workload-running" style="width:${pct(running)}%"></div>
         <div class="workload-seg workload-completed" style="width:${pct(completed)}%"></div>
         <div class="workload-seg workload-failed" style="width:${pct(failed)}%"></div>
+        <div class="workload-seg workload-cancelled" style="width:${pct(cancelled)}%"></div>
       </div>
-      <div class="row"><span>In-flight</span><span>${running}</span></div>
+      <div class="row"><span>Pending</span><span>${pending}</span></div>
+      <div class="row"><span>Running</span><span>${running}</span></div>
       <div class="row"><span>Completed</span><span>${completed}</span></div>
       <div class="row"><span>Failed</span><span>${failed}</span></div>
+      <div class="row"><span>Cancelled${unknown ? ` / unknown` : ""}</span><span>${cancelled}${unknown ? ` / ${unknown}` : ""}</span></div>
       <h4>Recent jobs</h4>
       ${recentHTML}
     `;
@@ -1222,10 +1590,70 @@ function renderDiscovery(peers) {
       <div class="row"><span>Address</span><span>${escapeHtml(p.http_addr)}</span></div>
       <div class="row"><span>Associated orchestrator</span><span>${escapeHtml(associated)}</span></div>
       <div class="row"><span>Last seen</span><span>${new Date(p.last_seen).toLocaleTimeString()}</span></div>
+      ${p.role === "orchestrator" ? '<small class="discovery-pair-hint">Right-click to pair this orchestrator</small>' : ""}
     `;
+    if (p.role === "orchestrator") {
+      card.classList.add("discovery-peer-pairable");
+      card.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openPeerPairing(p);
+      });
+    }
     discoveryList.appendChild(card);
   }
 }
+
+function openPeerPairing(peer) {
+  if (!peerPairingModal || !peerPairingAddress || !peerPairingPin) return;
+  const secureAddress = peer.peer_addr || "";
+  if (!secureAddress.startsWith("https://")) {
+    if (peerPairingStatus) peerPairingStatus.textContent = "This peer did not advertise a secure pairing address.";
+    return;
+  }
+  peerPairingAddress.value = secureAddress;
+  peerPairingAddress.readOnly = true;
+  peerPairingPin.value = "";
+  if (peerPairingStatus) peerPairingStatus.textContent = "";
+  const title = document.getElementById("peer-pairing-title");
+  if (title) title.textContent = `Pair with ${peer.id}`;
+  peerPairingModal.hidden = false;
+  peerPairingPin.focus();
+}
+
+function closePeerPairing() {
+  if (peerPairingModal) peerPairingModal.hidden = true;
+}
+
+document.getElementById("peer-pairing-close")?.addEventListener("click", closePeerPairing);
+document.getElementById("peer-pairing-cancel")?.addEventListener("click", closePeerPairing);
+peerPairingModal?.addEventListener("click", (event) => {
+  if (event.target === peerPairingModal) closePeerPairing();
+});
+peerPairingForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!peerPairingAddress || !peerPairingPin || !peerPairingSubmit) return;
+  peerPairingSubmit.disabled = true;
+  if (peerPairingStatus) peerPairingStatus.textContent = "Pairing securely…";
+  try {
+    const result = await fetchJSON("/api/pairing/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        address: peerPairingAddress.value.trim(),
+        pin: peerPairingPin.value.trim(),
+      }),
+    });
+    if (peerPairingStatus) {
+      peerPairingStatus.textContent = `Paired with ${result.paired_orchestrator}. Cluster synchronization will begin shortly.`;
+    }
+    peerPairingPin.value = "";
+    await refresh();
+  } catch (err) {
+    if (peerPairingStatus) peerPairingStatus.textContent = `Pairing failed: ${err.message}`;
+  } finally {
+    peerPairingSubmit.disabled = false;
+  }
+});
 
 function renderTasks(tasks) {
   if (!tasksList) return;
@@ -1234,11 +1662,13 @@ function renderTasks(tasks) {
     tasksList.innerHTML = '<p style="color:var(--muted)">No tasks submitted yet.</p>';
     return;
   }
-  tasks.sort((a, b) => (a.id < b.id ? 1 : -1));
-  for (const t of tasks) {
+  const orderedTasks = [...tasks].sort((a, b) =>
+    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+  );
+  for (const t of orderedTasks) {
     const card = document.createElement("div");
     card.className = "card";
-    const subtaskHTML = t.subtasks
+    const subtaskHTML = (t.subtasks || [])
       .map(
         (s) => `
         <div class="row"><span>${s.subtask.id} (${s.subtask.task_type}) &rarr; ${escapeHtml(s.node_id)}</span>
@@ -1300,27 +1730,40 @@ function escapeHtml(s) {
 async function refresh() {
   try {
     const [nodes, tasks, peers, build] = await Promise.all([
-      fetchJSON("/api/nodes"),
+      fetchJSON("/api/nodes/all"),
       fetchJSON("/api/tasks"),
       fetchJSON("/api/discovery"),
       fetchJSON("/api/version"),
     ]);
-    applySnapshot({ nodes, tasks, discovery: peers, build_version: build.version });
+    applySnapshot({ nodes, tasks, discovery: peers, build_version: build.version, complete_tasks: true });
   } catch (err) {
     console.error(err);
   }
 }
 
 function applySnapshot(snap) {
-  window.latestTasks = snap.tasks || [];
-  const nodeCount = snap.member_count ?? (snap.nodes || []).length;
+  if (snap.complete_tasks) {
+    window.latestTasks = snap.tasks || [];
+    window.fullTaskHistoryLoaded = true;
+  } else if (window.fullTaskHistoryLoaded) {
+    const merged = new Map((window.latestTasks || []).map((task) => [task.id, task]));
+    for (const task of snap.tasks || []) merged.set(task.id, task);
+    window.latestTasks = [...merged.values()].sort((a, b) =>
+      new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+    );
+  } else {
+    window.latestTasks = snap.tasks || [];
+  }
+  window.latestNodes = snap.nodes || [];
+  const nodeCount = snap.member_count ?? window.latestNodes.filter((node) => node.healthy).length;
   updateClusterTitle(nodeCount);
 
   // Update header stats pills
   if (statNodes) statNodes.textContent = `Nodes: ${nodeCount}`;
   let modelCount = 0;
   let activeLoad = 0;
-  for (const n of snap.nodes || []) {
+  for (const n of window.latestNodes) {
+    if (!n.healthy) continue;
     modelCount += (n.models || []).length;
     activeLoad += (n.active_tasks || 0);
   }
@@ -1331,12 +1774,88 @@ function applySnapshot(snap) {
   }
   if (statVersion && snap.build_version) statVersion.textContent = snap.build_version;
 
-  renderClusterMap(snap.nodes || [], snap.tasks || [], snap.discovery || []);
-  renderNodes(snap.nodes || []);
-  renderRouting(snap.nodes || [], snap.tasks || []);
-  renderDiscovery(snap.discovery || []);
-  renderTasks(snap.tasks || []);
+  const nodeState = window.latestNodes.map((node) => ({
+    id: node.id, version: node.version, address: node.address, hardware: node.hardware,
+    models: node.models, default_model: node.default_model, fast_score: node.fast_score,
+    active_tasks: node.active_tasks, healthy: node.healthy, leader: node.leader,
+    version_error: node.version_error, last_seen: node.healthy ? undefined : node.last_seen,
+    gpu_sample: node.gpu_history?.at(-1)?.timestamp,
+    system_sample: node.system_history?.at(-1)?.timestamp,
+  }));
+  const nodeSignature = JSON.stringify(nodeState);
+  const overviewNodeState = window.latestNodes.map((node) => ({
+    id: node.id,
+    healthy: node.healthy,
+    leader: node.leader,
+    active_tasks: node.active_tasks,
+    model_count: node.models?.length || 0,
+    last_seen: node.healthy ? undefined : node.last_seen,
+    gpu_stats_available: node.hardware?.gpu_stats_available,
+    gpu_utilization_percent: node.hardware?.gpu_utilization_percent,
+    cpu_stats_available: node.hardware?.cpu_stats_available,
+    cpu_utilization_percent: node.hardware?.cpu_utilization_percent,
+    memory_stats_available: node.hardware?.memory_stats_available,
+    memory_usage_percent: node.hardware?.memory_usage_percent,
+  }));
+  const taskState = window.latestTasks.map((task) => ({
+    id: task.id, description: task.description, status: task.status, updated_at: task.updated_at,
+    subtasks: (task.subtasks || []).map((item) => ({
+      id: item.subtask?.id, type: item.subtask?.task_type, status: item.status, node_id: item.node_id,
+      model: item.model,
+    })),
+  }));
+  const taskSignature = JSON.stringify(window.latestTasks.map((task) => [task.id, task.updated_at]));
+  const activitySignature = JSON.stringify(taskState);
+  const peerState = (snap.discovery || []).map((peer) => ({
+    id: peer.id, role: peer.role, address: peer.http_addr, peer_addr: peer.peer_addr,
+  }));
+  const peerSignature = JSON.stringify(peerState);
+  let overviewChanged = false;
+  const overviewParts = {
+    activity: activitySignature !== window.lastActivitySignature,
+    nodes: JSON.stringify(overviewNodeState) !== window.lastOverviewNodeSignature,
+    peers: peerSignature !== window.lastOverviewPeerSignature,
+  };
+  if (overviewParts.activity || overviewParts.nodes || overviewParts.peers) {
+    renderOverview(window.latestNodes, window.latestTasks, snap.discovery || [], overviewParts);
+    window.lastActivitySignature = activitySignature;
+    window.lastOverviewNodeSignature = JSON.stringify(overviewNodeState);
+    window.lastOverviewPeerSignature = peerSignature;
+    overviewChanged = true;
+  }
+  if (nodeSignature !== window.lastNodeSignature) {
+    renderNodes(window.latestNodes);
+    window.lastNodeSignature = nodeSignature;
+  }
+  const routingSignature = JSON.stringify({
+    nodes: nodeState.map((node) => ({ id: node.id, healthy: node.healthy, active_tasks: node.active_tasks })),
+    tasks: taskState.map((task) => ({
+      id: task.id, updated_at: task.updated_at,
+      subtasks: task.subtasks,
+    })),
+  });
+  if (routingSignature !== window.lastRoutingSignature) {
+    renderRouting(window.latestNodes, window.latestTasks);
+    window.lastRoutingSignature = routingSignature;
+  }
+  if (peerSignature !== window.lastPeerSignature) {
+    renderDiscovery(snap.discovery || []);
+    window.lastPeerSignature = peerSignature;
+  }
+  if (taskSignature !== window.lastTaskSignature) {
+    renderTasks(window.latestTasks);
+    window.lastTaskSignature = taskSignature;
+  }
+  if (overviewChanged) refreshOverviewTimes();
 }
+
+function refreshOverviewTimes() {
+  overviewNodes?.querySelectorAll("[data-last-seen]").forEach((label) => {
+    label.textContent = `Last seen ${formatRelativeTime(label.dataset.lastSeen)}`;
+  });
+}
+
+setInterval(refreshOverviewTimes, 15000);
 
 function connectEvents() {
   const es = new EventSource("/api/events");
@@ -1369,8 +1888,10 @@ submitBtn?.addEventListener("click", async () => {
 
 // Initialization
 loadAgentTools();
-loadAgentBackend();
+loadAgentBackend().then(loadSessions);
+loadPairingStatus();
+setInterval(loadPairingStatus, 30000);
 loadClusterModels();
-loadSessions();
 refresh();
+checkSetupReadiness();
 connectEvents();
