@@ -45,6 +45,19 @@ func TestAssignAllowsGeneralCapableModelForSpecificTask(t *testing.T) {
 	}
 }
 
+func TestAssignKeepsCompatibleCandidateUnderHeavyLoadPenalty(t *testing.T) {
+	assignments, err := Assign([]Subtask{{ID: "review", TaskType: "general"}}, []cluster.NodeStatus{{
+		ID: "busy-specialist", Address: "http://node", Healthy: true, ActiveTasks: 10,
+		Models: []engine.Model{{Name: "code-model", Tags: []string{"code"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 1 || assignments[0].NodeID != "busy-specialist" {
+		t.Fatalf("compatible model disappeared under load penalty: %+v", assignments)
+	}
+}
+
 func TestAssignPrefersLowerLiveGPUUtilization(t *testing.T) {
 	nodes := []cluster.NodeStatus{
 		{
@@ -64,5 +77,27 @@ func TestAssignPrefersLowerLiveGPUUtilization(t *testing.T) {
 	}
 	if assignments[0].NodeID != "free" {
 		t.Fatalf("assigned to %q, want the less-loaded GPU node", assignments[0].NodeID)
+	}
+}
+
+func TestAssignPrefersLowerLiveNPUUtilization(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "busy-npu", Address: "http://busy", Healthy: true,
+			Hardware: hardware.Info{Score: 50, NPUStatsAvailable: true, NPUUtilization: 90},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+		{
+			ID: "free-npu", Address: "http://free", Healthy: true,
+			Hardware: hardware.Info{Score: 50, NPUStatsAvailable: true, NPUUtilization: 10},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+	}
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignments[0].NodeID != "free-npu" {
+		t.Fatalf("assigned to %q, want the less-loaded NPU node", assignments[0].NodeID)
 	}
 }

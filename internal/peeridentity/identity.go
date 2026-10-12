@@ -200,13 +200,33 @@ func (i *Identity) ClientTransport() *http.Transport {
 // BootstrapTransport is used only for PIN-authenticated first contact. It
 // must not be used for ordinary cluster requests.
 func (i *Identity) BootstrapTransport() *http.Transport {
+	return i.bootstrapTransport("")
+}
+
+// BootstrapTransportForID is used to send an out-of-band pairing invitation
+// to a discovered peer. It verifies that the TLS endpoint presents the
+// expected stable identity before any invitation PIN is sent.
+func (i *Identity) BootstrapTransportForID(expectedID string) *http.Transport {
+	return i.bootstrapTransport(expectedID)
+}
+
+func (i *Identity) bootstrapTransport(expectedID string) *http.Transport {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return &http.Transport{TLSClientConfig: &tls.Config{
+	config := &tls.Config{
 		Certificates:       []tls.Certificate{i.certificate},
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS12,
-	}}
+	}
+	if expectedID != "" {
+		config.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 || state.PeerCertificates[0].Subject.CommonName != expectedID {
+				return fmt.Errorf("peeridentity: bootstrap server identity does not match expected peer %q", expectedID)
+			}
+			return nil
+		}
+	}
+	return &http.Transport{TLSClientConfig: config}
 }
 
 // NewPairingPIN creates a short-lived code accepted during first-contact
@@ -315,18 +335,22 @@ func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) er
 	return i.persistLocked()
 }
 
-// PairedOrchestratorAddresses returns persisted HTTPS addresses for paired
-// orchestrators.
-func (i *Identity) PairedOrchestratorAddresses() map[string]string {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	addresses := make(map[string]string)
+// RemovePairedOrchestrators removes federation-era orchestrator pins so
+// upgraded instances only retain ordinary node identities in their roster.
+func (i *Identity) RemovePairedOrchestrators() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	changed := false
 	for id, peer := range i.trusted {
-		if peer.Role == "orchestrator" && peer.Address != "" {
-			addresses[id] = peer.Address
+		if peer.Role == "orchestrator" {
+			delete(i.trusted, id)
+			changed = true
 		}
 	}
-	return addresses
+	if changed {
+		return i.persistLocked()
+	}
+	return nil
 }
 
 func (i *Identity) ValidatePeer(id, certificatePEM string) error {

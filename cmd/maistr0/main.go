@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/nodeagent"
 	"github.com/maistr0/maistr0/internal/orchestrator"
@@ -32,11 +34,11 @@ func main() {
 	nodeListenAddr := flag.String("node-listen", "", "override node listen address, e.g. :7451")
 	orchListenAddr := flag.String("orchestrator-listen", "", "override orchestrator listen address, e.g. :7450")
 	orchestratorAddr := flag.String("orchestrator-addr", "", "override the orchestrator address the node registers with (empty = auto-discover on the LAN)")
-	pairTo := flag.String("pair-to", "", "pair this orchestrator with another at an HTTPS address; provide its active PIN with --pairing-pin")
-	pairingPIN := flag.String("pairing-pin", "", "one-time PIN displayed by the orchestrator accepting a node or orchestrator pairing")
+	pairTo := flag.String("pair-to", "", "deprecated; orchestrator federation is disabled")
+	pairingPIN := flag.String("pairing-pin", "", "one-time PIN displayed by the orchestrator accepting a node")
 	trayMode := flag.String("tray-mode", "", `override tray behavior: "taskbar" or "hidden"`)
 	noBrowser := flag.Bool("no-browser", false, "do not auto-open the dashboard in a browser on startup")
-	noDiscovery := flag.Bool("no-discovery", false, "disable LAN auto-discovery of other orchestrators/nodes")
+	noDiscovery := flag.Bool("no-discovery", false, "disable LAN auto-discovery (node-only; orchestrator election requires discovery)")
 	harness := flag.String("harness", "", `override orchestrator agent backend: "deepseek" or "pi"`)
 	memoryPath := flag.String("memory-path", "", "override the cluster memory database file (empty = per-user data dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -51,24 +53,46 @@ func main() {
 		log.Fatalf("failed to initialize application log: %v", err)
 	}
 	defer logFile.Close()
-	if *role == "auto" {
-		if *pairTo != "" {
-			*role = "orchestrator"
-		} else if *orchestratorAddr != "" {
+	if *pairTo != "" {
+		log.Fatal("--pair-to is no longer supported; orchestrators cannot be paired")
+	}
+	if *role == "auto" && *orchestratorAddr != "" {
+		*role = "node"
+	}
+	if *role == "auto" || *role == "orchestrator" || *role == "both" {
+		orchCfg := loadOrchestratorConfig(*orchConfigPath, *orchListenAddr, *noDiscovery)
+		if !orchCfg.DiscoveryEnabled {
+			log.Fatal("orchestrator election requires LAN discovery; remove --no-discovery or enable discovery in the orchestrator config")
+		}
+		ip := discovery.OutboundIP()
+		candidate := discovery.Announcement{
+			Role: "candidate", ID: "orchestrator-" + ip,
+			PeerAddr: "https://" + ip + portSuffix(orchCfg.ListenAddr),
+			Score:    cluster.SelfScore(hardware.Detect()),
+		}
+		probe := discovery.Listen(candidate.ID)
+		if err := probe.WaitReady(2 * time.Second); err != nil {
+			probe.Close()
+			log.Fatalf("cannot elect a single orchestrator without LAN discovery: %v", err)
+		}
+		stop := make(chan struct{})
+		go discovery.Beacon(func() discovery.Announcement { return candidate }, 250*time.Millisecond, stop)
+		log.Printf("main: checking for the highest-capability orchestrator candidate")
+		time.Sleep(6 * time.Second)
+		close(stop)
+		peers := probe.Snapshot()
+		probe.Close()
+		winner := discovery.BestOrchestratorCandidate(candidate, peers)
+		if winner.ID != candidate.ID {
+			if winner.PeerAddr == "" {
+				log.Fatalf("orchestrator election selected %s without an HTTPS address", winner.ID)
+			}
+			log.Printf("main: yielding orchestrator role to %s at %s; joining as a node", winner.ID, winner.PeerAddr)
+			*orchestratorAddr = winner.PeerAddr
 			*role = "node"
 		} else {
-			probe := discovery.Listen("startup-probe-" + discovery.OutboundIP())
-			found := probe.FirstOrchestrator(4 * time.Second)
-			probe.Close()
-			if found != "" {
-				*role = "node"
-				*orchestratorAddr = found
-			} else {
-				*role = "both"
-			}
-		}
-		if *pairTo != "" && *role != "orchestrator" && *role != "both" {
-			log.Fatal("--pair-to can only be used with --role orchestrator or --role both")
+			log.Printf("main: elected orchestrator for this cluster; starting local node worker")
+			*role = "both"
 		}
 	}
 
@@ -77,45 +101,6 @@ func main() {
 	var closeOrchestrator func()
 
 	switch *role {
-	case "orchestrator":
-		cfg := loadOrchestratorConfig(*orchConfigPath, *orchListenAddr, *noDiscovery)
-		if *memoryPath != "" {
-			cfg.MemoryPath = *memoryPath
-		}
-		if *harness != "" {
-			cfg.Harness = *harness
-		}
-		srv, err := orchestrator.NewWithMemoryAndHarness(cfg.MemoryPath, cfg.Harness)
-		if err != nil {
-			log.Fatalf("failed to configure orchestrator agent: %v", err)
-		}
-		closeOrchestrator = func() {
-			if err := srv.Close(); err != nil {
-				log.Printf("orchestrator shutdown: %v", err)
-			}
-		}
-		srv.SetDiscoveryEnabled(cfg.DiscoveryEnabled)
-		if cfg.DiscoveryEnabled {
-			srv.SetDiscovery(discovery.Listen(srv.SelfID()))
-		}
-		if *pairTo != "" {
-			if *pairingPIN == "" {
-				log.Fatal("--pairing-pin is required with --pair-to")
-			}
-			if err := srv.SetAdvertiseAddress("https://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr)); err != nil {
-				log.Fatalf("invalid orchestrator advertised address: %v", err)
-			}
-			if err := srv.InitializeIdentity(); err != nil {
-				log.Fatalf("failed to initialize orchestrator identity: %v", err)
-			}
-			if err := srv.PairWithOrchestrator(*pairTo, *pairingPIN); err != nil {
-				log.Fatalf("failed to pair orchestrator: %v", err)
-			}
-		}
-		dashboardURL = localURL(cfg.ListenAddr)
-		effectiveTrayMode, autoOpen = cfg.TrayMode, cfg.AutoOpenBrowser
-		go runOrchestrator(srv, cfg.ListenAddr)
-
 	case "node":
 		cfg := loadNodeConfig(*nodeConfigPath, *nodeListenAddr, *orchestratorAddr, *noDiscovery)
 		if *pairingPIN != "" {
@@ -139,12 +124,9 @@ func main() {
 			nodeCfg.PairingPIN = *pairingPIN
 		}
 
-		// Same-process pairing doesn't need discovery, but wire the node to
-		// the orchestrator's LAN address (not 127.0.0.1) so registrations
-		// and logs always reference an address other machines can reach.
-		if nodeCfg.OrchestratorAddr == "" {
-			nodeCfg.OrchestratorAddr = "https://" + discovery.OutboundIP() + portSuffix(orchCfg.ListenAddr)
-		}
+		// The local worker must register with this process's orchestrator,
+		// regardless of any saved or command-line node address.
+		nodeCfg.OrchestratorAddr = "https://" + discovery.OutboundIP() + portSuffix(orchCfg.ListenAddr)
 
 		// Both roles share one process but need separate database files.
 		if *memoryPath != "" {
@@ -166,17 +148,6 @@ func main() {
 		agent := nodeagent.New(nodeCfg)
 		if err := srv.InitializeIdentity(); err != nil {
 			log.Fatalf("failed to initialize orchestrator identity: %v", err)
-		}
-		if *pairTo != "" {
-			if *pairingPIN == "" {
-				log.Fatal("--pairing-pin is required with --pair-to")
-			}
-			if err := srv.SetAdvertiseAddress("https://" + discovery.OutboundIP() + portSuffix(orchCfg.ListenAddr)); err != nil {
-				log.Fatalf("invalid orchestrator advertised address: %v", err)
-			}
-			if err := srv.PairWithOrchestrator(*pairTo, *pairingPIN); err != nil {
-				log.Fatalf("failed to pair orchestrator: %v", err)
-			}
 		}
 		if err := agent.InitializeIdentity(); err != nil {
 			log.Fatalf("failed to initialize node identity: %v", err)
@@ -201,6 +172,10 @@ func main() {
 		// This is only used to find *other* peers on the LAN now.
 		if orchCfg.DiscoveryEnabled || nodeCfg.DiscoveryEnabled {
 			shared := discovery.Listen(srv.SelfID(), agent.ID())
+			if err := shared.WaitReady(2 * time.Second); err != nil {
+				shared.Close()
+				log.Fatalf("cannot start cluster discovery: %v", err)
+			}
 			srv.SetDiscovery(shared)
 			agent.SetDiscovery(shared)
 		}

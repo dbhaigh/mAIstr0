@@ -71,6 +71,41 @@ func TestPairingPersistsAndChecksCertificatePins(t *testing.T) {
 	}
 }
 
+func TestRemovePairedOrchestratorsKeepsNodeTrust(t *testing.T) {
+	identity, err := Open(filepath.Join(t.TempDir(), "identity.json"), "cluster-orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestrator, err := Open(filepath.Join(t.TempDir(), "paired-orchestrator.json"), "paired-orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := Open(filepath.Join(t.TempDir(), "node.json"), "cluster-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.TrustPeerDetails(orchestrator.ID(), orchestrator.CertificatePEM(), "orchestrator", "https://192.0.2.10:7450"); err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.TrustPeerDetails(node.ID(), node.CertificatePEM(), "node", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := identity.RemovePairedOrchestrators(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Open(identity.path, identity.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.IsTrustedID(orchestrator.ID()) {
+		t.Fatal("orchestrator federation pin survived cleanup")
+	}
+	if !reloaded.IsTrustedID(node.ID()) {
+		t.Fatal("ordinary node pin was removed")
+	}
+}
+
 func TestTrustedHandlerRequiresPairedTLSClient(t *testing.T) {
 	identity, err := Open(filepath.Join(t.TempDir(), "identity.json"), "node")
 	if err != nil {
@@ -83,5 +118,37 @@ func TestTrustedHandlerRequiresPairedTLSClient(t *testing.T) {
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("unpaired plaintext request returned %d, want forbidden", recorder.Code)
+	}
+}
+
+func TestBootstrapTransportForIDChecksDiscoveredPeerIdentity(t *testing.T) {
+	serverIdentity, err := Open(filepath.Join(t.TempDir(), "server.json"), "discovered-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientIdentity, err := Open(filepath.Join(t.TempDir(), "client.json"), "orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.TLS = serverIdentity.ServerTLSConfig()
+	server.StartTLS()
+	defer server.Close()
+
+	client := &http.Client{Transport: clientIdentity.BootstrapTransportForID(serverIdentity.ID())}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("request to the expected discovered peer failed: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected peer returned %d", response.StatusCode)
+	}
+
+	client = &http.Client{Transport: clientIdentity.BootstrapTransportForID("different-node")}
+	if _, err := client.Get(server.URL); err == nil {
+		t.Fatal("bootstrap request succeeded against a peer with a different identity")
 	}
 }

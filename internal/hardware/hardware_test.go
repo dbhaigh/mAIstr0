@@ -1,6 +1,9 @@
 package hardware
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestNPUVendor(t *testing.T) {
 	tests := []struct {
@@ -32,6 +35,41 @@ func TestParseNVIDIAUsageDoesNotTreatUnknownAsIdle(t *testing.T) {
 	utilization, freeMemory, ok := parseNVIDIAUsage("N/A, N/A\ninvalid")
 	if ok || utilization != 0 || freeMemory != 0 {
 		t.Fatalf("invalid telemetry returned (%d, %d, %t), want zero values and unavailable", utilization, freeMemory, ok)
+	}
+}
+
+func TestParseNPUUsage(t *testing.T) {
+	utilization, ok := parseNPUUsage("17.5\n84.2\n")
+	if !ok || utilization != 84 {
+		t.Fatalf("parseNPUUsage returned (%d, %t), want (84, true)", utilization, ok)
+	}
+}
+
+func TestParseNPUUsageDoesNotTreatUnknownAsIdle(t *testing.T) {
+	for _, output := range []string{"", "N/A", "101", "-1", "invalid"} {
+		if utilization, ok := parseNPUUsage(output); ok || utilization != 0 {
+			t.Fatalf("parseNPUUsage(%q) = (%d, %t), want (0, false)", output, utilization, ok)
+		}
+	}
+}
+
+func TestInfoJSONPreservesAvailableZeroUtilization(t *testing.T) {
+	info := Info{
+		GPUStatsAvailable: true,
+		NPUStatsAvailable: true,
+	}
+	payload, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"gpu_utilization_percent", "npu_utilization_percent"} {
+		if value, ok := fields[key]; !ok || value != float64(0) {
+			t.Errorf("%s = %v (present: %t), want zero retained in JSON", key, value, ok)
+		}
 	}
 }
 

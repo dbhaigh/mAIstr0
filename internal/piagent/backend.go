@@ -203,11 +203,14 @@ func (b *Backend) SendMessage(ctx context.Context, sessionID, userText string, s
 		case <-ctx.Done():
 		}
 	}
+	tools := b.toolHost.ListTools()
 	maxSteps := state.session.Config.MaxSteps
 	if maxSteps <= 0 {
-		maxSteps = 8
+		maxSteps = len(tools) + 1
+		if maxSteps < 8 {
+			maxSteps = 8
+		}
 	}
-	tools := b.toolHost.ListTools()
 	var final *agent.Message
 	for step := 1; step <= maxSteps; step++ {
 		if err := ctx.Err(); err != nil {
@@ -315,7 +318,7 @@ func (b *Backend) providerMessages(session *agent.Session) []ChatMessage {
 	messages := make([]ChatMessage, 0, len(session.Messages)+1)
 	systemPrompt := session.Config.SystemPrompt
 	if systemPrompt == "" {
-		systemPrompt = "You are the mAIstr0 cluster orchestration agent. Use the available cluster tools to inspect nodes, select models, and coordinate work. Do not claim a tool action succeeded unless its result confirms it."
+		systemPrompt = "You are the mAIstr0 cluster orchestration agent. Use the available cluster tools to inspect nodes and answer direct questions. For multi-step work that needs dependencies, durable progress, validation, or review, use execute_workflow rather than coordinating worker calls manually. Do not claim a tool action succeeded unless its result confirms it."
 	}
 	messages = append(messages, ChatMessage{Role: "system", Content: systemPrompt})
 	for _, message := range session.Messages {

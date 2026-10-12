@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- LAN orchestrator election based on node capability, with stable-ID tie
+  breaking and a local worker on the elected orchestrator.
+- Shared `execute_workflow` support for Pi and DeepSeek, including dependency
+  scheduling, output contracts, retries, review gates, and persistent human
+  approval.
+- Windows NPU utilization reporting using DXCore adapter identification and
+  GPU Engine counters when available.
+
+### Changed
+
+- Add opt-in model-assisted task planning with explicit subtask roles,
+  dependencies, expected outputs, and approval controls while preserving
+  heuristic decomposition as the default.
+- Restore in-progress work after an orchestrator restart as failed with an
+  interruption reason instead of presenting it as still running.
+
 ## 0.0.3 - 2026-10-10
 
 ### Added

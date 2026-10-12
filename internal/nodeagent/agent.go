@@ -43,6 +43,7 @@ type Agent struct {
 	hwMu              sync.RWMutex
 	hw                hardware.Info
 	gpuHistory        []hardware.GPUUsageSample
+	npuHistory        []hardware.NPUUsageSample
 	systemHistory     []hardware.SystemUsageSample
 	identity          *peeridentity.Identity
 
@@ -58,21 +59,39 @@ type Agent struct {
 	orchestratorAddr string
 	orchestratorID   string
 
-	mu             sync.Mutex
-	disabledModels map[string]bool
-	defaultModel   string
-	activeTasks    int
-	peers          []cluster.NodeStatus
-	modelMu        sync.Mutex
-	reportedModels []engine.Model
-	reportedAt     time.Time
-	joinedMu       sync.Mutex
-	joined         bool
+	mu               sync.Mutex
+	disabledModels   map[string]bool
+	defaultModel     string
+	activeTasks      int
+	peers            []cluster.NodeStatus
+	modelMu          sync.Mutex
+	reportedModels   []engine.Model
+	reportedAt       time.Time
+	joinedMu         sync.Mutex
+	joined           bool
+	pairingInviteMu  sync.Mutex
+	pairingInvite    *pairingInvitation
+	pairingAccepting bool
 
 	dialogues   map[string]*Dialogue
 	dialoguesMu sync.RWMutex
 
 	mem *memory.Store
+}
+
+type pairingInvitation struct {
+	OrchestratorID string    `json:"orchestrator_id"`
+	Address        string    `json:"address"`
+	PIN            string    `json:"pin"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+type pairingInvitationRequest struct {
+	NodeID         string    `json:"node_id"`
+	OrchestratorID string    `json:"orchestrator_id"`
+	Address        string    `json:"address"`
+	PIN            string    `json:"pin"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 // Dialogue represents an ongoing conversational session with an LLM on this node.
@@ -230,13 +249,32 @@ func (a *Agent) pairOrchestrator(candidate orchestratorCandidate) error {
 // PairWithOrchestrator enrolls this node at a user-selected orchestrator
 // using its one-use out-of-band PIN.
 func (a *Agent) PairWithOrchestrator(address, pin string) error {
+	address, err := normalizeOrchestratorAddress(address)
+	if err != nil {
+		return err
+	}
+	return a.pairWithAddress(address, "", strings.TrimSpace(pin))
+}
+
+func normalizeOrchestratorAddress(address string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(address))
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
 		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("orchestrator address must be an https URL without user information")
+		return "", errors.New("orchestrator address must be an https URL without user information")
 	}
-	address = "https://" + parsed.Host
-	return a.pairWithAddress(address, "", strings.TrimSpace(pin))
+	return "https://" + parsed.Host, nil
+}
+
+func validPairingPIN(pin string) bool {
+	if len(pin) != 6 {
+		return false
+	}
+	for _, digit := range pin {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *Agent) pairWithAddress(address, expectedID, pin string) (resultErr error) {
@@ -349,6 +387,7 @@ type statusResponse struct {
 	Address       string                       `json:"address"`
 	Hardware      hardware.Info                `json:"hardware"`
 	GPUHistory    []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
+	NPUHistory    []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
 	SystemHistory []hardware.SystemUsageSample `json:"system_history,omitempty"`
 	Models        []engine.Model               `json:"models"`
 	DefaultModel  string                       `json:"default_model,omitempty"`
@@ -458,6 +497,7 @@ func (a *Agent) status() statusResponse {
 		Address:       a.cfg.AdvertiseAddr,
 		Hardware:      hw,
 		GPUHistory:    a.gpuHistorySnapshot(),
+		NPUHistory:    a.npuHistorySnapshot(),
 		SystemHistory: a.systemHistorySnapshot(),
 		Models:        a.reportedModelList(),
 		DefaultModel:  a.defaultModelName(),
@@ -475,6 +515,7 @@ func (a *Agent) hardwareSnapshot() hardware.Info {
 func (a *Agent) hardwareUsageLoop() {
 	refresh := func() {
 		utilization, freeMemoryMB, available := hardware.CurrentGPUUsage()
+		npuUtilization, npuAvailable := hardware.CurrentNPUUsage()
 		cpuUtilization, cpuAvailable, memoryUsage, memoryAvailable := hardware.CurrentSystemUsage()
 		sample := hardware.GPUUsageSample{
 			Timestamp: time.Now().UTC(), Available: available, Utilization: utilization,
@@ -483,11 +524,17 @@ func (a *Agent) hardwareUsageLoop() {
 			Timestamp: time.Now().UTC(), CPUAvailable: cpuAvailable, CPUUtilization: cpuUtilization,
 			MemoryAvailable: memoryAvailable, MemoryUtilization: memoryUsage,
 		}
+		npuSample := hardware.NPUUsageSample{
+			Timestamp: time.Now().UTC(), Available: npuAvailable, Utilization: npuUtilization,
+		}
 		a.hwMu.Lock()
 		a.hw.GPUStatsAvailable = available
 		a.hw.GPUUtilization = utilization
 		a.hw.GPUMemoryFreeMB = freeMemoryMB
 		a.gpuHistory = appendGPUUsageSample(a.gpuHistory, sample)
+		a.hw.NPUStatsAvailable = npuAvailable
+		a.hw.NPUUtilization = npuUtilization
+		a.npuHistory = appendNPUUsageSample(a.npuHistory, npuSample)
 		a.hw.CPUStatsAvailable = cpuAvailable
 		a.hw.CPUUtilization = cpuUtilization
 		a.hw.MemoryStatsAvailable = memoryAvailable
@@ -505,10 +552,21 @@ func (a *Agent) hardwareUsageLoop() {
 
 const gpuHistoryLimit = 60
 
+const npuHistoryLimit = 60
+
 const systemHistoryLimit = 60
 
 func appendGPUUsageSample(history []hardware.GPUUsageSample, sample hardware.GPUUsageSample) []hardware.GPUUsageSample {
 	if len(history) < gpuHistoryLimit {
+		return append(history, sample)
+	}
+	copy(history, history[1:])
+	history[len(history)-1] = sample
+	return history
+}
+
+func appendNPUUsageSample(history []hardware.NPUUsageSample, sample hardware.NPUUsageSample) []hardware.NPUUsageSample {
+	if len(history) < npuHistoryLimit {
 		return append(history, sample)
 	}
 	copy(history, history[1:])
@@ -529,6 +587,12 @@ func (a *Agent) gpuHistorySnapshot() []hardware.GPUUsageSample {
 	a.hwMu.RLock()
 	defer a.hwMu.RUnlock()
 	return append([]hardware.GPUUsageSample(nil), a.gpuHistory...)
+}
+
+func (a *Agent) npuHistorySnapshot() []hardware.NPUUsageSample {
+	a.hwMu.RLock()
+	defer a.hwMu.RUnlock()
+	return append([]hardware.NPUUsageSample(nil), a.npuHistory...)
 }
 
 func (a *Agent) systemHistorySnapshot() []hardware.SystemUsageSample {
@@ -1013,11 +1077,22 @@ type nodeProperties struct {
 func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 	orchestratorID := a.getOrchestratorID()
 	trusted := orchestratorID != "" && a.identity != nil && a.identity.IsTrustedID(orchestratorID)
+	joined := a.isJoined()
+	pairingRequired := false
+	if !joined {
+		for _, candidate := range a.orchestratorCandidates() {
+			if a.identity == nil || !a.identity.IsTrustedID(candidate.id) {
+				pairingRequired = true
+				break
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"role":              "node",
 		"orchestrator_addr": a.getOrchestratorAddr(),
 		"trusted":           trusted,
-		"joined":            a.isJoined(),
+		"joined":            joined,
+		"pairing_required":  pairingRequired,
 	})
 }
 
@@ -1038,6 +1113,124 @@ func (a *Agent) handlePairingConnect(w http.ResponseWriter, r *http.Request) {
 		"orchestrator_addr": a.getOrchestratorAddr(),
 		"orchestrator_id":   a.getOrchestratorID(),
 	})
+}
+
+func (a *Agent) handlePairingInvitation(w http.ResponseWriter, r *http.Request) {
+	if r.TLS == nil {
+		http.Error(w, "pairing invitations require HTTPS", http.StatusUpgradeRequired)
+		return
+	}
+	if len(r.TLS.PeerCertificates) == 0 {
+		http.Error(w, "pairing invitation must include an orchestrator identity", http.StatusForbidden)
+		return
+	}
+	var request pairingInvitationRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
+		http.Error(w, "invalid pairing invitation", http.StatusBadRequest)
+		return
+	}
+	address, err := normalizeOrchestratorAddress(request.Address)
+	if err != nil || request.NodeID != a.cfg.NodeID || request.OrchestratorID == "" ||
+		r.TLS.PeerCertificates[0].Subject.CommonName != request.OrchestratorID || !validPairingPIN(request.PIN) {
+		http.Error(w, "pairing invitation identity or details are invalid", http.StatusBadRequest)
+		return
+	}
+	now := time.Now()
+	expiresAt := request.ExpiresAt
+	if expiresAt.IsZero() || expiresAt.After(now.Add(10*time.Minute)) {
+		expiresAt = now.Add(10 * time.Minute)
+	}
+	if !expiresAt.After(now) {
+		http.Error(w, "pairing invitation has expired", http.StatusGone)
+		return
+	}
+
+	invitation := &pairingInvitation{
+		OrchestratorID: request.OrchestratorID,
+		Address:        address,
+		PIN:            request.PIN,
+		ExpiresAt:      expiresAt,
+	}
+	a.pairingInviteMu.Lock()
+	if a.pairingAccepting {
+		a.pairingInviteMu.Unlock()
+		http.Error(w, "a pairing invitation is already being accepted", http.StatusConflict)
+		return
+	}
+	if current := a.pairingInvite; current != nil && current.ExpiresAt.After(now) {
+		if current.OrchestratorID != invitation.OrchestratorID || current.Address != invitation.Address || current.PIN != invitation.PIN {
+			a.pairingInviteMu.Unlock()
+			http.Error(w, "another pairing invitation is waiting for local confirmation", http.StatusConflict)
+			return
+		}
+		invitation = current
+	} else {
+		a.pairingInvite = invitation
+	}
+	a.pairingInviteMu.Unlock()
+	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "expires_at": invitation.ExpiresAt})
+}
+
+func (a *Agent) handlePairingInvitationStatus(w http.ResponseWriter, _ *http.Request) {
+	a.pairingInviteMu.Lock()
+	defer a.pairingInviteMu.Unlock()
+	if a.pairingInvite == nil || !a.pairingInvite.ExpiresAt.After(time.Now()) {
+		a.pairingInvite = nil
+		writeJSON(w, http.StatusOK, map[string]any{"pending": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pending":         true,
+		"orchestrator_id": a.pairingInvite.OrchestratorID,
+		"address":         a.pairingInvite.Address,
+		"expires_at":      a.pairingInvite.ExpiresAt,
+	})
+}
+
+func (a *Agent) handlePairingInvitationAccept(w http.ResponseWriter, _ *http.Request) {
+	a.pairingInviteMu.Lock()
+	if a.pairingAccepting {
+		a.pairingInviteMu.Unlock()
+		http.Error(w, "pairing invitation is already being accepted", http.StatusConflict)
+		return
+	}
+	invitation := a.pairingInvite
+	if invitation == nil || !invitation.ExpiresAt.After(time.Now()) {
+		a.pairingInvite = nil
+		a.pairingInviteMu.Unlock()
+		http.Error(w, "pairing invitation is missing or expired", http.StatusGone)
+		return
+	}
+	a.pairingAccepting = true
+	a.pairingInviteMu.Unlock()
+
+	err := a.pairWithAddress(invitation.Address, invitation.OrchestratorID, invitation.PIN)
+
+	a.pairingInviteMu.Lock()
+	a.pairingAccepting = false
+	if err == nil && a.pairingInvite == invitation {
+		a.pairingInvite = nil
+	}
+	a.pairingInviteMu.Unlock()
+	if err != nil {
+		http.Error(w, "could not join cluster: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"orchestrator_id":   a.getOrchestratorID(),
+		"orchestrator_addr": a.getOrchestratorAddr(),
+	})
+}
+
+func (a *Agent) handlePairingInvitationReject(w http.ResponseWriter, _ *http.Request) {
+	a.pairingInviteMu.Lock()
+	defer a.pairingInviteMu.Unlock()
+	if a.pairingAccepting {
+		http.Error(w, "pairing invitation is being accepted", http.StatusConflict)
+		return
+	}
+	a.pairingInvite = nil
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type engineInfo struct {
@@ -1252,6 +1445,10 @@ func (a *Agent) Run() error {
 	})
 	mux.HandleFunc("GET /api/pairing/status", a.handlePairingStatus)
 	mux.HandleFunc("POST /api/pairing/connect", a.handlePairingConnect)
+	mux.HandleFunc("POST /api/pairing/invitation", a.handlePairingInvitation)
+	mux.Handle("GET /api/pairing/invitation", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationStatus)))
+	mux.Handle("POST /api/pairing/invitation/accept", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationAccept)))
+	mux.Handle("POST /api/pairing/invitation/reject", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationReject)))
 	mux.HandleFunc("/execute", a.handleExecute)
 	mux.HandleFunc("POST /generate", a.handleGenerate)
 	mux.HandleFunc("POST /chat", a.handleChat)
@@ -1294,14 +1491,17 @@ func (a *Agent) Run() error {
 	// orchestrator, backed by /api/* aliases below, so any node shows the
 	// same cluster information and can submit work on its members' behalf.
 	mux.HandleFunc("GET /api/nodes", a.handleAPINodesGet)
+	mux.HandleFunc("GET /api/nodes/all", a.handleAPINodesGet)
 	mux.HandleFunc("GET /api/nodes/{id}/models", a.handleAPINodeModelsGet)
 	mux.HandleFunc("PATCH /api/nodes/{id}/models", a.handleAPINodeModelsPatch)
+	mux.HandleFunc("POST /api/nodes/{id}/pairing/connect", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", a.handleAPINodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", a.handleAPINodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/discovery", a.handleAPIDiscovery)
+	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", a.handleAPIDiscoveryPairingInvite)
 	mux.HandleFunc("GET /api/events", a.events.ServeHTTP)
 	mux.HandleFunc("POST /api/tasks", a.handleAPITasksPost)
 	mux.HandleFunc("GET /api/tasks", a.handleAPITasksList)
@@ -1353,10 +1553,18 @@ func (a *Agent) Run() error {
 	go a.syncMemoryToOrchestrator()
 
 	log.Printf("node agent %q listening on %s (advertised as %s)", a.cfg.NodeID, a.cfg.ListenAddr, a.cfg.AdvertiseAddr)
+	trustedHandler := a.identity.RequireTrustedPeer(mux)
+	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/pairing/invitation" {
+			a.handlePairingInvitation(w, r)
+			return
+		}
+		trustedHandler.ServeHTTP(w, r)
+	})
 	return peeridentity.ServeDual(
 		a.cfg.ListenAddr,
 		peeridentity.LoopbackOnly(mux),
-		a.identity.RequireTrustedPeer(mux),
+		secureHandler,
 		a.identity.ServerTLSConfig(),
 	)
 }
@@ -1898,6 +2106,16 @@ func (a *Agent) handleAPIDiscovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.discoveryListener.Snapshot())
 }
 
+func (a *Agent) handleAPIDiscoveryPairingInvite(w http.ResponseWriter, r *http.Request) {
+	orchestratorAddr := a.getOrchestratorAddr()
+	if orchestratorAddr == "" {
+		http.Error(w, "pairing invitations must be sent from a joined cluster member", http.StatusServiceUnavailable)
+		return
+	}
+	path := "/api/discovery/" + url.PathEscape(r.PathValue("id")) + "/pairing/invite"
+	a.proxy(w, r, orchestratorAddr, path)
+}
+
 // handleAPITasksPost accepts a submission from this node's GUI. The most
 // capable live node is the coordinator for the cluster, so all submissions are
 // routed there automatically instead of whichever node happens to be first.
@@ -1960,11 +2178,7 @@ func (a *Agent) handleAPINodeModelsPatch(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *Agent) handleAPINodeControl(w http.ResponseWriter, r *http.Request) {
-	addr, ok := a.peerAddress(r.PathValue("id"))
-	if !ok {
-		http.Error(w, "node not found", http.StatusNotFound)
-		return
-	}
+	nodeID := r.PathValue("id")
 	path := "/properties"
 	if strings.HasSuffix(r.URL.Path, "/engines") {
 		path = "/engine"
@@ -1975,7 +2189,34 @@ func (a *Agent) handleAPINodeControl(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/refresh") {
 		path = "/models/refresh"
 	}
-	a.proxy(w, r, addr, path)
+	if strings.HasSuffix(r.URL.Path, "/pairing/connect") {
+		path = "/api/pairing/connect"
+	}
+	if nodeID == a.cfg.NodeID {
+		switch path {
+		case "/engine":
+			a.handleEngineInfo(w, r)
+		case "/models/pull":
+			a.handleModelPull(w, r)
+		case "/models/refresh":
+			a.handleModelsRefresh(w, r)
+		case "/api/pairing/connect":
+			a.handlePairingConnect(w, r)
+		default:
+			a.handleProperties(w, r)
+		}
+		return
+	}
+	if _, ok := a.peerAddress(nodeID); !ok {
+		http.Error(w, "node not found", http.StatusNotFound)
+		return
+	}
+	orchestratorAddr := a.getOrchestratorAddr()
+	if orchestratorAddr == "" {
+		http.Error(w, "orchestrator unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	a.proxy(w, r, orchestratorAddr, r.URL.RequestURI())
 }
 
 func (a *Agent) handleAPINodeDialogue(w http.ResponseWriter, r *http.Request) {

@@ -35,9 +35,15 @@ type Harness struct {
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
 
-	events *hub.Hub
-	mem    *memory.Store
-	style  string
+	events           *hub.Hub
+	mem              *memory.Store
+	style            string
+	workflowExecutor func(context.Context, string, []scheduler.Subtask, bool) (string, error)
+}
+
+// SetWorkflowExecutor installs the shared durable workflow execution path.
+func (h *Harness) SetWorkflowExecutor(executor func(context.Context, string, []scheduler.Subtask, bool) (string, error)) {
+	h.workflowExecutor = executor
 }
 
 func New(registry *cluster.Registry, dispatcher *http.Client) *Harness {
@@ -639,7 +645,8 @@ func (h *Harness) selectCoordinator(s *Session) (*cluster.NodeStatus, string, er
 		if m == "" {
 			continue
 		}
-		score := n.FastScore - float64(n.ActiveTasks)*8.0 - cluster.GPUUtilizationPenalty(n.Hardware)
+		score := n.FastScore - float64(n.ActiveTasks)*8.0 -
+			cluster.GPUUtilizationPenalty(n.Hardware) - cluster.NPUUtilizationPenalty(n.Hardware)
 		if score > bestScore {
 			bestScore = score
 			bestNode = n
@@ -727,6 +734,7 @@ func (h *Harness) buildPrompt(s *Session) string {
 	sb.WriteString("- To converse with the least-loaded matching node in the cluster, call `cluster_converse`.\n")
 	sb.WriteString("- To directly query a node's LLM once, call `node_llm_query` or `cluster_llm_query`.\n")
 	sb.WriteString("- To fan out parallel tasks simultaneously across multiple nodes, call `cluster_parallel_dispatch`.\n")
+	sb.WriteString("- For multi-step work that needs durable progress, dependencies, validation, or review, call `execute_workflow` instead of coordinating worker calls manually.\n")
 	sb.WriteString("- To perform arithmetic or math formulas, call `eval_expression`.\n")
 	sb.WriteString("- To have two worker node LLMs debate or design something together, call `node_to_node_conversation`.\n")
 	sb.WriteString("- To look up what the cluster learned from past runs, call `recall_memory` or `memory_insights`.\n")
@@ -818,7 +826,7 @@ func (h *Harness) pickBestNodeForSubtask(st scheduler.Subtask, modelPref string,
 		}
 		hwScore := n.Hardware.Score
 		loadPenalty := float64(load[n.ID]) * 8.0
-		gpuPenalty := cluster.GPUUtilizationPenalty(n.Hardware)
+		acceleratorPenalty := cluster.GPUUtilizationPenalty(n.Hardware) + cluster.NPUUtilizationPenalty(n.Hardware)
 
 		// Past results shift routing: pairings that historically succeeded
 		// here get promoted, ones that failed or ran slow get demoted.
@@ -827,7 +835,7 @@ func (h *Harness) pickBestNodeForSubtask(st scheduler.Subtask, modelPref string,
 			learned = h.mem.LearnedBias(n.ID, model, st.TaskType)
 		}
 
-		totalScore := matchScore*10.0 + hwScore*0.3 - loadPenalty - gpuPenalty + learned
+		totalScore := matchScore*10.0 + hwScore*0.3 - loadPenalty - acceleratorPenalty + learned
 		if totalScore > bestScore {
 			bestScore = totalScore
 			best = n

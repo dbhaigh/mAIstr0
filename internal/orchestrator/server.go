@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,30 +37,30 @@ import (
 )
 
 type Server struct {
-	registry            *cluster.Registry
-	tasks               *taskmgr.Manager
-	client              *http.Client // short timeout, for node proxy/status calls
-	dispatcher          *http.Client // long timeout, subtask execution can cold-load a model
-	dispatchSlots       chan struct{}
-	discovery           *discovery.Listener
-	selfID              string
-	discoveryEnabled    bool
-	events              *hub.Hub
-	agentMu             sync.RWMutex
-	agents              map[string]agent.Backend
-	activeHarness       string
-	sessionHarnesses    map[string]string
-	mem                 *memory.Store
-	selfScore           float64 // announced on the LAN for orchestrator election
-	leaderMu            sync.Mutex
-	lastLeaderID        string // last announced leader, to log transitions once
-	discoveredNodes     map[string]bool
-	identityPath        string
-	identity            *peeridentity.Identity
-	advertiseAddr       string
-	peerMu              sync.RWMutex
-	pairedOrchestrators map[string]string
+	registry         *cluster.Registry
+	tasks            *taskmgr.Manager
+	client           *http.Client // short timeout, for node proxy/status calls
+	dispatcher       *http.Client // long timeout, subtask execution can cold-load a model
+	dispatchSlots    chan struct{}
+	discovery        *discovery.Listener
+	selfID           string
+	discoveryEnabled bool
+	events           *hub.Hub
+	agentMu          sync.RWMutex
+	agents           map[string]agent.Backend
+	activeHarness    string
+	sessionHarnesses map[string]string
+	mem              *memory.Store
+	selfScore        float64 // announced on the LAN for orchestrator election
+	leaderMu         sync.Mutex
+	lastLeaderID     string // last announced leader, to log transitions once
+	discoveredNodes  map[string]bool
+	identityPath     string
+	identity         *peeridentity.Identity
+	advertiseAddr    string
 }
+
+const discoveryRequestTimeout = 5 * time.Second
 
 func New() (*Server, error) { return NewWithMemory("") }
 
@@ -105,24 +106,24 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 	}
 	backends := map[string]agent.Backend{"deepseek": deepseekBackend}
 	srv := &Server{
-		registry:            reg,
-		client:              &http.Client{Timeout: 10 * time.Second},
-		dispatcher:          disp,
-		dispatchSlots:       make(chan struct{}, 16),
-		selfID:              selfID,
-		selfScore:           cluster.SelfScore(hardware.Detect()),
-		discoveryEnabled:    true,
-		events:              events,
-		discoveredNodes:     make(map[string]bool),
-		pairedOrchestrators: make(map[string]string),
-		agents:              backends,
-		activeHarness:       harnessName,
-		sessionHarnesses:    make(map[string]string),
-		tasks:               tasks,
-		mem:                 store,
-		identityPath:        peeridentity.DefaultPath(selfID),
+		registry:         reg,
+		client:           &http.Client{Timeout: 10 * time.Second},
+		dispatcher:       disp,
+		dispatchSlots:    make(chan struct{}, 16),
+		selfID:           selfID,
+		selfScore:        cluster.SelfScore(hardware.Detect()),
+		discoveryEnabled: true,
+		events:           events,
+		discoveredNodes:  make(map[string]bool),
+		agents:           backends,
+		activeHarness:    harnessName,
+		sessionHarnesses: make(map[string]string),
+		tasks:            tasks,
+		mem:              store,
+		identityPath:     peeridentity.DefaultPath(selfID),
 	}
 	srv.agents["pi"] = piagent.New(&localPiProvider{server: srv}, deepseekBackend)
+	deepseekBackend.SetWorkflowExecutor(srv.executeWorkflow)
 	if memoryPath != "" {
 		srv.identityPath = memoryPath + ".identity"
 	}
@@ -341,14 +342,12 @@ func (s *Server) InitializeIdentity() error {
 	if err != nil {
 		return err
 	}
+	if err := identity.RemovePairedOrchestrators(); err != nil {
+		return fmt.Errorf("remove unsupported orchestrator pairing: %w", err)
+	}
 	s.identity = identity
 	s.client.Transport = identity.ClientTransport()
 	s.dispatcher.Transport = identity.ClientTransport()
-	s.peerMu.Lock()
-	for id, address := range identity.PairedOrchestratorAddresses() {
-		s.pairedOrchestrators[id] = address
-	}
-	s.peerMu.Unlock()
 	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", pin)
 	return nil
 }
@@ -371,6 +370,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/pairing/join", s.handlePairingJoin)
 	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
+	mux.Handle("POST /api/pairing/pin", peeridentity.LoopbackOnly(http.HandlerFunc(s.handlePairingPINRegenerate)))
 	mux.HandleFunc("POST /api/pairing/connect", s.handlePairingConnect)
 	mux.HandleFunc("GET /api/pairing/roster", s.handlePairingRoster)
 	mux.HandleFunc("POST /api/nodes/register", s.handleRegister)
@@ -381,17 +381,20 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/nodes/{id}/models", s.handleNodeModelsGet)
 	mux.HandleFunc("PATCH /api/nodes/{id}/models", s.handleNodeModelsPatch)
+	mux.HandleFunc("POST /api/nodes/{id}/pairing/connect", s.handleNodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/properties", s.handleNodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", s.handleNodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", s.handleNodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", s.handleNodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", s.handleNodeControl)
 	mux.HandleFunc("GET /api/discovery", s.handleDiscovery)
+	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", s.handlePairingInvite)
 	mux.HandleFunc("GET /api/events", s.events.ServeHTTP)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
+	mux.HandleFunc("POST /api/tasks/{id}/approve", s.handleApproveTask)
 
 	// Interactive agent backend endpoints
 	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessionsList)
@@ -467,13 +470,20 @@ func (s *Server) Run(listenAddr string) error {
 		if s.discovery == nil {
 			s.discovery = discovery.Listen(s.selfID)
 		}
+		if err := s.discovery.WaitReady(2 * time.Second); err != nil {
+			return fmt.Errorf("orchestrator: start cluster discovery: %w", err)
+		}
 		selfAddr := "http://" + discovery.OutboundIP() + portSuffix(listenAddr)
 		peerAddr := "https://" + discovery.OutboundIP() + portSuffix(listenAddr)
 		go discovery.Beacon(func() discovery.Announcement {
 			members := s.registry.Active()
 			_, elected := s.registry.Leader()
+			role := "candidate"
+			if s.isElectedOrchestrator() {
+				role = "orchestrator"
+			}
 			return discovery.Announcement{
-				Role: "orchestrator", ID: s.selfID, HTTPAddr: selfAddr, PeerAddr: peerAddr,
+				Role: role, ID: s.selfID, HTTPAddr: selfAddr, PeerAddr: peerAddr,
 				Score: s.selfScore, Members: len(members), Elected: elected,
 			}
 		}, 5*time.Second, nil)
@@ -482,18 +492,37 @@ func (s *Server) Run(listenAddr string) error {
 	log.Printf("orchestrator listening on %s", listenAddr)
 	mux := s.Mux()
 	secure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.isElectedOrchestrator() {
+			http.Error(w, "this instance yielded orchestrator leadership to a higher-ranked cluster member", http.StatusServiceUnavailable)
+			return
+		}
 		if r.URL.Path == "/api/pairing/join" {
 			mux.ServeHTTP(w, r)
 			return
 		}
 		s.identity.RequireTrustedPeer(mux).ServeHTTP(w, r)
 	})
+	loopback := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.isElectedOrchestrator() {
+			http.Error(w, "this instance yielded orchestrator leadership to a higher-ranked cluster member", http.StatusServiceUnavailable)
+			return
+		}
+		peeridentity.LoopbackOnly(mux).ServeHTTP(w, r)
+	})
 	return peeridentity.ServeDual(
 		listenAddr,
-		peeridentity.LoopbackOnly(mux),
+		loopback,
 		secure,
 		s.identity.ServerTLSConfig(),
 	)
+}
+
+func (s *Server) isElectedOrchestrator() bool {
+	if !s.discoveryEnabled || s.discovery == nil {
+		return true
+	}
+	self := discovery.Announcement{Role: "orchestrator", ID: s.selfID, Score: s.selfScore}
+	return discovery.IsElectedOrchestrator(self, s.discovery.Snapshot())
 }
 
 type pairingJoinRequest struct {
@@ -533,26 +562,29 @@ func (s *Server) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-func (s *Server) handlePairingConnect(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePairingPINRegenerate(w http.ResponseWriter, _ *http.Request) {
 	if s.identity == nil {
 		http.Error(w, "pairing is not initialized", http.StatusServiceUnavailable)
 		return
 	}
-	var request struct {
-		Address string `json:"address"`
-		PIN     string `json:"pin"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
-		http.Error(w, "invalid pairing request", http.StatusBadRequest)
+	pin, err := s.identity.NewPairingPIN()
+	if err != nil {
+		http.Error(w, "could not generate a pairing PIN: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.PairWithOrchestrator(strings.TrimSpace(request.Address), strings.TrimSpace(request.PIN)); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+	_, expiresAt, active := s.identity.ActivePairingPIN()
+	if !active {
+		http.Error(w, "generated pairing PIN is not active", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"paired_orchestrator": strings.TrimSpace(request.Address),
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pin":        pin,
+		"expires_at": expiresAt,
 	})
+}
+
+func (s *Server) handlePairingConnect(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "orchestrator-to-orchestrator pairing is disabled; join the cluster as a node", http.StatusForbidden)
 }
 
 func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
@@ -570,9 +602,9 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid pairing request", http.StatusBadRequest)
 		return
 	}
-	if request.Role != "node" && request.Role != "orchestrator" {
+	if request.Role != "node" {
 		log.Printf("orchestrator: rejected pairing request from %s: invalid peer role", r.RemoteAddr)
-		http.Error(w, "role must be node or orchestrator", http.StatusBadRequest)
+		http.Error(w, "only nodes can join an orchestrator", http.StatusBadRequest)
 		return
 	}
 	if request.ID == "" || request.ID == s.selfID {
@@ -585,20 +617,6 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if request.Role == "orchestrator" {
-		for id, certificate := range request.Peers {
-			if id == "" || id == s.selfID {
-				log.Printf("orchestrator: rejected federation pairing request from %s: invalid peer roster identity", r.RemoteAddr)
-				http.Error(w, "invalid peer roster identity", http.StatusBadRequest)
-				return
-			}
-			if err := s.identity.ValidatePeer(id, certificate); err != nil {
-				log.Printf("orchestrator: rejected federation pairing request from %s: invalid roster certificate: %v", r.RemoteAddr, err)
-				http.Error(w, "invalid peer roster certificate: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
-	}
 	if !s.identity.ConsumePairingPIN(request.PIN) {
 		log.Printf("orchestrator: rejected pairing request from %s: PIN invalid, expired, or already used", r.RemoteAddr)
 		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
@@ -608,22 +626,6 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		log.Printf("orchestrator: failed to save paired peer from %s: %v", r.RemoteAddr, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
-	}
-	if request.Role == "orchestrator" && request.PeerAddr != "" {
-		s.peerMu.Lock()
-		s.pairedOrchestrators[request.ID] = request.PeerAddr
-		s.peerMu.Unlock()
-	}
-	if request.Role == "orchestrator" {
-		for id, certificate := range request.Peers {
-			if id == request.ID {
-				continue
-			}
-			if err := s.identity.TrustPeer(id, certificate); err != nil {
-				http.Error(w, "orchestrator paired but could not trust peer "+id+": "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
 	}
 	nextPIN, err := s.identity.NewPairingPIN()
 	if err != nil {
@@ -638,79 +640,6 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PairWithOrchestrator enrolls this orchestrator with another using its
-// one-use out-of-band PIN, then pins the returned identity and trusted roster.
-func (s *Server) PairWithOrchestrator(address, pin string) (resultErr error) {
-	if s.identity == nil {
-		return errors.New("orchestrator identity is not initialized")
-	}
-	parsed, err := url.Parse(address)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
-		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("pairing address must be an https URL without user information")
-	}
-	if pin == "" {
-		return errors.New("pairing PIN is required")
-	}
-	log.Printf("orchestrator: starting federation pairing with %s", "https://"+parsed.Host)
-	defer func() {
-		if resultErr != nil {
-			log.Printf("orchestrator: federation pairing with %s failed: %v", "https://"+parsed.Host, resultErr)
-		}
-	}()
-	body, err := json.Marshal(pairingJoinRequest{
-		ID: s.selfID, Role: "orchestrator", PeerAddr: s.advertiseAddr,
-		PIN: pin, CertificatePEM: s.identity.CertificatePEM(), Peers: s.identity.TrustedPeers(),
-	})
-	if err != nil {
-		return fmt.Errorf("encode orchestrator pairing request: %w", err)
-	}
-	address = "https://" + parsed.Host
-	client := &http.Client{Timeout: 10 * time.Second, Transport: s.identity.BootstrapTransport()}
-	resp, err := client.Post(address+"/api/pairing/join", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("pair with orchestrator at %s: %w", address, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("orchestrator pairing rejected: %s: %s", resp.Status, strings.TrimSpace(string(message)))
-	}
-	var result pairingJoinResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode orchestrator pairing response: %w", err)
-	}
-	if result.Role != "orchestrator" || result.ID == "" || result.ID == s.selfID {
-		return fmt.Errorf("pairing endpoint returned invalid orchestrator identity %q with role %q", result.ID, result.Role)
-	}
-	if err := s.identity.ValidatePeer(result.ID, result.CertificatePEM); err != nil {
-		return err
-	}
-	if s.discovery != nil {
-		for _, peer := range s.discovery.Snapshot() {
-			if peer.Role == "orchestrator" && peer.PeerAddr == address && peer.ID != result.ID {
-				return fmt.Errorf("pairing endpoint identity %q does not match discovered identity %q", result.ID, peer.ID)
-			}
-		}
-	}
-	if err := s.identity.TrustPeerDetails(result.ID, result.CertificatePEM, "orchestrator", address); err != nil {
-		return err
-	}
-	for id, certificate := range result.Peers {
-		if id == s.selfID {
-			continue
-		}
-		if err := s.identity.TrustPeer(id, certificate); err != nil {
-			return fmt.Errorf("trust paired roster member %q: %w", id, err)
-		}
-	}
-	s.peerMu.Lock()
-	s.pairedOrchestrators[result.ID] = address
-	s.peerMu.Unlock()
-	log.Printf("orchestrator: paired with orchestrator %s at %s", result.ID, address)
-	return nil
-}
-
 func (s *Server) discoverySyncLoop() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -720,6 +649,9 @@ func (s *Server) discoverySyncLoop() {
 }
 
 func (s *Server) syncDiscoveredPeers() {
+	if !s.isElectedOrchestrator() {
+		return
+	}
 	visibleNodes := make(map[string]bool)
 	type discoveryResult struct {
 		peer   discovery.Peer
@@ -733,38 +665,22 @@ func (s *Server) syncDiscoveredPeers() {
 			peers[peer.ID] = peer
 		}
 	}
-	s.peerMu.RLock()
-	for id, address := range s.pairedOrchestrators {
-		peers[id] = discovery.Peer{Announcement: discovery.Announcement{
-			Role: "orchestrator", ID: id, PeerAddr: address,
-		}}
-	}
-	s.peerMu.RUnlock()
 	for _, peer := range peers {
 		if peer.PeerAddr == "" || !s.identity.IsTrustedID(peer.ID) {
 			continue
 		}
-		if peer.Role != "node" && peer.Role != "orchestrator" {
+		if peer.Role != "node" {
 			continue
 		}
 		probes.Add(1)
 		go func(peer discovery.Peer) {
 			defer probes.Done()
-			if peer.Role == "node" {
-				status, err := s.discoveredNodeStatus(peer.PeerAddr)
-				if err != nil {
-					log.Printf("orchestrator: secure status probe for paired node %s failed: %v", peer.ID, err)
-					return
-				}
-				results <- discoveryResult{peer: peer, status: []cluster.NodeStatus{status}}
-				return
-			}
-			nodes, err := s.fetchDiscoveredClusterNodes(peer.PeerAddr)
+			status, err := s.discoveredNodeStatus(peer.PeerAddr)
 			if err != nil {
-				log.Printf("orchestrator: secure cluster sync with paired orchestrator %s failed: %v", peer.ID, err)
+				log.Printf("orchestrator: secure status probe for paired node %s failed: %v", peer.ID, err)
 				return
 			}
-			results <- discoveryResult{peer: peer, status: nodes}
+			results <- discoveryResult{peer: peer, status: []cluster.NodeStatus{status}}
 		}(peer)
 	}
 	go func() {
@@ -772,10 +688,8 @@ func (s *Server) syncDiscoveredPeers() {
 		close(results)
 	}()
 	for result := range results {
-		if result.peer.Role == "node" {
-			visibleNodes[result.peer.ID] = true
-			s.discoveredNodes[result.peer.ID] = true
-		}
+		visibleNodes[result.peer.ID] = true
+		s.discoveredNodes[result.peer.ID] = true
 		for _, status := range result.status {
 			s.registry.Upsert(status)
 		}
@@ -793,25 +707,8 @@ func (s *Server) syncDiscoveredPeers() {
 	s.publishSnapshot()
 }
 
-func (s *Server) fetchDiscoveredClusterNodes(addr string) ([]cluster.NodeStatus, error) {
-	client := &http.Client{Timeout: 1500 * time.Millisecond, Transport: s.identity.ClientTransport()}
-	resp, err := client.Get(addr + "/api/nodes")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("cluster status endpoint returned %s", resp.Status)
-	}
-	var nodes []cluster.NodeStatus
-	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
-		return nil, fmt.Errorf("decode cluster status: %w", err)
-	}
-	return nodes, nil
-}
-
 func (s *Server) discoveredNodeStatus(addr string) (cluster.NodeStatus, error) {
-	client := &http.Client{Timeout: 1500 * time.Millisecond, Transport: s.identity.ClientTransport()}
+	client := &http.Client{Timeout: discoveryRequestTimeout, Transport: s.identity.ClientTransport()}
 	resp, err := client.Get(addr + "/status")
 	if err != nil {
 		return cluster.NodeStatus{}, err
@@ -835,6 +732,107 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.discovery.Snapshot())
+}
+
+func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
+	if s.identity == nil {
+		http.Error(w, "pairing is not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	nodeID := r.PathValue("id")
+	if nodeID == "" {
+		http.Error(w, "node id is required", http.StatusBadRequest)
+		return
+	}
+	if _, paired := s.registry.Get(nodeID); paired {
+		http.Error(w, "node is already paired; use the node re-pair action", http.StatusConflict)
+		return
+	}
+	var request struct {
+		PIN string `json:"pin"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
+		http.Error(w, "invalid pairing invitation request", http.StatusBadRequest)
+		return
+	}
+	activePIN, expiresAt, active := s.identity.ActivePairingPIN()
+	if !active || len(request.PIN) != len(activePIN) ||
+		subtle.ConstantTimeCompare([]byte(request.PIN), []byte(activePIN)) != 1 {
+		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
+		return
+	}
+	if s.advertiseAddr == "" {
+		http.Error(w, "orchestrator HTTPS address is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	orchestratorURL, err := url.Parse(s.advertiseAddr)
+	if err != nil || orchestratorURL.Scheme != "https" || orchestratorURL.Host == "" ||
+		orchestratorURL.User != nil || orchestratorURL.Path != "" && orchestratorURL.Path != "/" ||
+		orchestratorURL.RawQuery != "" || orchestratorURL.Fragment != "" {
+		http.Error(w, "orchestrator HTTPS address is invalid", http.StatusServiceUnavailable)
+		return
+	}
+	if s.discovery == nil {
+		http.Error(w, "LAN discovery is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var nodePeer *discovery.Peer
+	for _, peer := range s.discovery.Snapshot() {
+		if peer.ID == nodeID && peer.Role == "node" {
+			copy := peer
+			nodePeer = &copy
+			break
+		}
+	}
+	if nodePeer == nil {
+		http.Error(w, "node is no longer visible on the local network", http.StatusNotFound)
+		return
+	}
+	targetURL, err := url.Parse(nodePeer.PeerAddr)
+	if err != nil || targetURL.Scheme != "https" || targetURL.Host == "" ||
+		targetURL.User != nil || targetURL.Path != "" && targetURL.Path != "/" ||
+		targetURL.RawQuery != "" || targetURL.Fragment != "" {
+		http.Error(w, "discovered node does not advertise a valid HTTPS address", http.StatusBadRequest)
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"node_id":         nodeID,
+		"orchestrator_id": s.selfID,
+		"address":         s.advertiseAddr,
+		"pin":             request.PIN,
+		"expires_at":      expiresAt,
+	})
+	if err != nil {
+		http.Error(w, "could not encode pairing invitation", http.StatusInternalServerError)
+		return
+	}
+	outbound, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+		strings.TrimRight(nodePeer.PeerAddr, "/")+"/api/pairing/invitation", bytes.NewReader(payload))
+	if err != nil {
+		http.Error(w, "could not prepare pairing invitation: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	outbound.Header.Set("Content-Type", "application/json")
+	client := &http.Client{
+		Timeout:   discoveryRequestTimeout,
+		Transport: s.identity.BootstrapTransportForID(nodeID),
+	}
+	response, err := client.Do(outbound)
+	if err != nil {
+		http.Error(w, "could not reach discovered node: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+		http.Error(w, "node rejected pairing invitation: "+strings.TrimSpace(string(message)), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"node_id":    nodeID,
+		"address":    nodePeer.PeerAddr,
+		"expires_at": expiresAt,
+	})
 }
 
 // portSuffix extracts ":port" from a listen address like ":7450".
@@ -978,37 +976,6 @@ func (s *Server) handleEject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) notifyOrchestratorsOfEjection(nodeID string) {
-	addresses := make(map[string]string)
-	if s.discovery != nil {
-		for _, peer := range s.discovery.Snapshot() {
-			if peer.Role == "orchestrator" && peer.ID != s.selfID && peer.PeerAddr != "" {
-				addresses[peer.ID] = peer.PeerAddr
-			}
-		}
-	}
-	s.peerMu.RLock()
-	for id, address := range s.pairedOrchestrators {
-		addresses[id] = address
-	}
-	s.peerMu.RUnlock()
-	for id, address := range addresses {
-		if s.identity == nil || !s.identity.IsTrustedID(id) {
-			continue
-		}
-		go func(addr string) {
-			req, err := http.NewRequest(http.MethodPost, addr+"/api/nodes/"+url.PathEscape(nodeID)+"/eject", nil)
-			if err != nil {
-				return
-			}
-			resp, err := s.client.Do(req)
-			if err == nil {
-				resp.Body.Close()
-			}
-		}(address)
-	}
-}
-
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.registry.Active())
 }
@@ -1104,6 +1071,9 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(r.URL.Path, "/refresh") {
 		path = "/models/refresh"
+	}
+	if strings.HasSuffix(r.URL.Path, "/pairing/connect") {
+		path = "/api/pairing/connect"
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -1214,58 +1184,21 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 	_, _ = io.Copy(w, resp.Body)
 }
 
-type createTaskRequest struct {
-	Description string              `json:"description"`
-	Subtasks    []scheduler.Subtask `json:"subtasks,omitempty"`
-}
-
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	var req createTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Description) == "" {
-		http.Error(w, "description is required", http.StatusBadRequest)
-		return
-	}
-
-	subtasks := req.Subtasks
-	if len(subtasks) == 0 {
-		subtasks = scheduler.Decompose(req.Description)
-	}
-	subtasks, err := scheduler.ValidatePlan(subtasks)
+	task, err := s.createTask(r.Context(), req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	assignments, err := scheduler.AssignWithExperience(subtasks, s.registry.Active(), s.experience())
-	if err != nil {
-		if errors.Is(err, scheduler.ErrNoHealthyNodes) {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		var unassignable *scheduler.UnassignableSubtasksError
-		if errors.As(err, &unassignable) {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		var createErr *taskCreateError
+		if errors.As(err, &createErr) {
+			http.Error(w, createErr.Error(), createErr.status)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	if len(assignments) != len(subtasks) {
-		http.Error(w, "scheduler returned an incomplete assignment", http.StatusServiceUnavailable)
-		return
-	}
-
-	task, err := s.tasks.CreateChecked(req.Description, assignments)
-	if err != nil {
-		http.Error(w, "could not persist task: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	for _, a := range assignments {
-		go s.dispatch(task.ID, a)
 	}
 	writeJSON(w, http.StatusAccepted, task)
 }
@@ -1309,15 +1242,29 @@ func (s *Server) dispatch(taskID string, a scheduler.Assignment) {
 			attemptErr = errors.New("node was ejected before dispatch")
 		} else {
 			s.registry.IncrementLoad(current.NodeID, 1)
-			started := time.Now()
-			output, attemptErr, retryable = s.executeSubtask(ctx, current, prompt)
+			attemptPrompt := prompt
+			for validationAttempt := 0; ; validationAttempt++ {
+				started := time.Now()
+				output, attemptErr, retryable = s.executeSubtask(ctx, current, attemptPrompt)
+				if attemptErr == nil {
+					attemptErr = validateTaskOutput(current.Subtask, output)
+					if attemptErr != nil {
+						retryable = false
+					}
+				}
+				s.recordDispatch(current, output, attemptErr, time.Since(started))
+				if attemptErr == nil || retryable || validationAttempt >= current.Subtask.MaxRetries {
+					break
+				}
+				attemptPrompt = validationRetryPrompt(prompt, attemptErr, output)
+			}
 			s.registry.IncrementLoad(current.NodeID, -1)
-			s.recordDispatch(current, output, attemptErr, time.Since(started))
 		}
 		if attemptErr == nil {
 			s.tasks.CompleteSubtask(taskID, a.Subtask.ID, output, nil)
 			return
 		}
+
 		if !retryable || attempt == 1 || ctx.Err() != nil {
 			s.tasks.CompleteSubtask(taskID, a.Subtask.ID, "", attemptErr)
 			return
@@ -1339,6 +1286,15 @@ func (s *Server) dispatch(taskID string, a scheduler.Assignment) {
 		}
 		current = retry
 	}
+}
+
+func validationRetryPrompt(prompt string, validationErr error, output string) string {
+	const maxPriorOutputBytes = 8 * 1024
+	if len(output) > maxPriorOutputBytes {
+		output = output[:maxPriorOutputBytes]
+	}
+	return fmt.Sprintf("%s\n\nYour previous result did not pass validation: %s\nRevise it and return a corrected result. Previous result:\n%s",
+		prompt, validationErr, output)
 }
 
 func (s *Server) executeSubtask(ctx context.Context, assignment scheduler.Assignment, prompt string) (string, error, bool) {
@@ -1418,7 +1374,7 @@ func (s *Server) recordDispatch(a scheduler.Assignment, output string, err error
 	if err != nil {
 		errMsg = err.Error()
 	}
-	_, _ = s.mem.Record(memory.Experience{
+	if _, err := s.mem.Record(memory.Experience{
 		Kind:        "subtask",
 		TaskType:    a.Subtask.TaskType,
 		Description: a.Subtask.Description,
@@ -1429,8 +1385,10 @@ func (s *Server) recordDispatch(a scheduler.Assignment, output string, err error
 		Success:     err == nil,
 		Error:       errMsg,
 		DurationMs:  elapsed.Milliseconds(),
-		Tags:        append([]string{"dispatch"}, a.Subtask.Tags...),
-	})
+		Tags:        append(append([]string{"dispatch", "role:" + a.Subtask.Role}, a.Subtask.Tags...), "stage:"+a.Subtask.TaskType),
+	}); err != nil {
+		log.Printf("orchestrator: record subtask experience failed: %v", err)
+	}
 }
 
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
@@ -1465,6 +1423,29 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	}
 	cancelled, _ := s.tasks.Get(id)
 	writeJSON(w, http.StatusOK, cancelled)
+}
+
+func (s *Server) handleApproveTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	taskBeforeApproval, ok := s.tasks.Get(id)
+	if !ok {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	if taskBeforeApproval.Status != taskmgr.StatusAwaitingApproval {
+		http.Error(w, "task is not awaiting approval", http.StatusConflict)
+		return
+	}
+	if err := s.tasks.ApproveChecked(id); err != nil {
+		if errors.Is(err, taskmgr.ErrNotAwaitingApproval) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, "could not approve task: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	task, _ := s.tasks.Get(id)
+	writeJSON(w, http.StatusOK, task)
 }
 
 // --- Interactive Agent Backend HTTP Handlers ---

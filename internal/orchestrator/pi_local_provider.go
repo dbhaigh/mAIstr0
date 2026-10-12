@@ -154,35 +154,11 @@ func localPiPrompt(request piagent.CompletionRequest) (string, error) {
 }
 
 func piToolGuidance(tools []agent.ToolDef) string {
-	available := make(map[string]bool, len(tools))
-	for _, tool := range tools {
-		available[tool.Name] = true
-	}
-	guidance := []struct {
-		name string
-		text string
-	}{
-		{"cluster_status", "Inspect cluster health, hardware, leadership, and active workloads."},
-		{"list_node_models", "Discover which models are available on cluster nodes."},
-		{"node_converse", "Continue a multi-turn conversation with a specific node model."},
-		{"node_collaborate", "Iteratively collaborate with a worker model on a complex task."},
-		{"cluster_converse", "Ask the least-loaded matching cluster model a question."},
-		{"node_llm_query", "Send one direct query to a specific node model."},
-		{"cluster_llm_query", "Send one query to a matching model anywhere in the cluster."},
-		{"cluster_parallel_dispatch", "Run independent subtasks concurrently across cluster nodes."},
-		{"eval_expression", "Evaluate arithmetic or a mathematical expression."},
-		{"node_to_node_conversation", "Have two worker models debate or review a topic directly."},
-		{"recall_memory", "Look up relevant past work before repeating a task."},
-		{"memory_insights", "Review learned cluster performance and routing recommendations."},
-		{"remember_fact", "Save a durable fact or preference for future sessions."},
-		{"session_memory", "Read or update information in this conversation's memory."},
-	}
 	var prompt strings.Builder
-	prompt.WriteString("Choose the appropriate tool when the request calls for cluster inspection, model work, math, web access, or memory; use multiple tools when needed and wait for each result before deciding the next step.\n")
-	for _, item := range guidance {
-		if available[item.name] {
-			fmt.Fprintf(&prompt, "- `%s`: %s\n", item.name, item.text)
-		}
+	prompt.WriteString("All tools in the catalog above are available for you to execute. Follow explicit user instructions to use named tools; if the user asks you to run all available tools, call every tool listed below and do not omit or substitute any. You may emit multiple <tool_call> blocks in one response. If the calls depend on earlier results, continue in later steps until every requested tool has run and returned a result. If a requested tool is not in the catalog, say so.\n")
+	prompt.WriteString("Available tools:\n")
+	for _, tool := range tools {
+		fmt.Fprintf(&prompt, "- `%s`: %s\n", tool.Name, tool.Description)
 	}
 	return prompt.String()
 }

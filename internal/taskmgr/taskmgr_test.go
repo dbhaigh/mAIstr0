@@ -147,6 +147,67 @@ func TestFinalizerFailureIsReported(t *testing.T) {
 	}
 }
 
+func TestApprovalGateDefersSynthesisUntilApproved(t *testing.T) {
+	finalizerCalls := 0
+	manager := NewManagerWithFinalizer(func(context.Context, *Task) (string, error) {
+		finalizerCalls++
+		return "approved result", nil
+	})
+	task, err := manager.CreateWithOptionsChecked("Review this", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work", Description: "Do the work"},
+	}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.CompleteSubtask(task.ID, "work", "worker result", nil)
+	waiting, _ := manager.Get(task.ID)
+	if waiting.Status != StatusAwaitingApproval || finalizerCalls != 0 {
+		t.Fatalf("approval gate state = %q, finalizer calls = %d", waiting.Status, finalizerCalls)
+	}
+	if err := manager.ApproveChecked(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	completed, _ := manager.Get(task.ID)
+	if completed.Status != StatusCompleted || completed.Result != "approved result" || finalizerCalls != 1 {
+		t.Fatalf("approval did not resume synthesis: %+v, finalizer calls = %d", completed, finalizerCalls)
+	}
+}
+
+func TestApprovalGateSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "approval.db")
+	manager, err := OpenManager(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := manager.CreateWithOptionsChecked("Review this", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work", Description: "Do the work"},
+	}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.CompleteSubtask(task.ID, "work", "saved output", nil)
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenManager(path, func(_ context.Context, task *Task) (string, error) {
+		if task.Subtasks[0].Output != "saved output" {
+			t.Fatalf("restored output = %q", task.Subtasks[0].Output)
+		}
+		return "resumed result", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.ApproveChecked(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	result, _ := reopened.Get(task.ID)
+	if result.Status != StatusCompleted || result.Result != "resumed result" {
+		t.Fatalf("approval state did not resume after restart: %+v", result)
+	}
+}
+
 func TestPersistentManagerRestoresHistoryAndMarksInterruptedTasksFailed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tasks.db")
 	manager, err := OpenManager(path, nil)

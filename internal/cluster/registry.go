@@ -21,6 +21,7 @@ type NodeStatus struct {
 	Hardware      hardware.Info                `json:"hardware"`
 	Models        []engine.Model               `json:"models"`
 	GPUHistory    []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
+	NPUHistory    []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
 	SystemHistory []hardware.SystemUsageSample `json:"system_history,omitempty"`
 	DefaultModel  string                       `json:"default_model,omitempty"`
 	FastScore     float64                      `json:"fast_score"`
@@ -159,11 +160,23 @@ func GPUUtilizationPenalty(hw hardware.Info) float64 {
 	return float64(hw.GPUUtilization) * 0.1
 }
 
+// NPUUtilizationPenalty uses the same scheduler scale as GPU utilization.
+// Missing telemetry is neutral, not interpreted as idle.
+func NPUUtilizationPenalty(hw hardware.Info) float64 {
+	if !hw.NPUStatsAvailable {
+		return 0
+	}
+	return float64(hw.NPUUtilization) * 0.1
+}
+
 // FastScore is the coordination-speed metric, shared so every process
 // announces election scores computed the same way.
 func FastScore(hw hardware.Info) float64 {
 	s := float64(hw.CPUCores) * 2
 	if hw.HasGPU {
+		s += 100
+	}
+	if hw.HasNPU {
 		s += 100
 	}
 	return s

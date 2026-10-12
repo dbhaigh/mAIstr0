@@ -5,6 +5,7 @@ package taskmgr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -21,13 +22,16 @@ import (
 
 type Status string
 
+var ErrNotAwaitingApproval = errors.New("task is not awaiting approval")
+
 const (
-	StatusPending   Status = "pending"
-	StatusRunning   Status = "running"
-	StatusSynthesis Status = "synthesizing"
-	StatusCompleted Status = "completed"
-	StatusFailed    Status = "failed"
-	StatusCancelled Status = "cancelled"
+	StatusPending          Status = "pending"
+	StatusRunning          Status = "running"
+	StatusSynthesis        Status = "synthesizing"
+	StatusAwaitingApproval Status = "awaiting_approval"
+	StatusCompleted        Status = "completed"
+	StatusFailed           Status = "failed"
+	StatusCancelled        Status = "cancelled"
 )
 
 // SubtaskResult tracks one assignment's execution outcome.
@@ -40,17 +44,18 @@ type SubtaskResult struct {
 
 // Task is a submitted job and everything derived from it.
 type Task struct {
-	ID          string          `json:"id"`
-	Description string          `json:"description"`
-	Status      Status          `json:"status"`
-	Subtasks    []SubtaskResult `json:"subtasks"`
-	Result      string          `json:"result,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	ctx         context.Context
-	cancel      context.CancelFunc
-	changed     chan struct{}
+	ID              string          `json:"id"`
+	Description     string          `json:"description"`
+	Status          Status          `json:"status"`
+	Subtasks        []SubtaskResult `json:"subtasks"`
+	RequireApproval bool            `json:"require_approval,omitempty"`
+	Result          string          `json:"result,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	ctx             context.Context
+	cancel          context.CancelFunc
+	changed         chan struct{}
 }
 
 // Finalizer converts completed subtask outputs into the task's final result.
@@ -160,7 +165,7 @@ func (m *Manager) load() error {
 				task.UpdatedAt = time.Now()
 				interrupted[task.ID] = true
 				cancel()
-			} else {
+			} else if task.Status != StatusAwaitingApproval {
 				cancel()
 			}
 			tasks = append(tasks, &task)
@@ -221,6 +226,12 @@ func (m *Manager) Create(description string, assignments []scheduler.Assignment)
 
 // CreateChecked creates a task and reports persistence errors to the caller.
 func (m *Manager) CreateChecked(description string, assignments []scheduler.Assignment) (*Task, error) {
+	return m.CreateWithOptionsChecked(description, assignments, false)
+}
+
+// CreateWithOptionsChecked creates a persisted task with an optional approval
+// gate before final synthesis.
+func (m *Manager) CreateWithOptionsChecked(description string, assignments []scheduler.Assignment, requireApproval bool) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seq++
@@ -228,20 +239,22 @@ func (m *Manager) CreateChecked(description string, assignments []scheduler.Assi
 
 	results := make([]SubtaskResult, 0, len(assignments))
 	for _, a := range assignments {
+		a.Subtask = cloneSubtask(a.Subtask)
 		results = append(results, SubtaskResult{Assignment: a, Status: StatusPending})
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &Task{
-		ID:          id,
-		Description: description,
-		Status:      StatusRunning,
-		Subtasks:    results,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-		ctx:         ctx,
-		cancel:      cancel,
-		changed:     make(chan struct{}),
+		ID:              id,
+		Description:     description,
+		Status:          StatusRunning,
+		Subtasks:        results,
+		RequireApproval: requireApproval,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+		ctx:             ctx,
+		cancel:          cancel,
+		changed:         make(chan struct{}),
 	}
 	if len(results) == 0 {
 		t.Status = StatusFailed
@@ -273,6 +286,34 @@ func (m *Manager) Context(id string) (context.Context, bool) {
 		return nil, false
 	}
 	return t.ctx, true
+}
+
+// Wait blocks until the task reaches a terminal state or ctx is cancelled.
+func (m *Manager) Wait(ctx context.Context, id string) (*Task, error) {
+	for {
+		m.mu.RLock()
+		t, ok := m.tasks[id]
+		if !ok {
+			m.mu.RUnlock()
+			return nil, fmt.Errorf("taskmgr: task %s not found", id)
+		}
+		snapshot := cloneTask(t)
+		switch t.Status {
+		case StatusCompleted, StatusFailed, StatusCancelled:
+			m.mu.RUnlock()
+			return snapshot, nil
+		case StatusAwaitingApproval:
+			m.mu.RUnlock()
+			return snapshot, errors.New("task is awaiting human approval")
+		}
+		changed := t.changed
+		m.mu.RUnlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-changed:
+		}
+	}
 }
 
 func (m *Manager) Cancel(id string) bool {
@@ -391,6 +432,7 @@ func (m *Manager) ReassignSubtaskChecked(taskID, subtaskID string, assignment sc
 		if t.Subtasks[i].Status != StatusRunning {
 			return fmt.Errorf("taskmgr: subtask %s in task %s is not running", subtaskID, taskID)
 		}
+		assignment.Subtask = cloneSubtask(assignment.Subtask)
 		t.Subtasks[i].Assignment = assignment
 		t.UpdatedAt = time.Now()
 		signalChanged(t)
@@ -477,7 +519,21 @@ func (m *Manager) InputForSubtask(taskID, subtaskID string) (string, bool) {
 		}
 		fmt.Fprintf(&input, "Prerequisite %s:\n%s\n\n", dependency, strings.TrimSpace(result.Output))
 	}
-	fmt.Fprintf(&input, "Task: %s\n\nSubtask: %s", t.Description, current.Subtask.Description)
+	profile, ok := scheduler.AgentProfileFor(current.Subtask.Role)
+	if !ok {
+		profile, _ = scheduler.AgentProfileFor("general")
+	}
+	fmt.Fprintf(&input, "You are the %s agent.\n%s\n\n", profile.Role, profile.Instructions)
+	fmt.Fprintf(&input, "Overall task: %s\n\nSubtask: %s", t.Description, current.Subtask.Description)
+	if current.Subtask.ExpectedOutput != "" {
+		fmt.Fprintf(&input, "\n\nExpected output: %s", current.Subtask.ExpectedOutput)
+	}
+	if current.Subtask.OutputFormat == "json" {
+		input.WriteString("\n\nReturn only a valid JSON object.")
+		if len(current.Subtask.RequiredFields) > 0 {
+			fmt.Fprintf(&input, " Include these top-level fields: %s.", strings.Join(current.Subtask.RequiredFields, ", "))
+		}
+	}
 	return input.String(), true
 }
 
@@ -539,6 +595,8 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 		if anyFailed {
 			t.Status = StatusFailed
 			t.Error = "one or more subtasks failed"
+		} else if t.RequireApproval {
+			t.Status = StatusAwaitingApproval
 		} else if m.finalizer != nil {
 			t.Status = StatusSynthesis
 			finalize = m.finalizer
@@ -559,9 +617,48 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 	if persistErr != nil {
 		return persistErr
 	}
+	return m.finishSynthesis(taskID, taskCtx, snapshot, finalize, persistErr)
+}
+
+// ApproveChecked releases a completed task's approval gate and starts
+// synthesis using the configured finalizer.
+func (m *Manager) ApproveChecked(taskID string) error {
+	m.mu.Lock()
+	t, ok := m.tasks[taskID]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("taskmgr: task %s not found", taskID)
+	}
+	if t.Status != StatusAwaitingApproval {
+		m.mu.Unlock()
+		return fmt.Errorf("taskmgr: task %s: %w", taskID, ErrNotAwaitingApproval)
+	}
+	if m.finalizer == nil {
+		t.Status = StatusCompleted
+		t.UpdatedAt = time.Now()
+		signalChanged(t)
+		err := m.persistLocked(t)
+		m.mu.Unlock()
+		return err
+	}
+	t.Status = StatusSynthesis
+	t.UpdatedAt = time.Now()
+	signalChanged(t)
+	snapshot := cloneTask(t)
+	taskCtx := t.ctx
+	finalize := m.finalizer
+	persistErr := m.persistLocked(t)
+	m.mu.Unlock()
+	return m.finishSynthesis(taskID, taskCtx, snapshot, finalize, persistErr)
+}
+
+func (m *Manager) finishSynthesis(taskID string, taskCtx context.Context, snapshot *Task, finalize Finalizer, persistErr error) error {
+	if finalize == nil || persistErr != nil {
+		return persistErr
+	}
 	result, err := finalize(taskCtx, snapshot)
 	m.mu.Lock()
-	t, ok = m.tasks[taskID]
+	t, ok := m.tasks[taskID]
 	if !ok || t.Status != StatusSynthesis {
 		m.mu.Unlock()
 		return nil
@@ -603,10 +700,16 @@ func cloneTask(t *Task) *Task {
 	cloned := *t
 	cloned.Subtasks = append([]SubtaskResult(nil), t.Subtasks...)
 	for i := range cloned.Subtasks {
-		cloned.Subtasks[i].Subtask.Tags = append([]string(nil), t.Subtasks[i].Subtask.Tags...)
-		cloned.Subtasks[i].Subtask.DependsOn = append([]string(nil), t.Subtasks[i].Subtask.DependsOn...)
+		cloned.Subtasks[i].Subtask = cloneSubtask(t.Subtasks[i].Subtask)
 	}
 	return &cloned
+}
+
+func cloneSubtask(subtask scheduler.Subtask) scheduler.Subtask {
+	subtask.Tags = append([]string(nil), subtask.Tags...)
+	subtask.DependsOn = append([]string(nil), subtask.DependsOn...)
+	subtask.RequiredFields = append([]string(nil), subtask.RequiredFields...)
+	return subtask
 }
 
 func signalChanged(t *Task) {

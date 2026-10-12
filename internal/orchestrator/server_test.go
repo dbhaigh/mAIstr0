@@ -64,6 +64,30 @@ func TestNodeRegistrationPreservesGPUHistory(t *testing.T) {
 	}
 }
 
+func TestNodeRegistrationPreservesNPUHistory(t *testing.T) {
+	srv := newTestServer(t)
+	sample := hardware.NPUUsageSample{
+		Timestamp: time.Date(2026, time.October, 9, 12, 0, 0, 0, time.UTC),
+		Available: true, Utilization: 63,
+	}
+	body, err := json.Marshal(cluster.NodeStatus{
+		ID: "npu-telemetry-node", Address: "https://127.0.0.1:7451",
+		NPUHistory: []hardware.NPUUsageSample{sample},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/nodes/register", bytes.NewReader(body)))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("registration returned %d: %s", response.Code, response.Body.String())
+	}
+	registered, ok := srv.registry.Get("npu-telemetry-node")
+	if !ok || len(registered.NPUHistory) != 1 || registered.NPUHistory[0] != sample {
+		t.Fatalf("registered NPU history = %#v", registered.NPUHistory)
+	}
+}
+
 func TestNodeRegistrationPreservesSystemHistory(t *testing.T) {
 	srv := newTestServer(t)
 	sample := hardware.SystemUsageSample{
@@ -241,6 +265,9 @@ func TestPiExecutesClusterToolsAndReceivesResults(t *testing.T) {
 				if !strings.Contains(request.Prompt, name) {
 					t.Errorf("Pi prompt omitted registered tool %q", name)
 				}
+				if !strings.Contains(request.Prompt, fmt.Sprintf("- `%s`:", name)) {
+					t.Errorf("Pi prompt omitted executable guidance for tool %q", name)
+				}
 			}
 			for _, guidance := range []string{
 				"`cluster_status`:", "`node_converse`:", "`cluster_parallel_dispatch`:",
@@ -249,6 +276,9 @@ func TestPiExecutesClusterToolsAndReceivesResults(t *testing.T) {
 				if !strings.Contains(request.Prompt, guidance) {
 					t.Errorf("Pi prompt omitted tool usage guidance %q", guidance)
 				}
+			}
+			if !strings.Contains(request.Prompt, "if the user asks you to run all available tools, call every tool listed below") {
+				t.Error("Pi prompt does not require running every tool when explicitly instructed")
 			}
 		} else {
 			if !strings.Contains(request.Prompt, "<tool_response>") ||
@@ -519,125 +549,120 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 	}
 }
 
-func TestOrchestratorsPairAndAuthenticateFederationRequests(t *testing.T) {
-	left := newTestServer(t)
-	right := newTestServer(t)
-	left.selfID = "orchestrator-left"
-	right.selfID = "orchestrator-right"
-	if err := left.InitializeIdentity(); err != nil {
-		t.Fatal(err)
-	}
-	if err := right.InitializeIdentity(); err != nil {
-		t.Fatal(err)
-	}
-	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "federated-node.json"), "federated-node")
+func TestPairingPINCanBeRegeneratedFromLoopback(t *testing.T) {
+	srv := newTestServer(t)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := left.identity.TrustPeer(node.ID(), node.CertificatePEM()); err != nil {
-		t.Fatal(err)
-	}
-	if err := left.SetAdvertiseAddress("https://left.example:7450"); err != nil {
-		t.Fatal(err)
-	}
-	rightPIN, err := right.identity.NewPairingPIN()
+	srv.identity = identity
+	consumedPIN, err := identity.NewPairingPIN()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !identity.ConsumePairingPIN(consumedPIN) {
+		t.Fatal("could not consume initial pairing PIN")
 	}
 
-	rightMux := right.Mux()
-	rightServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/pairing/join" {
-			rightMux.ServeHTTP(w, r)
-			return
-		}
-		right.identity.RequireTrustedPeer(rightMux).ServeHTTP(w, r)
-	}))
-	rightServer.TLS = right.identity.ServerTLSConfig()
-	rightServer.StartTLS()
-	defer rightServer.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/pairing/pin", nil)
+	request.RemoteAddr = "127.0.0.1:1234"
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("loopback PIN regeneration returned %d: %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		PIN       string    `json:"pin"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.PIN == "" || result.ExpiresAt.IsZero() || !identity.VerifyPairingPIN(result.PIN) {
+		t.Fatalf("regenerated PIN is not active: %#v", result)
+	}
 
-	connectBody, err := json.Marshal(map[string]string{"address": rightServer.URL, "pin": rightPIN})
+	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/pairing/pin", nil)
+	remoteRequest.RemoteAddr = "192.0.2.10:1234"
+	remoteResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(remoteResponse, remoteRequest)
+	if remoteResponse.Code != http.StatusForbidden {
+		t.Fatalf("remote PIN regeneration returned %d, want 403", remoteResponse.Code)
+	}
+}
+
+func TestOrchestratorPairingIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	connectResponse := httptest.NewRecorder()
-	left.Mux().ServeHTTP(connectResponse, httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(connectBody)))
-	if connectResponse.Code != http.StatusOK {
-		t.Fatalf("POST /api/pairing/connect returned %d: %s", connectResponse.Code, connectResponse.Body.String())
-	}
-	var connectResult map[string]string
-	if err := json.Unmarshal(connectResponse.Body.Bytes(), &connectResult); err != nil {
-		t.Fatal(err)
-	}
-	if connectResult["paired_orchestrator"] != rightServer.URL {
-		t.Fatalf("paired address = %q, want %q", connectResult["paired_orchestrator"], rightServer.URL)
-	}
-	if !left.identity.IsTrustedID(right.selfID) || !right.identity.IsTrustedID(left.selfID) {
-		t.Fatal("pairing did not establish reciprocal orchestrator trust")
-	}
-	if !right.identity.IsTrustedID(node.ID()) {
-		t.Fatal("federation did not transfer the joining orchestrator's trusted node certificate")
-	}
-	if right.identity.PairedOrchestratorAddresses()[left.selfID] != "https://left.example:7450" {
-		t.Fatal("receiving orchestrator did not persist the joining orchestrator address")
-	}
-	if err := node.TrustPeer(right.selfID, right.identity.CertificatePEM()); err != nil {
-		t.Fatal(err)
-	}
-	nodeClient := &http.Client{Timeout: 3 * time.Second, Transport: node.ClientTransport()}
-	rosterResponse, err := nodeClient.Get(rightServer.URL + "/api/pairing/roster")
+	srv.identity = identity
+	pin, err := identity.NewPairingPIN()
 	if err != nil {
-		t.Fatalf("federated node mTLS request failed: %v", err)
+		t.Fatal(err)
 	}
-	rosterResponse.Body.Close()
-	if rosterResponse.StatusCode != http.StatusOK {
-		t.Fatalf("federated node mTLS request returned %s, want 200", rosterResponse.Status)
+	peer, err := peeridentity.Open(filepath.Join(t.TempDir(), "other-orchestrator.json"), "other-orchestrator")
+	if err != nil {
+		t.Fatal(err)
 	}
-	right.registry.Upsert(cluster.NodeStatus{
-		ID: "federated-worker", Address: "https://worker.example:7451", Healthy: true,
-		Models: []engine.Model{{Name: "shared-model", Tags: []string{"general"}}},
+	body, err := json.Marshal(pairingJoinRequest{
+		ID: peer.ID(), Role: "orchestrator", PIN: pin, CertificatePEM: peer.CertificatePEM(),
 	})
-	left.syncDiscoveredPeers()
-	if node, ok := left.registry.Get("federated-worker"); !ok || node.Address != "https://worker.example:7451" {
-		t.Fatalf("paired orchestrator cluster state was not synchronized: %#v, found=%v", node, ok)
-	}
-	left.peerMu.RLock()
-	pairedAddress := left.pairedOrchestrators[right.selfID]
-	left.peerMu.RUnlock()
-	if pairedAddress != rightServer.URL {
-		t.Fatalf("paired address = %q, want %q", pairedAddress, rightServer.URL)
-	}
-	reloadedLeft, err := peeridentity.Open(left.identityPath, left.selfID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloadedLeft.PairedOrchestratorAddresses()[right.selfID] != rightServer.URL {
-		t.Fatal("initiating orchestrator address did not survive identity reload")
+	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
+	request.TLS = &tls.ConnectionState{}
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("orchestrator join returned %d, want 400: %s", response.Code, response.Body.String())
+	}
+	if identity.IsTrustedID(peer.ID()) || !identity.VerifyPairingPIN(pin) {
+		t.Fatal("rejected orchestrator pairing changed the trust roster or consumed the PIN")
 	}
 
-	client := &http.Client{Timeout: 3 * time.Second, Transport: left.identity.ClientTransport()}
-	response, err := client.Get(rightServer.URL + "/api/pairing/roster")
+	connectResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(connectResponse, httptest.NewRequest(http.MethodPost, "/api/pairing/connect", nil))
+	if connectResponse.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/pairing/connect returned %d, want 403", connectResponse.Code)
+	}
+}
+
+func TestDiscoveredNodeStatusAllowsSlowPeerResponse(t *testing.T) {
+	srv := newTestServer(t)
+	srv.selfID = "orchestrator-slow-node-test"
+	if err := srv.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := peeridentity.Open(filepath.Join(t.TempDir(), "slow-node.json"), "slow-node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("authenticated federation request returned %d, want 200", response.StatusCode)
+	if err := srv.identity.TrustPeerDetails(peer.ID(), peer.CertificatePEM(), "node", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.TrustPeer(srv.selfID, srv.identity.CertificatePEM()); err != nil {
+		t.Fatal(err)
 	}
 
-	unpaired, err := peeridentity.Open(filepath.Join(t.TempDir(), "unpaired.json"), "unpaired-orchestrator")
+	peerMux := http.NewServeMux()
+	peerMux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(2 * time.Second)
+		_, _ = w.Write([]byte(`{"id":"slow-node"}`))
+	})
+	peerServer := httptest.NewUnstartedServer(peer.RequireTrustedPeer(peerMux))
+	peerServer.TLS = peer.ServerTLSConfig()
+	peerServer.StartTLS()
+	defer peerServer.Close()
+
+	status, err := srv.discoveredNodeStatus(peerServer.URL)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("fetch from a slow paired node failed: %v", err)
 	}
-	unpairedClient := &http.Client{Timeout: 3 * time.Second, Transport: unpaired.BootstrapTransport()}
-	response, err = unpairedClient.Get(rightServer.URL + "/api/pairing/roster")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("unpaired federation request returned %d, want 403", response.StatusCode)
+	if status.ID != peer.ID() {
+		t.Fatalf("fetched node status = %#v, want ID %q", status, peer.ID())
 	}
 }
 

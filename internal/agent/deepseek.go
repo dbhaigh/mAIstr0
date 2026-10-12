@@ -9,6 +9,7 @@ import (
 	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
 type DeepSeek struct {
@@ -23,6 +24,12 @@ func NewDeepSeek(registry *cluster.Registry, dispatcher *http.Client, store *mem
 }
 
 func (d *DeepSeek) Name() string { return "deepseek" }
+
+// SetWorkflowExecutor connects the shared agent tools to the orchestrator's
+// durable task engine.
+func (d *DeepSeek) SetWorkflowExecutor(executor func(context.Context, string, []scheduler.Subtask, bool) (string, error)) {
+	d.harness.SetWorkflowExecutor(executor)
+}
 
 func (d *DeepSeek) CreateSession(title string, cfg SessionConfig) (*Session, error) {
 	return fromDeepSeekSession(d.harness.CreateSession(title, deepseek.SessionConfig{

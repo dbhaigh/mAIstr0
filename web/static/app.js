@@ -4,6 +4,9 @@ const routingList = document.getElementById("routing-list");
 const discoveryList = document.getElementById("discovery-list");
 const tasksList = document.getElementById("tasks-list");
 const taskInput = document.getElementById("task-input");
+const taskAutoPlan = document.getElementById("task-auto-plan");
+const taskRequireReview = document.getElementById("task-require-review");
+const taskRequireApproval = document.getElementById("task-require-approval");
 const submitBtn = document.getElementById("submit-btn");
 const submitStatus = document.getElementById("submit-status");
 const copyTasksBtn = document.getElementById("copy-tasks-btn");
@@ -13,24 +16,32 @@ const overviewNodes = document.getElementById("overview-nodes");
 const clusterOverviewStatus = document.getElementById("cluster-overview-status");
 const clusterPeers = document.getElementById("cluster-peers");
 const setupCheckBtn = document.getElementById("setup-check-btn");
-const setupNodesBtn = document.getElementById("setup-nodes-btn");
 const setupStatus = document.getElementById("setup-status");
 const setupResults = document.getElementById("setup-results");
+const setupNodeList = document.getElementById("setup-node-list");
+const setupNodeSummary = document.getElementById("setup-node-summary");
 const pairingPinView = document.getElementById("pairing-pin-view");
 const pairingPin = document.getElementById("pairing-pin");
 const pairingPinExpiry = document.getElementById("pairing-pin-expiry");
+const pairingPinRegenerateBtn = document.getElementById("pairing-pin-regenerate-btn");
 const pairingAddressDisplay = document.getElementById("pairing-address-display");
+const pairingInstructions = document.getElementById("pairing-instructions");
+const pairingNodeConnect = document.getElementById("pairing-node-connect");
 const pairingConnectForm = document.getElementById("pairing-connect-form");
+const pairingConnectDialog = document.getElementById("pairing-connect-dialog");
+const pairingConnectOpenBtn = document.getElementById("pairing-connect-open");
+const pairingConnectCancelBtn = document.getElementById("pairing-connect-cancel");
 const pairingAddress = document.getElementById("pairing-address");
+const pairingAddressField = document.getElementById("pairing-address-field");
 const pairingCode = document.getElementById("pairing-code");
 const pairingConnectButton = document.getElementById("pairing-connect-button");
 const pairingStatus = document.getElementById("pairing-status");
-const peerPairingModal = document.getElementById("peer-pairing-modal");
-const peerPairingForm = document.getElementById("peer-pairing-form");
-const peerPairingAddress = document.getElementById("peer-pairing-address");
-const peerPairingPin = document.getElementById("peer-pairing-pin");
-const peerPairingStatus = document.getElementById("peer-pairing-status");
-const peerPairingSubmit = document.getElementById("peer-pairing-submit");
+const pairingState = document.getElementById("pairing-state");
+const pairingInvitationDialog = document.getElementById("pairing-invitation-dialog");
+const pairingInvitationDetails = document.getElementById("pairing-invitation-details");
+const pairingInvitationStatus = document.getElementById("pairing-invitation-status");
+const pairingInvitationAcceptBtn = document.getElementById("pairing-invitation-accept");
+const pairingInvitationDeclineBtn = document.getElementById("pairing-invitation-decline");
 
 // Header stats & navigation
 const statNodes = document.getElementById("stat-nodes");
@@ -63,6 +74,13 @@ const agentModelSelect = document.getElementById("agent-model-select");
 const agentStepsSelect = document.getElementById("agent-steps-select");
 const agentSettingsTitle = document.getElementById("agent-settings-title");
 const agentToolsList = document.getElementById("agent-tools-list");
+const directChatHelp = document.getElementById("direct-chat-help");
+const clearDirectChatBtn = document.getElementById("clear-direct-chat-btn");
+const directClusterContext = document.getElementById("direct-cluster-context");
+const directClusterStatus = document.getElementById("direct-cluster-status");
+const directClusterNodesEl = document.getElementById("direct-cluster-nodes");
+const directClusterRefreshBtn = document.getElementById("direct-cluster-refresh");
+const dispatchDirectTaskBtn = document.getElementById("dispatch-direct-task-btn");
 const chatMessagesEl = document.getElementById("chat-messages");
 const chatInput = document.getElementById("chat-input");
 const sendMsgBtn = document.getElementById("send-msg-btn");
@@ -76,6 +94,8 @@ let currentSessions = [];
 let isSending = false;
 let streamingAssistantEl = null;
 let currentAgentHarness = "pi";
+let activeChatMode = "pi";
+let directMessages = [];
 const modelPanelOpen = new Set();
 const pendingModelState = new Map();
 const pendingDefaultModel = new Map();
@@ -85,6 +105,10 @@ let currentNodes = [];
 const nodeProperties = new Map();
 let terminalNode = null;
 let terminalDialogueId = null;
+let pairingTargetNode = null;
+let currentPairingStatus = null;
+let pairingSetupFocused = false;
+let pairingPromptShown = false;
 
 // Tab Switching
 navTabs.forEach((tab) => {
@@ -114,50 +138,174 @@ clusterWorkspaceTabs.forEach((tab) => {
   });
 });
 
-setupNodesBtn?.addEventListener("click", () => {
-  document.querySelector('[data-window="nodes-panel"]')?.click();
-});
+pairingConnectCancelBtn?.addEventListener("click", () => pairingConnectDialog?.close());
+pairingConnectOpenBtn?.addEventListener("click", () => openPairingDialog());
 
 setupCheckBtn?.addEventListener("click", checkSetupReadiness);
+
+function openPairingDialog(node = null) {
+  if (!pairingConnectDialog || pairingConnectDialog.open) return;
+  pairingTargetNode = node;
+  if (pairingStatus) pairingStatus.textContent = "";
+  const title = document.getElementById("pairing-title-node");
+  const description = document.getElementById("pairing-dialog-description");
+  if (node) {
+    const invitation = Boolean(node.discovered);
+    if (title) title.textContent = invitation
+      ? `Pair ${node.id} with this cluster`
+      : `Re-pair ${node.id} with this cluster`;
+    if (description) description.textContent = invitation
+      ? `Send a pairing invitation to ${node.address}. The node must confirm locally before it joins.`
+      : "Enter this cluster's HTTPS address and an active one-use PIN. The selected node must be online and already trusted by this cluster.";
+    if (pairingAddressField) pairingAddressField.hidden = invitation;
+    if (pairingAddress) pairingAddress.required = !invitation;
+    if (pairingAddress) pairingAddress.value = currentPairingStatus?.address || currentPairingStatus?.orchestrator_addr || "";
+    if (pairingCode) pairingCode.value = currentPairingStatus?.role === "orchestrator" ? currentPairingStatus.pin || "" : "";
+    if (pairingConnectButton) pairingConnectButton.textContent = invitation ? "Send invitation" : "Re-pair node";
+  } else {
+    if (pairingAddressField) pairingAddressField.hidden = false;
+    if (pairingAddress) pairingAddress.required = true;
+    const joiningNode = currentPairingStatus?.role === "node";
+    if (title) title.textContent = joiningNode
+      ? currentPairingStatus.joined ? "Re-pair node" : "Join cluster"
+      : "Connect to orchestrator";
+    if (description) description.textContent = joiningNode
+      ? "Enter the orchestrator HTTPS address and one-use PIN shown on its Setup page."
+      : "Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.";
+    if (joiningNode) {
+      pairingAddress.value = currentPairingStatus.orchestrator_addr || pairingAddress.value;
+      pairingCode.value = "";
+    }
+    if (pairingConnectButton) pairingConnectButton.textContent = joiningNode
+      ? currentPairingStatus.joined ? "Re-pair node" : "Join cluster"
+      : "Connect node";
+  }
+  pairingConnectDialog.showModal();
+  pairingAddress?.focus();
+}
+
+pairingPinRegenerateBtn?.addEventListener("click", async () => {
+  pairingPinRegenerateBtn.disabled = true;
+  pairingPinRegenerateBtn.textContent = "Generating PIN…";
+  if (pairingState) pairingState.textContent = "Generating a new one-use PIN…";
+  try {
+    await fetchJSON("/api/pairing/pin", { method: "POST" });
+    await loadPairingStatus();
+    if (pairingState) pairingState.textContent = "New PIN generated. Enter it only on the node you intend to pair.";
+  } catch (err) {
+    if (pairingState) pairingState.textContent = `Could not generate a new PIN: ${err.message}`;
+  } finally {
+    pairingPinRegenerateBtn.disabled = false;
+    pairingPinRegenerateBtn.textContent = "Generate / replace pairing PIN";
+  }
+});
 
 async function loadPairingStatus() {
   try {
     const status = await fetchJSON("/api/pairing/status");
+    currentPairingStatus = status;
     if (status.role === "orchestrator") {
       if (pairingPinView) pairingPinView.hidden = false;
-      if (pairingConnectForm) pairingConnectForm.hidden = true;
+      if (pairingNodeConnect) pairingNodeConnect.hidden = true;
+      if (pairingInstructions) pairingInstructions.textContent = "Add a node to this cluster by generating a one-use PIN, then entering it on that node.";
+      const hasPIN = Boolean(status.pin);
+      if (pairingPinRegenerateBtn) {
+        pairingPinRegenerateBtn.textContent = hasPIN ? "Generate / replace pairing PIN" : "Generate pairing PIN";
+      }
       if (pairingAddressDisplay) pairingAddressDisplay.textContent = status.address || "HTTPS address unavailable";
       if (pairingPin) pairingPin.textContent = status.pin || "Expired";
       if (pairingPinExpiry) {
         pairingPinExpiry.textContent = status.expires_at
           ? `Expires ${new Date(status.expires_at).toLocaleTimeString()}. The PIN can be used once.`
-          : "No active PIN. Restart the orchestrator to create a new one.";
+          : "No active PIN. Generate a new PIN to pair another node.";
       }
-      if (pairingStatus) pairingStatus.textContent = "Show this PIN only to the node you intend to pair.";
+      if (pairingState) pairingState.textContent = hasPIN
+        ? "Share the PIN and HTTPS address only with the node you intend to add."
+        : "No active PIN. Generate one to add or re-pair a node.";
       return;
     }
     if (status.role === "node") {
       if (pairingPinView) pairingPinView.hidden = true;
-      if (pairingConnectForm) pairingConnectForm.hidden = false;
+      if (pairingNodeConnect) pairingNodeConnect.hidden = false;
+      if (pairingConnectOpenBtn) pairingConnectOpenBtn.textContent = status.joined
+        ? "Re-pair / change orchestrator"
+        : "Enter address and pairing PIN";
+      if (pairingInstructions) pairingInstructions.textContent = "Join this node to an orchestrator with the one-use PIN shown on its Setup page. You can also re-pair this node to another cluster here.";
       if (status.orchestrator_addr && pairingAddress && !pairingAddress.value) {
         pairingAddress.value = status.orchestrator_addr;
       }
-      if (pairingStatus) {
-        pairingStatus.textContent = status.joined
-          ? `Connected to ${status.orchestrator_addr || "an orchestrator"}. You can pair with another orchestrator below.`
+      if (pairingState) {
+        pairingState.textContent = status.joined
+          ? `Connected to ${status.orchestrator_addr || "the orchestrator"}.`
           : status.trusted
-            ? "Pairing succeeded. Waiting for the node to register with the orchestrator…"
-          : "This node is not connected. Enter the orchestrator HTTPS address and its one-use PIN.";
+            ? "Pairing succeeded. Waiting for the node to register with the orchestrator."
+            : "Not paired. Enter the orchestrator HTTPS address and its one-use PIN.";
+      }
+      if (!status.joined && !pairingSetupFocused) {
+        pairingSetupFocused = true;
+        document.querySelector('.nav-tab[data-tab="cluster-tab"]')?.click();
+        document.querySelector('[data-window="setup-panel"]')?.click();
+      }
+      const invitationPending = await checkPairingInvitation();
+      if (!invitationPending && !status.joined && !pairingPromptShown) {
+        pairingPromptShown = true;
+        openPairingDialog();
+      } else if (status.joined) {
+        pairingPromptShown = false;
       }
     }
 
+    async function checkPairingInvitation() {
+      const invitation = await fetchJSON("/api/pairing/invitation");
+      if (!invitation.pending) {
+        if (pairingInvitationDialog?.open) pairingInvitationDialog.close();
+        return false;
+      }
+      pairingConnectDialog?.close();
+      if (pairingInvitationDetails) {
+        pairingInvitationDetails.textContent = `${invitation.orchestrator_id} at ${invitation.address} wants to add this node to its cluster. The invitation expires ${new Date(invitation.expires_at).toLocaleTimeString()}.`;
+      }
+      if (pairingInvitationDialog && !pairingInvitationDialog.open) pairingInvitationDialog.showModal();
+      return true;
+    }
+
+    async function respondToPairingInvitation(accept) {
+      if (!pairingInvitationAcceptBtn || !pairingInvitationDeclineBtn) return;
+      pairingInvitationAcceptBtn.disabled = true;
+      pairingInvitationDeclineBtn.disabled = true;
+      if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept ? "Connecting to the cluster securely…" : "Declining invitation…";
+      try {
+        const result = await fetchJSON(`/api/pairing/invitation/${accept ? "accept" : "reject"}`, { method: "POST" });
+        pairingPromptShown = true;
+        pairingInvitationDialog?.close();
+        if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept
+          ? `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}.`
+          : "Invitation declined.";
+        await loadPairingStatus();
+        await refresh();
+      } catch (err) {
+        if (pairingInvitationStatus) pairingInvitationStatus.textContent = `${accept ? "Could not join cluster" : "Could not decline invitation"}: ${err.message}`;
+      } finally {
+        pairingInvitationAcceptBtn.disabled = false;
+        pairingInvitationDeclineBtn.disabled = false;
+      }
+    }
+
+    pairingInvitationAcceptBtn?.addEventListener("click", () => respondToPairingInvitation(true));
+    pairingInvitationDeclineBtn?.addEventListener("click", () => respondToPairingInvitation(false));
+    pairingInvitationDialog?.addEventListener("cancel", (event) => event.preventDefault());
+
   } catch (err) {
-    if (pairingStatus) pairingStatus.textContent = `Could not load pairing status: ${err.message}`;
+    if (pairingState) pairingState.textContent = `Could not load pairing status: ${err.message}`;
+    if (pairingNodeConnect) pairingNodeConnect.hidden = false;
+    if (pairingConnectOpenBtn) pairingConnectOpenBtn.hidden = false;
   }
 }
 
 async function activateAgentTab(harness) {
   if (isSending) return;
+  const previousMode = activeChatMode;
+  activeChatMode = harness;
   if (newSessionBtn) newSessionBtn.disabled = true;
   if (agentHarnessSelect) agentHarnessSelect.disabled = true;
   agentTabs.forEach((tab) => {
@@ -166,6 +314,7 @@ async function activateAgentTab(harness) {
     tab.setAttribute("aria-selected", String(active));
     tab.disabled = true;
   });
+  setAgentConsoleMode(harness);
   try {
     if (currentAgentHarness !== harness) {
       const backend = await fetchJSON("/api/agent/backend", {
@@ -186,8 +335,10 @@ async function activateAgentTab(harness) {
   } catch (err) {
     console.error("failed to switch agent tab", err);
     if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not switch agent: ${err.message}`;
+    activeChatMode = previousMode;
+    setAgentConsoleMode(previousMode);
     agentTabs.forEach((tab) => {
-      const active = tab.dataset.agent === currentAgentHarness;
+      const active = tab.dataset.agent === previousMode;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", String(active));
     });
@@ -199,8 +350,69 @@ async function activateAgentTab(harness) {
   }
 }
 
+function setAgentConsoleMode(mode) {
+  const direct = mode === "direct";
+  const sessionSection = sessionListEl?.closest(".sidebar-section");
+  const toolsSection = agentToolsList?.closest(".sidebar-section");
+  const harnessLabel = agentHarnessSelect?.closest("label");
+  const modelLabel = agentModelSelect?.closest("label");
+  const stepsLabel = agentStepsSelect?.closest("label");
+  const modelLabelText = modelLabel?.querySelector("span");
+  const quickPrompts = document.querySelector(".quick-prompts");
+
+  if (sessionSection) sessionSection.hidden = direct;
+  if (toolsSection) toolsSection.hidden = direct;
+  if (directClusterContext) directClusterContext.hidden = !direct;
+  if (harnessLabel) harnessLabel.hidden = direct;
+  if (stepsLabel) stepsLabel.hidden = direct;
+  if (directChatHelp) directChatHelp.hidden = !direct;
+  if (quickPrompts) quickPrompts.hidden = direct;
+  if (clearDirectChatBtn) clearDirectChatBtn.hidden = !direct;
+  if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.hidden = !direct;
+  if (sendMsgBtn) sendMsgBtn.textContent = direct ? "Ask Orchestrator" : "Send";
+  if (agentSettingsTitle) {
+    agentSettingsTitle.textContent = direct ? "Direct Chat Settings" : `${mode === "pi" ? "Pi" : "DeepSeek"} Agent Settings`;
+  }
+  if (modelLabelText) {
+    modelLabelText.textContent = direct ? "Cluster Model" : "Coordinator Model";
+    if (agentModelSelect?.options.length) {
+      agentModelSelect.options[0].textContent = direct
+        ? "Auto (Orchestrator scheduler)"
+        : "Auto (Fastest / Cluster Leader)";
+    }
+  }
+  if (chatInput) {
+    chatInput.placeholder = direct
+      ? "Ask about the cluster, or enter work to dispatch as a task..."
+      : "Message the orchestrator... (Enter to send, Shift+Enter for new line)";
+  }
+  if (direct) {
+    renderDirectMessages();
+    void refreshDirectClusterContext();
+  }
+}
+
+function activateDirectChat() {
+  if (isSending) return;
+  activeChatMode = "direct";
+  agentTabs.forEach((tab) => {
+    const active = tab.dataset.agent === "direct";
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  setAgentConsoleMode("direct");
+  chatInput?.focus();
+}
+
 agentTabs.forEach((tab) => {
-  tab.addEventListener("click", () => activateAgentTab(tab.dataset.agent));
+  tab.addEventListener("click", () => {
+    if (tab.dataset.agent === "direct") activateDirectChat();
+    else activateAgentTab(tab.dataset.agent);
+  });
+
+  directClusterRefreshBtn?.addEventListener("click", () => {
+    void refreshDirectClusterContext();
+  });
 });
 
 pairingConnectForm?.addEventListener("submit", async (event) => {
@@ -209,13 +421,31 @@ pairingConnectForm?.addEventListener("submit", async (event) => {
   pairingConnectButton.disabled = true;
   pairingStatus.textContent = "Connecting securely…";
   try {
-    const result = await fetchJSON("/api/pairing/connect", {
+    const node = pairingTargetNode;
+    const invitation = Boolean(node?.discovered);
+    const endpoint = invitation
+      ? `/api/discovery/${encodeURIComponent(node.id)}/pairing/invite`
+      : node
+        ? `/api/nodes/${encodeURIComponent(node.id)}/pairing/connect`
+        : "/api/pairing/connect";
+    const result = await fetchJSON(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ address: pairingAddress.value.trim(), pin: pairingCode.value.trim() }),
+      body: JSON.stringify(invitation
+        ? { pin: pairingCode.value.trim() }
+        : { address: pairingAddress.value.trim(), pin: pairingCode.value.trim() }),
     });
     pairingCode.value = "";
-    pairingStatus.textContent = `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}. Connecting to the cluster…`;
+    pairingStatus.textContent = invitation
+      ? `Invitation sent to ${node.id}. Confirm it on the node to complete pairing.`
+      : node
+        ? `${node.id} paired with this cluster.`
+      : `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}. Connecting to the cluster…`;
+    if (invitation && pairingState) {
+      pairingState.textContent = `Invitation sent to ${node.id}; waiting for confirmation on that node.`;
+    }
+    pairingTargetNode = null;
+    pairingConnectDialog?.close();
     await loadPairingStatus();
     await refresh();
   } catch (err) {
@@ -226,13 +456,25 @@ pairingConnectForm?.addEventListener("submit", async (event) => {
 });
 
 async function checkSetupReadiness() {
-  if (setupCheckBtn) setupCheckBtn.disabled = true;
-  if (setupStatus) setupStatus.textContent = "Checking node engines and refreshing empty model registries…";
+  if (setupCheckBtn) {
+    setupCheckBtn.disabled = true;
+    setupCheckBtn.textContent = "Checking…";
+  }
+  setSetupStatus("Checking node engines and refreshing empty model registries…", "checking");
+  setupResults?.setAttribute("aria-busy", "true");
   try {
-    const nodes = await fetchJSON("/api/nodes");
+    const allNodes = await fetchJSON("/api/nodes/all");
+    const nodes = allNodes.filter((node) => node.healthy);
     if (!nodes.length) {
-      if (setupStatus) setupStatus.textContent = "No nodes are registered. Start a node and pair it with this orchestrator first.";
-      if (setupResults) setupResults.innerHTML = "";
+      setSetupStatus(
+        allNodes.length
+          ? "No cluster nodes are online. Offline nodes remain listed above."
+          : "No nodes are registered. Start a node and pair it with this orchestrator first.",
+        allNodes.length ? "attention" : "empty",
+      );
+      if (setupResults) {
+        setupResults.innerHTML = '<p class="setup-empty">An online node is required to check engine and model readiness.</p>';
+      }
       return;
     }
     const results = await Promise.all(nodes.map(async (node) => {
@@ -248,7 +490,7 @@ async function checkSetupReadiness() {
         return { node, engines: [], refreshed: false, error: err.message };
       }
     }));
-    const latestNodes = await fetchJSON("/api/nodes");
+    const latestNodes = await fetchJSON("/api/nodes/all");
     const latestByID = new Map(latestNodes.map((node) => [node.id, node]));
     let readyCount = 0;
     if (setupResults) {
@@ -258,26 +500,46 @@ async function checkSetupReadiness() {
         const ready = !error && engines.length > 0 && modelCount > 0;
         if (ready) readyCount += 1;
         const state = error
-          ? `Could not inspect node: ${escapeHtml(error)}`
+            ? `Could not inspect node: ${error}`
           : !engines.length
             ? "No inference engine detected. Configure an engine in node settings."
             : modelCount
               ? `${modelCount} model${modelCount === 1 ? "" : "s"} ready${refreshed ? " (registry refreshed)" : ""}.`
               : "Engine detected, but no models are available yet.";
-        return `<article class="setup-card"><h3>${escapeHtml(node.id)}</h3><p>Engines: ${engines.length ? engines.map((engine) => escapeHtml(engine.name)).join(", ") : "none"}</p><p>Models: ${modelCount}</p><p>${state}</p></article>`;
-      }).join("");
+          const stateName = ready ? "ready" : error ? "error" : "attention";
+          const badge = ready ? "Ready" : error ? "Unavailable" : "Needs setup";
+          return `<article class="setup-card" data-state="${stateName}">
+            <div class="setup-card-heading"><h3>${escapeHtml(node.id)}</h3><span class="setup-badge">${badge}</span></div>
+            <dl class="setup-details">
+              <div><dt>Engines</dt><dd>${engines.length ? engines.map((engine) => escapeHtml(engine.name)).join(", ") : "None detected"}</dd></div>
+              <div><dt>Models</dt><dd>${modelCount}</dd></div>
+            </dl>
+            <p class="setup-card-message">${escapeHtml(state)}</p>
+          </article>`;
+        }).join("");
     }
-    if (setupStatus) {
-      setupStatus.textContent = readyCount === nodes.length
-        ? `All ${nodes.length} node${nodes.length === 1 ? "" : "s"} are ready for inference.`
-        : `${readyCount} of ${nodes.length} nodes are ready. Use node settings to configure engines or select models.`;
-    }
+    setSetupStatus(
+        readyCount === nodes.length
+          ? `All ${nodes.length} node${nodes.length === 1 ? "" : "s"} are ready for inference.`
+          : `${readyCount} of ${nodes.length} nodes are ready. Use node settings to configure engines or select models.`,
+        readyCount === nodes.length ? "ready" : "attention",
+    );
     await refresh();
   } catch (err) {
-    if (setupStatus) setupStatus.textContent = `Readiness check failed: ${err.message}`;
+    setSetupStatus(`Readiness check failed: ${err.message}`, "error");
   } finally {
-    if (setupCheckBtn) setupCheckBtn.disabled = false;
+    if (setupCheckBtn) {
+        setupCheckBtn.disabled = false;
+        setupCheckBtn.textContent = "Check readiness";
+    }
+    setupResults?.removeAttribute("aria-busy");
   }
+}
+
+function setSetupStatus(message, state) {
+  if (!setupStatus) return;
+  setupStatus.textContent = message;
+  setupStatus.dataset.state = state;
 }
 
 async function fetchJSON(url, opts) {
@@ -326,8 +588,10 @@ async function loadAgentBackend() {
 
 function applyAgentBackend(backend) {
   currentAgentHarness = backend.name;
+  const mode = activeChatMode === "direct" ? "direct" : backend.name;
+  activeChatMode = mode;
   agentTabs.forEach((tab) => {
-    const active = tab.dataset.agent === backend.name;
+    const active = tab.dataset.agent === mode;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
   });
@@ -342,6 +606,7 @@ function applyAgentBackend(backend) {
   if (agentHarnessStatus) {
     agentHarnessStatus.textContent = `New conversations use ${backend.name === "pi" ? "Pi" : "DeepSeek"}; existing conversations stay on their harness.`;
   }
+  setAgentConsoleMode(mode);
 }
 
 agentHarnessSelect?.addEventListener("change", async () => {
@@ -506,6 +771,137 @@ function renderChatMessages(session) {
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
+function populateDirectModelOptions(nodes) {
+  if (!agentModelSelect) return;
+  const selectedModel = agentModelSelect.value;
+  const models = new Map();
+  for (const node of nodes.filter((entry) => entry.healthy)) {
+    for (const model of node.models || []) {
+      const key = model.name.toLowerCase();
+      const current = models.get(key) || { name: model.name, engine: model.engine, tags: new Set(), nodes: new Set() };
+      for (const tag of model.tags || []) current.tags.add(tag);
+      current.nodes.add(node.id);
+      models.set(key, current);
+    }
+  }
+
+  agentModelSelect.replaceChildren(new Option("Auto (Orchestrator scheduler)", ""));
+  for (const model of [...models.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+    const option = new Option(
+      `${model.name} · ${[...model.tags].join(", ") || "general"} · ${[...model.nodes].join(", ")}`,
+      model.name,
+    );
+    agentModelSelect.add(option);
+  }
+  if (models.has(selectedModel.toLowerCase())) agentModelSelect.value = selectedModel;
+}
+
+function formatDirectNodeHardware(node) {
+  const hardware = node.hardware || {};
+  const parts = [];
+  if (hardware.os || hardware.arch) parts.push([hardware.os, hardware.arch].filter(Boolean).join("/"));
+  if (hardware.cpu_cores) parts.push(`${hardware.cpu_cores} CPU cores`);
+  if (hardware.total_ram_mb) parts.push(`${(hardware.total_ram_mb / 1024).toFixed(1)} GB RAM`);
+  if (hardware.has_gpu) {
+    parts.push(`${hardware.gpu_vendor || "GPU"}${hardware.gpu_stats_available ? ` · ${hardware.gpu_utilization_percent}% busy` : ""}`);
+  }
+  if (hardware.has_npu) {
+    parts.push(`${hardware.npu_vendor || "NPU"}${hardware.npu_stats_available ? ` · ${hardware.npu_utilization_percent}% busy` : ""}`);
+  }
+  return parts.length ? parts.join(" · ") : "Hardware details unavailable";
+}
+
+function renderDirectClusterContext(nodes) {
+  if (!directClusterNodesEl || !directClusterStatus) return;
+  const healthyCount = nodes.filter((node) => node.healthy).length;
+  const availableModels = new Set(
+    nodes.filter((node) => node.healthy).flatMap((node) => (node.models || []).map((model) => model.name)),
+  );
+  directClusterStatus.textContent = `${nodes.length} nodes · ${healthyCount} online · ${availableModels.size} available models. Model tags indicate task capabilities; dispatch uses the native capability-aware scheduler.`;
+  if (!nodes.length) {
+    directClusterNodesEl.innerHTML = '<p class="direct-cluster-empty">No nodes are registered with this orchestrator.</p>';
+    return;
+  }
+  directClusterNodesEl.innerHTML = nodes.map((node) => {
+    const models = (node.models || []).map((model) => `
+      <div class="direct-model-row">
+        <strong>${escapeHtml(model.name)}</strong>
+        <span>${escapeHtml((model.tags || []).join(", ") || "general")}${model.engine ? ` · ${escapeHtml(model.engine)}` : ""}</span>
+      </div>
+    `).join("") || '<div class="direct-model-row"><span>No models reported</span></div>';
+    const score = Number.isFinite(node.hardware?.score) ? ` · capability score ${node.hardware.score.toFixed(1)}` : "";
+    return `
+      <details class="direct-node-card" ${node.healthy ? "open" : ""}>
+        <summary>
+          <span class="direct-node-name">${escapeHtml(node.id)}</span>
+          <span class="badge ${node.healthy ? "healthy" : "offline"}">${node.healthy ? "Online" : "Offline"}</span>
+        </summary>
+        <div class="direct-node-details">
+          <div>${escapeHtml(formatDirectNodeHardware(node))}</div>
+          <div>Active tasks: ${Number(node.active_tasks) || 0}${score}</div>
+          <div class="direct-model-list">${models}</div>
+        </div>
+      </details>
+    `;
+  }).join("");
+}
+
+async function refreshDirectClusterContext() {
+  if (!directClusterStatus) return null;
+  if (directClusterRefreshBtn) directClusterRefreshBtn.disabled = true;
+  directClusterStatus.textContent = "Refreshing live nodes, models, and capabilities…";
+  try {
+    const nodes = await fetchJSON("/api/nodes/all");
+    if (!Array.isArray(nodes)) throw new Error("orchestrator returned an invalid node inventory");
+    populateDirectModelOptions(nodes);
+    renderDirectClusterContext(nodes);
+    return nodes;
+  } catch (err) {
+    directClusterStatus.textContent = `Cluster inventory unavailable: ${err.message}`;
+    console.error("could not refresh direct chat cluster context", err);
+    return null;
+  } finally {
+    if (directClusterRefreshBtn) directClusterRefreshBtn.disabled = false;
+  }
+}
+
+function directClusterSystemMessage(nodes) {
+  const inventory = nodes.map((node) => ({
+    id: node.id,
+    status: node.healthy ? "online" : "offline",
+    active_tasks: node.active_tasks || 0,
+    hardware: node.hardware || {},
+    models: (node.models || []).map((model) => ({
+      name: model.name,
+      engine: model.engine,
+      task_capability_tags: model.tags || [],
+      size_gb: model.size_gb || 0,
+    })),
+  }));
+  return {
+    role: "system",
+    content: `You are the conversational interface to the mAIstr0 orchestrator. Answer questions about the cluster from this live inventory and distinguish unknown details from facts. Model capability tags are task categories. The native task scheduler chooses healthy node/model pairs using task type compatibility, hardware capability, accelerator utilization, current load, and learned dispatch history. The user can explicitly dispatch work with the Dispatch Task action; do not claim a task was run unless that action was used. For task execution, the native planner and scheduler—not this chat response—create and route subtasks.\nLive cluster inventory: ${JSON.stringify(inventory)}`,
+  };
+}
+
+function renderDirectMessages() {
+  if (!chatMessagesEl) return;
+  chatMessagesEl.innerHTML = "";
+  if (!directMessages.length) {
+    chatMessagesEl.innerHTML = `
+      <div class="welcome-card">
+        <h2>Direct Orchestrator Chat</h2>
+        <p>Ask about the live cluster or use Dispatch Task to have the native planner route work to nodes with suitable models and capabilities. No agent or harness is involved.</p>
+      </div>
+    `;
+    return;
+  }
+  for (const message of directMessages) {
+    appendMessageToChat({ ...message, coordinator: "Direct Orchestrator" });
+  }
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
 function appendMessageToChat(msg) {
   if (!chatMessagesEl) return;
   const isUser = msg.role === "user";
@@ -599,7 +995,162 @@ function appendMessageToChat(msg) {
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
+async function sendDirectMessage(text) {
+  if (!text || isSending) return;
+  isSending = true;
+  streamingAssistantEl = null;
+  if (sendMsgBtn) sendMsgBtn.disabled = true;
+  if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = true;
+  if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
+  agentTabs.forEach((tab) => { tab.disabled = true; });
+  if (chatStatus) chatStatus.textContent = "Sending directly to the orchestrator...";
+
+  directMessages.push({ role: "user", content: text });
+  appendMessageToChat({ role: "user", content: text });
+  chatInput.value = "";
+  let assistantContent = "";
+
+  try {
+    const nodes = await refreshDirectClusterContext();
+    if (!nodes) throw new Error("Could not load the current cluster inventory.");
+    if (!nodes.some((node) => node.healthy)) {
+      throw new Error("No healthy cluster nodes are available to answer this message.");
+    }
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson" },
+      body: JSON.stringify({
+        model: agentModelSelect?.value || "",
+        messages: [directClusterSystemMessage(nodes), ...directMessages],
+        stream: true,
+      }),
+    });
+    if (!response.ok) {
+      let message = await response.text();
+      try {
+        message = JSON.parse(message).error || message;
+      } catch {
+        // Keep the plain-text server error.
+      }
+      throw new Error(message.trim() || response.statusText);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const consumeLine = (line) => {
+      if (!line.trim()) return;
+      const event = JSON.parse(line);
+      if (event.error) throw new Error(event.error);
+      const delta = event.message?.content || "";
+      if (!delta) return;
+      assistantContent += delta;
+      if (!streamingAssistantEl) {
+        streamingAssistantEl = document.createElement("div");
+        streamingAssistantEl.className = "chat-msg assistant";
+        const meta = document.createElement("div");
+        meta.className = "msg-meta";
+        meta.textContent = `🤖 Direct Orchestrator${agentModelSelect?.value ? ` · ${agentModelSelect.value}` : ""}`;
+        const bubble = document.createElement("div");
+        bubble.className = "msg-bubble";
+        streamingAssistantEl.append(meta, bubble);
+        chatMessagesEl.appendChild(streamingAssistantEl);
+      }
+      const bubble = streamingAssistantEl.querySelector(".msg-bubble");
+      if (bubble) bubble.textContent += delta;
+      chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) consumeLine(line);
+      if (done) break;
+    }
+    if (buffer.trim()) consumeLine(buffer);
+    if (!assistantContent) throw new Error("The orchestrator returned an empty response.");
+    directMessages.push({ role: "assistant", content: assistantContent });
+    if (chatStatus) chatStatus.textContent = "";
+  } catch (err) {
+    if (assistantContent) directMessages.push({ role: "assistant", content: assistantContent });
+    if (chatStatus) chatStatus.textContent = `Direct chat failed: ${err.message}`;
+    appendMessageToChat({
+      role: "assistant",
+      coordinator: "Direct Orchestrator",
+      content: `⚠️ Direct chat failed: ${err.message}`,
+    });
+  } finally {
+    isSending = false;
+    streamingAssistantEl = null;
+    if (sendMsgBtn) sendMsgBtn.disabled = false;
+    if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = false;
+    if (clearDirectChatBtn) clearDirectChatBtn.disabled = false;
+    agentTabs.forEach((tab) => { tab.disabled = false; });
+  }
+}
+
+function formatDirectTaskDispatch(task) {
+  const assignments = (task.subtasks || []).map((item) => {
+    const subtask = item.subtask || {};
+    const description = subtask.description || subtask.id || "Subtask";
+    const category = subtask.task_type || "general";
+    return `• ${description} [${category}] → ${item.node_id} / ${item.model} (${item.status})`;
+  });
+  return [
+    `Task ${task.id} submitted to the orchestrator's native planner and capability-aware scheduler.`,
+    `Status: ${task.status}`,
+    ...assignments,
+    "Live progress and results are available in the Tasks workspace.",
+  ].join("\n");
+}
+
+async function dispatchDirectTask(description) {
+  if (!description || isSending) return;
+  isSending = true;
+  if (sendMsgBtn) sendMsgBtn.disabled = true;
+  if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = true;
+  if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
+  agentTabs.forEach((tab) => { tab.disabled = true; });
+  if (chatStatus) chatStatus.textContent = "Planning against live capabilities and routing to suitable nodes…";
+
+  directMessages.push({ role: "user", content: description });
+  appendMessageToChat({ role: "user", content: description });
+  chatInput.value = "";
+  try {
+    const nodes = await refreshDirectClusterContext();
+    if (!nodes) throw new Error("Could not load the current cluster inventory.");
+    if (!nodes.some((node) => node.healthy)) {
+      throw new Error("No healthy cluster nodes are available to plan or run this task.");
+    }
+    const task = await fetchJSON("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description, plan_mode: "auto" }),
+    });
+    const summary = formatDirectTaskDispatch(task);
+    directMessages.push({ role: "assistant", content: summary });
+    appendMessageToChat({ role: "assistant", coordinator: "Direct Orchestrator", content: summary });
+    if (chatStatus) chatStatus.textContent = "";
+    void refreshDirectClusterContext();
+    void refresh();
+  } catch (err) {
+    const message = `Task dispatch failed: ${err.message}`;
+    directMessages.push({ role: "assistant", content: message });
+    appendMessageToChat({ role: "assistant", coordinator: "Direct Orchestrator", content: message });
+    if (chatStatus) chatStatus.textContent = message;
+  } finally {
+    isSending = false;
+    if (sendMsgBtn) sendMsgBtn.disabled = false;
+    if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = false;
+    if (clearDirectChatBtn) clearDirectChatBtn.disabled = false;
+    agentTabs.forEach((tab) => { tab.disabled = false; });
+  }
+}
+
 async function sendInteractiveMessage(text) {
+  if (activeChatMode === "direct") return sendDirectMessage(text);
   if (!text || !activeSessionId || isSending) return;
   isSending = true;
   streamingAssistantEl = null;
@@ -728,6 +1279,17 @@ chatInput?.addEventListener("keydown", (e) => {
 
 newSessionBtn?.addEventListener("click", () => {
   createNewSession();
+});
+
+clearDirectChatBtn?.addEventListener("click", () => {
+  if (isSending) return;
+  directMessages = [];
+  if (chatStatus) chatStatus.textContent = "";
+  renderDirectMessages();
+});
+
+dispatchDirectTaskBtn?.addEventListener("click", () => {
+  void dispatchDirectTask(chatInput.value.trim());
 });
 
 promptChips.forEach((chip) => {
@@ -902,8 +1464,8 @@ function sortNodesByCapability(nodes) {
   return [...nodes].sort((a, b) => {
     if ((b.active_tasks || 0) !== (a.active_tasks || 0)) return (b.active_tasks || 0) - (a.active_tasks || 0);
     if (Boolean(b.leader) !== Boolean(a.leader)) return Number(b.leader) - Number(a.leader);
-    const aScore = (a.hardware?.score || 0) + (a.fast_score || 0) * 0.75 + (a.hardware?.total_ram_mb || 0) / 1024 * 0.5 + (a.hardware?.cpu_cores || 0) * 0.25 + (a.hardware?.has_gpu ? 25 : 0);
-    const bScore = (b.hardware?.score || 0) + (b.fast_score || 0) * 0.75 + (b.hardware?.total_ram_mb || 0) / 1024 * 0.5 + (b.hardware?.cpu_cores || 0) * 0.25 + (b.hardware?.has_gpu ? 25 : 0);
+    const aScore = (a.hardware?.score || 0) + (a.fast_score || 0) * 0.75 + (a.hardware?.total_ram_mb || 0) / 1024 * 0.5 + (a.hardware?.cpu_cores || 0) * 0.25 + (a.hardware?.has_gpu ? 25 : 0) + (a.hardware?.has_npu ? 30 : 0);
+    const bScore = (b.hardware?.score || 0) + (b.fast_score || 0) * 0.75 + (b.hardware?.total_ram_mb || 0) / 1024 * 0.5 + (b.hardware?.cpu_cores || 0) * 0.25 + (b.hardware?.has_gpu ? 25 : 0) + (b.hardware?.has_npu ? 30 : 0);
     if (b.healthy !== a.healthy) return Number(b.healthy) - Number(a.healthy);
     if (bScore !== aScore) return bScore - aScore;
     return (b.id || "").localeCompare(a.id || "");
@@ -932,8 +1494,31 @@ function gpuGaugeMarkup(node, size = 40) {
     </span>`;
 }
 
-function gpuHistoryMarkup(node) {
-  const history = (node.gpu_history || []).slice(-60);
+function npuGaugeMarkup(node, size = 40) {
+  const hardware = node.hardware || {};
+  if (!hardware.has_npu) return "";
+  const utilization = Number(hardware.npu_utilization_percent);
+  if (!hardware.npu_stats_available || !Number.isFinite(utilization)) {
+    return `<span class="npu-gauge-unavailable" role="img" aria-label="NPU utilization unavailable">NPU n/a</span>`;
+  }
+  const value = Math.max(0, Math.min(100, utilization));
+  const radius = 15;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - value / 100);
+  return `
+    <span class="node-npu-gauge" role="img" aria-label="NPU utilization ${value}%">
+      <svg width="${size}" height="${size}" viewBox="0 0 36 36" aria-hidden="true">
+        <circle class="node-npu-gauge-track" cx="18" cy="18" r="${radius}"></circle>
+        <circle class="node-npu-gauge-value" cx="18" cy="18" r="${radius}"
+          stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
+      </svg>
+      <span>${value}%</span>
+    </span>`;
+}
+
+function acceleratorHistoryMarkup(node, type) {
+  const label = type.toUpperCase();
+  const history = (node[`${type}_history`] || []).slice(-60);
   const points = history
     .map((sample, index) => ({
       index,
@@ -942,8 +1527,8 @@ function gpuHistoryMarkup(node) {
     }))
     .filter((sample) => sample.available && Number.isFinite(sample.value));
   if (!points.length) {
-    const message = node.hardware?.has_gpu ? "GPU telemetry unavailable" : "No GPU detected";
-    return `<div class="gpu-history-empty">${message}</div>`;
+    const message = node.hardware?.[`has_${type}`] ? `${label} telemetry unavailable` : `No ${label} detected`;
+    return `<div class="accelerator-history-empty">${message}</div>`;
   }
 
   const width = 180;
@@ -969,28 +1554,36 @@ function gpuHistoryMarkup(node) {
   if (segment.length) segments.push(segment);
   const paths = segments
     .filter((items) => items.length > 1)
-    .map((items) => `<path class="gpu-history-line" d="${items.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}"></path>`)
+    .map((items) => `<path class="accelerator-history-line" d="${items.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}"></path>`)
     .join("");
   const isolatedPoints = segments
     .filter((items) => items.length === 1)
-    .map(([point]) => `<circle class="gpu-history-point" cx="${point.x}" cy="${point.y}" r="2.5"></circle>`)
+    .map(([point]) => `<circle class="accelerator-history-point" cx="${point.x}" cy="${point.y}" r="2.5"></circle>`)
     .join("");
   const latest = points[points.length - 1];
   const lastPoint = { x: x(latest.index), y: y(latest.value) };
   const latestPoint = segments.some((items) => items.length === 1 && items[0].x === lastPoint.x)
     ? ""
-    : `<circle class="gpu-history-point" cx="${lastPoint.x}" cy="${lastPoint.y}" r="2.5"></circle>`;
+    : `<circle class="accelerator-history-point" cx="${lastPoint.x}" cy="${lastPoint.y}" r="2.5"></circle>`;
   return `
-    <div class="gpu-history">
-      <div class="gpu-history-heading"><span>GPU utilization</span><strong>${Math.round(latest.value)}%</strong></div>
-      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="GPU utilization history for ${escapeHtml(node.id)}">
-        <path class="gpu-history-grid" d="M${left},${top}H${right} M${left},${(top + bottom) / 2}H${right} M${left},${bottom}H${right}"></path>
+    <div class="accelerator-history">
+      <div class="accelerator-history-heading"><span>${label} utilization</span><strong>${Math.round(latest.value)}%</strong></div>
+      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${label} utilization history for ${escapeHtml(node.id)}">
+        <path class="accelerator-history-grid" d="M${left},${top}H${right} M${left},${(top + bottom) / 2}H${right} M${left},${bottom}H${right}"></path>
         ${paths}
         ${isolatedPoints}
         ${latestPoint}
       </svg>
       <small>Recent samples · up to 5-minute window</small>
     </div>`;
+}
+
+function gpuHistoryMarkup(node) {
+  return acceleratorHistoryMarkup(node, "gpu");
+}
+
+function npuHistoryMarkup(node) {
+  return acceleratorHistoryMarkup(node, "npu");
 }
 
 function systemHistoryMarkup(node) {
@@ -1021,7 +1614,7 @@ function systemHistoryMarkup(node) {
   </div>`;
 }
 
-const TASK_ACTIVE_STATES = new Set(["pending", "running", "synthesizing"]);
+const TASK_ACTIVE_STATES = new Set(["pending", "running", "synthesizing", "awaiting_approval"]);
 const TASK_STATES = new Set([...TASK_ACTIVE_STATES, "completed", "failed", "cancelled"]);
 const SUBTASK_STATES = new Set(["pending", "running", "completed", "failed", "cancelled"]);
 
@@ -1056,6 +1649,20 @@ function nodeAssignments(tasks) {
 
 function renderOverview(nodes, tasks, peers, parts = {}) {
   const nodeList = sortNodesByCapability(nodes || []);
+  const memberIDs = new Set(nodeList.map((node) => node.id));
+  const discoveredNodes = (peers || [])
+    .filter((peer) => peer.role === "node" && peer.id && !memberIDs.has(peer.id))
+    .map((peer) => ({
+      id: peer.id,
+      address: peer.peer_addr || peer.http_addr,
+      healthy: true,
+      discovered: true,
+      last_seen: peer.last_seen,
+      models: [],
+      active_tasks: 0,
+      hardware: {},
+    }));
+  const displayNodes = sortNodesByCapability([...nodeList, ...discoveredNodes]);
   const taskList = [...(tasks || [])].sort((a, b) =>
     new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
   );
@@ -1065,7 +1672,7 @@ function renderOverview(nodes, tasks, peers, parts = {}) {
   const online = nodeList.filter((node) => node.healthy).length;
   const offline = nodeList.length - online;
   if (clusterOverviewStatus) {
-    clusterOverviewStatus.textContent = `${online} online · ${offline} offline · ${activeTasks.length} active tasks`;
+    clusterOverviewStatus.textContent = `${online} online · ${offline} offline · ${discoveredNodes.length} available to pair · ${activeTasks.length} active tasks`;
   }
 
   if (parts.activity !== false && overviewActivity) {
@@ -1093,20 +1700,29 @@ function renderOverview(nodes, tasks, peers, parts = {}) {
 
   if (parts.nodes !== false && overviewNodes) {
     const leaderID = nodeList.find((node) => node.leader)?.id;
-    overviewNodes.innerHTML = nodeList.length
-      ? nodeList.map((node) => {
+    overviewNodes.innerHTML = displayNodes.length
+      ? displayNodes.map((node) => {
           const nodeTasks = assignments.get(node.id) || [];
-          const state = node.healthy ? "online" : "offline";
-          const lastSeen = node.last_seen ? `Last seen ${formatRelativeTime(node.last_seen)}` : "Last seen unavailable";
+          const state = node.discovered ? "discovered" : node.healthy ? "online" : "offline";
+          const status = node.discovered ? "available · not paired" : state;
+          const lastSeen = node.last_seen
+            ? `${node.discovered ? "Seen" : "Last seen"} ${formatRelativeTime(node.last_seen)}`
+            : "Last seen unavailable";
           return `<article class="overview-node ${state}" data-node-id="${escapeHtml(node.id)}">
-            <div class="overview-node-heading"><span class="legend-dot ${state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${state}</span></div>
-            <div class="overview-node-meta">${node.id === leaderID ? "Cluster leader · " : ""}${node.active_tasks || 0} active load · ${(node.models || []).length} models</div>
-            <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
+            <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
+            <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
+            <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${node.active_tasks || 0} active tasks · ${(node.models || []).length} models`}</div>
+            <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
             <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
             ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
           </article>`;
         }).join("")
       : '<p class="overview-empty">No known cluster members.</p>';
+    const nodesByID = new Map(displayNodes.map((node) => [node.id, node]));
+    overviewNodes.querySelectorAll("[data-node-id]").forEach((card) => {
+      const node = nodesByID.get(card.dataset.nodeId);
+      if (node) attachNodeContextMenu(card, node);
+    });
   }
 
   if (parts.peers !== false && clusterPeers) {
@@ -1146,6 +1762,7 @@ function renderNodes(nodes) {
     const card = document.createElement("div");
     card.className = "card" + (n.id === leaderID ? " leader" : "");
     const gpuGauge = gpuGaugeMarkup(n, 46);
+    const npuGauge = npuGaugeMarkup(n, 46);
     const modelTags = (n.models || [])
       .map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`)
       .join("");
@@ -1155,7 +1772,7 @@ function renderNodes(nodes) {
          <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>`
       : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
     card.innerHTML = `
-      <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3>${gpuGauge}</div>
+      <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3><div class="node-accelerator-gauges">${gpuGauge}${npuGauge}</div></div>
       ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
       <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ''}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ''}</div>
       <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
@@ -1163,7 +1780,9 @@ function renderNodes(nodes) {
       <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
       <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
       <div class="row"><span>GPU</span><span>${n.hardware.has_gpu ? escapeHtml(n.hardware.gpu_vendor || "enabled") : "none"}</span></div>
+      <div class="row"><span>NPU</span><span>${n.hardware.has_npu ? escapeHtml(n.hardware.npu_vendor || "enabled") : "none"}</span></div>
       ${gpuHistoryMarkup(n)}
+      ${npuHistoryMarkup(n)}
       ${systemHistoryMarkup(n)}
       ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
       <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
@@ -1177,13 +1796,7 @@ function renderNodes(nodes) {
     nodesList.appendChild(card);
     card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
     card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
-    if (n.healthy) {
-      card.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
-        contextNode = n;
-        showNodeMenu(event.clientX, event.clientY);
-      });
-    }
+    attachNodeContextMenu(card, n);
 
     // Wire model direct test buttons
     card.querySelectorAll(".model-tag-btn").forEach((btn) => {
@@ -1225,6 +1838,37 @@ function renderNodes(nodes) {
       renderNodes(nodes);
     });
   });
+}
+
+function renderSetupNodes(nodes) {
+  if (!setupNodeList) return;
+  const ordered = sortNodesByCapability(nodes || []);
+  if (setupNodeSummary) {
+    const online = ordered.filter((node) => node.healthy).length;
+    setupNodeSummary.textContent = `${online} online · ${ordered.length - online} offline · ${ordered.length} total`;
+  }
+  if (!ordered.length) {
+    setupNodeList.innerHTML = '<p class="setup-empty">No cluster members are registered yet. Pair a node to add it to the cluster.</p>';
+    return;
+  }
+  setupNodeList.innerHTML = "";
+  for (const node of ordered) {
+    const online = Boolean(node.healthy);
+    const card = document.createElement("article");
+    card.className = `setup-node-card ${online ? "online" : "offline"}`;
+    card.innerHTML = `
+      <div class="setup-node-heading">
+        <div><h4>${escapeHtml(node.id)}</h4><span class="panel-caption">${escapeHtml(node.address || "Address unavailable")}</span></div>
+        <span class="setup-node-status ${online ? "online" : "offline"}"><span class="legend-dot ${online ? "online" : "offline"}"></span>${online ? "Online" : "Offline"}</span>
+      </div>
+      <div class="setup-node-details">
+        <span>${(node.models || []).length} models</span>
+        <span>${node.active_tasks || 0} active tasks</span>
+        ${online ? "" : `<span>Last seen ${escapeHtml(node.last_seen ? formatRelativeTime(node.last_seen) : "unknown")}</span>`}
+      </div>`;
+    attachNodeContextMenu(card, node);
+    setupNodeList.appendChild(card);
+  }
 }
 
 async function openNodeTerminal(node) {
@@ -1384,10 +2028,30 @@ refreshAllModelsBtn?.addEventListener("click", async () => {
 function showNodeMenu(x, y) {
   const menu = document.getElementById("node-context-menu");
   if (!menu || !contextNode) return;
-  menu.querySelector("[data-action=properties]").textContent = `Edit ${contextNode.id} properties`;
-  menu.style.left = `${Math.min(x, window.innerWidth - menu.offsetWidth - 8)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - menu.offsetHeight - 8)}px`;
+  const properties = menu.querySelector("[data-action=properties]");
+  const pairing = menu.querySelector("[data-action=pair]");
+  const nodeIsDiscovered = Boolean(contextNode.discovered);
+  if (properties) {
+    properties.textContent = `Configure ${contextNode.id}`;
+    properties.disabled = !contextNode.healthy || nodeIsDiscovered;
+  }
+  if (pairing) {
+    pairing.textContent = nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
+    pairing.disabled = !contextNode.healthy;
+  }
+  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered;
   menu.hidden = false;
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
+}
+
+function attachNodeContextMenu(element, node) {
+  element.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    contextNode = node;
+    showNodeMenu(event.clientX, event.clientY);
+  });
 }
 
 function hideNodeMenu() {
@@ -1404,6 +2068,8 @@ document.getElementById("node-context-menu")?.addEventListener("click", async (e
   hideNodeMenu();
   if (action === "properties") {
     openNodeProperties(node);
+  } else if (action === "pair") {
+    openPairingDialog(node);
   } else if (action === "open") {
     window.open(node.address, "_blank", "noopener");
   } else if (action === "copy") {
@@ -1585,75 +2251,29 @@ function renderDiscovery(peers) {
     const card = document.createElement("div");
     card.className = "card";
     const associated = p.role === "node" ? (orchestrator[0]?.id || "none") : "self";
+    const member = p.role === "node" ? currentNodes.find((node) => node.id === p.id) : null;
     card.innerHTML = `
       <h3>${escapeHtml(p.id)} <span class="badge healthy">${escapeHtml(p.role)}</span></h3>
-      <div class="row"><span>Address</span><span>${escapeHtml(p.http_addr)}</span></div>
+      <div class="row"><span>Address</span><span>${escapeHtml(p.peer_addr || p.http_addr || "Address unavailable")}</span></div>
+      ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member ? member.healthy ? "Online · paired" : "Offline · paired" : "Available · not paired"}</span></div>` : ""}
       <div class="row"><span>Associated orchestrator</span><span>${escapeHtml(associated)}</span></div>
       <div class="row"><span>Last seen</span><span>${new Date(p.last_seen).toLocaleTimeString()}</span></div>
-      ${p.role === "orchestrator" ? '<small class="discovery-pair-hint">Right-click to pair this orchestrator</small>' : ""}
     `;
-    if (p.role === "orchestrator") {
-      card.classList.add("discovery-peer-pairable");
-      card.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
-        openPeerPairing(p);
+    discoveryList.appendChild(card);
+    if (p.role === "node") {
+      attachNodeContextMenu(card, member || {
+        id: p.id,
+        address: p.peer_addr || p.http_addr,
+        healthy: true,
+        discovered: true,
+        last_seen: p.last_seen,
+        models: [],
+        active_tasks: 0,
+        hardware: {},
       });
     }
-    discoveryList.appendChild(card);
   }
 }
-
-function openPeerPairing(peer) {
-  if (!peerPairingModal || !peerPairingAddress || !peerPairingPin) return;
-  const secureAddress = peer.peer_addr || "";
-  if (!secureAddress.startsWith("https://")) {
-    if (peerPairingStatus) peerPairingStatus.textContent = "This peer did not advertise a secure pairing address.";
-    return;
-  }
-  peerPairingAddress.value = secureAddress;
-  peerPairingAddress.readOnly = true;
-  peerPairingPin.value = "";
-  if (peerPairingStatus) peerPairingStatus.textContent = "";
-  const title = document.getElementById("peer-pairing-title");
-  if (title) title.textContent = `Pair with ${peer.id}`;
-  peerPairingModal.hidden = false;
-  peerPairingPin.focus();
-}
-
-function closePeerPairing() {
-  if (peerPairingModal) peerPairingModal.hidden = true;
-}
-
-document.getElementById("peer-pairing-close")?.addEventListener("click", closePeerPairing);
-document.getElementById("peer-pairing-cancel")?.addEventListener("click", closePeerPairing);
-peerPairingModal?.addEventListener("click", (event) => {
-  if (event.target === peerPairingModal) closePeerPairing();
-});
-peerPairingForm?.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!peerPairingAddress || !peerPairingPin || !peerPairingSubmit) return;
-  peerPairingSubmit.disabled = true;
-  if (peerPairingStatus) peerPairingStatus.textContent = "Pairing securely…";
-  try {
-    const result = await fetchJSON("/api/pairing/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        address: peerPairingAddress.value.trim(),
-        pin: peerPairingPin.value.trim(),
-      }),
-    });
-    if (peerPairingStatus) {
-      peerPairingStatus.textContent = `Paired with ${result.paired_orchestrator}. Cluster synchronization will begin shortly.`;
-    }
-    peerPairingPin.value = "";
-    await refresh();
-  } catch (err) {
-    if (peerPairingStatus) peerPairingStatus.textContent = `Pairing failed: ${err.message}`;
-  } finally {
-    peerPairingSubmit.disabled = false;
-  }
-});
 
 function renderTasks(tasks) {
   if (!tasksList) return;
@@ -1671,7 +2291,7 @@ function renderTasks(tasks) {
     const subtaskHTML = (t.subtasks || [])
       .map(
         (s) => `
-        <div class="row"><span>${s.subtask.id} (${s.subtask.task_type}) &rarr; ${escapeHtml(s.node_id)}</span>
+        <div class="row"><span>${escapeHtml(s.subtask.id)} · ${escapeHtml(s.subtask.role || s.subtask.task_type)} (${escapeHtml(s.subtask.task_type)}) &rarr; ${escapeHtml(s.node_id)}</span>
         <span class="badge ${s.status}">${s.status}</span></div>
         ${s.output ? `<div class="subtask-output-wrap"><button class="copy-output-btn" type="button" data-copy-output="${encodeURIComponent(s.output)}">Copy</button><div class="subtask-output">${escapeHtml(s.output)}</div></div>` : ""}
         ${s.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(s.error)}</div>` : ""}
@@ -1679,7 +2299,7 @@ function renderTasks(tasks) {
       )
       .join("");
     card.innerHTML = `
-      <h3>${escapeHtml(t.id)} <span class="badge ${t.status}">${t.status}</span>${t.status === "running" ? ` <button class="cancel-task-btn" type="button" data-task-id="${escapeHtml(t.id)}">Cancel</button>` : ""}</h3>
+      <h3>${escapeHtml(t.id)} <span class="badge ${t.status}">${escapeHtml(t.status)}</span>${t.status === "running" || t.status === "awaiting_approval" ? ` <button class="cancel-task-btn" type="button" data-task-id="${escapeHtml(t.id)}">Cancel</button>` : ""}${t.status === "awaiting_approval" ? ` <button class="approve-task-btn primary-btn" type="button" data-task-id="${escapeHtml(t.id)}">Approve and synthesize</button>` : ""}</h3>
       <div class="row"><span colspan="2">${escapeHtml(t.description)}</span></div>
       ${t.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(t.error)}</div>` : ""}
       ${subtaskHTML}
@@ -1693,6 +2313,16 @@ function renderTasks(tasks) {
         await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
       } catch (err) {
         if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err.message}`;
+      }
+    });
+    card.querySelector(".approve-task-btn")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/approve`, { method: "POST" });
+      } catch (err) {
+        button.disabled = false;
+        if (submitStatus) submitStatus.textContent = `Unable to approve ${t.id}: ${err.message}`;
       }
     });
     card.querySelectorAll("[data-copy-output]").forEach((button) => {
@@ -1741,6 +2371,21 @@ async function refresh() {
   }
 }
 
+async function refreshDiscovery() {
+  try {
+    const discovery = await fetchJSON("/api/discovery");
+    applySnapshot({
+      nodes: window.latestNodes || [],
+      tasks: window.latestTasks || [],
+      discovery,
+    });
+  } catch (err) {
+    console.error("local network refresh failed", err);
+  }
+}
+
+setInterval(refreshDiscovery, 5000);
+
 function applySnapshot(snap) {
   if (snap.complete_tasks) {
     window.latestTasks = snap.tasks || [];
@@ -1780,11 +2425,13 @@ function applySnapshot(snap) {
     active_tasks: node.active_tasks, healthy: node.healthy, leader: node.leader,
     version_error: node.version_error, last_seen: node.healthy ? undefined : node.last_seen,
     gpu_sample: node.gpu_history?.at(-1)?.timestamp,
+    npu_sample: node.npu_history?.at(-1)?.timestamp,
     system_sample: node.system_history?.at(-1)?.timestamp,
   }));
   const nodeSignature = JSON.stringify(nodeState);
   const overviewNodeState = window.latestNodes.map((node) => ({
     id: node.id,
+    address: node.address,
     healthy: node.healthy,
     leader: node.leader,
     active_tasks: node.active_tasks,
@@ -1792,6 +2439,8 @@ function applySnapshot(snap) {
     last_seen: node.healthy ? undefined : node.last_seen,
     gpu_stats_available: node.hardware?.gpu_stats_available,
     gpu_utilization_percent: node.hardware?.gpu_utilization_percent,
+    npu_stats_available: node.hardware?.npu_stats_available,
+    npu_utilization_percent: node.hardware?.npu_utilization_percent,
     cpu_stats_available: node.hardware?.cpu_stats_available,
     cpu_utilization_percent: node.hardware?.cpu_utilization_percent,
     memory_stats_available: node.hardware?.memory_stats_available,
@@ -1807,24 +2456,29 @@ function applySnapshot(snap) {
   const taskSignature = JSON.stringify(window.latestTasks.map((task) => [task.id, task.updated_at]));
   const activitySignature = JSON.stringify(taskState);
   const peerState = (snap.discovery || []).map((peer) => ({
-    id: peer.id, role: peer.role, address: peer.http_addr, peer_addr: peer.peer_addr,
+    id: peer.id, role: peer.role, address: peer.http_addr, peer_addr: peer.peer_addr, last_seen: peer.last_seen,
   }));
   const peerSignature = JSON.stringify(peerState);
+  const discoveredNodeState = (snap.discovery || [])
+    .filter((peer) => peer.role === "node")
+    .map((peer) => ({ id: peer.id, address: peer.peer_addr || peer.http_addr, last_seen: peer.last_seen }));
+  const overviewNodeSignature = JSON.stringify({ members: overviewNodeState, discovered: discoveredNodeState });
   let overviewChanged = false;
   const overviewParts = {
     activity: activitySignature !== window.lastActivitySignature,
-    nodes: JSON.stringify(overviewNodeState) !== window.lastOverviewNodeSignature,
+    nodes: overviewNodeSignature !== window.lastOverviewNodeSignature,
     peers: peerSignature !== window.lastOverviewPeerSignature,
   };
   if (overviewParts.activity || overviewParts.nodes || overviewParts.peers) {
     renderOverview(window.latestNodes, window.latestTasks, snap.discovery || [], overviewParts);
     window.lastActivitySignature = activitySignature;
-    window.lastOverviewNodeSignature = JSON.stringify(overviewNodeState);
+    window.lastOverviewNodeSignature = overviewNodeSignature;
     window.lastOverviewPeerSignature = peerSignature;
     overviewChanged = true;
   }
   if (nodeSignature !== window.lastNodeSignature) {
     renderNodes(window.latestNodes);
+    renderSetupNodes(window.latestNodes);
     window.lastNodeSignature = nodeSignature;
   }
   const routingSignature = JSON.stringify({
@@ -1876,7 +2530,12 @@ submitBtn?.addEventListener("click", async () => {
     const task = await fetchJSON("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description }),
+      body: JSON.stringify({
+        description,
+        plan_mode: taskAutoPlan?.checked ? "auto" : "heuristic",
+        require_review: taskRequireReview?.checked || false,
+        require_approval: taskRequireApproval?.checked || false,
+      }),
     });
     submitStatus.textContent = `Submitted as ${task.id}`;
     taskInput.value = "";
@@ -1890,7 +2549,10 @@ submitBtn?.addEventListener("click", async () => {
 loadAgentTools();
 loadAgentBackend().then(loadSessions);
 loadPairingStatus();
-setInterval(loadPairingStatus, 30000);
+setInterval(loadPairingStatus, 5000);
+setInterval(() => {
+  if (activeChatMode === "direct") void refreshDirectClusterContext();
+}, 15000);
 loadClusterModels();
 refresh();
 checkSetupReadiness();

@@ -11,11 +11,16 @@ import (
 
 // Subtask is one unit of work produced by decomposing a submitted task.
 type Subtask struct {
-	ID          string   `json:"id"`
-	Description string   `json:"description"`
-	TaskType    string   `json:"task_type"` // e.g. code, summarize, translate, math, creative, general
-	Tags        []string `json:"tags"`
-	DependsOn   []string `json:"depends_on,omitempty"`
+	ID             string   `json:"id"`
+	Description    string   `json:"description"`
+	Role           string   `json:"role,omitempty"`
+	TaskType       string   `json:"task_type"` // e.g. code, summarize, translate, math, creative, general
+	Tags           []string `json:"tags"`
+	DependsOn      []string `json:"depends_on,omitempty"`
+	ExpectedOutput string   `json:"expected_output,omitempty"`
+	OutputFormat   string   `json:"output_format,omitempty"`
+	RequiredFields []string `json:"required_fields,omitempty"`
+	MaxRetries     int      `json:"max_retries,omitempty"`
 }
 
 var listItemPattern = regexp.MustCompile(`(?m)^\s*(?:[-*]|\d+[.)])\s+`)
@@ -58,6 +63,7 @@ func Decompose(description string) []Subtask {
 		subtask := Subtask{
 			ID:          idFor(i),
 			Description: p,
+			Role:        roleForTaskType(taskType),
 			TaskType:    taskType,
 			Tags:        tagsFor(taskType),
 		}
@@ -97,6 +103,11 @@ func ValidatePlan(subtasks []Subtask) ([]Subtask, error) {
 		if subtask.TaskType == "" {
 			subtask.TaskType = classify(subtask.Description)
 		}
+		normalized, err := validateSubtask(subtask)
+		if err != nil {
+			return nil, err
+		}
+		subtask = normalized
 		if len(subtask.Tags) == 0 {
 			subtask.Tags = tagsFor(subtask.TaskType)
 		} else {

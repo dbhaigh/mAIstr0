@@ -1,5 +1,5 @@
 // Package hardware detects local machine capabilities used to score a node
-// for LLM engine/model suitability (CPU, RAM, GPU presence).
+// for LLM engine/model suitability (CPU, RAM, GPU and NPU presence).
 package hardware
 
 import (
@@ -15,6 +15,14 @@ import (
 // GPUUsageSample is one five-second GPU telemetry snapshot. Utilization is
 // aggregated across detected NVIDIA GPUs and is only meaningful when Available.
 type GPUUsageSample struct {
+	Timestamp   time.Time `json:"timestamp"`
+	Available   bool      `json:"available"`
+	Utilization int       `json:"utilization_percent"`
+}
+
+// NPUUsageSample is one five-second NPU telemetry snapshot. Utilization is
+// only meaningful when Available.
+type NPUUsageSample struct {
 	Timestamp   time.Time `json:"timestamp"`
 	Available   bool      `json:"available"`
 	Utilization int       `json:"utilization_percent"`
@@ -42,10 +50,12 @@ type Info struct {
 	HasGPU               bool    `json:"has_gpu"`
 	GPUVendor            string  `json:"gpu_vendor,omitempty"`
 	GPUStatsAvailable    bool    `json:"gpu_stats_available"`
-	GPUUtilization       int     `json:"gpu_utilization_percent,omitempty"`
+	GPUUtilization       int     `json:"gpu_utilization_percent"`
 	GPUMemoryFreeMB      uint64  `json:"gpu_memory_free_mb,omitempty"`
 	HasNPU               bool    `json:"has_npu"`
 	NPUVendor            string  `json:"npu_vendor,omitempty"`
+	NPUStatsAvailable    bool    `json:"npu_stats_available"`
+	NPUUtilization       int     `json:"npu_utilization_percent"`
 	Score                float64 `json:"score"`
 }
 
@@ -77,6 +87,13 @@ func CurrentGPUUsage() (utilization int, freeMemoryMB uint64, available bool) {
 		return 0, 0, false
 	}
 	return parseNVIDIAUsage(string(out))
+}
+
+// CurrentNPUUsage returns current NPU utilization when the operating system
+// exposes NPU utilization performance counters. Unsupported or unavailable
+// telemetry is reported as unavailable, not as an idle accelerator.
+func CurrentNPUUsage() (utilization int, available bool) {
+	return currentNPUUsage()
 }
 
 // CurrentSystemUsage returns host CPU and memory utilization where the
@@ -118,6 +135,25 @@ func parseNVIDIAUsage(output string) (int, uint64, bool) {
 		found = true
 	}
 	return maxUtilization, maxFreeMemory, found
+}
+
+func parseNPUUsage(output string) (int, bool) {
+	maxUtilization := 0.0
+	found := false
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		utilization, err := strconv.ParseFloat(strings.TrimSpace(line), 64)
+		if err != nil || utilization < 0 || utilization > 100 {
+			continue
+		}
+		if !found || utilization > maxUtilization {
+			maxUtilization = utilization
+		}
+		found = true
+	}
+	if !found {
+		return 0, false
+	}
+	return int(maxUtilization + 0.5), true
 }
 
 // computeScore produces a single relative capability score used by the

@@ -43,6 +43,7 @@ func DefaultTools() []Tool {
 		&NodeLLMQueryTool{},
 		&ClusterLLMQueryTool{},
 		&ClusterParallelDispatchTool{},
+		&ExecuteWorkflowTool{},
 		&TestNodeModelTool{},
 		&ListNodeDialoguesTool{},
 		&GetNodeDialogueTool{},
@@ -50,6 +51,70 @@ func DefaultTools() []Tool {
 		&FetchWebTool{},
 		&SessionMemoryTool{},
 	}
+}
+
+// ExecuteWorkflowTool sends multi-step work through mAIstr0's validated,
+// persistent task engine instead of coordinating dispatch in chat history.
+type ExecuteWorkflowTool struct{}
+
+func (t *ExecuteWorkflowTool) Def() ToolDef {
+	return ToolDef{
+		Name:        "execute_workflow",
+		Description: "Execute a multi-step task using mAIstr0's persistent cluster workflow engine. For complex work, provide an explicit dependency-aware task plan; if omitted, the coordinator creates and validates a structured plan. Set require_review when a separate reviewer must approve the results. Returns only after the workflow completes.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"description": map[string]any{"type": "string", "description": "The overall task to complete."},
+				"subtasks": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":              map[string]any{"type": "string"},
+							"description":     map[string]any{"type": "string"},
+							"role":            map[string]any{"type": "string", "enum": []string{"researcher", "analyst", "coder", "writer", "reviewer", "summarizer", "translator", "general"}},
+							"task_type":       map[string]any{"type": "string", "enum": []string{"code", "summarize", "translate", "math", "vision", "creative", "general"}},
+							"depends_on":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+							"expected_output": map[string]any{"type": "string"},
+							"output_format":   map[string]any{"type": "string", "enum": []string{"text", "json"}},
+							"required_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+							"max_retries":     map[string]any{"type": "integer", "minimum": 0, "maximum": 2},
+						},
+						"required": []string{"description"},
+					},
+					"description": "Optional tasks with id, description, role, task_type, depends_on, expected_output, output_format, required_fields, and max_retries.",
+				},
+				"require_review": map[string]any{"type": "boolean", "description": "Add a reviewer task that must approve the completed work before synthesis."},
+			},
+			"required": []string{"description"},
+		},
+	}
+}
+
+func (t *ExecuteWorkflowTool) Execute(ctx context.Context, h *Harness, _ *Session, args map[string]any) (any, string, string, string, error) {
+	description, _ := args["description"].(string)
+	if strings.TrimSpace(description) == "" {
+		return nil, "", "", "", errors.New("workflow description is required")
+	}
+	if h.workflowExecutor == nil {
+		return nil, "", "", "", errors.New("durable workflow execution is not configured")
+	}
+	var subtasks []scheduler.Subtask
+	if raw, exists := args["subtasks"]; exists {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil, "", "", "", fmt.Errorf("encode workflow plan: %w", err)
+		}
+		if err := json.Unmarshal(encoded, &subtasks); err != nil {
+			return nil, "", "", "", fmt.Errorf("decode workflow plan: %w", err)
+		}
+	}
+	requireReview, _ := args["require_review"].(bool)
+	result, err := h.workflowExecutor(ctx, description, subtasks, requireReview)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	return map[string]any{"result": result}, "", "", "", nil
 }
 
 // --- Tool: cluster_status ---

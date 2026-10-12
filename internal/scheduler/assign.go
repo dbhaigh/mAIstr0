@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -92,7 +93,7 @@ func AssignWithExperience(subtasks []Subtask, nodes []cluster.NodeStatus, exp Ex
 func pickBest(st Subtask, nodes []cluster.NodeStatus, load map[string]int, exp Experience) (*cluster.NodeStatus, string, float64) {
 	var best *cluster.NodeStatus
 	bestModel := ""
-	bestScore := -1.0
+	bestScore := math.Inf(-1)
 
 	for i := range nodes {
 		n := &nodes[i]
@@ -102,14 +103,14 @@ func pickBest(st Subtask, nodes []cluster.NodeStatus, load map[string]int, exp E
 		}
 		hardwareScore := n.Hardware.Score
 		loadPenalty := float64(load[n.ID]) * 8.0
-		gpuPenalty := cluster.GPUUtilizationPenalty(n.Hardware)
+		acceleratorPenalty := cluster.GPUUtilizationPenalty(n.Hardware) + cluster.NPUUtilizationPenalty(n.Hardware)
 
 		learned := 0.0
 		if exp != nil {
 			learned = exp.LearnedBias(n.ID, model, st.TaskType)
 		}
 
-		score := matchScore*10.0 + hardwareScore*0.3 - loadPenalty - gpuPenalty + learned
+		score := matchScore*10.0 + hardwareScore*0.3 - loadPenalty - acceleratorPenalty + learned
 		if score > bestScore {
 			bestScore = score
 			best = n

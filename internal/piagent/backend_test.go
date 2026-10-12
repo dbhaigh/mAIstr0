@@ -19,6 +19,16 @@ type fakeProvider struct {
 	requests  []CompletionRequest
 }
 
+type recordingToolHost struct {
+	agent.Backend
+	calls []string
+}
+
+func (h *recordingToolHost) ExecuteTool(_ context.Context, _, name string, _ map[string]any) (agent.ToolResult, error) {
+	h.calls = append(h.calls, name)
+	return agent.ToolResult{Output: map[string]any{"ok": true}}, nil
+}
+
 func (p *fakeProvider) Name() string { return "test-provider" }
 
 func (p *fakeProvider) Complete(_ context.Context, request CompletionRequest, onDelta func(string)) (*Completion, error) {
@@ -92,6 +102,48 @@ func TestNativeAgentLoopExecutesToolsAndKeepsHistory(t *testing.T) {
 	}
 	if !backend.DeleteSession(session.ID) || len(host.ListSessions()) != 0 {
 		t.Fatal("deleting the Pi session did not clean up its tool-host session")
+	}
+}
+
+func TestNativeAgentExecutesEveryToolRequestedInOneTurn(t *testing.T) {
+	host := &recordingToolHost{Backend: testToolHost()}
+	tools := host.ListTools()
+	calls := make([]ChatToolCall, 0, len(tools))
+	expected := make(map[string]bool, len(tools))
+	for i, tool := range tools {
+		calls = append(calls, ChatToolCall{
+			ID: fmt.Sprintf("call-%d", i), Type: "function",
+			Function: ChatToolFunction{Name: tool.Name, Arguments: `{}`},
+		})
+		expected[tool.Name] = true
+	}
+	provider := &fakeProvider{responses: []*Completion{
+		{ToolCalls: calls},
+		{Content: "All requested tools have run."},
+	}}
+	backend := New(provider, host)
+	session, err := backend.CreateSession("all tools", agent.SessionConfig{MaxSteps: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := backend.SendMessage(context.Background(), session.ID, "Run all available tools.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Content != "All requested tools have run." {
+		t.Fatalf("final response = %q", final.Content)
+	}
+	if len(host.calls) != len(expected) {
+		t.Fatalf("executed %d tools, want %d", len(host.calls), len(expected))
+	}
+	for _, name := range host.calls {
+		if !expected[name] {
+			t.Errorf("executed unexpected tool %q", name)
+		}
+		delete(expected, name)
+	}
+	if len(expected) != 0 {
+		t.Errorf("tools not executed: %#v", expected)
 	}
 }
 

@@ -56,13 +56,15 @@
             <select id="agent-model-select">
               <option value="">Auto (Fastest / Cluster Leader)</option>
             </select>
+            <small id="direct-chat-help" class="setting-help" hidden>Direct chat uses live cluster context and the orchestrator scheduler, without an agent or harness.</small>
           </label>
           <label class="setting-label">
             <span>Max Reasoning Steps</span>
             <select id="agent-steps-select">
               <option value="6">6 steps</option>
-              <option value="8" selected>8 steps</option>
+              <option value="8">8 steps</option>
               <option value="12">12 steps</option>
+              <option value="24" selected>24 steps</option>
             </select>
           </label>
         </div>
@@ -71,14 +73,27 @@
           <h3>Orchestrator Cluster Tools</h3>
           <div id="agent-tools-list" class="tools-pills"></div>
         </div>
+
+        <div id="direct-cluster-context" class="sidebar-section direct-cluster-context" hidden>
+          <div class="direct-cluster-heading">
+            <h3>Live Cluster Context</h3>
+            <button id="direct-cluster-refresh" class="icon-button" type="button">Refresh</button>
+          </div>
+          <p id="direct-cluster-status" class="setting-help">Loading node and model capabilities…</p>
+          <div id="direct-cluster-nodes" class="direct-cluster-nodes"></div>
+        </div>
       </aside>
 
       <!-- Main Interactive Chat Area -->
       <div class="agent-chat-container">
-        <nav class="agent-tabs" role="tablist" aria-label="Interactive agents">
-          <button class="agent-tab active" type="button" role="tab" aria-selected="true" data-agent="pi">Pi Agent</button>
-          <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="deepseek">DeepSeek Agent</button>
-        </nav>
+        <div class="agent-tabbar">
+          <nav class="agent-tabs" role="tablist" aria-label="Interactive agents">
+            <button class="agent-tab active" type="button" role="tab" aria-selected="true" data-agent="pi">Pi Agent</button>
+            <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="deepseek">DeepSeek Agent</button>
+            <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="direct">Direct Orchestrator</button>
+          </nav>
+          <button id="clear-direct-chat-btn" class="icon-button direct-chat-clear" type="button" hidden>Clear chat</button>
+        </div>
 
         <!-- Quick prompt chips -->
         <div class="quick-prompts">
@@ -108,6 +123,7 @@
           <textarea id="chat-input" placeholder="Message the orchestrator... (Enter to send, Shift+Enter for new line)" rows="2"></textarea>
           <div class="chat-input-actions">
             <span id="chat-status" class="chat-status"></span>
+            <button id="dispatch-direct-task-btn" class="secondary-button direct-task-button" type="button" hidden>Dispatch Task</button>
             <button id="send-msg-btn" class="primary-btn">Send</button>
           </div>
         </div>
@@ -129,56 +145,69 @@
 
     <section id="setup-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-setup-tab" hidden>
       <div class="section-heading">
-        <div><h2>Get your cluster ready</h2><p class="panel-caption">Check node connectivity, configured inference engines, and available models.</p></div>
-        <button id="setup-check-btn" class="primary-btn" type="button">Check readiness</button>
+        <div><h2>Cluster setup</h2><p class="panel-caption">View cluster members and their current status. Right-click a node to configure it or pair it again.</p></div>
       </div>
-      <ol class="setup-steps">
-        <li><strong>Pair nodes securely.</strong> Copy the one-use PIN shown by the orchestrator and enter it on each node.</li>
-        <li><strong>Connect an engine.</strong> Nodes detect local Ollama and FastFlowLM services. Configure another engine from the node's settings.</li>
-        <li><strong>Load models.</strong> Refresh the model registry, then use a node's settings to choose its default model.</li>
-      </ol>
       <section id="pairing-panel" class="pairing-panel" aria-labelledby="pairing-title">
+        <div class="pairing-heading">
+          <div>
+            <p class="pairing-kicker">CLUSTER MEMBERSHIP</p>
+            <h3 id="pairing-title">Pairing access</h3>
+            <p id="pairing-instructions">Generate a one-use PIN on the orchestrator. First-time pairing is started from the node.</p>
+          </div>
+        </div>
         <div id="pairing-pin-view" hidden>
-          <h3 id="pairing-title">Pairing PIN</h3>
-          <p>On the node you want to add, enter this one-use PIN and this orchestrator's HTTPS address.</p>
-          <p>Orchestrator address: <code id="pairing-address-display"></code></p>
-          <output id="pairing-pin" class="pairing-pin">------</output>
+          <p>Use this one-use PIN and HTTPS address on the node you want to add or re-pair.</p>
+          <p class="pairing-address-line"><strong>Orchestrator address</strong><code id="pairing-address-display"></code></p>
+          <div class="pairing-pin-controls">
+            <output id="pairing-pin" class="pairing-pin">------</output>
+            <button id="pairing-pin-regenerate-btn" class="primary-btn pairing-action" type="button">Generate / replace pairing PIN</button>
+          </div>
           <p id="pairing-pin-expiry" class="panel-caption"></p>
         </div>
-        <form id="pairing-connect-form" hidden>
-          <h3 id="pairing-title-node">Join an orchestrator</h3>
-          <p>Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.</p>
-          <div class="pairing-connect-fields">
-            <label>Orchestrator HTTPS address<input id="pairing-address" type="url" placeholder="https://192.168.1.10:7450" required /></label>
-            <label>One-use PIN<input id="pairing-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required /></label>
-            <button id="pairing-connect-button" class="primary-btn" type="submit">Connect node</button>
-          </div>
-        </form>
-        <p id="pairing-status" class="setup-status" role="status" aria-live="polite">Loading pairing status…</p>
+        <p id="pairing-state" class="pairing-state" role="status" aria-live="polite">Loading pairing status…</p>
+        <div id="pairing-node-connect" class="pairing-node-connect" hidden>
+          <h4>Join this node to a cluster</h4>
+          <p>Enter the orchestrator HTTPS address and one-use PIN shown on its Setup page.</p>
+          <button id="pairing-connect-open" class="primary-btn pairing-action" type="button">Enter address and pairing PIN</button>
+        </div>
       </section>
-      <div id="setup-status" class="setup-status" role="status" aria-live="polite">Checking cluster readiness…</div>
-      <div id="setup-results" class="setup-grid"></div>
-      <button id="setup-nodes-btn" class="icon-button" type="button">Open node settings</button>
+      <section class="setup-node-section" aria-labelledby="setup-nodes-heading">
+        <div class="section-heading">
+          <div><h3 id="setup-nodes-heading">Available nodes</h3><p id="setup-node-summary" class="panel-caption">Loading cluster members…</p></div>
+        </div>
+        <div id="setup-node-list" class="setup-node-list" aria-live="polite"></div>
+      </section>
+      <section class="setup-readiness-section" aria-labelledby="setup-readiness-heading">
+        <div class="section-heading">
+          <div><h3 id="setup-readiness-heading">Inference readiness</h3><p class="panel-caption">Check whether online nodes have an engine and models available.</p></div>
+          <button id="setup-check-btn" class="primary-btn" type="button">Check readiness</button>
+        </div>
+        <div id="setup-status" class="setup-status setup-summary" data-state="checking" role="status" aria-live="polite">Checking cluster readiness…</div>
+        <div id="setup-results" class="setup-grid" aria-live="polite"></div>
+      </section>
     </section>
 
     <section id="submit-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-submit-tab" hidden>
       <h2>Batch Task Submission</h2>
       <textarea id="task-input" placeholder="Describe the task. Use a numbered or bulleted list to force explicit subtasks."></textarea>
+      <label class="checkbox-field"><input id="task-auto-plan" type="checkbox"> Ask a coordinator model to create a role-based workflow plan</label>
+      <label class="checkbox-field"><input id="task-require-review" type="checkbox"> Add a reviewer that must approve the work</label>
+      <label class="checkbox-field"><input id="task-require-approval" type="checkbox"> Pause for approval before final synthesis</label>
       <button id="submit-btn" class="primary-btn">Submit Batch Task</button>
       <div id="submit-status"></div>
     </section>
 
     <section id="cluster-overview-panel" class="cluster-window active" role="tabpanel" aria-labelledby="cluster-overview-tab">
-      <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Live work mapped to the nodes executing it</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
+      <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Available nodes and their current status. Right-click a node to configure or pair it.</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
       <div class="cluster-overview-grid">
-        <section class="overview-column" aria-labelledby="overview-activity-heading">
-          <h3 id="overview-activity-heading">Current activity</h3>
-          <div id="overview-activity" class="overview-activity"></div>
-        </section>
-        <section class="overview-column" aria-labelledby="overview-nodes-heading">
-          <h3 id="overview-nodes-heading">Cluster members</h3>
+        <section class="overview-column overview-members" aria-labelledby="overview-nodes-heading">
+          <h3 id="overview-nodes-heading">Available nodes</h3>
           <div id="overview-nodes" class="overview-nodes"></div>
           <div id="cluster-peers" class="cluster-peers"></div>
+        </section>
+        <section class="overview-column overview-activity-column" aria-labelledby="overview-activity-heading">
+          <h3 id="overview-activity-heading">Current activity</h3>
+          <div id="overview-activity" class="overview-activity"></div>
         </section>
       </div>
     </section>
@@ -235,29 +264,42 @@
     </section>
   </main>
 
+  <dialog id="pairing-connect-dialog" class="pairing-dialog" aria-labelledby="pairing-title-node">
+    <form id="pairing-connect-form">
+      <h3 id="pairing-title-node">Connect to orchestrator</h3>
+      <p id="pairing-dialog-description">Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.</p>
+      <div class="pairing-connect-fields">
+        <label id="pairing-address-field">Orchestrator HTTPS address<input id="pairing-address" type="url" placeholder="https://192.168.1.10:7450" required /></label>
+        <label>One-use PIN<input id="pairing-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required /></label>
+      </div>
+      <p id="pairing-status" class="setup-status" role="status" aria-live="polite"></p>
+      <div class="pairing-dialog-actions">
+        <button id="pairing-connect-cancel" class="icon-button" type="button">Not now</button>
+        <button id="pairing-connect-button" class="primary-btn" type="submit">Connect node</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="pairing-invitation-dialog" class="pairing-dialog" aria-labelledby="pairing-invitation-title">
+    <div>
+      <h3 id="pairing-invitation-title">Cluster pairing request</h3>
+      <p id="pairing-invitation-details"></p>
+      <p id="pairing-invitation-status" class="setup-status" role="status" aria-live="polite">Confirm this request on the node to join the cluster.</p>
+      <div class="pairing-dialog-actions">
+        <button id="pairing-invitation-decline" class="icon-button" type="button">Decline</button>
+        <button id="pairing-invitation-accept" class="primary-btn" type="button">Accept and join</button>
+      </div>
+    </div>
+  </dialog>
+
   <div id="node-context-menu" class="context-menu" hidden>
     <button data-action="properties">Edit host properties</button>
+    <button data-action="pair">Pair / re-pair with this cluster</button>
     <button data-action="open">Open node interface</button>
     <button data-action="copy">Copy node address</button>
   </div>
 
-  <div id="peer-pairing-modal" class="node-properties-modal" hidden>
-    <div class="node-properties-dialog" role="dialog" aria-modal="true" aria-labelledby="peer-pairing-title">
-      <div class="node-properties-header">
-        <div><h2 id="peer-pairing-title">Pair orchestrator</h2><p id="peer-pairing-address-label" class="panel-caption"></p></div>
-        <button id="peer-pairing-close" class="dialog-close" type="button" title="Close pairing">Close</button>
-      </div>
-      <form id="peer-pairing-form" class="node-properties-form">
-        <label>Orchestrator HTTPS address<input id="peer-pairing-address" type="url" required /></label>
-        <label>One-use PIN<input id="peer-pairing-pin" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required /></label>
-        <div class="node-properties-footer">
-          <span id="peer-pairing-status" class="node-property-status" role="status" aria-live="polite"></span>
-          <button class="dialog-close" type="button" id="peer-pairing-cancel">Cancel</button>
-          <button class="primary-btn" type="submit" id="peer-pairing-submit">Pair orchestrators</button>
-        </div>
-      </form>
-    </div>
-  </div>
+
 
   <div id="node-terminal" class="node-terminal" hidden>
     <div class="node-terminal-header"><h2 id="node-terminal-title">Node terminal</h2><button id="node-terminal-close" type="button" title="Close terminal">Close</button></div>

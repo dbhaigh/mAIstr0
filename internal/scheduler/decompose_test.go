@@ -61,3 +61,34 @@ func TestValidatePlanRejectsInvalidDependencies(t *testing.T) {
 		})
 	}
 }
+
+func TestValidatePlanAddsAgentAndOutputDefaults(t *testing.T) {
+	plan, err := ValidatePlan([]Subtask{{
+		ID: "code", Description: "Implement a parser", TaskType: "code",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan[0].Role != "coder" || plan[0].OutputFormat != "text" {
+		t.Fatalf("plan defaults = role %q, output format %q", plan[0].Role, plan[0].OutputFormat)
+	}
+}
+
+func TestValidatePlanRejectsInvalidAgentAndOutputContracts(t *testing.T) {
+	tests := []struct {
+		name    string
+		subtask Subtask
+	}{
+		{name: "unknown role", subtask: Subtask{Description: "Work", Role: "made-up"}},
+		{name: "required fields need JSON", subtask: Subtask{Description: "Work", RequiredFields: []string{"answer"}}},
+		{name: "retry bound", subtask: Subtask{Description: "Work", MaxRetries: 3}},
+		{name: "reviewer rejects unsupported format", subtask: Subtask{Description: "Review", Role: "reviewer", OutputFormat: "xml"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := ValidatePlan([]Subtask{test.subtask}); err == nil {
+				t.Fatal("ValidatePlan accepted invalid agent/output configuration")
+			}
+		})
+	}
+}

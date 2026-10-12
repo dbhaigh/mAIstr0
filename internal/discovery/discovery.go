@@ -5,6 +5,7 @@ package discovery
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -82,9 +83,11 @@ type Listener struct {
 	selfIDs map[string]bool
 	stop    chan struct{}
 	conn    net.PacketConn
+	ready   chan struct{}
 
-	mu    sync.RWMutex
-	peers map[string]Peer
+	mu       sync.RWMutex
+	peers    map[string]Peer
+	readyErr error
 }
 
 // Listen starts listening for peer announcements in the background. Any
@@ -97,7 +100,7 @@ func Listen(selfIDs ...string) *Listener {
 	for _, id := range selfIDs {
 		exclude[id] = true
 	}
-	l := &Listener{selfIDs: exclude, peers: make(map[string]Peer), stop: make(chan struct{})}
+	l := &Listener{selfIDs: exclude, peers: make(map[string]Peer), stop: make(chan struct{}), ready: make(chan struct{})}
 	go l.run()
 	return l
 }
@@ -106,10 +109,15 @@ func (l *Listener) run() {
 	conn, err := listenUDP("udp4", ":"+itoa(Port), false)
 	if err != nil {
 		log.Printf("discovery: listener disabled, could not bind UDP port %d: %v", Port, err)
+		l.mu.Lock()
+		l.readyErr = err
+		close(l.ready)
+		l.mu.Unlock()
 		return
 	}
 	l.mu.Lock()
 	l.conn = conn
+	close(l.ready)
 	l.mu.Unlock()
 	defer conn.Close()
 	defer func() {
@@ -152,6 +160,24 @@ func listenUDP(network, address string, broadcast bool) (net.PacketConn, error) 
 		return configureSocket(raw, broadcast)
 	}
 	return config.ListenPacket(nil, network, address)
+}
+
+// WaitReady waits until the UDP listener has bound successfully or failed.
+func (l *Listener) WaitReady(timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-l.ready:
+		l.mu.RLock()
+		err := l.readyErr
+		l.mu.RUnlock()
+		if err != nil {
+			return fmt.Errorf("discovery listener failed: %w", err)
+		}
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("discovery listener did not start within %s", timeout)
+	}
 }
 
 // Close stops the listener. It is used by startup auto-detection so the
@@ -218,6 +244,51 @@ func (l *Listener) BestOrchestrator() (Peer, bool) {
 		}
 	}
 	return best, found
+}
+
+// BestOrchestratorCandidate elects from active orchestrators and instances
+// currently starting up as candidates. Higher capability wins; ties are
+// broken by the lexicographically lowest stable ID.
+func BestOrchestratorCandidate(self Announcement, peers []Peer) Announcement {
+	best := self
+	for _, peer := range peers {
+		if peer.Role != "orchestrator" && peer.Role != "candidate" {
+			continue
+		}
+		if outranks(peer.Announcement, best) {
+			best = peer.Announcement
+		}
+	}
+	return best
+}
+
+// IsBestOrchestratorCandidate reports whether self wins against the visible
+// orchestrator candidates.
+func IsBestOrchestratorCandidate(self Announcement, peers []Peer) bool {
+	return BestOrchestratorCandidate(self, peers).ID == self.ID
+}
+
+// IsElectedOrchestrator compares against live leaders first so a candidate
+// cannot preempt a running orchestrator during its startup election.
+func IsElectedOrchestrator(self Announcement, peers []Peer) bool {
+	active := make([]Peer, 0, len(peers))
+	for _, peer := range peers {
+		if peer.Role == "orchestrator" {
+			active = append(active, peer)
+		}
+	}
+	if len(active) > 0 {
+		return IsBestOrchestratorCandidate(self, active)
+	}
+	if self.Role == "orchestrator" {
+		return true
+	}
+	return IsBestOrchestratorCandidate(self, peers)
+}
+
+func outranks(candidate, incumbent Announcement) bool {
+	return candidate.Score > incumbent.Score ||
+		(candidate.Score == incumbent.Score && candidate.ID < incumbent.ID)
 }
 
 // OutboundIP makes a best-effort guess at this host's LAN IP by asking the
