@@ -1,6 +1,7 @@
 package nodeagent
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -141,5 +142,58 @@ func TestNodeRecordsExperienceToMemory(t *testing.T) {
 	}
 	if recalled[0].NodeID != "node-mem" || !recalled[0].Success {
 		t.Errorf("unexpected recorded experience: %+v", recalled[0])
+	}
+}
+
+type blockingEngine struct {
+	started chan struct{}
+}
+
+func (b *blockingEngine) Name() string      { return "blocking" }
+func (b *blockingEngine) Available() bool    { return true }
+func (b *blockingEngine) ListModels() ([]engine.Model, error) {
+	return []engine.Model{{Name: "blocking"}}, nil
+}
+func (b *blockingEngine) Generate(model, prompt string) (string, error) {
+	return "", nil
+}
+func (b *blockingEngine) Chat(model string, messages []engine.ChatMessage) (string, error) {
+	return "", nil
+}
+func (b *blockingEngine) ChatWithContext(ctx context.Context, model string, messages []engine.ChatMessage) (string, error) {
+	close(b.started)
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func TestDialogueInterruption(t *testing.T) {
+	a := newTestAgent(t, "node-interrupt")
+	eng := &blockingEngine{started: make(chan struct{})}
+	a.engines = []engine.Engine{eng}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := a.dialogueTurn("dlg-int", "blocking", "", "user", "hello", "dialogue_turn")
+		errCh <- err
+	}()
+
+	<-eng.started
+
+	interrupted := a.InterruptDialogue("dlg-int")
+	if !interrupted {
+		t.Fatal("expected InterruptDialogue to return true")
+	}
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("expected dialogue turn to return error on interruption")
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/dialogues/dlg-int/interrupt", nil)
+	req.SetPathValue("id", "dlg-int")
+	a.handleDialogueInterrupt(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 }

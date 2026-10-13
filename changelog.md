@@ -4,6 +4,10 @@
 
 ### Added
 
+- Cross-platform CI for Go tests, vet, dashboard tests, and Windows/Linux builds.
+- Process-level integration coverage for secure pairing, authenticated requests,
+  streaming inference, and restoring conversations after restart.
+- A system-status API and dashboard warning when persistent memory is unavailable.
 - LAN orchestrator election based on node capability, with stable-ID tie
   breaking and a local worker on the elected orchestrator.
 - Shared `execute_workflow` support for Pi and DeepSeek, including dependency
@@ -14,6 +18,10 @@
 
 ### Changed
 
+- Separate orchestrator and node-agent HTTP handlers from their server lifecycle
+  and state-management code.
+- Keep DXCore COM object pointers typed to avoid unsafe integer-to-pointer
+  conversions in Windows NPU telemetry.
 - Add opt-in model-assisted task planning with explicit subtask roles,
   dependencies, expected outputs, and approval controls while preserving
   heuristic decomposition as the default.

@@ -53,12 +53,25 @@ orchestrator and local worker are paired automatically. A machine that loses
 the election joins as a node; provide the elected orchestrator's one-use PIN
 with `--pairing-pin` for automatic secure enrollment, or pair it later from
 the node dashboard's Setup panel.
+If a running orchestrator yields, its local dashboard redirects to the worker
+dashboard so pairing and invitation acceptance remain available. Existing
+trust in the old orchestrator does not authorize joining the new one; use the
+new leader's PIN or accept its invitation locally.
+The **Local network** tab lists LAN-discovered instances regardless of pairing,
+plus online cluster nodes and the local worker. Membership is labeled
+separately from visibility; an associated orchestrator is shown only when known,
+not inferred from whichever orchestrator happens to be visible first.
 Application logs are appended to `maistr0.log` in the user's configuration
 directory (`%APPDATA%\maistr0\maistr0.log` on Windows). Choose **View Logs**
 from the tray icon's right-click menu to inspect pairing and TLS diagnostics,
 including when the console is hidden. Logs roll over daily; dated archives are
 kept for seven calendar days and are available through **Open Logs Folder** in
 the same menu.
+
+`GET /api/status` reports whether persistent memory is available. If its
+database cannot be opened, the dashboard shows a warning that conversation
+history and learned data will not survive restarts; the process continues
+without persistent memory.
 ## Orchestrator agent backends
 
 The interactive orchestrator uses [Pi](https://github.com/earendil-works/pi)
@@ -92,13 +105,22 @@ The dashboard provides three views:
 
 - **Interactive Orchestrator** for conversational requests, tool activity,
   cluster-aware model selection, runtime harness selection, and the shared
-  tool catalog available to both Pi and DeepSeek. Both harnesses can hand
-  multi-step work to the same persistent `execute_workflow` engine instead of
-  coordinating worker calls only in chat history.
+  tool catalog available to both Pi and DeepSeek. In-flight agent turns can be
+  interrupted at any time via the **Interrupt** button or the API
+  (`POST /api/agent/sessions/{id}/interrupt`), cleanly halting reasoning loops,
+  cancelling downstream node model dispatches, and preserving session state.
+  Both harnesses can hand multi-step work to the same persistent `execute_workflow`
+  engine instead of coordinating worker calls only in chat history; workflows
+  triggered by an agent are cancelled if the parent session is interrupted.
 - **Cluster & Workload** for node health, discovered LAN peers, model lists,
-  active tasks, and routing. Its Overview pairs current and recent task
-  activity with the nodes assigned to each subtask. Selecting an assignment
-  highlights its target node; known members remain visible when offline.
+  active tasks, and routing. Its Overview has **Available nodes** and
+  **Current activity** tabs for node status and current/recent task activity.
+  Selecting a subtask assignment switches to Available nodes and highlights
+  its target node; known members remain visible when offline. Its Setup page
+  is organized into **Pairing access**, **Available nodes**, **Inference readiness**,
+  and **Model catalog** tabs. Workspace, Overview, and Setup tabs support arrow
+  keys, Home, and End. Content sections expand with their content and scroll
+  cleanly without compressing or overlapping.
   Pending, running, completed, failed, cancelled, and unknown subtasks are
   counted separately. Tasks awaiting human approval remain visible as active
   work. Detailed Nodes, Workload, Local network, Tasks, Setup,
@@ -113,6 +135,18 @@ The dashboard provides three views:
 The Cluster & Workload **Setup** tab checks each node's engine and model
 readiness, refreshes an empty model registry, and links to node settings for
 engine configuration and default-model selection.
+On worker-only nodes, local model inspection and updates run directly without
+an HTTPS request back to the worker itself. Remote node requests still require
+paired certificate pins.
+Its model catalog is a curated, bundled list of pull-ready Ollama names; it
+does not fetch catalog metadata or send prompts to a remote catalog service.
+Choose an online target node and its download-capable engine before installing.
+Installed models are shown as either usable or disabled for scheduling.
+Task details show the scheduler's score components and whether accelerator
+telemetry was fresh enough to influence the assignment; telemetry older than
+30 seconds is ignored for routing. Scheduler load includes active node work and
+workflow subtasks waiting on dependencies, with node-reported utilization
+penalties applied only when the telemetry sample timestamp is current.
 
 Use **Refresh all model registries** in the Nodes section to refresh model
 lists across the cluster, or refresh an individual node. Registries are also
@@ -207,6 +241,9 @@ The Ollama-compatible surface includes `GET /api/tags`, `POST /api/chat`, and
 `max_tokens`; text messages and text content blocks are supported. Streaming
 is supported by both compatibility APIs. Existing mAIstr0 generation requests
 and the OpenAI-compatible routes remain available.
+The bundled model catalog is available at `GET /api/models/catalog`, with
+optional `engine` and `q` filters. Model pulls can specify both `model` and
+`engine` in `POST /api/nodes/{id}/models/pull`.
 
 Automatic decomposition remains heuristic; callers that need reliable
 dependencies should provide an explicit plan. GPU utilization and free-memory
@@ -220,7 +257,14 @@ Run the test suite with:
 
 ```sh
 go test ./...
+go vet ./...
+node --test web/app_test.js
 ```
+
+The Go suite includes a process-level integration test for pairing, authenticated
+cluster requests, streaming inference, and session restoration after restart.
+The GitHub Actions workflow runs these checks and builds the application on
+Windows and Linux.
 
 On Windows, cross-compile the release binaries for Windows and Linux with:
 

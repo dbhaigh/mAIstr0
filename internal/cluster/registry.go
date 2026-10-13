@@ -23,9 +23,11 @@ type NodeStatus struct {
 	GPUHistory    []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
 	NPUHistory    []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
 	SystemHistory []hardware.SystemUsageSample `json:"system_history,omitempty"`
+	TelemetryAt   time.Time                    `json:"telemetry_at,omitempty"`
 	DefaultModel  string                       `json:"default_model,omitempty"`
 	FastScore     float64                      `json:"fast_score"`
 	ActiveTasks   int                          `json:"active_tasks"`
+	QueuedTasks   int                          `json:"-"`
 	LastSeen      time.Time                    `json:"last_seen"`
 	Healthy       bool                         `json:"healthy"`
 	Leader        bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
@@ -48,6 +50,7 @@ func (r *Registry) Upsert(status NodeStatus) {
 	defer r.mu.Unlock()
 	status.LastSeen = time.Now()
 	status.Healthy = true
+	status.QueuedTasks = 0
 	status.VersionError = ""
 	for _, existing := range r.nodes {
 		if existing.Version == "" || status.Version == "" || existing.Version == status.Version {

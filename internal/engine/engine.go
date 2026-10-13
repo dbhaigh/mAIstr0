@@ -51,6 +51,12 @@ type EngineWithOptions interface {
 	GenerateWithOptions(ctx context.Context, model, prompt string, options GenerationOptions) (string, error)
 }
 
+// EngineWithChatContext is implemented by engines that can run multi-turn chat
+// with request context cancellation.
+type EngineWithChatContext interface {
+	ChatWithContext(ctx context.Context, model string, messages []ChatMessage) (string, error)
+}
+
 // StreamingEngine is implemented by engines that can return generated text
 // incrementally.
 type StreamingEngine interface {

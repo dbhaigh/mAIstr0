@@ -35,7 +35,7 @@ func (s *Server) synthesizeTask(ctx context.Context, task *taskmgr.Task) (string
 		TaskType:    "general",
 		Tags:        []string{"general"},
 	}
-	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{synthesis}, s.registry.Active(), s.experience())
+	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{synthesis}, s.schedulerNodes(), s.experience())
 	if err != nil {
 		return "", fmt.Errorf("select synthesis model: %w", err)
 	}

@@ -362,6 +362,22 @@ func (m *Manager) All() []*Task {
 	return out
 }
 
+// PendingAssignmentsByNode returns the number of waiting subtask assignments
+// per node without cloning task outputs or other history.
+func (m *Manager) PendingAssignmentsByNode() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	queued := make(map[string]int)
+	for _, task := range m.tasks {
+		for _, subtask := range task.Subtasks {
+			if subtask.Status == StatusPending && subtask.NodeID != "" {
+				queued[subtask.NodeID]++
+			}
+		}
+	}
+	return queued
+}
+
 // Recent returns at most limit tasks ordered by most recent update without
 // cloning the entire persisted task history.
 func (m *Manager) Recent(limit int) []*Task {

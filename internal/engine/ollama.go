@@ -218,11 +218,20 @@ type ollamaChatResponse struct {
 }
 
 func (o *Ollama) Chat(model string, messages []ChatMessage) (string, error) {
+	return o.ChatWithContext(context.Background(), model, messages)
+}
+
+func (o *Ollama) ChatWithContext(ctx context.Context, model string, messages []ChatMessage) (string, error) {
 	body, err := json.Marshal(ollamaChatRequest{Model: model, Messages: messages, Stream: false})
 	if err != nil {
 		return "", err
 	}
-	resp, err := o.genClient.Post(o.baseURL+"/api/chat", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := o.genClient.Do(req)
 	if err != nil {
 		return "", err
 	}

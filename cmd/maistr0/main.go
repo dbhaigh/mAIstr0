@@ -145,6 +145,9 @@ func main() {
 			}
 		}
 		srv.SetDiscoveryEnabled(orchCfg.DiscoveryEnabled)
+		if err := srv.SetLocalNodeDashboard(localURL(nodeCfg.ListenAddr)); err != nil {
+			log.Fatalf("failed to configure local worker dashboard: %v", err)
+		}
 		agent := nodeagent.New(nodeCfg)
 		if err := srv.InitializeIdentity(); err != nil {
 			log.Fatalf("failed to initialize orchestrator identity: %v", err)

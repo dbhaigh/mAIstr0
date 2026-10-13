@@ -103,6 +103,7 @@ const (
 	EventError        StreamEventType = "error"
 	EventDone         StreamEventType = "done"
 	EventTextDelta    StreamEventType = "text_delta"
+	EventInterrupted  StreamEventType = "interrupted"
 )
 
 type StreamEvent struct {
@@ -136,6 +137,7 @@ type Backend interface {
 	ListSessions() []*Session
 	DeleteSession(id string) bool
 	SendMessage(ctx context.Context, sessionID, userText string, streamChan chan<- StreamEvent) (*Message, error)
+	InterruptSession(id string) bool
 	ListTools() []ToolDef
 	ListClusterModels() []ModelInfo
 	Stats() AgentStats

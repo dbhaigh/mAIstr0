@@ -3,6 +3,7 @@ package scheduler
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -56,19 +57,25 @@ func TestAssignKeepsCompatibleCandidateUnderHeavyLoadPenalty(t *testing.T) {
 	if len(assignments) != 1 || assignments[0].NodeID != "busy-specialist" {
 		t.Fatalf("compatible model disappeared under load penalty: %+v", assignments)
 	}
+	if assignments[0].Factors.ActiveTasks != 10 || assignments[0].Factors.LoadPenalty != 80 {
+		t.Fatalf("load contribution missing from score explanation: %+v", assignments[0].Factors)
+	}
 }
 
 func TestAssignPrefersLowerLiveGPUUtilization(t *testing.T) {
+	telemetryAt := time.Now()
 	nodes := []cluster.NodeStatus{
 		{
 			ID: "busy", Address: "http://busy", Healthy: true,
-			Hardware: hardware.Info{Score: 50, GPUStatsAvailable: true, GPUUtilization: 90},
-			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+			Hardware:    hardware.Info{Score: 50, GPUStatsAvailable: true, GPUUtilization: 90},
+			TelemetryAt: telemetryAt,
+			Models:      []engine.Model{{Name: "model", Tags: []string{"general"}}},
 		},
 		{
 			ID: "free", Address: "http://free", Healthy: true,
-			Hardware: hardware.Info{Score: 50, GPUStatsAvailable: true, GPUUtilization: 10},
-			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+			Hardware:    hardware.Info{Score: 50, GPUStatsAvailable: true, GPUUtilization: 10},
+			TelemetryAt: telemetryAt,
+			Models:      []engine.Model{{Name: "model", Tags: []string{"general"}}},
 		},
 	}
 	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
@@ -81,16 +88,19 @@ func TestAssignPrefersLowerLiveGPUUtilization(t *testing.T) {
 }
 
 func TestAssignPrefersLowerLiveNPUUtilization(t *testing.T) {
+	telemetryAt := time.Now()
 	nodes := []cluster.NodeStatus{
 		{
 			ID: "busy-npu", Address: "http://busy", Healthy: true,
-			Hardware: hardware.Info{Score: 50, NPUStatsAvailable: true, NPUUtilization: 90},
-			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+			Hardware:    hardware.Info{Score: 50, NPUStatsAvailable: true, NPUUtilization: 90},
+			TelemetryAt: telemetryAt,
+			Models:      []engine.Model{{Name: "model", Tags: []string{"general"}}},
 		},
 		{
 			ID: "free-npu", Address: "http://free", Healthy: true,
-			Hardware: hardware.Info{Score: 50, NPUStatsAvailable: true, NPUUtilization: 10},
-			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+			Hardware:    hardware.Info{Score: 50, NPUStatsAvailable: true, NPUUtilization: 10},
+			TelemetryAt: telemetryAt,
+			Models:      []engine.Model{{Name: "model", Tags: []string{"general"}}},
 		},
 	}
 	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
@@ -99,5 +109,91 @@ func TestAssignPrefersLowerLiveNPUUtilization(t *testing.T) {
 	}
 	if assignments[0].NodeID != "free-npu" {
 		t.Fatalf("assigned to %q, want the less-loaded NPU node", assignments[0].NodeID)
+	}
+}
+
+func TestAssignPenalizesQueuedWorkAndExposesScoreFactors(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "queued", Address: "http://queued", Healthy: true, QueuedTasks: 3,
+			Hardware: hardware.Info{Score: 50},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+		{
+			ID: "idle", Address: "http://idle", Healthy: true,
+			Hardware: hardware.Info{Score: 50},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+	}
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := assignments[0].NodeID; got != "idle" {
+		t.Fatalf("assigned to %q, want idle node", got)
+	}
+	factors := assignments[0].Factors
+	if factors.Hardware != 15 || factors.LoadPenalty != 0 || factors.ActiveTasks != 0 {
+		t.Fatalf("unexpected selected-node score factors: %+v", factors)
+	}
+}
+
+func TestAssignIncludesQueuedWorkInLoadFactor(t *testing.T) {
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, []cluster.NodeStatus{{
+		ID: "queued", Address: "http://queued", Healthy: true, QueuedTasks: 2,
+		Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if factors := assignments[0].Factors; factors.QueuedTasks != 2 || factors.LoadPenalty != 16 {
+		t.Fatalf("queued work missing from score explanation: %+v", factors)
+	}
+}
+
+func TestAssignIgnoresStaleAcceleratorTelemetry(t *testing.T) {
+	now := time.Now()
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "stale", Address: "http://stale", Healthy: true, TelemetryAt: now.Add(-time.Minute),
+			Hardware: hardware.Info{Score: 50, GPUStatsAvailable: true, GPUUtilization: 100},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+		{
+			ID: "fresh", Address: "http://fresh", Healthy: true, TelemetryAt: now,
+			Hardware: hardware.Info{Score: 50, GPUStatsAvailable: true, GPUUtilization: 50},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+	}
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := assignments[0].NodeID; got != "stale" {
+		t.Fatalf("stale load reading affected routing; assigned to %q", got)
+	}
+	if assignments[0].Factors.TelemetryFresh || assignments[0].Factors.GPUUtilizationPenalty != 0 ||
+		assignments[0].Factors.TelemetryAgeMs < telemetryFreshnessWindow.Milliseconds() {
+		t.Fatalf("stale telemetry was not marked and ignored: %+v", assignments[0].Factors)
+	}
+}
+
+func TestAssignExcludesFailedNodes(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "failed", Address: "http://failed", Healthy: false,
+			Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+		{
+			ID: "healthy", Address: "http://healthy", Healthy: true,
+			Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+	}
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 1 || assignments[0].NodeID != "healthy" {
+		t.Fatalf("failed node was assigned work: %+v", assignments)
 	}
 }

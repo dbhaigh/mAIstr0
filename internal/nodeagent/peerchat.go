@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,12 +21,27 @@ import (
 // appends the incoming utterance, runs the node's LLM over the accumulated
 // history, stores the reply, and records the exchange in memory.
 func (a *Agent) dialogueTurn(id, model, system, role, content, kind string) (dialogueMessageResponse, error) {
+	return a.dialogueTurnContext(context.Background(), id, model, system, role, content, kind)
+}
+
+func (a *Agent) dialogueTurnContext(ctx context.Context, id, model, system, role, content, kind string) (dialogueMessageResponse, error) {
 	if role == "" {
 		role = "user"
 	}
 	if kind == "" {
 		kind = "dialogue_turn"
 	}
+
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	a.dialogueCancelsMu.Lock()
+	a.dialogueCancels[id] = turnCancel
+	a.dialogueCancelsMu.Unlock()
+	defer func() {
+		a.dialogueCancelsMu.Lock()
+		delete(a.dialogueCancels, id)
+		a.dialogueCancelsMu.Unlock()
+		turnCancel()
+	}()
 
 	a.dialoguesMu.Lock()
 	dlg, ok := a.dialogues[id]
@@ -83,11 +99,25 @@ func (a *Agent) dialogueTurn(id, model, system, role, content, kind string) (dia
 	}()
 
 	start := time.Now()
-	reply, err := eng.Chat(modelName, history)
-	if err != nil {
-		reply, err = eng.Generate(modelName, flattenChatML(history))
+	reply, err := chatWithContext(turnCtx, eng, modelName, history)
+	if err != nil && turnCtx.Err() == nil {
+		reply, err = generateWithOptions(turnCtx, eng, modelName, flattenChatML(history), engine.GenerationOptions{})
 	}
 	duration := time.Since(start).Milliseconds()
+
+	if turnCtx.Err() != nil {
+		a.remember(memory.Experience{
+			Kind:        kind,
+			Description: truncateText(content, 400),
+			Prompt:      content,
+			Model:       modelName,
+			Success:     false,
+			Error:       "interrupted",
+			DurationMs:  duration,
+			Tags:        []string{"dialogue", id, "interrupted"},
+		})
+		return dialogueMessageResponse{DialogueID: id, Model: modelName, DurationMs: duration, Error: "dialogue turn interrupted"}, turnCtx.Err()
+	}
 
 	a.remember(memory.Experience{
 		Kind:        kind,

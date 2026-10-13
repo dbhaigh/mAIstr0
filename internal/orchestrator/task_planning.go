@@ -77,7 +77,7 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 			return nil, &taskCreateError{status: 400, err: err}
 		}
 	}
-	assignments, err := scheduler.AssignWithExperience(subtasks, s.registry.Active(), s.experience())
+	assignments, err := scheduler.AssignWithExperience(subtasks, s.schedulerNodes(), s.experience())
 	if err != nil {
 		return nil, &taskCreateError{status: 503, err: err}
 	}
@@ -110,6 +110,9 @@ func (s *Server) executeWorkflow(ctx context.Context, description string, subtas
 	}
 	result, err := s.tasks.Wait(ctx, task.ID)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			_ = s.tasks.Cancel(task.ID)
+		}
 		return "", fmt.Errorf("workflow %s: %w", task.ID, err)
 	}
 	if result.Status != taskmgr.StatusCompleted {
@@ -142,7 +145,7 @@ func addReviewerSubtask(subtasks []scheduler.Subtask) []scheduler.Subtask {
 
 func (s *Server) planSubtasks(ctx context.Context, description string) ([]scheduler.Subtask, error) {
 	planning := scheduler.Subtask{ID: "plan", Description: "Create a workflow plan", TaskType: "general"}
-	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{planning}, s.registry.Active(), s.experience())
+	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{planning}, s.schedulerNodes(), s.experience())
 	if err != nil {
 		return nil, fmt.Errorf("select planning model: %w", err)
 	}

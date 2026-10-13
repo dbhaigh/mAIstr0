@@ -122,6 +122,7 @@ const (
 	EventFinalMessage StreamEventType = "final_message"
 	EventError        StreamEventType = "error"
 	EventDone         StreamEventType = "done"
+	EventInterrupted  StreamEventType = "interrupted"
 )
 
 // StreamEvent is sent over SSE streams during interactive execution.

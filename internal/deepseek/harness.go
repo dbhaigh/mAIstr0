@@ -39,6 +39,9 @@ type Harness struct {
 	mem              *memory.Store
 	style            string
 	workflowExecutor func(context.Context, string, []scheduler.Subtask, bool) (string, error)
+
+	activeCancels map[string]context.CancelFunc
+	cancelsMu     sync.Mutex
 }
 
 // SetWorkflowExecutor installs the shared durable workflow execution path.
@@ -55,12 +58,13 @@ func newWithStyle(registry *cluster.Registry, dispatcher *http.Client, style str
 		dispatcher = &http.Client{Timeout: 10 * time.Minute}
 	}
 	h := &Harness{
-		registry:   registry,
-		dispatcher: dispatcher,
-		tools:      make(map[string]Tool),
-		sessions:   make(map[string]*Session),
-		events:     hub.New(),
-		style:      style,
+		registry:      registry,
+		dispatcher:    dispatcher,
+		tools:         make(map[string]Tool),
+		sessions:      make(map[string]*Session),
+		events:        hub.New(),
+		style:         style,
+		activeCancels: make(map[string]context.CancelFunc),
 	}
 
 	for _, t := range DefaultTools() {
@@ -275,6 +279,7 @@ func (h *Harness) ListSessions() []*Session {
 
 // DeleteSession removes a session from memory.
 func (h *Harness) DeleteSession(id string) bool {
+	h.InterruptSession(id)
 	h.sessionsMu.Lock()
 	defer h.sessionsMu.Unlock()
 	if _, ok := h.sessions[id]; ok {
@@ -282,6 +287,26 @@ func (h *Harness) DeleteSession(id string) bool {
 		return true
 	}
 	return false
+}
+
+// InterruptSession aborts in-flight reasoning and tools for a session.
+func (h *Harness) InterruptSession(sessionID string) bool {
+	h.cancelsMu.Lock()
+	cancel, ok := h.activeCancels[sessionID]
+	h.cancelsMu.Unlock()
+	if ok {
+		cancel()
+	}
+	s, found := h.GetSession(sessionID)
+	if found {
+		s.mu.Lock()
+		wasActive := s.Active
+		s.Active = false
+		s.UpdatedAt = time.Now()
+		s.mu.Unlock()
+		return wasActive || ok
+	}
+	return ok
 }
 
 // Stats returns runtime statistics for the interactive agent harness.
@@ -344,7 +369,16 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 	s.Messages = append(s.Messages, userMsg)
 	s.mu.Unlock()
 
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	h.cancelsMu.Lock()
+	h.activeCancels[sessionID] = turnCancel
+	h.cancelsMu.Unlock()
+
 	defer func() {
+		h.cancelsMu.Lock()
+		delete(h.activeCancels, sessionID)
+		h.cancelsMu.Unlock()
+		turnCancel()
 		s.mu.Lock()
 		s.Active = false
 		s.UpdatedAt = time.Now()
@@ -356,9 +390,33 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 		if streamChan != nil {
 			select {
 			case streamChan <- evt:
-			case <-ctx.Done():
+			default:
+				select {
+				case streamChan <- evt:
+				case <-time.After(50 * time.Millisecond):
+				}
 			}
 		}
+	}
+
+	recordInterrupted := func() *Message {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i := len(s.Messages) - 1; i >= 0; i-- {
+			if s.Messages[i].Role == RoleAssistant && strings.Contains(s.Messages[i].Content, "interrupted") {
+				return &s.Messages[i]
+			}
+		}
+		interruptedMsg := Message{
+			ID:          generateID("msg_"),
+			Role:        RoleAssistant,
+			Content:     "⚠️ Session interrupted by user.",
+			Coordinator: "orchestrator",
+			Timestamp:   time.Now(),
+			DurationMs:  time.Since(sessionStart).Milliseconds(),
+		}
+		s.Messages = append(s.Messages, interruptedMsg)
+		return &interruptedMsg
 	}
 
 	maxSteps := s.Config.MaxSteps
@@ -370,9 +428,9 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 
 	for step := 1; step <= maxSteps; step++ {
 		select {
-		case <-ctx.Done():
-			sendEvent(StreamEvent{Type: EventError, Error: "request context cancelled"})
-			return nil, ctx.Err()
+		case <-turnCtx.Done():
+			sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
+			return recordInterrupted(), turnCtx.Err()
 		default:
 		}
 
@@ -381,6 +439,10 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 		// Select coordinator node and model to drive this step's reasoning
 		coordNode, coordModel, err := h.selectCoordinator(s)
 		if err != nil {
+			if turnCtx.Err() != nil {
+				sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
+				return recordInterrupted(), turnCtx.Err()
+			}
 			sendEvent(StreamEvent{Type: EventError, Error: "failed to select coordinator LLM: " + err.Error()})
 			return nil, err
 		}
@@ -390,11 +452,15 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 
 		stepStart := time.Now()
 		h.registry.IncrementLoad(coordNode.ID, 1)
-		rawResp, err := h.dispatchToNode(ctx, coordNode.Address, coordModel, prompt)
+		rawResp, err := h.dispatchToNode(turnCtx, coordNode.Address, coordModel, prompt)
 		h.registry.IncrementLoad(coordNode.ID, -1)
 		stepDuration := time.Since(stepStart).Milliseconds()
 
 		if err != nil {
+			if turnCtx.Err() != nil {
+				sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
+				return recordInterrupted(), turnCtx.Err()
+			}
 			errText := fmt.Sprintf("coordinator error from %s (%s): %v", coordNode.ID, coordModel, err)
 			sendEvent(StreamEvent{Type: EventError, Error: errText})
 			return nil, errors.New(errText)
@@ -437,6 +503,13 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 			s.mu.Unlock()
 
 			for _, tc := range parsed.ToolCalls {
+				select {
+				case <-turnCtx.Done():
+					sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
+					return recordInterrupted(), turnCtx.Err()
+				default:
+				}
+
 				sendEvent(StreamEvent{Type: EventToolCall, Step: step, ToolCall: &tc})
 
 				h.toolsMu.RLock()
@@ -454,8 +527,12 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 						DurationMs: time.Since(toolStart).Milliseconds(),
 					}
 				} else {
-					out, nID, nAddr, mod, execErr := toolImpl.Execute(ctx, h, s, tc.Arguments)
+					out, nID, nAddr, mod, execErr := toolImpl.Execute(turnCtx, h, s, tc.Arguments)
 					toolElapsed := time.Since(toolStart).Milliseconds()
+					if turnCtx.Err() != nil {
+						sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
+						return recordInterrupted(), turnCtx.Err()
+					}
 					toolResp = ToolResponse{
 						ToolCallID: tc.ID,
 						Name:       tc.Name,

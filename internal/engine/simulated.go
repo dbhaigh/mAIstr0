@@ -1,6 +1,9 @@
 package engine
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // Simulated is a no-runtime-required fallback engine used when no real LLM
 // server (e.g. Ollama) is detected on the host. It lets the cluster be
@@ -22,10 +25,24 @@ func (s *Simulated) ListModels() ([]Model, error) {
 }
 
 func (s *Simulated) Generate(model, prompt string) (string, error) {
+	return s.GenerateWithOptions(context.Background(), model, prompt, GenerationOptions{})
+}
+
+func (s *Simulated) GenerateWithOptions(ctx context.Context, model, prompt string, _ GenerationOptions) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("[simulated response from %s] processed prompt of %d chars", model, len(prompt)), nil
 }
 
 func (s *Simulated) Chat(model string, messages []ChatMessage) (string, error) {
+	return s.ChatWithContext(context.Background(), model, messages)
+}
+
+func (s *Simulated) ChatWithContext(ctx context.Context, model string, messages []ChatMessage) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	lastMsg := ""
 	if len(messages) > 0 {
 		lastMsg = messages[len(messages)-1].Content

@@ -23,6 +23,7 @@ import (
 	"github.com/maistr0/maistr0/internal/piagent"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"sync"
 	"sync/atomic"
 )
 
@@ -38,6 +39,64 @@ func newTestServer(t *testing.T) *Server {
 		_ = srv.Close()
 	})
 	return srv
+}
+
+func TestYieldedDashboardPreservesLocalPairingAccess(t *testing.T) {
+	srv := newTestServer(t)
+	if err := srv.SetLocalNodeDashboard("http://localhost:7451"); err != nil {
+		t.Fatal(err)
+	}
+	handler := peeridentity.LoopbackOnly(http.HandlerFunc(srv.handleYieldedDashboard))
+	for _, test := range []struct {
+		method, path, remote string
+		code                 int
+	}{
+		{http.MethodGet, "/", "127.0.0.1:1234", http.StatusTemporaryRedirect},
+		{http.MethodGet, "/api/pairing/status", "127.0.0.1:1234", http.StatusOK},
+		{http.MethodPost, "/api/nodes/register", "127.0.0.1:1234", http.StatusServiceUnavailable},
+		{http.MethodPost, "/api/pairing/join", "127.0.0.1:1234", http.StatusServiceUnavailable},
+		{http.MethodGet, "/", "192.0.2.1:1234", http.StatusForbidden},
+		{http.MethodGet, "/api/pairing/status", "192.0.2.1:1234", http.StatusForbidden},
+	} {
+		t.Run(test.method+test.path+test.remote, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, nil)
+			request.RemoteAddr = test.remote
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.code {
+				t.Fatalf("returned %d, want %d: %s", response.Code, test.code, response.Body.String())
+			}
+			if test.code == http.StatusTemporaryRedirect && response.Header().Get("Location") != "http://localhost:7451/" {
+				t.Fatalf("redirect = %q", response.Header().Get("Location"))
+			}
+			if test.code == http.StatusOK {
+				var status map[string]string
+				if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+					t.Fatal(err)
+				}
+				if status["role"] != "node" || status["dashboard_url"] != "http://localhost:7451" {
+					t.Fatalf("handoff status = %#v", status)
+				}
+			}
+		})
+	}
+}
+
+func TestLocalNodeDashboardRejectsNonLoopbackTargets(t *testing.T) {
+	srv := newTestServer(t)
+	for _, address := range []string{
+		"https://localhost:7451", "http://192.0.2.1:7451", "http://example.com:7451",
+		"http://user@localhost:7451", "http://localhost:7451/path", "http://localhost:7451?query=1",
+	} {
+		if err := srv.SetLocalNodeDashboard(address); err == nil {
+			t.Errorf("accepted dashboard target %q", address)
+		}
+	}
+	response := httptest.NewRecorder()
+	srv.handleYieldedDashboard(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured handoff returned %d", response.Code)
+	}
 }
 
 func TestNodeRegistrationPreservesGPUHistory(t *testing.T) {
@@ -475,12 +534,112 @@ func TestOllamaAndAnthropicMessagesCompatibility(t *testing.T) {
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), test.want) {
 			t.Fatalf("streaming %s returned %d: %s", test.path, response.Code, response.Body.String())
 		}
+		if test.path == "/v1/messages" {
+			for _, event := range []string{"event: message_start", "event: content_block_delta", "event: content_block_stop", "event: message_stop"} {
+				if !strings.Contains(response.Body.String(), event) {
+					t.Errorf("Anthropic stream omitted %q: %s", event, response.Body.String())
+				}
+			}
+		}
 	}
 
 	tags := httptest.NewRecorder()
 	mux.ServeHTTP(tags, httptest.NewRequest(http.MethodGet, "/api/tags", nil))
 	if tags.Code != http.StatusOK || !strings.Contains(tags.Body.String(), `"name":"compat-model"`) {
 		t.Fatalf("GET /api/tags returned %d: %s", tags.Code, tags.Body.String())
+	}
+}
+
+func TestModelCatalogReturnsBundledEngineSpecificEntries(t *testing.T) {
+	srv := newTestServer(t)
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/models/catalog?engine=ollama&q=code", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("catalog returned %d: %s", response.Code, response.Body.String())
+	}
+	var models []engine.CatalogModel
+	if err := json.Unmarshal(response.Body.Bytes(), &models); err != nil {
+		t.Fatal(err)
+	}
+	if len(models) == 0 {
+		t.Fatal("expected local catalog entries for Ollama code models")
+	}
+	for _, model := range models {
+		if model.Engine != "ollama" || !strings.Contains(strings.ToLower(model.Name+" "+model.Description+" "+strings.Join(model.Tags, " ")), "code") {
+			t.Fatalf("catalog did not honor engine/query filters: %+v", model)
+		}
+	}
+}
+
+func TestSchedulerNodesIncludeQueuedWorkflowAssignments(t *testing.T) {
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "queue-worker", Address: "http://queue-worker", ActiveTasks: 2,
+		Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+	})
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "idle-worker", Address: "http://idle-worker",
+		Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+	})
+	_, err := srv.tasks.CreateChecked("queued work", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "waiting", TaskType: "general"},
+		NodeID:  "queue-worker",
+		Model:   "model",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := srv.schedulerNodes()
+	if len(nodes) != 2 || nodes[0].ID != "idle-worker" || nodes[1].ID != "queue-worker" {
+		t.Fatalf("scheduler nodes = %+v", nodes)
+	}
+	if nodes[1].ActiveTasks != 2 || nodes[1].QueuedTasks != 1 || nodes[0].QueuedTasks != 0 {
+		t.Fatalf("active and queued load not combined: %+v", nodes)
+	}
+}
+
+func TestAnthropicTextBlocksAndRequestValidation(t *testing.T) {
+	var received struct {
+		Prompt   string `json:"prompt"`
+		MaxToken int    `json:"max_tokens"`
+	}
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode worker request: %v", err)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "ok"})
+	}))
+	defer worker.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "anthropic-block-worker", Address: worker.URL, Healthy: true,
+		Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+	})
+	body := `{"model":"model","max_tokens":80,"system":[{"type":"text","text":"Be concise."}],"messages":[{"role":"user","content":[{"type":"text","text":"hello "},{"type":"text","text":"world"}]}]}`
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid Anthropic text blocks returned %d: %s", response.Code, response.Body.String())
+	}
+	for _, part := range []string{"Be concise.", "hello world"} {
+		if !strings.Contains(received.Prompt, part) {
+			t.Errorf("worker prompt omitted %q: %s", part, received.Prompt)
+		}
+	}
+	if received.MaxToken != 80 {
+		t.Fatalf("max_tokens = %d, want 80", received.MaxToken)
+	}
+
+	invalid := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"model","max_tokens":80,"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]}`,
+	)))
+	if invalid.Code != http.StatusBadRequest ||
+		!strings.Contains(invalid.Body.String(), `"type":"error"`) ||
+		!strings.Contains(invalid.Body.String(), `"type":"invalid_request_error"`) {
+		t.Fatalf("unsupported Anthropic content returned %d: %s", invalid.Code, invalid.Body.String())
 	}
 }
 
@@ -1100,5 +1259,117 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	}
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
 		t.Fatalf("dispatch attempts = (%d, %d), want (1, 1)", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+func TestAgentSessionInterrupt(t *testing.T) {
+	srv := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(`{"title":"test"}`))
+	srv.handleAgentSessionsCreate(rec, createReq)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session returned %d: %s", rec.Code, rec.Body.String())
+	}
+	var session agent.Session
+	if err := json.NewDecoder(rec.Body).Decode(&session); err != nil {
+		t.Fatal(err)
+	}
+
+	interrupted := srv.InterruptSession(session.ID)
+	if interrupted {
+		t.Error("expected InterruptSession to return false when no turn is in flight")
+	}
+
+	rec = httptest.NewRecorder()
+	interruptReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+session.ID+"/interrupt", nil)
+	interruptReq.SetPathValue("id", session.ID)
+	srv.handleAgentSessionInterrupt(rec, interruptReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("interrupt endpoint returned %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["session_id"] != session.ID {
+		t.Fatalf("expected session_id %s, got %v", session.ID, resp["session_id"])
+	}
+}
+
+func TestAgentSessionActiveTurnInterrupt(t *testing.T) {
+	var once sync.Once
+	started := make(chan struct{})
+	stopServer := make(chan struct{})
+
+	mockCoord := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		select {
+		case <-stopServer:
+		case <-r.Context().Done():
+		}
+	}))
+	defer mockCoord.Close()
+	defer close(stopServer)
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID:      "coord-node",
+		Address: mockCoord.URL,
+		Hardware: hardware.Info{
+			CPUCores:   16,
+			TotalRAMMB: 65536,
+			Score:      100,
+		},
+		Models: []engine.Model{
+			{Name: "deepseek-test", Tags: []string{"chat"}},
+		},
+		DefaultModel: "deepseek-test",
+		Healthy:      true,
+		Leader:       true,
+	})
+
+	rec := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(`{"title":"test-active","coordinator_model":"deepseek-test"}`))
+	srv.handleAgentSessionsCreate(rec, createReq)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session returned %d: %s", rec.Code, rec.Body.String())
+	}
+	var session agent.Session
+	if err := json.NewDecoder(rec.Body).Decode(&session); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		msgRec := httptest.NewRecorder()
+		msgReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+session.ID+"/messages?stream=true", strings.NewReader(`{"content":"hello"}`))
+		msgReq.SetPathValue("id", session.ID)
+		srv.handleAgentMessagePost(msgRec, msgReq)
+		close(done)
+	}()
+
+	<-started
+
+	rec = httptest.NewRecorder()
+	interruptReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+session.ID+"/interrupt", nil)
+	interruptReq.SetPathValue("id", session.ID)
+	srv.handleAgentSessionInterrupt(rec, interruptReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("interrupt returned %d: %s", rec.Code, rec.Body.String())
+	}
+
+	<-done
+
+	_, backend, exists := srv.agentForSession(session.ID)
+	if !exists {
+		t.Fatal("session not found")
+	}
+	stored, ok := backend.GetSession(session.ID)
+	if !ok {
+		t.Fatal("session not found in backend")
+	}
+	if stored.Active {
+		t.Fatal("expected session Active to be false after interrupt")
 	}
 }

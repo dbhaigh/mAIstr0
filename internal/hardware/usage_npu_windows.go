@@ -130,25 +130,25 @@ func windowsNPUAdapterLUIDs() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var factory uintptr
+	var factory unsafe.Pointer
 	hr, _, _ = createFactory.Call(
 		uintptr(unsafe.Pointer(&iidDXCoreAdapterFactory)),
 		uintptr(unsafe.Pointer(&factory)),
 	)
-	if int32(hr) < 0 || factory == 0 {
+	if int32(hr) < 0 || factory == nil {
 		return nil, fmt.Errorf("DXCore adapter factory creation failed: HRESULT 0x%08x", uint32(hr))
 	}
 	defer releaseDXCoreObject(factory)
 
 	attribute := dxcoreNPUHardwareType
-	var adapterList uintptr
+	var adapterList unsafe.Pointer
 	hr = callDXCoreMethod(factory, 3,
 		1,
 		uintptr(unsafe.Pointer(&attribute)),
 		uintptr(unsafe.Pointer(&iidDXCoreAdapterList)),
 		uintptr(unsafe.Pointer(&adapterList)),
 	)
-	if int32(hr) < 0 || adapterList == 0 {
+	if int32(hr) < 0 || adapterList == nil {
 		return nil, fmt.Errorf("DXCore NPU adapter enumeration failed: HRESULT 0x%08x", uint32(hr))
 	}
 	defer releaseDXCoreObject(adapterList)
@@ -156,13 +156,13 @@ func windowsNPUAdapterLUIDs() ([]string, error) {
 	count := uint32(callDXCoreMethod(adapterList, 4))
 	luids := make([]string, 0, count)
 	for index := uint32(0); index < count; index++ {
-		var adapter uintptr
+		var adapter unsafe.Pointer
 		hr = callDXCoreMethod(adapterList, 3,
 			uintptr(index),
 			uintptr(unsafe.Pointer(&iidDXCoreAdapter)),
 			uintptr(unsafe.Pointer(&adapter)),
 		)
-		if int32(hr) < 0 || adapter == 0 {
+		if int32(hr) < 0 || adapter == nil {
 			continue
 		}
 
@@ -181,16 +181,16 @@ func windowsNPUAdapterLUIDs() ([]string, error) {
 	return luids, nil
 }
 
-func callDXCoreMethod(object uintptr, index uintptr, args ...uintptr) uintptr {
-	vtable := *(*uintptr)(unsafe.Pointer(object))
-	method := *(*uintptr)(unsafe.Pointer(vtable + index*unsafe.Sizeof(uintptr(0))))
-	callArgs := append([]uintptr{object}, args...)
+func callDXCoreMethod(object unsafe.Pointer, index uintptr, args ...uintptr) uintptr {
+	vtable := *(*unsafe.Pointer)(object)
+	method := *(*uintptr)(unsafe.Add(vtable, index*unsafe.Sizeof(uintptr(0))))
+	callArgs := append([]uintptr{uintptr(object)}, args...)
 	result, _, _ := syscall.SyscallN(method, callArgs...)
 	return result
 }
 
-func releaseDXCoreObject(object uintptr) {
-	if object != 0 {
+func releaseDXCoreObject(object unsafe.Pointer) {
+	if object != nil {
 		callDXCoreMethod(object, 2)
 	}
 }

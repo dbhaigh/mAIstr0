@@ -21,6 +21,25 @@ import (
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
+type pullTestEngine struct {
+	name  string
+	pulls []string
+}
+
+func (e *pullTestEngine) Name() string                        { return e.name }
+func (e *pullTestEngine) Available() bool                     { return true }
+func (e *pullTestEngine) ListModels() ([]engine.Model, error) { return nil, nil }
+func (e *pullTestEngine) Generate(string, string) (string, error) {
+	return "", nil
+}
+func (e *pullTestEngine) Chat(string, []engine.ChatMessage) (string, error) {
+	return "", nil
+}
+func (e *pullTestEngine) Pull(model string) error {
+	e.pulls = append(e.pulls, model)
+	return nil
+}
+
 func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
 	orchestrator, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), "orchestrator-pair-test")
 	if err != nil {
@@ -85,6 +104,100 @@ func TestPairingStatusRequestsPINForUntrustedOrchestrator(t *testing.T) {
 	agent.handlePairingStatus(response, httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"pairing_required":true`) {
 		t.Fatalf("pairing status returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestFormerOrchestratorWorkerJoinsNewLeader(t *testing.T) {
+	oldLeader, err := peeridentity.Open(filepath.Join(t.TempDir(), "old.json"), "old-orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newLeader, err := peeridentity.Open(filepath.Join(t.TempDir(), "new.json"), "new-orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := New(config.NodeConfig{
+		NodeID: "former-orchestrator-worker", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Memory().Close()
+	if err := agent.PairLocalOrchestrator(oldLeader.ID(), oldLeader.CertificatePEM(), "https://127.0.0.1:7450"); err != nil {
+		t.Fatal(err)
+	}
+	agent.markJoined()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pairing/join", func(w http.ResponseWriter, r *http.Request) {
+		var request nodePairingRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if request.PIN != "123456" || request.ID != agent.cfg.NodeID || request.Role != "node" {
+			http.Error(w, "pairing rejected", http.StatusUnauthorized)
+			return
+		}
+		if err := newLeader.TrustPeer(request.ID, request.CertificatePEM); err != nil {
+			t.Error(err)
+			http.Error(w, "invalid certificate", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, nodePairingResponse{
+			ID: newLeader.ID(), Role: "orchestrator", CertificatePEM: newLeader.CertificatePEM(),
+		})
+	})
+	registered := false
+	mux.Handle("POST /api/nodes/register", newLeader.RequireTrustedPeer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var node cluster.NodeStatus
+		if err := json.NewDecoder(r.Body).Decode(&node); err != nil {
+			t.Error(err)
+			http.Error(w, "invalid node", http.StatusBadRequest)
+			return
+		}
+		registered = node.ID == agent.cfg.NodeID
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	server := httptest.NewUnstartedServer(mux)
+	server.TLS = newLeader.ServerTLSConfig()
+	server.StartTLS()
+	defer server.Close()
+
+	agent.joinedMu.Lock()
+	agent.joined = false
+	agent.joinedMu.Unlock()
+	agent.setOrchestratorAddr(server.URL)
+	agent.setOrchestratorID(newLeader.ID())
+	response := httptest.NewRecorder()
+	agent.handlePairingStatus(response, httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil))
+	if !strings.Contains(response.Body.String(), `"pairing_required":true`) ||
+		!strings.Contains(response.Body.String(), `"trusted":false`) {
+		t.Fatalf("former local pairing hid the new leader's pairing requirement: %s", response.Body.String())
+	}
+	body, err := json.Marshal(map[string]string{"address": server.URL, "pin": "123456"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	agent.handlePairingConnect(response, httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("former orchestrator worker could not pair: %d: %s", response.Code, response.Body.String())
+	}
+	status, err := json.Marshal(agent.status())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, err := agent.peerClient.Post(server.URL+"/api/nodes/register", "application/json", bytes.NewReader(status))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Body.Close()
+	if registration.StatusCode != http.StatusNoContent || !registered {
+		t.Fatalf("former orchestrator worker could not register: %s", registration.Status)
+	}
+	if agent.getOrchestratorID() != newLeader.ID() || agent.getOrchestratorAddr() != server.URL {
+		t.Fatal("worker retained its surrendered local orchestrator")
 	}
 }
 
@@ -167,6 +280,196 @@ func TestNodeControlRoutesRemoteInspectionThroughOrchestrator(t *testing.T) {
 	}
 	if len(engines) != 1 || engines[0].Name != "remote-engine" {
 		t.Fatalf("remote engine inspection returned %#v", engines)
+	}
+}
+
+func TestNodeModelsLocalRequestsWithoutSelfTLS(t *testing.T) {
+	agent := New(config.NodeConfig{
+		NodeID: "node-local-models-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Memory().Close()
+	agent.engines = []engine.Engine{engine.NewSimulated()}
+	agent.enginesConfigured = true
+
+	selfRequests := 0
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		selfRequests++
+		http.Error(w, "unexpected self request", http.StatusInternalServerError)
+	}))
+	server.TLS = agent.identity.ServerTLSConfig()
+	server.StartTLS()
+	defer server.Close()
+	agent.cfg.AdvertiseAddr = server.URL
+	if agent.identity.IsTrustedID(agent.cfg.NodeID) {
+		t.Fatal("test requires an unpinned self identity")
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/nodes/{id}/models", agent.handleAPINodeModelsGet)
+	mux.HandleFunc("PATCH /api/nodes/{id}/models", agent.handleAPINodeModelsPatch)
+	path := "/api/nodes/" + agent.cfg.NodeID + "/models"
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("local model inspection returned %d: %s", response.Code, response.Body.String())
+	}
+	models := agent.allModelsWithState()
+	if len(models) == 0 {
+		t.Fatal("simulated engine must provide models")
+	}
+	modelName := models[0].Name
+	body, err := json.Marshal(modelsPatchRequest{DisabledModels: []string{modelName}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("local model update returned %d: %s", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("local model inspection returned %d: %s", response.Code, response.Body.String())
+	}
+	var inspected []struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&inspected); err != nil {
+		t.Fatal(err)
+	}
+	if len(inspected) != len(models) {
+		t.Fatalf("inspection returned %d models, want %d including disabled models", len(inspected), len(models))
+	}
+	foundDisabled := false
+	for _, model := range inspected {
+		if model.Name == modelName && !model.Enabled {
+			foundDisabled = true
+		}
+	}
+	if !foundDisabled {
+		t.Fatalf("inspection did not include disabled model %q: %#v", modelName, inspected)
+	}
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, path, strings.NewReader("{")))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid local update returned %d: %s", response.Code, response.Body.String())
+	}
+	if selfRequests != 0 {
+		t.Fatalf("local handlers made %d self HTTPS requests", selfRequests)
+	}
+}
+
+func TestNodeModelsRemoteRequestsRequirePinnedPeer(t *testing.T) {
+	remote, err := peeridentity.Open(filepath.Join(t.TempDir(), "remote.json"), "remote-models-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := New(config.NodeConfig{
+		NodeID: "node-models-client", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Memory().Close()
+	if err := remote.TrustPeer(agent.cfg.NodeID, agent.identity.CertificatePEM()); err != nil {
+		t.Fatal(err)
+	}
+	remoteRequests := 0
+	server := httptest.NewUnstartedServer(remote.RequireTrustedPeer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remoteRequests++
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Path != "/models/all" {
+				t.Errorf("remote inspection path = %q", r.URL.Path)
+			}
+		case http.MethodPatch:
+			if r.URL.Path != "/models" {
+				t.Errorf("remote update path = %q", r.URL.Path)
+			}
+			var body modelsPatchRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if len(body.DisabledModels) != 1 || body.DisabledModels[0] != "remote-model" {
+				t.Errorf("remote update body = %#v", body)
+			}
+		default:
+			t.Errorf("unexpected remote method = %q", r.Method)
+		}
+		writeJSON(w, http.StatusOK, []map[string]any{{"name": "remote-model", "enabled": false}})
+	})))
+	server.TLS = remote.ServerTLSConfig()
+	server.StartTLS()
+	defer server.Close()
+	agent.peers = []cluster.NodeStatus{{ID: remote.ID(), Address: server.URL, Healthy: true}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/nodes/{id}/models", agent.handleAPINodeModelsGet)
+	mux.HandleFunc("PATCH /api/nodes/{id}/models", agent.handleAPINodeModelsPatch)
+
+	for _, method := range []string{http.MethodGet, http.MethodPatch} {
+		for _, target := range []struct {
+			id   string
+			code int
+		}{
+			{id: "unknown-node", code: http.StatusNotFound},
+			{id: remote.ID(), code: http.StatusBadGateway},
+		} {
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(method, "/api/nodes/"+target.id+"/models", strings.NewReader(`{"disabled_models":["remote-model"]}`)))
+			if response.Code != target.code {
+				t.Fatalf("%s to %s returned %d, want %d: %s", method, target.id, response.Code, target.code, response.Body.String())
+			}
+		}
+	}
+	if remoteRequests != 0 {
+		t.Fatal("unpinned requests reached remote handler")
+	}
+	if err := agent.identity.TrustPeer(remote.ID(), remote.CertificatePEM()); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPatch} {
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(method, "/api/nodes/"+remote.ID()+"/models", strings.NewReader(`{"disabled_models":["remote-model"]}`)))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"remote-model"`) {
+			t.Fatalf("pinned remote %s returned %d: %s", method, response.Code, response.Body.String())
+		}
+	}
+	if remoteRequests != 2 {
+		t.Fatalf("remote handler received %d requests, want 2", remoteRequests)
+	}
+}
+
+func TestModelPullUsesRequestedEngine(t *testing.T) {
+	first := &pullTestEngine{name: "first"}
+	target := &pullTestEngine{name: "target"}
+	agent := &Agent{engines: []engine.Engine{first, target}}
+	request := httptest.NewRequest(http.MethodPost, "/models/pull", strings.NewReader(`{"model":"qwen2.5:7b","engine":"target"}`))
+	response := httptest.NewRecorder()
+	agent.handleModelPull(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("pull returned %d: %s", response.Code, response.Body.String())
+	}
+	if len(first.pulls) != 0 || len(target.pulls) != 1 || target.pulls[0] != "qwen2.5:7b" {
+		t.Fatalf("pull routed to wrong engine: first=%v target=%v", first.pulls, target.pulls)
+	}
+	if !strings.Contains(response.Body.String(), `"engine":"target"`) {
+		t.Fatalf("pull response did not identify selected engine: %s", response.Body.String())
+	}
+}
+
+func TestModelPullRejectsUnknownRequestedEngine(t *testing.T) {
+	agent := &Agent{engines: []engine.Engine{&pullTestEngine{name: "configured"}}}
+	request := httptest.NewRequest(http.MethodPost, "/models/pull", strings.NewReader(`{"model":"model","engine":"missing"}`))
+	response := httptest.NewRecorder()
+	agent.handleModelPull(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "engine is not configured") {
+		t.Fatalf("unknown engine pull returned %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -344,6 +647,9 @@ func TestNodeStatusIncludesCopiedGPUHistory(t *testing.T) {
 	if len(status.GPUHistory) != 1 || status.GPUHistory[0] != sample {
 		t.Fatalf("node status GPU history = %#v", status.GPUHistory)
 	}
+	if !status.TelemetryAt.Equal(sample.Timestamp) {
+		t.Fatalf("node telemetry timestamp = %s, want %s", status.TelemetryAt, sample.Timestamp)
+	}
 	status.GPUHistory[0].Utilization = 99
 	if agent.gpuHistorySnapshot()[0].Utilization != sample.Utilization {
 		t.Fatal("node status exposed mutable telemetry history")
@@ -396,6 +702,48 @@ func TestNodeStatusIncludesCopiedSystemHistory(t *testing.T) {
 	status.SystemHistory[0].CPUUtilization = 99
 	if agent.systemHistorySnapshot()[0].CPUUtilization != sample.CPUUtilization {
 		t.Fatal("node status exposed mutable system telemetry history")
+	}
+}
+
+func TestSystemStatusReportsPersistenceAvailability(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		memory    string
+		available bool
+	}{
+		{name: "available", memory: filepath.Join(t.TempDir(), "node.db"), available: true},
+		{name: "unavailable", memory: t.TempDir(), available: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			agent := New(config.NodeConfig{NodeID: "system-status-test", MemoryPath: test.memory})
+			if agent.Memory() != nil {
+				t.Cleanup(func() { _ = agent.Memory().Close() })
+			}
+			response := httptest.NewRecorder()
+			agent.handleSystemStatus(response, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET /api/status returned %d", response.Code)
+			}
+			var status struct {
+				Role        string `json:"role"`
+				Persistence struct {
+					Available bool   `json:"available"`
+					Warning   string `json:"warning"`
+				} `json:"persistence"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+				t.Fatal(err)
+			}
+			if status.Role != "node" || status.Persistence.Available != test.available {
+				t.Fatalf("unexpected status: %+v", status)
+			}
+			if test.available && status.Persistence.Warning != "" {
+				t.Fatalf("available persistence has warning %q", status.Persistence.Warning)
+			}
+			if !test.available && status.Persistence.Warning == "" {
+				t.Fatal("unavailable persistence did not include a user-facing warning")
+			}
+		})
 	}
 }
 

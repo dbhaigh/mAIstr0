@@ -109,11 +109,20 @@ func (v *VLLM) GenerateWithOptions(ctx context.Context, model, prompt string, op
 }
 
 func (v *VLLM) Chat(model string, messages []ChatMessage) (string, error) {
+	return v.ChatWithContext(context.Background(), model, messages)
+}
+
+func (v *VLLM) ChatWithContext(ctx context.Context, model string, messages []ChatMessage) (string, error) {
 	body, err := json.Marshal(map[string]any{"model": model, "messages": messages, "stream": false})
 	if err != nil {
 		return "", err
 	}
-	resp, err := v.client.Post(v.baseURL+"/v1/chat/completions", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := v.client.Do(req)
 	if err != nil {
 		return "", err
 	}

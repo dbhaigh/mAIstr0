@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,9 @@ type Backend struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*piSession
+
+	activeCancels map[string]context.CancelFunc
+	cancelsMu     sync.Mutex
 }
 
 type piSession struct {
@@ -30,9 +34,10 @@ func New(provider Provider, toolHost agent.Backend) *Backend {
 		provider = unavailableProvider{}
 	}
 	return &Backend{
-		provider: provider,
-		toolHost: toolHost,
-		sessions: make(map[string]*piSession),
+		provider:      provider,
+		toolHost:      toolHost,
+		sessions:      make(map[string]*piSession),
+		activeCancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -124,6 +129,7 @@ func (b *Backend) ListSessions() []*agent.Session {
 }
 
 func (b *Backend) DeleteSession(id string) bool {
+	b.InterruptSession(id)
 	b.mu.Lock()
 	_, ok := b.sessions[id]
 	if ok {
@@ -135,6 +141,28 @@ func (b *Backend) DeleteSession(id string) bool {
 	}
 	b.toolHost.DeleteSession(id)
 	return true
+}
+
+func (b *Backend) InterruptSession(id string) bool {
+	b.cancelsMu.Lock()
+	cancel, ok := b.activeCancels[id]
+	b.cancelsMu.Unlock()
+	b.toolHost.InterruptSession(id)
+	if ok {
+		cancel()
+	}
+	b.mu.RLock()
+	state, found := b.sessions[id]
+	b.mu.RUnlock()
+	if found {
+		state.mu.Lock()
+		wasActive := state.session.Active
+		state.session.Active = false
+		state.session.UpdatedAt = time.Now()
+		state.mu.Unlock()
+		return wasActive || ok
+	}
+	return ok
 }
 
 func (b *Backend) ListTools() []agent.ToolDef { return b.toolHost.ListTools() }
@@ -186,7 +214,17 @@ func (b *Backend) SendMessage(ctx context.Context, sessionID, userText string, s
 		ID: newMessageID(), Role: agent.RoleUser, Content: userText, Timestamp: time.Now(),
 	})
 	state.mu.Unlock()
+
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	b.cancelsMu.Lock()
+	b.activeCancels[sessionID] = turnCancel
+	b.cancelsMu.Unlock()
+
 	defer func() {
+		b.cancelsMu.Lock()
+		delete(b.activeCancels, sessionID)
+		b.cancelsMu.Unlock()
+		turnCancel()
 		state.mu.Lock()
 		state.session.Active = false
 		state.session.UpdatedAt = time.Now()
@@ -200,9 +238,34 @@ func (b *Backend) SendMessage(ctx context.Context, sessionID, userText string, s
 		}
 		select {
 		case streamChan <- event:
-		case <-ctx.Done():
+		default:
+			select {
+			case streamChan <- event:
+			case <-time.After(50 * time.Millisecond):
+			}
 		}
 	}
+
+	recordInterrupted := func() *agent.Message {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		for i := len(state.session.Messages) - 1; i >= 0; i-- {
+			if state.session.Messages[i].Role == agent.RoleAssistant && strings.Contains(state.session.Messages[i].Content, "interrupted") {
+				return &state.session.Messages[i]
+			}
+		}
+		interruptedMsg := agent.Message{
+			ID:          newMessageID(),
+			Role:        agent.RoleAssistant,
+			Content:     "⚠️ Session interrupted by user.",
+			Coordinator: b.provider.Name(),
+			Timestamp:   time.Now(),
+		}
+		state.session.Messages = append(state.session.Messages, interruptedMsg)
+		state.session.UpdatedAt = time.Now()
+		return &interruptedMsg
+	}
+
 	tools := b.toolHost.ListTools()
 	maxSteps := state.session.Config.MaxSteps
 	if maxSteps <= 0 {
@@ -213,22 +276,26 @@ func (b *Backend) SendMessage(ctx context.Context, sessionID, userText string, s
 	}
 	var final *agent.Message
 	for step := 1; step <= maxSteps; step++ {
-		if err := ctx.Err(); err != nil {
-			emit(agent.StreamEvent{Type: agent.EventError, Error: "request context cancelled"})
-			return nil, err
+		if err := turnCtx.Err(); err != nil {
+			emit(agent.StreamEvent{Type: agent.EventInterrupted, Step: step, Content: "Session interrupted."})
+			return recordInterrupted(), err
 		}
 		emit(agent.StreamEvent{Type: agent.EventStepStarted, Step: step})
 		state.mu.Lock()
 		messages := b.providerMessages(state.session)
 		sessionConfig := state.session.Config
 		state.mu.Unlock()
-		completion, err := b.provider.Complete(ctx, CompletionRequest{
+		completion, err := b.provider.Complete(turnCtx, CompletionRequest{
 			Model: sessionConfig.CoordinatorModel, Temperature: sessionConfig.Temperature,
 			Messages: messages, Tools: tools,
 		}, func(delta string) {
 			emit(agent.StreamEvent{Type: agent.EventTextDelta, Step: step, Content: delta})
 		})
 		if err != nil {
+			if turnCtx.Err() != nil {
+				emit(agent.StreamEvent{Type: agent.EventInterrupted, Step: step, Content: "Session interrupted."})
+				return recordInterrupted(), turnCtx.Err()
+			}
 			emit(agent.StreamEvent{Type: agent.EventError, Error: err.Error()})
 			return nil, err
 		}
@@ -269,6 +336,10 @@ func (b *Backend) SendMessage(ctx context.Context, sessionID, userText string, s
 		}
 
 		for i, call := range completion.ToolCalls {
+			if err := turnCtx.Err(); err != nil {
+				emit(agent.StreamEvent{Type: agent.EventInterrupted, Step: step, Content: "Session interrupted."})
+				return recordInterrupted(), err
+			}
 			parsedArgs, parseErr := parseToolArguments(call.Function.Arguments)
 			toolCall := assistant.ToolCalls[i]
 			emit(agent.StreamEvent{Type: agent.EventToolCall, Step: step, ToolCall: &toolCall})
@@ -277,7 +348,11 @@ func (b *Backend) SendMessage(ctx context.Context, sessionID, userText string, s
 			if parseErr != nil {
 				response.Error = fmt.Sprintf("invalid tool arguments: %v", parseErr)
 			} else {
-				result, execErr := b.toolHost.ExecuteTool(ctx, sessionID, call.Function.Name, parsedArgs)
+				result, execErr := b.toolHost.ExecuteTool(turnCtx, sessionID, call.Function.Name, parsedArgs)
+				if turnCtx.Err() != nil {
+					emit(agent.StreamEvent{Type: agent.EventInterrupted, Step: step, Content: "Session interrupted."})
+					return recordInterrupted(), turnCtx.Err()
+				}
 				response.Output = result.Output
 				response.NodeID, response.NodeAddr, response.Model = result.NodeID, result.NodeAddr, result.Model
 				response.DurationMs = result.DurationMs

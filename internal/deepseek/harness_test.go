@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -445,5 +446,87 @@ func TestDirectNodeTools(t *testing.T) {
 	clm := out.(map[string]any)
 	if clm["total_rounds"] != 2 {
 		t.Errorf("expected 2 rounds, got %v", clm["total_rounds"])
+	}
+}
+
+func TestInterruptSession(t *testing.T) {
+	var once sync.Once
+	started := make(chan struct{})
+	stopServer := make(chan struct{})
+
+	mockCoordinator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		select {
+		case <-stopServer:
+		case <-r.Context().Done():
+		}
+	}))
+	defer mockCoordinator.Close()
+	defer close(stopServer)
+
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	reg := cluster.NewRegistry()
+	reg.Upsert(cluster.NodeStatus{
+		ID:      "coord-node",
+		Address: mockCoordinator.URL,
+		Hardware: hardware.Info{
+			CPUCores:   16,
+			TotalRAMMB: 65536,
+			Score:      100,
+		},
+		Models: []engine.Model{
+			{Name: "deepseek-test", Tags: []string{"chat"}},
+		},
+		DefaultModel: "deepseek-test",
+		Healthy:      true,
+		Leader:       true,
+	})
+
+	h := New(reg, client)
+	s := h.CreateSession("test-interrupt", SessionConfig{CoordinatorModel: "deepseek-test"})
+
+	streamChan := make(chan StreamEvent, 20)
+	errCh := make(chan error, 1)
+
+	go func() {
+		_, err := h.SendMessage(context.Background(), s.ID, "Hello", streamChan)
+		errCh <- err
+	}()
+
+	<-started
+
+	ok := h.InterruptSession(s.ID)
+	if !ok {
+		t.Fatal("expected InterruptSession to return true")
+	}
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("expected SendMessage to return error on interrupt")
+	}
+
+	if s.Active {
+		t.Fatal("expected session Active to be false after interrupt")
+	}
+
+	foundInterruptedEvent := false
+	close(streamChan)
+	for ev := range streamChan {
+		if ev.Type == EventInterrupted {
+			foundInterruptedEvent = true
+			break
+		}
+	}
+	if !foundInterruptedEvent {
+		t.Fatal("expected EventInterrupted stream event")
+	}
+
+	if len(s.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages in history, got %d", len(s.Messages))
+	}
+	lastMsg := s.Messages[len(s.Messages)-1]
+	if lastMsg.Role != RoleAssistant || !strings.Contains(lastMsg.Content, "interrupted") {
+		t.Fatalf("expected interrupted assistant message, got %#v", lastMsg)
 	}
 }

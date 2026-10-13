@@ -27,6 +27,7 @@
       <button class="nav-tab" data-tab="memory-tab">🧠 Memory &amp; Learning</button>
     </nav>
   </header>
+  <div id="persistence-warning" class="persistence-warning" role="status" hidden></div>
 
   <!-- TAB 1: Interactive Orchestrator Console -->
   <section id="agent-tab" class="tab-content active">
@@ -123,6 +124,7 @@
           <textarea id="chat-input" placeholder="Message the orchestrator... (Enter to send, Shift+Enter for new line)" rows="2"></textarea>
           <div class="chat-input-actions">
             <span id="chat-status" class="chat-status"></span>
+            <button id="interrupt-msg-btn" class="secondary-button interrupt-button" type="button" hidden>Interrupt</button>
             <button id="dispatch-direct-task-btn" class="secondary-button direct-task-button" type="button" hidden>Dispatch Task</button>
             <button id="send-msg-btn" class="primary-btn">Send</button>
           </div>
@@ -147,7 +149,13 @@
       <div class="section-heading">
         <div><h2>Cluster setup</h2><p class="panel-caption">View cluster members and their current status. Right-click a node to configure it or pair it again.</p></div>
       </div>
-      <section id="pairing-panel" class="pairing-panel" aria-labelledby="pairing-title">
+      <nav class="setup-tabs" role="tablist" aria-label="Cluster setup">
+        <button class="setup-tab active" type="button" role="tab" id="setup-pairing-tab" aria-controls="pairing-panel" aria-selected="true">Pairing access</button>
+        <button class="setup-tab" type="button" role="tab" id="setup-nodes-tab" aria-controls="setup-nodes-panel" aria-selected="false" tabindex="-1">Available nodes</button>
+        <button class="setup-tab" type="button" role="tab" id="setup-readiness-tab" aria-controls="setup-readiness-panel" aria-selected="false" tabindex="-1">Inference readiness</button>
+        <button class="setup-tab" type="button" role="tab" id="setup-catalog-tab" aria-controls="setup-catalog-panel" aria-selected="false" tabindex="-1">Model catalog</button>
+      </nav>
+      <section id="pairing-panel" class="pairing-panel setup-panel-section" role="tabpanel" aria-labelledby="setup-pairing-tab" tabindex="0">
         <div class="pairing-heading">
           <div>
             <p class="pairing-kicker">CLUSTER MEMBERSHIP</p>
@@ -171,19 +179,31 @@
           <button id="pairing-connect-open" class="primary-btn pairing-action" type="button">Enter address and pairing PIN</button>
         </div>
       </section>
-      <section class="setup-node-section" aria-labelledby="setup-nodes-heading">
+      <section id="setup-nodes-panel" class="setup-node-section setup-panel-section" role="tabpanel" aria-labelledby="setup-nodes-tab" tabindex="0" hidden>
         <div class="section-heading">
           <div><h3 id="setup-nodes-heading">Available nodes</h3><p id="setup-node-summary" class="panel-caption">Loading cluster members…</p></div>
         </div>
         <div id="setup-node-list" class="setup-node-list" aria-live="polite"></div>
       </section>
-      <section class="setup-readiness-section" aria-labelledby="setup-readiness-heading">
+      <section id="setup-readiness-panel" class="setup-readiness-section setup-panel-section" role="tabpanel" aria-labelledby="setup-readiness-tab" tabindex="0" hidden>
         <div class="section-heading">
           <div><h3 id="setup-readiness-heading">Inference readiness</h3><p class="panel-caption">Check whether online nodes have an engine and models available.</p></div>
           <button id="setup-check-btn" class="primary-btn" type="button">Check readiness</button>
         </div>
         <div id="setup-status" class="setup-status setup-summary" data-state="checking" role="status" aria-live="polite">Checking cluster readiness…</div>
         <div id="setup-results" class="setup-grid" aria-live="polite"></div>
+      </section>
+      <section id="setup-catalog-panel" class="setup-catalog-section setup-panel-section" role="tabpanel" aria-labelledby="setup-catalog-tab" tabindex="0" hidden>
+        <div class="section-heading">
+          <div><h3 id="setup-catalog-heading">Model catalog</h3><p class="panel-caption">Browse curated models and install them on a specific node and engine. Catalog metadata is bundled locally; prompts are never sent to the catalog.</p></div>
+        </div>
+        <div class="catalog-controls">
+          <label>Target node<select id="catalog-node"></select></label>
+          <label>Engine<select id="catalog-engine"></select></label>
+          <label>Search models<input id="catalog-search" type="search" placeholder="Name, task, or capability"></label>
+        </div>
+        <div id="catalog-status" class="setup-status" role="status" aria-live="polite">Loading model catalog…</div>
+        <div id="catalog-results" class="setup-grid" aria-live="polite"></div>
       </section>
     </section>
 
@@ -199,17 +219,19 @@
 
     <section id="cluster-overview-panel" class="cluster-window active" role="tabpanel" aria-labelledby="cluster-overview-tab">
       <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Available nodes and their current status. Right-click a node to configure or pair it.</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
-      <div class="cluster-overview-grid">
-        <section class="overview-column overview-members" aria-labelledby="overview-nodes-heading">
-          <h3 id="overview-nodes-heading">Available nodes</h3>
-          <div id="overview-nodes" class="overview-nodes"></div>
-          <div id="cluster-peers" class="cluster-peers"></div>
-        </section>
-        <section class="overview-column overview-activity-column" aria-labelledby="overview-activity-heading">
-          <h3 id="overview-activity-heading">Current activity</h3>
-          <div id="overview-activity" class="overview-activity"></div>
-        </section>
-      </div>
+      <nav class="overview-tabs" role="tablist" aria-label="Cluster overview">
+        <button class="overview-tab active" type="button" role="tab" id="overview-members-tab" aria-controls="overview-members-panel" aria-selected="true">Available nodes</button>
+        <button class="overview-tab" type="button" role="tab" id="overview-activity-tab" aria-controls="overview-activity-panel" aria-selected="false" tabindex="-1">Current activity</button>
+      </nav>
+      <section id="overview-members-panel" class="overview-column overview-members" role="tabpanel" aria-labelledby="overview-members-tab" tabindex="0">
+        <h3 id="overview-nodes-heading">Available nodes</h3>
+        <div id="overview-nodes" class="overview-nodes"></div>
+        <div id="cluster-peers" class="cluster-peers"></div>
+      </section>
+      <section id="overview-activity-panel" class="overview-column overview-activity-column" role="tabpanel" aria-labelledby="overview-activity-tab" tabindex="0" hidden>
+        <h3 id="overview-activity-heading">Current activity</h3>
+        <div id="overview-activity" class="overview-activity"></div>
+      </section>
     </section>
 
     <section id="nodes-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-nodes-tab" hidden>
@@ -224,6 +246,7 @@
 
     <section id="discovery-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-discovery-tab" hidden>
       <h2>Local network</h2>
+      <p class="setup-empty">Visible LAN instances and online cluster nodes, including nodes not paired with this cluster.</p>
       <div id="discovery-list" class="cards"></div>
     </section>
 
@@ -305,7 +328,7 @@
     <div class="node-terminal-header"><h2 id="node-terminal-title">Node terminal</h2><button id="node-terminal-close" type="button" title="Close terminal">Close</button></div>
     <div class="node-terminal-toolbar"><label>Model<select id="node-terminal-model"></select></label><span id="node-terminal-status"></span></div>
     <div id="node-terminal-messages" class="node-terminal-messages"></div>
-    <form id="node-terminal-form" class="node-terminal-form"><textarea id="node-terminal-input" rows="2" placeholder="Send a message to this node..."></textarea><button type="submit">Send</button></form>
+    <form id="node-terminal-form" class="node-terminal-form"><textarea id="node-terminal-input" rows="2" placeholder="Send a message to this node..."></textarea><button id="node-terminal-interrupt" type="button" class="secondary-button interrupt-button" hidden>Interrupt</button><button type="submit">Send</button></form>
   </div>
 
   <div id="node-properties-modal" class="node-properties-modal" hidden>

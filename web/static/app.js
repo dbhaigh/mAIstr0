@@ -20,6 +20,14 @@ const setupStatus = document.getElementById("setup-status");
 const setupResults = document.getElementById("setup-results");
 const setupNodeList = document.getElementById("setup-node-list");
 const setupNodeSummary = document.getElementById("setup-node-summary");
+const catalogNodeSelect = document.getElementById("catalog-node");
+const catalogEngineSelect = document.getElementById("catalog-engine");
+const catalogSearch = document.getElementById("catalog-search");
+const catalogStatus = document.getElementById("catalog-status");
+const catalogResults = document.getElementById("catalog-results");
+let modelCatalogEntries = [];
+let catalogEngines = [];
+let catalogModels = [];
 const pairingPinView = document.getElementById("pairing-pin-view");
 const pairingPin = document.getElementById("pairing-pin");
 const pairingPinExpiry = document.getElementById("pairing-pin-expiry");
@@ -49,10 +57,15 @@ const statModels = document.getElementById("stat-models");
 const statLoad = document.getElementById("stat-load");
 const statMemory = document.getElementById("stat-memory");
 const statVersion = document.getElementById("stat-version");
+const persistenceWarning = document.getElementById("persistence-warning");
 const navTabs = document.querySelectorAll(".nav-tab");
 const tabContents = document.querySelectorAll(".tab-content");
 const clusterWorkspaceTabs = document.querySelectorAll(".cluster-workspace-tab");
 const clusterWindows = document.querySelectorAll(".cluster-window");
+const overviewTabs = document.querySelectorAll(".overview-tab");
+const overviewPanels = document.querySelectorAll("#cluster-overview-panel > .overview-column");
+const setupTabs = document.querySelectorAll(".setup-tab");
+const setupPanels = document.querySelectorAll("#setup-panel > .setup-panel-section");
 
 // Memory & learning elements
 const learningSummary = document.getElementById("learning-summary");
@@ -81,6 +94,8 @@ const directClusterStatus = document.getElementById("direct-cluster-status");
 const directClusterNodesEl = document.getElementById("direct-cluster-nodes");
 const directClusterRefreshBtn = document.getElementById("direct-cluster-refresh");
 const dispatchDirectTaskBtn = document.getElementById("dispatch-direct-task-btn");
+const interruptMsgBtn = document.getElementById("interrupt-msg-btn");
+const nodeTerminalInterruptBtn = document.getElementById("node-terminal-interrupt");
 const chatMessagesEl = document.getElementById("chat-messages");
 const chatInput = document.getElementById("chat-input");
 const sendMsgBtn = document.getElementById("send-msg-btn");
@@ -92,6 +107,8 @@ let activeSessionId = null;
 const activeSessionIds = new Map();
 let currentSessions = [];
 let isSending = false;
+let activeAbortController = null;
+let terminalAbortController = null;
 let streamingAssistantEl = null;
 let currentAgentHarness = "pi";
 let activeChatMode = "pi";
@@ -122,29 +139,55 @@ navTabs.forEach((tab) => {
   });
 });
 
-clusterWorkspaceTabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
-    const targetID = tab.dataset.window;
-    clusterWorkspaceTabs.forEach((item) => {
+function wireWorkspaceTabs(tabs, panels) {
+  const selectTab = (tab) => {
+    const targetID = tab.getAttribute("aria-controls");
+    tabs.forEach((item) => {
       const active = item === tab;
       item.classList.toggle("active", active);
       item.setAttribute("aria-selected", String(active));
+      item.tabIndex = active ? 0 : -1;
     });
-    clusterWindows.forEach((panel) => {
+    panels.forEach((panel) => {
       const active = panel.id === targetID;
       panel.classList.toggle("active", active);
       panel.hidden = !active;
     });
+  };
+  tabs.forEach((tab, index) => {
+    tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
+    tab.addEventListener("click", () => selectTab(tab));
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      selectTab(tabs[nextIndex]);
+      tabs[nextIndex].focus();
+    });
   });
-});
+}
+
+wireWorkspaceTabs(clusterWorkspaceTabs, clusterWindows);
+wireWorkspaceTabs(overviewTabs, overviewPanels);
+wireWorkspaceTabs(setupTabs, setupPanels);
 
 pairingConnectCancelBtn?.addEventListener("click", () => pairingConnectDialog?.close());
 pairingConnectOpenBtn?.addEventListener("click", () => openPairingDialog());
 
 setupCheckBtn?.addEventListener("click", checkSetupReadiness);
+catalogNodeSelect?.addEventListener("change", loadCatalogTarget);
+catalogEngineSelect?.addEventListener("change", renderModelCatalog);
+catalogSearch?.addEventListener("input", renderModelCatalog);
 
 function openPairingDialog(node = null) {
   if (!pairingConnectDialog || pairingConnectDialog.open) return;
+  if (currentPairingStatus?.role === "node" && node?.id === currentPairingStatus.node_id) {
+    node = null;
+  }
   pairingTargetNode = node;
   if (pairingStatus) pairingStatus.textContent = "";
   const title = document.getElementById("pairing-title-node");
@@ -203,6 +246,10 @@ pairingPinRegenerateBtn?.addEventListener("click", async () => {
 async function loadPairingStatus() {
   try {
     const status = await fetchJSON("/api/pairing/status");
+    if (status.dashboard_url) {
+      window.location.replace(status.dashboard_url);
+      return;
+    }
     currentPairingStatus = status;
     if (status.role === "orchestrator") {
       if (pairingPinView) pairingPinView.hidden = false;
@@ -245,6 +292,7 @@ async function loadPairingStatus() {
         pairingSetupFocused = true;
         document.querySelector('.nav-tab[data-tab="cluster-tab"]')?.click();
         document.querySelector('[data-window="setup-panel"]')?.click();
+        document.getElementById("setup-pairing-tab")?.click();
       }
       const invitationPending = await checkPairingInvitation();
       if (!invitationPending && !status.joined && !pairingPromptShown) {
@@ -485,35 +533,38 @@ async function checkSetupReadiness() {
           await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/models/refresh`, { method: "POST" });
           refreshed = true;
         }
-        return { node, engines, refreshed, error: "" };
+        const models = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/models`);
+        return { node, engines, models, refreshed, error: "" };
       } catch (err) {
-        return { node, engines: [], refreshed: false, error: err.message };
+        return { node, engines: [], models: [], refreshed: false, error: err.message };
       }
     }));
-    const latestNodes = await fetchJSON("/api/nodes/all");
-    const latestByID = new Map(latestNodes.map((node) => [node.id, node]));
     let readyCount = 0;
     if (setupResults) {
-      setupResults.innerHTML = results.map(({ node, engines, refreshed, error }) => {
-        const current = latestByID.get(node.id) || node;
-        const modelCount = (current.models || []).length;
-        const ready = !error && engines.length > 0 && modelCount > 0;
+      setupResults.innerHTML = results.map(({ node, engines, models, refreshed, error }) => {
+        const installedCount = models.length;
+        const usableCount = models.filter((model) => model.enabled).length;
+        const ready = !error && engines.length > 0 && usableCount > 0;
         if (ready) readyCount += 1;
         const state = error
             ? `Could not inspect node: ${error}`
           : !engines.length
             ? "No inference engine detected. Configure an engine in node settings."
-            : modelCount
-              ? `${modelCount} model${modelCount === 1 ? "" : "s"} ready${refreshed ? " (registry refreshed)" : ""}.`
-              : "Engine detected, but no models are available yet.";
+            : usableCount
+              ? `${usableCount} usable model${usableCount === 1 ? "" : "s"}${installedCount > usableCount ? ` · ${installedCount - usableCount} disabled` : ""}${refreshed ? " (registry refreshed)" : ""}.`
+              : installedCount
+                ? "Models are installed, but all are disabled for scheduling."
+                : "Engine detected, but no models are available yet.";
           const stateName = ready ? "ready" : error ? "error" : "attention";
           const badge = ready ? "Ready" : error ? "Unavailable" : "Needs setup";
           return `<article class="setup-card" data-state="${stateName}">
             <div class="setup-card-heading"><h3>${escapeHtml(node.id)}</h3><span class="setup-badge">${badge}</span></div>
             <dl class="setup-details">
               <div><dt>Engines</dt><dd>${engines.length ? engines.map((engine) => escapeHtml(engine.name)).join(", ") : "None detected"}</dd></div>
-              <div><dt>Models</dt><dd>${modelCount}</dd></div>
+              <div><dt>Installed</dt><dd>${installedCount}</dd></div>
+              <div><dt>Usable</dt><dd>${usableCount}</dd></div>
             </dl>
+            ${models.length ? `<div class="catalog-tags">${models.map((model) => `${escapeHtml(model.name)} · ${escapeHtml(model.engine)} — ${model.enabled ? "usable" : "installed, disabled"}`).join("<br>")}</div>` : ""}
             <p class="setup-card-message">${escapeHtml(state)}</p>
           </article>`;
         }).join("");
@@ -536,6 +587,122 @@ async function checkSetupReadiness() {
   }
 }
 
+async function loadModelCatalog() {
+  if (!catalogResults) return;
+  try {
+    [modelCatalogEntries] = await Promise.all([
+      fetchJSON("/api/models/catalog"),
+      loadCatalogNodes(),
+    ]);
+    renderModelCatalog();
+  } catch (err) {
+    catalogStatus.textContent = `Could not load model catalog: ${err.message}`;
+    catalogResults.innerHTML = "";
+  }
+}
+
+async function loadCatalogNodes() {
+  const nodes = await fetchJSON("/api/nodes/all");
+  const online = nodes.filter((node) => node.healthy);
+  const selected = catalogNodeSelect.value;
+  catalogNodeSelect.innerHTML = online
+    .map((node) => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.id)}</option>`)
+    .join("");
+  if (online.some((node) => node.id === selected)) catalogNodeSelect.value = selected;
+  if (!online.length) {
+    catalogEngineSelect.innerHTML = "";
+    catalogModels = [];
+    catalogStatus.textContent = "An online node is required to inspect installed models or install a catalog model.";
+    catalogResults.innerHTML = '<p class="setup-empty">No online target nodes.</p>';
+    return;
+  }
+  await loadCatalogTarget();
+}
+
+async function loadCatalogTarget() {
+  const nodeId = catalogNodeSelect?.value;
+  if (!nodeId) return;
+  catalogStatus.textContent = `Loading engines and installed models for ${nodeId}…`;
+  try {
+    const [allEngines, models] = await Promise.all([
+      fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/engines`),
+      fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models`),
+    ]);
+    catalogEngines = allEngines.filter((item) => item.can_pull);
+    catalogModels = models;
+    const currentEngine = catalogEngineSelect.value;
+    catalogEngineSelect.innerHTML = catalogEngines
+      .map((item) => `<option value="${escapeHtml(item.name)}">${escapeHtml(item.name)} · ${escapeHtml(item.url || "configured engine")}</option>`)
+      .join("");
+    if (catalogEngines.some((item) => item.name === currentEngine)) catalogEngineSelect.value = currentEngine;
+    catalogStatus.textContent = catalogEngines.length
+      ? `Target: ${nodeId} · ${catalogEngineSelect.value || "Select an engine"}. Installed models are marked usable or disabled for scheduling.`
+      : `No configured engine on ${nodeId} supports model downloads.`;
+    renderModelCatalog();
+  } catch (err) {
+    catalogStatus.textContent = `Could not inspect ${nodeId}: ${err.message}`;
+    catalogResults.innerHTML = "";
+  }
+}
+
+function renderModelCatalog() {
+  if (!catalogResults) return;
+  const engineName = catalogEngineSelect?.value || "";
+  const query = (catalogSearch?.value || "").trim().toLowerCase();
+  const entries = modelCatalogEntries.filter((model) =>
+    model.engine === engineName &&
+    (!query || `${model.name} ${model.description} ${(model.tags || []).join(" ")}`.toLowerCase().includes(query))
+  );
+  if (!engineName) {
+    catalogResults.innerHTML = '<p class="setup-empty">Choose an online node with a download-capable engine to browse matching models.</p>';
+    return;
+  }
+  if (!entries.length) {
+    catalogResults.innerHTML = '<p class="setup-empty">No catalog entries match this engine and search.</p>';
+    return;
+  }
+  catalogResults.innerHTML = entries.map((model) => {
+    const installed = catalogModels.find((item) => item.name === model.name && item.engine === model.engine);
+    const state = installed ? (installed.enabled ? "Installed · usable" : "Installed · disabled for scheduling") : "Available to download";
+    const button = installed
+      ? `<button class="secondary-button" type="button" disabled>${installed.enabled ? "Installed" : "Installed (disabled)"}</button>`
+      : `<button class="primary-btn catalog-install" type="button" data-model="${escapeHtml(model.name)}">Install on ${escapeHtml(catalogNodeSelect.value)} · ${escapeHtml(engineName)}</button>`;
+    return `<article class="setup-card catalog-card">
+      <div class="setup-card-heading"><h3>${escapeHtml(model.name)}</h3><span class="setup-badge">${escapeHtml(state)}</span></div>
+      <p>${escapeHtml(model.description)}</p>
+      <div class="catalog-tags">Engine: ${escapeHtml(model.engine)}${model.tags?.length ? ` · ${model.tags.map(escapeHtml).join(", ")}` : ""}</div>
+      ${button}
+    </article>`;
+  }).join("");
+  catalogResults.querySelectorAll(".catalog-install").forEach((button) => {
+    button.addEventListener("click", () => installCatalogModel(button.dataset.model, button));
+  });
+}
+
+async function installCatalogModel(model, button) {
+  const nodeId = catalogNodeSelect.value;
+  const engineName = catalogEngineSelect.value;
+  if (!nodeId || !engineName || !model) return;
+  button.disabled = true;
+  button.textContent = "Installing…";
+  catalogStatus.textContent = `Installing ${model} with ${engineName} on ${nodeId}…`;
+  try {
+    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/pull`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, engine: engineName }),
+    });
+    catalogModels = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/refresh`, { method: "POST" });
+    catalogStatus.textContent = `Installed ${model} on ${nodeId} using ${engineName}.`;
+    renderModelCatalog();
+    await refresh();
+  } catch (err) {
+    catalogStatus.textContent = `Could not install ${model} on ${nodeId} using ${engineName}: ${err.message}`;
+    button.disabled = false;
+    button.textContent = `Retry on ${nodeId} · ${engineName}`;
+  }
+}
+
 function setSetupStatus(message, state) {
   if (!setupStatus) return;
   setupStatus.textContent = message;
@@ -549,6 +716,18 @@ async function fetchJSON(url, opts) {
   }
   if (resp.status === 204) return null;
   return resp.json();
+}
+
+async function refreshPersistenceStatus() {
+  if (!persistenceWarning) return;
+  try {
+    const status = await fetchJSON("/api/status");
+    const persistence = status.persistence;
+    persistenceWarning.hidden = persistence?.available !== false;
+    persistenceWarning.textContent = persistence?.warning || "Persistent memory is unavailable.";
+  } catch (error) {
+    console.error("Could not load persistence status:", error);
+  }
 }
 
 function updateClusterTitle(count) {
@@ -999,7 +1178,9 @@ async function sendDirectMessage(text) {
   if (!text || isSending) return;
   isSending = true;
   streamingAssistantEl = null;
+  activeAbortController = new AbortController();
   if (sendMsgBtn) sendMsgBtn.disabled = true;
+  if (interruptMsgBtn) interruptMsgBtn.hidden = false;
   if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = true;
   if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
   agentTabs.forEach((tab) => { tab.disabled = true; });
@@ -1024,6 +1205,7 @@ async function sendDirectMessage(text) {
         messages: [directClusterSystemMessage(nodes), ...directMessages],
         stream: true,
       }),
+      signal: activeAbortController.signal,
     });
     if (!response.ok) {
       let message = await response.text();
@@ -1075,15 +1257,21 @@ async function sendDirectMessage(text) {
     if (chatStatus) chatStatus.textContent = "";
   } catch (err) {
     if (assistantContent) directMessages.push({ role: "assistant", content: assistantContent });
-    if (chatStatus) chatStatus.textContent = `Direct chat failed: ${err.message}`;
-    appendMessageToChat({
-      role: "assistant",
-      coordinator: "Direct Orchestrator",
-      content: `⚠️ Direct chat failed: ${err.message}`,
-    });
+    if (err.name === "AbortError") {
+      if (chatStatus) chatStatus.textContent = "Interrupted.";
+    } else {
+      if (chatStatus) chatStatus.textContent = `Direct chat failed: ${err.message}`;
+      appendMessageToChat({
+        role: "assistant",
+        coordinator: "Direct Orchestrator",
+        content: `⚠️ Direct chat failed: ${err.message}`,
+      });
+    }
   } finally {
     isSending = false;
+    activeAbortController = null;
     streamingAssistantEl = null;
+    if (interruptMsgBtn) interruptMsgBtn.hidden = true;
     if (sendMsgBtn) sendMsgBtn.disabled = false;
     if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = false;
     if (clearDirectChatBtn) clearDirectChatBtn.disabled = false;
@@ -1154,7 +1342,9 @@ async function sendInteractiveMessage(text) {
   if (!text || !activeSessionId || isSending) return;
   isSending = true;
   streamingAssistantEl = null;
+  activeAbortController = new AbortController();
   if (sendMsgBtn) sendMsgBtn.disabled = true;
+  if (interruptMsgBtn) interruptMsgBtn.hidden = false;
   if (newSessionBtn) newSessionBtn.disabled = true;
   if (agentHarnessSelect) agentHarnessSelect.disabled = true;
   agentTabs.forEach((tab) => { tab.disabled = true; });
@@ -1170,6 +1360,7 @@ async function sendInteractiveMessage(text) {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
       body: JSON.stringify({ content: text }),
+      signal: activeAbortController.signal,
     });
 
     if (!response.ok) {
@@ -1206,13 +1397,24 @@ async function sendInteractiveMessage(text) {
     if (streamError) throw new Error(streamError);
     if (chatStatus) chatStatus.textContent = "";
   } catch (err) {
-    if (chatStatus) chatStatus.textContent = "Error: " + err.message;
-    appendMessageToChat({
-      role: "assistant",
-      content: "⚠️ Error during execution: " + err.message,
-    });
+    if (err.name === "AbortError") {
+      if (chatStatus) chatStatus.textContent = "Interrupted.";
+      try {
+        await selectSession(activeSessionId);
+      } catch (e) {
+        // ignore
+      }
+    } else {
+      if (chatStatus) chatStatus.textContent = "Error: " + err.message;
+      appendMessageToChat({
+        role: "assistant",
+        content: "⚠️ Error during execution: " + err.message,
+      });
+    }
   } finally {
     isSending = false;
+    activeAbortController = null;
+    if (interruptMsgBtn) interruptMsgBtn.hidden = true;
     if (sendMsgBtn) sendMsgBtn.disabled = false;
     if (newSessionBtn) newSessionBtn.disabled = false;
     if (agentHarnessSelect) agentHarnessSelect.disabled = false;
@@ -1260,10 +1462,30 @@ function handleStreamEvent(event) {
     const bubble = streamingAssistantEl.querySelector(".msg-bubble");
     if (bubble) bubble.textContent += event.content;
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  } else if (event.type === "interrupted") {
+    if (chatStatus) chatStatus.textContent = "Session interrupted.";
   } else if (event.type === "error") {
     if (chatStatus) chatStatus.textContent = `Error: ${event.error}`;
   }
 }
+
+// Event Listeners for Chat
+interruptMsgBtn?.addEventListener("click", async () => {
+  if (!isSending) return;
+  if (chatStatus) chatStatus.textContent = "Interrupting...";
+  if (activeChatMode !== "direct" && activeSessionId) {
+    try {
+      await fetchJSON(`/api/agent/sessions/${encodeURIComponent(activeSessionId)}/interrupt`, {
+        method: "POST",
+      });
+    } catch (err) {
+      console.error("interrupt agent session failed", err);
+    }
+  }
+  if (activeAbortController) {
+    activeAbortController.abort();
+  }
+});
 
 // Event Listeners for Chat
 sendMsgBtn?.addEventListener("click", () => {
@@ -1740,6 +1962,9 @@ overviewActivity?.addEventListener("click", (event) => {
     (item) => item.dataset.nodeId === target.dataset.targetNode
   );
   if (!node) return;
+  const membersTab = document.getElementById("overview-members-tab");
+  membersTab?.click();
+  membersTab?.focus({ preventScroll: true });
   node.scrollIntoView({ behavior: "smooth", block: "nearest" });
   node.classList.add("highlighted");
   setTimeout(() => node.classList.remove("highlighted"), 1200);
@@ -1920,17 +2145,42 @@ document.getElementById("node-terminal-form")?.addEventListener("submit", async 
   input.value = "";
   appendTerminalMessage("user", content);
   status.textContent = "Generating...";
+  terminalAbortController = new AbortController();
+  if (nodeTerminalInterruptBtn) nodeTerminalInterruptBtn.hidden = false;
   try {
     if (!terminalDialogueId) {
-      const dialogue = await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) });
+      const dialogue = await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }), signal: terminalAbortController.signal });
       terminalDialogueId = dialogue.id;
     }
-    const response = await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues/${encodeURIComponent(terminalDialogueId)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) });
+    const response = await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues/${encodeURIComponent(terminalDialogueId)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }), signal: terminalAbortController.signal });
     appendTerminalMessage("assistant", response.reply || response.error || "No response");
     status.textContent = `${response.model || model} · ${response.duration_ms || 0}ms`;
   } catch (err) {
-    appendTerminalMessage("assistant", "Error: " + err.message);
-    status.textContent = "Request failed";
+    if (err.name === "AbortError") {
+      appendTerminalMessage("assistant", "⚠️ Dialogue turn interrupted.");
+      status.textContent = "Interrupted";
+    } else {
+      appendTerminalMessage("assistant", "Error: " + err.message);
+      status.textContent = "Request failed";
+    }
+  } finally {
+    terminalAbortController = null;
+    if (nodeTerminalInterruptBtn) nodeTerminalInterruptBtn.hidden = true;
+  }
+});
+
+nodeTerminalInterruptBtn?.addEventListener("click", async () => {
+  if (terminalNode && terminalDialogueId) {
+    try {
+      await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues/${encodeURIComponent(terminalDialogueId)}/interrupt`, {
+        method: "POST",
+      });
+    } catch (err) {
+      console.error("interrupt node dialogue failed", err);
+    }
+  }
+  if (terminalAbortController) {
+    terminalAbortController.abort();
   }
 });
 
@@ -2237,27 +2487,47 @@ function renderRouting(nodes, tasks) {
   }
 }
 
+function visibleNetworkPeers(peers, nodes, pairingStatus) {
+  const visible = new Map((peers || []).map((peer) => [peer.id, peer]));
+  for (const node of nodes || []) {
+    if (!node.healthy || visible.has(node.id)) continue;
+    visible.set(node.id, {
+      id: node.id, role: "node", peer_addr: node.address, last_seen: node.last_seen,
+      orchestrator_id: pairingStatus?.orchestrator_id,
+    });
+  }
+  if (pairingStatus?.role === "node" && pairingStatus.node_id) {
+    visible.set(pairingStatus.node_id, {
+      ...visible.get(pairingStatus.node_id),
+      id: pairingStatus.node_id, role: "node", peer_addr: pairingStatus.node_addr,
+      orchestrator_id: pairingStatus.joined ? pairingStatus.orchestrator_id : "",
+      local: true,
+    });
+  }
+  return [...visible.values()].sort((a, b) => (a.id || "").localeCompare(b.id || ""));
+}
+
 function renderDiscovery(peers) {
   if (!discoveryList) return;
   discoveryList.innerHTML = "";
-  if (!peers || peers.length === 0) {
-    discoveryList.innerHTML = '<p style="color:var(--muted)">No other instances found on the local network yet.</p>';
+  const ordered = visibleNetworkPeers(peers, currentNodes, currentPairingStatus);
+  if (ordered.length === 0) {
+    discoveryList.innerHTML = '<p style="color:var(--muted)">No visible nodes found on the local network yet.</p>';
     return;
   }
 
-  const orchestrator = peers.filter((p) => p.role === "orchestrator").sort((a, b) => (a.id || "").localeCompare(b.id || ""));
-  const ordered = [...peers].sort((a, b) => (a.id || "").localeCompare(b.id || ""));
   for (const p of ordered) {
     const card = document.createElement("div");
     card.className = "card";
-    const associated = p.role === "node" ? (orchestrator[0]?.id || "none") : "self";
+    const associated = p.role === "node" ? (p.orchestrator_id || "Not announced") : p.role === "orchestrator" ? "self" : "Not elected";
     const member = p.role === "node" ? currentNodes.find((node) => node.id === p.id) : null;
+    const localMember = p.id === currentPairingStatus?.node_id && currentPairingStatus?.joined;
     card.innerHTML = `
       <h3>${escapeHtml(p.id)} <span class="badge healthy">${escapeHtml(p.role)}</span></h3>
       <div class="row"><span>Address</span><span>${escapeHtml(p.peer_addr || p.http_addr || "Address unavailable")}</span></div>
-      ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member ? member.healthy ? "Online · paired" : "Offline · paired" : "Available · not paired"}</span></div>` : ""}
+      ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
       <div class="row"><span>Associated orchestrator</span><span>${escapeHtml(associated)}</span></div>
-      <div class="row"><span>Last seen</span><span>${new Date(p.last_seen).toLocaleTimeString()}</span></div>
+      <div class="row"><span>Last seen</span><span>${p.local ? "This device" : p.last_seen ? new Date(p.last_seen).toLocaleTimeString() : "Online in cluster"}</span></div>
     `;
     discoveryList.appendChild(card);
     if (p.role === "node") {
@@ -2265,7 +2535,7 @@ function renderDiscovery(peers) {
         id: p.id,
         address: p.peer_addr || p.http_addr,
         healthy: true,
-        discovered: true,
+        discovered: !p.local,
         last_seen: p.last_seen,
         models: [],
         active_tasks: 0,
@@ -2291,8 +2561,9 @@ function renderTasks(tasks) {
     const subtaskHTML = (t.subtasks || [])
       .map(
         (s) => `
-        <div class="row"><span>${escapeHtml(s.subtask.id)} · ${escapeHtml(s.subtask.role || s.subtask.task_type)} (${escapeHtml(s.subtask.task_type)}) &rarr; ${escapeHtml(s.node_id)}</span>
+        <div class="row"><span>${escapeHtml(s.subtask.id)} · ${escapeHtml(s.subtask.role || s.subtask.task_type)} (${escapeHtml(s.subtask.task_type)}) &rarr; ${escapeHtml(s.node_id)} / ${escapeHtml(s.model)}</span>
         <span class="badge ${s.status}">${s.status}</span></div>
+        ${s.score_factors ? `<details class="routing-score-details"><summary>Routing score ${Number(s.score || 0).toFixed(1)}</summary><div class="catalog-tags">Model match +${Number(s.score_factors.model_match || 0).toFixed(1)} · hardware +${Number(s.score_factors.hardware || 0).toFixed(1)} · load −${Number(s.score_factors.load_penalty || 0).toFixed(1)} (${s.score_factors.active_tasks || 0} active + ${s.score_factors.queued_tasks || 0} queued) · GPU −${Number(s.score_factors.gpu_utilization_penalty || 0).toFixed(1)} · NPU −${Number(s.score_factors.npu_utilization_penalty || 0).toFixed(1)} · learned ${Number(s.score_factors.learned_bias || 0) >= 0 ? "+" : ""}${Number(s.score_factors.learned_bias || 0).toFixed(1)} · telemetry ${s.score_factors.telemetry_fresh ? `fresh (${s.score_factors.telemetry_age_ms || 0}ms)` : "stale/unavailable, ignored"}</div></details>` : ""}
         ${s.output ? `<div class="subtask-output-wrap"><button class="copy-output-btn" type="button" data-copy-output="${encodeURIComponent(s.output)}">Copy</button><div class="subtask-output">${escapeHtml(s.output)}</div></div>` : ""}
         ${s.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(s.error)}</div>` : ""}
       `
@@ -2457,8 +2728,11 @@ function applySnapshot(snap) {
   const activitySignature = JSON.stringify(taskState);
   const peerState = (snap.discovery || []).map((peer) => ({
     id: peer.id, role: peer.role, address: peer.http_addr, peer_addr: peer.peer_addr, last_seen: peer.last_seen,
+    orchestrator_id: peer.orchestrator_id,
   }));
-  const peerSignature = JSON.stringify(peerState);
+  const peerSignature = JSON.stringify({ peers: peerState, nodes: nodeState.map((node) => ({
+    id: node.id, address: node.address, healthy: node.healthy, last_seen: node.last_seen,
+  })), pairing: currentPairingStatus });
   const discoveredNodeState = (snap.discovery || [])
     .filter((peer) => peer.role === "node")
     .map((peer) => ({ id: peer.id, address: peer.peer_addr || peer.http_addr, last_seen: peer.last_seen }));
@@ -2549,11 +2823,14 @@ submitBtn?.addEventListener("click", async () => {
 loadAgentTools();
 loadAgentBackend().then(loadSessions);
 loadPairingStatus();
+refreshPersistenceStatus();
 setInterval(loadPairingStatus, 5000);
+setInterval(refreshPersistenceStatus, 30000);
 setInterval(() => {
   if (activeChatMode === "direct") void refreshDirectClusterContext();
 }, 15000);
 loadClusterModels();
 refresh();
 checkSetupReadiness();
+loadModelCatalog();
 connectEvents();

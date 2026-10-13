@@ -249,3 +249,70 @@ func TestOpenAICompatibleProviderRejectsEmptyStream(t *testing.T) {
 		t.Fatalf("expected empty completion error, got %v", err)
 	}
 }
+
+type blockingProvider struct {
+	started chan struct{}
+}
+
+func (p *blockingProvider) Name() string { return "blocking-provider" }
+func (p *blockingProvider) Complete(ctx context.Context, _ CompletionRequest, _ func(string)) (*Completion, error) {
+	close(p.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestInterruptSession(t *testing.T) {
+	provider := &blockingProvider{started: make(chan struct{})}
+	host := testToolHost()
+	backend := New(provider, host)
+	session, err := backend.CreateSession("test-interrupt", agent.SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events := make(chan agent.StreamEvent, 16)
+	errCh := make(chan error, 1)
+	go func() {
+		_, sendErr := backend.SendMessage(context.Background(), session.ID, "Hello", events)
+		errCh <- sendErr
+	}()
+
+	<-provider.started
+
+	ok := backend.InterruptSession(session.ID)
+	if !ok {
+		t.Fatal("expected InterruptSession to return true")
+	}
+
+	err = <-errCh
+	if err == nil {
+		t.Fatal("expected SendMessage to return error on interrupt")
+	}
+
+	stored, ok := backend.GetSession(session.ID)
+	if !ok {
+		t.Fatal("session not found")
+	}
+	if stored.Active {
+		t.Fatal("expected session to not be active after interrupt")
+	}
+	if len(stored.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(stored.Messages))
+	}
+	lastMsg := stored.Messages[len(stored.Messages)-1]
+	if lastMsg.Role != agent.RoleAssistant || !strings.Contains(lastMsg.Content, "interrupted") {
+		t.Fatalf("expected last message to indicate interruption, got: %#v", lastMsg)
+	}
+
+	foundInterruptedEvent := false
+	close(events)
+	for ev := range events {
+		if ev.Type == agent.EventInterrupted {
+			foundInterruptedEvent = true
+			break
+		}
+	}
+	if !foundInterruptedEvent {
+		t.Fatal("expected EventInterrupted stream event")
+	}
+}

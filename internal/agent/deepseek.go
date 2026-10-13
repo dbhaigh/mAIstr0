@@ -59,6 +59,8 @@ func (d *DeepSeek) ListSessions() []*Session {
 
 func (d *DeepSeek) DeleteSession(id string) bool { return d.harness.DeleteSession(id) }
 
+func (d *DeepSeek) InterruptSession(id string) bool { return d.harness.InterruptSession(id) }
+
 func (d *DeepSeek) RestoreSession(session *Session) error {
 	if session == nil || session.ID == "" {
 		return errors.New("agent session and ID are required")

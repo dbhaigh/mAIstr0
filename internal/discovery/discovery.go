@@ -21,13 +21,14 @@ const peerTTL = 15 * time.Second
 
 // Announcement is broadcast periodically by every running instance.
 type Announcement struct {
-	Role     string  `json:"role"` // "orchestrator" or "node"
-	ID       string  `json:"id"`
-	HTTPAddr string  `json:"http_addr"`       // plaintext pairing bootstrap, loopback clients only after pairing
-	PeerAddr string  `json:"peer_addr"`       // mutual-TLS address used for cluster traffic
-	Score    float64 `json:"score,omitempty"` // capability score, used for orchestrator election
-	Members  int     `json:"members,omitempty"`
-	Elected  bool    `json:"elected,omitempty"`
+	Role           string  `json:"role"` // "orchestrator" or "node"
+	ID             string  `json:"id"`
+	HTTPAddr       string  `json:"http_addr"`       // plaintext pairing bootstrap, loopback clients only after pairing
+	PeerAddr       string  `json:"peer_addr"`       // mutual-TLS address used for cluster traffic
+	Score          float64 `json:"score,omitempty"` // capability score, used for orchestrator election
+	Members        int     `json:"members,omitempty"`
+	Elected        bool    `json:"elected,omitempty"`
+	OrchestratorID string  `json:"orchestrator_id,omitempty"`
 }
 
 // Peer is a discovered instance, with the time we last heard from it.
