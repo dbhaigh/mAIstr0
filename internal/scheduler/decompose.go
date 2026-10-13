@@ -11,16 +11,31 @@ import (
 
 // Subtask is one unit of work produced by decomposing a submitted task.
 type Subtask struct {
-	ID             string   `json:"id"`
-	Description    string   `json:"description"`
-	Role           string   `json:"role,omitempty"`
-	TaskType       string   `json:"task_type"` // e.g. code, summarize, translate, math, creative, general
-	Tags           []string `json:"tags"`
-	DependsOn      []string `json:"depends_on,omitempty"`
-	ExpectedOutput string   `json:"expected_output,omitempty"`
-	OutputFormat   string   `json:"output_format,omitempty"`
-	RequiredFields []string `json:"required_fields,omitempty"`
-	MaxRetries     int      `json:"max_retries,omitempty"`
+	ID                    string   `json:"id"`
+	Description           string   `json:"description"`
+	Role                  string   `json:"role,omitempty"`
+	TaskType              string   `json:"task_type"` // e.g. code, summarize, translate, math, creative, general
+	Tags                  []string `json:"tags"`
+	DependsOn             []string `json:"depends_on,omitempty"`
+	ExpectedOutput        string   `json:"expected_output,omitempty"`
+	OutputFormat          string   `json:"output_format,omitempty"`
+	RequiredFields        []string `json:"required_fields,omitempty"`
+	MaxRetries            int      `json:"max_retries,omitempty"` // Output-validation retries; JSON defaults to one.
+	RequiredCapabilities  []string `json:"required_capabilities,omitempty"`
+	PreferredCapabilities []string `json:"preferred_capabilities,omitempty"`
+	MinModelSizeGB        float64  `json:"min_model_size_gb,omitempty"`
+	PreferredModel        string   `json:"preferred_model,omitempty"`
+}
+
+// Clone creates a deep copy of the Subtask.
+func (s Subtask) Clone() Subtask {
+	cloned := s
+	cloned.Tags = append([]string(nil), s.Tags...)
+	cloned.DependsOn = append([]string(nil), s.DependsOn...)
+	cloned.RequiredFields = append([]string(nil), s.RequiredFields...)
+	cloned.RequiredCapabilities = append([]string(nil), s.RequiredCapabilities...)
+	cloned.PreferredCapabilities = append([]string(nil), s.PreferredCapabilities...)
+	return cloned
 }
 
 var listItemPattern = regexp.MustCompile(`(?m)^\s*(?:[-*]|\d+[.)])\s+`)

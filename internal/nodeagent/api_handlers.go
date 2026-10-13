@@ -346,6 +346,7 @@ func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 	joined := a.isJoined()
 	orchestratorAddr := a.getOrchestratorAddr()
 	pairingRequired := false
+	autoJoinAvailable := false
 	if !joined {
 		candidates := a.orchestratorCandidates()
 		if len(candidates) > 0 {
@@ -354,6 +355,9 @@ func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 			trusted = a.identity != nil && a.identity.IsTrustedID(orchestratorID)
 		}
 		for _, candidate := range candidates {
+			if discovery.IsSameSubnetAddress(candidate.address) {
+				autoJoinAvailable = true
+			}
 			if a.identity == nil || !a.identity.IsTrustedID(candidate.id) {
 				pairingRequired = true
 				break
@@ -361,14 +365,15 @@ func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"role":              "node",
-		"node_id":           a.cfg.NodeID,
-		"node_addr":         a.cfg.AdvertiseAddr,
-		"orchestrator_addr": orchestratorAddr,
-		"orchestrator_id":   orchestratorID,
-		"trusted":           trusted,
-		"joined":            joined,
-		"pairing_required":  pairingRequired,
+		"role":                "node",
+		"node_id":             a.cfg.NodeID,
+		"node_addr":           a.cfg.AdvertiseAddr,
+		"orchestrator_addr":   orchestratorAddr,
+		"orchestrator_id":     orchestratorID,
+		"trusted":             trusted,
+		"joined":              joined,
+		"pairing_required":    pairingRequired,
+		"auto_join_available": autoJoinAvailable,
 	})
 }
 
@@ -511,30 +516,8 @@ func (a *Agent) handlePairingInvitationReject(w http.ResponseWriter, _ *http.Req
 
 func (a *Agent) handleProperties(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		a.mu.Lock()
-		disabledModels := make([]string, 0, len(a.disabledModels))
-		for model, disabled := range a.disabledModels {
-			if disabled {
-				disabledModels = append(disabledModels, model)
-			}
-		}
-		a.mu.Unlock()
-		a.orchMu.RLock()
-		orchestratorAddr := a.orchestratorAddr
-		a.orchMu.RUnlock()
-		props := nodeProperties{ID: a.cfg.NodeID, ListenAddr: a.cfg.ListenAddr, AdvertiseAddr: a.cfg.AdvertiseAddr, OrchestratorAddr: orchestratorAddr, DefaultModel: a.defaultModel, DisabledModels: disabledModels, DiscoveryEnabled: a.cfg.DiscoveryEnabled, AutoOpenBrowser: a.cfg.AutoOpenBrowser, TrayMode: a.cfg.TrayMode, MemoryPath: a.cfg.MemoryPath}
-		a.mu.Unlock()
-		engines := a.engineSnapshot()
-		if len(engines) > 0 {
-			props.EngineName = engines[0].Name()
-			switch typed := engines[0].(type) {
-			case *engine.Ollama:
-				props.EngineURL = typed.URL()
-			case *engine.VLLM:
-				props.EngineURL = typed.URL()
-			}
-		}
-		writeJSON(w, http.StatusOK, props)
+		a.refreshDetectedEngines()
+		writeJSON(w, http.StatusOK, a.propertiesSnapshot())
 		return
 	}
 	var req nodeProperties
@@ -570,12 +553,6 @@ func (a *Agent) handleProperties(w http.ResponseWriter, r *http.Request) {
 		a.disabledModels = disabled
 		a.mu.Unlock()
 	}
-	a.mu.Lock()
-	a.orchMu.RLock()
-	orchestratorAddr := a.orchestratorAddr
-	a.orchMu.RUnlock()
-	props := nodeProperties{ID: a.cfg.NodeID, ListenAddr: a.cfg.ListenAddr, AdvertiseAddr: a.cfg.AdvertiseAddr, OrchestratorAddr: orchestratorAddr, DefaultModel: a.defaultModel, DiscoveryEnabled: a.cfg.DiscoveryEnabled, AutoOpenBrowser: a.cfg.AutoOpenBrowser, TrayMode: a.cfg.TrayMode, MemoryPath: a.cfg.MemoryPath}
-	a.mu.Unlock()
 	if req.EngineName != "" && req.EngineURL != "" {
 		if configured := engine.NewConfigured(strings.ToLower(req.EngineName), req.EngineURL); configured != nil {
 			a.enginesMu.Lock()
@@ -587,20 +564,53 @@ func (a *Agent) handleProperties(w http.ResponseWriter, r *http.Request) {
 			a.modelMu.Unlock()
 		}
 	}
-	writeJSON(w, http.StatusOK, props)
+	a.refreshDetectedEngines()
+	writeJSON(w, http.StatusOK, a.propertiesSnapshot())
+}
+
+func (a *Agent) propertiesSnapshot() nodeProperties {
+	a.mu.Lock()
+	props := nodeProperties{
+		ID:               a.cfg.NodeID,
+		ListenAddr:       a.cfg.ListenAddr,
+		AdvertiseAddr:    a.cfg.AdvertiseAddr,
+		DefaultModel:     a.defaultModel,
+		DiscoveryEnabled: a.cfg.DiscoveryEnabled,
+		AutoOpenBrowser:  a.cfg.AutoOpenBrowser,
+		TrayMode:         a.cfg.TrayMode,
+		MemoryPath:       a.cfg.MemoryPath,
+	}
+	for model, disabled := range a.disabledModels {
+		if disabled {
+			props.DisabledModels = append(props.DisabledModels, model)
+		}
+	}
+	a.mu.Unlock()
+
+	sort.Strings(props.DisabledModels)
+	a.orchMu.RLock()
+	props.OrchestratorAddr = a.orchestratorAddr
+	a.orchMu.RUnlock()
+
+	if engines := a.engineSnapshot(); len(engines) > 0 {
+		props.EngineName = engines[0].Name()
+		props.EngineURL = engineURL(engines[0])
+	}
+	return props
+}
+
+func engineURL(e engine.Engine) string {
+	if provider, ok := e.(interface{ URL() string }); ok {
+		return provider.URL()
+	}
+	return ""
 }
 
 func (a *Agent) handleEngineInfo(w http.ResponseWriter, r *http.Request) {
 	engines := a.engineSnapshot()
 	result := make([]engineInfo, 0, len(engines))
 	for _, e := range engines {
-		url := ""
-		switch typed := e.(type) {
-		case *engine.Ollama:
-			url = typed.URL()
-		case *engine.VLLM:
-			url = typed.URL()
-		}
+		url := engineURL(e)
 		_, canPull := e.(engine.ModelManager)
 		result = append(result, engineInfo{Name: e.Name(), URL: url, CanPull: canPull})
 	}
@@ -664,15 +674,7 @@ func (a *Agent) handleModelsAllGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {
-	if !a.enginesConfigured {
-		engines := engine.DetectAll()
-		if a.hardwareSnapshot().HasNPU {
-			engines = prioritizeNPUEngines(engines)
-		}
-		a.enginesMu.Lock()
-		a.engines = engines
-		a.enginesMu.Unlock()
-	}
+	a.rescanDetectedEngines()
 	a.modelMu.Lock()
 	a.reportedModels = nil
 	a.reportedAt = time.Time{}
@@ -747,7 +749,11 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task := a.tasks.Create(req.Description, assignments)
+	task, err := a.tasks.CreateChecked(req.Description, assignments)
+	if err != nil {
+		http.Error(w, "could not persist task: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	for _, asg := range assignments {
 		go a.dispatchToPeer(task.ID, asg)
 	}
@@ -793,10 +799,13 @@ func (a *Agent) handleAPIDiscoveryPairingInvite(w http.ResponseWriter, r *http.R
 	a.proxy(w, r, orchestratorAddr, path)
 }
 
-// handleAPITasksPost accepts a submission from this node's GUI. The most
-// capable live node is the coordinator for the cluster, so all submissions are
-// routed there automatically instead of whichever node happens to be first.
+// handleAPITasksPost sends joined-cluster submissions to the persistent
+// orchestrator task manager. Standalone nodes fall back to their elected peer.
 func (a *Agent) handleAPITasksPost(w http.ResponseWriter, r *http.Request) {
+	if addr := a.getOrchestratorAddr(); addr != "" {
+		a.proxy(w, r, addr, "/api/tasks")
+		return
+	}
 	if a.isMostCapable() {
 		a.handleSubmit(w, r)
 		return
@@ -805,6 +814,10 @@ func (a *Agent) handleAPITasksPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleAPITasksList(w http.ResponseWriter, r *http.Request) {
+	if addr := a.getOrchestratorAddr(); addr != "" {
+		a.proxy(w, r, addr, "/api/tasks")
+		return
+	}
 	if a.isMostCapable() {
 		a.handleTasksList(w, r)
 		return
@@ -813,6 +826,10 @@ func (a *Agent) handleAPITasksList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleAPITaskGet(w http.ResponseWriter, r *http.Request) {
+	if addr := a.getOrchestratorAddr(); addr != "" {
+		a.proxy(w, r, addr, "/api/tasks/"+url.PathEscape(r.PathValue("id")))
+		return
+	}
 	if a.isMostCapable() {
 		a.handleTaskGet(w, r)
 		return
@@ -821,7 +838,41 @@ func (a *Agent) handleAPITaskGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleAPITaskCancel(w http.ResponseWriter, r *http.Request) {
-	a.proxy(w, r, a.mostCapableNode().Address, "/api/tasks/"+r.PathValue("id")+"/cancel")
+	taskPath := "/api/tasks/" + url.PathEscape(r.PathValue("id")) + "/cancel"
+	if addr := a.getOrchestratorAddr(); addr != "" {
+		a.proxy(w, r, addr, taskPath)
+		return
+	}
+	if a.isMostCapable() {
+		a.handleTaskCancel(w, r)
+		return
+	}
+	a.proxy(w, r, a.mostCapableNode().Address, "/tasks/"+url.PathEscape(r.PathValue("id"))+"/cancel")
+}
+
+func (a *Agent) handleAPITaskApprove(w http.ResponseWriter, r *http.Request) {
+	a.proxyTaskAction(w, r, "/approve")
+}
+
+func (a *Agent) handleAPITaskResume(w http.ResponseWriter, r *http.Request) {
+	a.proxyTaskAction(w, r, "/resume")
+}
+
+func (a *Agent) handleAPITaskCheckpoints(w http.ResponseWriter, r *http.Request) {
+	if addr := a.getOrchestratorAddr(); addr != "" {
+		a.proxy(w, r, addr, "/api/tasks/"+url.PathEscape(r.PathValue("id"))+"/checkpoints")
+		return
+	}
+	http.Error(w, "task checkpoints are unavailable without an orchestrator", http.StatusServiceUnavailable)
+}
+
+func (a *Agent) proxyTaskAction(w http.ResponseWriter, r *http.Request, action string) {
+	taskPath := "/api/tasks/" + url.PathEscape(r.PathValue("id")) + action
+	if addr := a.getOrchestratorAddr(); addr != "" {
+		a.proxy(w, r, addr, taskPath)
+		return
+	}
+	http.Error(w, "task action is unavailable without an orchestrator", http.StatusServiceUnavailable)
 }
 
 func (a *Agent) handleAPIMemorySync(w http.ResponseWriter, r *http.Request) {

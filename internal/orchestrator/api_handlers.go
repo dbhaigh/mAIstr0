@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -127,23 +128,44 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if !s.identity.ConsumePairingPIN(request.PIN) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	remoteIP := net.ParseIP(host)
+	sameSubnet := discovery.IsSameSubnet(remoteIP)
+
+	pinValid := s.identity.ConsumePairingPIN(request.PIN)
+	if !sameSubnet && !pinValid {
 		log.Printf("orchestrator: rejected pairing request from %s: PIN invalid, expired, or already used", r.RemoteAddr)
 		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
 		return
 	}
-	if err := s.identity.TrustPeerDetails(request.ID, request.CertificatePEM, request.Role, request.PeerAddr); err != nil {
+	peerAddr := request.PeerAddr
+	if peerAddr == "" && s.discovery != nil {
+		for _, peer := range s.discovery.Snapshot() {
+			if peer.ID == request.ID && peer.PeerAddr != "" {
+				peerAddr = peer.PeerAddr
+				break
+			}
+		}
+	}
+	if err := s.identity.TrustPeerDetails(request.ID, request.CertificatePEM, request.Role, peerAddr); err != nil {
 		log.Printf("orchestrator: failed to save paired peer from %s: %v", r.RemoteAddr, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	nextPIN, err := s.identity.NewPairingPIN()
-	if err != nil {
-		http.Error(w, "peer paired but could not create the next pairing PIN", http.StatusInternalServerError)
-		return
+	if pinValid {
+		nextPIN, err := s.identity.NewPairingPIN()
+		if err != nil {
+			http.Error(w, "peer paired but could not create the next pairing PIN", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", nextPIN)
+		log.Printf("orchestrator: successfully paired peer role=%s from %s using PIN", request.Role, r.RemoteAddr)
+	} else {
+		log.Printf("orchestrator: automatically paired node %s from same subnet (%s)", request.ID, r.RemoteAddr)
 	}
-	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", nextPIN)
-	log.Printf("orchestrator: successfully paired peer role=%s from %s", request.Role, r.RemoteAddr)
 	writeJSON(w, http.StatusOK, pairingJoinResponse{
 		ID: s.selfID, Role: "orchestrator", CertificatePEM: s.identity.CertificatePEM(),
 		Peers: s.identity.TrustedPeers(),
@@ -522,6 +544,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.recoverTaskHistory()
 	task, err := s.createTask(r.Context(), req)
 	if err != nil {
 		var createErr *taskCreateError
@@ -536,6 +559,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	s.recoverTaskHistory()
 	writeJSON(w, http.StatusOK, s.tasks.All())
 }
 
@@ -590,6 +614,55 @@ func (s *Server) handleApproveTask(w http.ResponseWriter, r *http.Request) {
 	}
 	task, _ := s.tasks.Get(id)
 	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) handleListResumableTasks(w http.ResponseWriter, r *http.Request) {
+	resumable := s.tasks.ResumableTasks()
+	if resumable == nil {
+		resumable = []*taskmgr.Task{}
+	}
+	writeJSON(w, http.StatusOK, resumable)
+}
+
+func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task, ok := s.tasks.Get(id)
+	if !ok {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	if !task.Resumable {
+		http.Error(w, "task is not resumable", http.StatusConflict)
+		return
+	}
+	resumed, err := s.tasks.ResumeTaskChecked(id)
+	if err != nil {
+		http.Error(w, "could not resume task: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, subtask := range resumed.Subtasks {
+		if subtask.Status == taskmgr.StatusPending {
+			go s.dispatch(resumed.ID, subtask.Assignment)
+		}
+	}
+	writeJSON(w, http.StatusOK, resumed)
+}
+
+func (s *Server) handleTaskCheckpoints(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.tasks.Get(id); !ok {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	cps, err := s.tasks.GetCheckpoints(id)
+	if err != nil {
+		http.Error(w, "could not load checkpoints: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if cps == nil {
+		cps = []taskmgr.Checkpoint{}
+	}
+	writeJSON(w, http.StatusOK, cps)
 }
 
 func (s *Server) handleAgentSessionsList(w http.ResponseWriter, r *http.Request) {

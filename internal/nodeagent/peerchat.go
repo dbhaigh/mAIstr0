@@ -557,33 +557,8 @@ func (a *Agent) syncMemoryToOrchestrator() {
 		if addr == "" {
 			return
 		}
-		snapshot := a.mem.Snapshot()
-		body, err := json.Marshal(map[string]any{"node_id": a.cfg.NodeID, "snapshot": snapshot})
-		if err != nil {
-			return
-		}
-		resp, err := a.peerClient.Post(addr+"/api/memory/sync", "application/json", bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		resp.Body.Close()
-		if resp.StatusCode >= 400 {
-			log.Printf("nodeagent: memory sync rejected by orchestrator: %s", resp.Status)
-			return
-		}
-		resp, err = a.peerClient.Get(addr + "/api/memory/sync")
-		if err != nil {
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode >= 300 {
-			return
-		}
-		var merged memory.Snapshot
-		if json.NewDecoder(resp.Body).Decode(&merged) == nil {
-			if err := a.mem.MergeSnapshot(merged); err != nil {
-				log.Printf("nodeagent: memory merge failed: %v", err)
-			}
+		if err := a.syncOrchestratorMemory(addr); err != nil {
+			log.Printf("nodeagent: memory sync with orchestrator %s failed: %v", addr, err)
 		}
 	}
 	sync()
@@ -592,4 +567,64 @@ func (a *Agent) syncMemoryToOrchestrator() {
 	for range ticker.C {
 		sync()
 	}
+}
+
+func (a *Agent) syncOrchestratorMemory(addr string) error {
+	snapshot := a.mem.Snapshot()
+	body, err := json.Marshal(map[string]any{"node_id": a.cfg.NodeID, "snapshot": snapshot})
+	if err != nil {
+		return fmt.Errorf("encode local snapshot: %w", err)
+	}
+	if int64(len(body)) > maxMemorySyncBodyBytes {
+		return fmt.Errorf("local snapshot exceeds the %d-byte sync limit", maxMemorySyncBodyBytes)
+	}
+	postStarted := time.Now()
+	log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_start node_id=%s peer=%s body_bytes=%d records=%d",
+		a.cfg.NodeID, addr, len(body), memorySyncRecordCount(snapshot))
+	resp, err := a.peerClient.Post(strings.TrimRight(addr, "/")+"/api/memory/sync", "application/json", bytes.NewReader(body))
+	if err != nil {
+		log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_failed node_id=%s peer=%s body_bytes=%d elapsed=%s error=%v",
+			a.cfg.NodeID, addr, len(body), time.Since(postStarted), err)
+		return fmt.Errorf("send local snapshot: %w", err)
+	}
+	status := resp.StatusCode
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_failed node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s",
+			a.cfg.NodeID, addr, status, len(body), time.Since(postStarted))
+		return fmt.Errorf("orchestrator returned %s: %s", resp.Status, strings.TrimSpace(string(message)))
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_complete node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s",
+		a.cfg.NodeID, addr, status, len(body), time.Since(postStarted))
+
+	fetchStarted := time.Now()
+	log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_start node_id=%s peer=%s body_bytes=unknown",
+		a.cfg.NodeID, addr)
+	resp, err = a.peerClient.Get(strings.TrimRight(addr, "/") + "/api/memory/sync")
+	if err != nil {
+		log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_failed node_id=%s peer=%s body_bytes=0 elapsed=%s stage=request error=%v",
+			a.cfg.NodeID, addr, time.Since(fetchStarted), err)
+		return fmt.Errorf("fetch merged snapshot: %w", err)
+	}
+	status = resp.StatusCode
+	merged, bodyBytes, err := decodeMemorySyncResponse(resp)
+	if err != nil {
+		log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_failed node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
+			a.cfg.NodeID, addr, status, bodyBytes, time.Since(fetchStarted), err)
+		return fmt.Errorf("read merged snapshot: %w", err)
+	}
+	log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_complete node_id=%s peer=%s status=%d body_bytes=%d records=%d elapsed=%s",
+		a.cfg.NodeID, addr, status, bodyBytes, memorySyncRecordCount(merged), time.Since(fetchStarted))
+	mergeStarted := time.Now()
+	if err := a.mem.MergeSnapshot(merged); err != nil {
+		log.Printf("nodeagent: memory sync direction=orchestrator->node event=merge_failed node_id=%s peer=%s body_bytes=%d elapsed=%s error=%v",
+			a.cfg.NodeID, addr, bodyBytes, time.Since(mergeStarted), err)
+		return fmt.Errorf("merge orchestrator snapshot: %w", err)
+	}
+	log.Printf("nodeagent: memory sync direction=orchestrator->node event=merge_complete node_id=%s peer=%s body_bytes=%d records=%d elapsed=%s",
+		a.cfg.NodeID, addr, bodyBytes, memorySyncRecordCount(merged), time.Since(mergeStarted))
+	return nil
 }

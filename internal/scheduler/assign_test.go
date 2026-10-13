@@ -87,6 +87,51 @@ func TestAssignPrefersLowerLiveGPUUtilization(t *testing.T) {
 	}
 }
 
+func TestAssignPrefersModelsAdvertisedByGPUNode(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "cpu", Address: "http://cpu", Healthy: true,
+			Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+		{
+			ID: "gpu", Address: "http://gpu", Healthy: true,
+			Hardware: hardware.Info{HasGPU: true},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+	}
+
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 1 || assignments[0].NodeID != "gpu" {
+		t.Fatalf("assigned to %+v, want the GPU node", assignments)
+	}
+	if got := assignments[0].Factors.GPUCompatibilityScore; got != DefaultScoringConfig().GPUCompatibilityBonus {
+		t.Fatalf("GPU compatibility score = %v, want %v", got, DefaultScoringConfig().GPUCompatibilityBonus)
+	}
+}
+
+func TestAssignPrefersLMStudioAndSmallerModelOnGPU(t *testing.T) {
+	nodes := []cluster.NodeStatus{{
+		ID: "gpu", Address: "http://gpu", Healthy: true,
+		Hardware: hardware.Info{HasGPU: true},
+		Models: []engine.Model{
+			{Name: "ollama-general", Engine: "ollama", Tags: []string{"general"}},
+			{Name: "lmstudio-large", Engine: "lmstudio", Tags: []string{"general"}},
+			{Name: "lmstudio-small", Engine: "lmstudio", Tags: []string{"general", "small"}},
+		},
+	}}
+
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 1 || assignments[0].Model != "lmstudio-small" {
+		t.Fatalf("assigned to %+v, want the small LM Studio model on the GPU node", assignments)
+	}
+}
+
 func TestAssignPrefersLowerLiveNPUUtilization(t *testing.T) {
 	telemetryAt := time.Now()
 	nodes := []cluster.NodeStatus{

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // AgentProfile describes the bounded role a worker performs for a subtask.
@@ -10,6 +11,26 @@ type AgentProfile struct {
 	Role         string
 	TaskType     string
 	Instructions string
+	Tools        []string
+}
+
+var (
+	customProfilesMu sync.RWMutex
+	customProfiles   = make(map[string]AgentProfile)
+)
+
+// RegisterCustomAgentProfile dynamically registers a role profile for specialized workers.
+func RegisterCustomAgentProfile(role string, profile AgentProfile) {
+	customProfilesMu.Lock()
+	defer customProfilesMu.Unlock()
+	customProfiles[strings.ToLower(strings.TrimSpace(role))] = profile
+}
+
+// UnregisterCustomAgentProfile removes a registered custom profile.
+func UnregisterCustomAgentProfile(role string) {
+	customProfilesMu.Lock()
+	defer customProfilesMu.Unlock()
+	delete(customProfiles, strings.ToLower(strings.TrimSpace(role)))
 }
 
 var agentProfiles = map[string]AgentProfile{
@@ -49,7 +70,14 @@ var agentProfiles = map[string]AgentProfile{
 
 // AgentProfileFor returns the registered role profile.
 func AgentProfileFor(role string) (AgentProfile, bool) {
-	profile, ok := agentProfiles[strings.ToLower(strings.TrimSpace(role))]
+	key := strings.ToLower(strings.TrimSpace(role))
+	customProfilesMu.RLock()
+	custom, ok := customProfiles[key]
+	customProfilesMu.RUnlock()
+	if ok {
+		return custom, true
+	}
+	profile, ok := agentProfiles[key]
 	return profile, ok
 }
 
@@ -103,6 +131,9 @@ func validateSubtask(subtask Subtask) (Subtask, error) {
 	}
 	if subtask.MaxRetries < 0 || subtask.MaxRetries > 2 {
 		return Subtask{}, fmt.Errorf("scheduler: subtask %s max_retries must be between 0 and 2", subtask.ID)
+	}
+	if subtask.OutputFormat == "json" && subtask.MaxRetries == 0 {
+		subtask.MaxRetries = 1
 	}
 	for i, field := range subtask.RequiredFields {
 		subtask.RequiredFields[i] = strings.TrimSpace(field)

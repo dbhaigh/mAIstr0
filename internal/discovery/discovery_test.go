@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"net"
 	"testing"
 	"time"
 )
@@ -49,5 +50,60 @@ func TestListenerWaitReady(t *testing.T) {
 	defer listener.Close()
 	if err := listener.WaitReady(3 * time.Second); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIsSameSubnet(t *testing.T) {
+	if !IsSameSubnet(net.ParseIP("127.0.0.1")) {
+		t.Fatal("expected 127.0.0.1 to be on same subnet (loopback)")
+	}
+	if !IsSameSubnet(net.ParseIP("::1")) {
+		t.Fatal("expected ::1 to be on same subnet (loopback)")
+	}
+	if IsSameSubnet(nil) {
+		t.Fatal("expected nil IP to return false")
+	}
+
+	// Mock interfaces to test specific subnet matching
+	orig := interfaceAddrs
+	defer func() { interfaceAddrs = orig }()
+
+	_, testSubnet, err := net.ParseCIDR("192.168.10.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	interfaceAddrs = func() ([]net.Addr, error) {
+		return []net.Addr{testSubnet}, nil
+	}
+
+	if !IsSameSubnet(net.ParseIP("192.168.10.50")) {
+		t.Fatal("expected 192.168.10.50 to be in 192.168.10.0/24 subnet")
+	}
+	if IsSameSubnet(net.ParseIP("192.168.11.50")) {
+		t.Fatal("expected 192.168.11.50 not to be in 192.168.10.0/24 subnet")
+	}
+	if IsSameSubnet(net.ParseIP("10.0.0.1")) {
+		t.Fatal("expected 10.0.0.1 not to be in 192.168.10.0/24 subnet")
+	}
+}
+
+func TestIsSameSubnetAddress(t *testing.T) {
+	if !IsSameSubnetAddress("localhost") {
+		t.Fatal("expected localhost to be on same subnet")
+	}
+	if !IsSameSubnetAddress("localhost:7450") {
+		t.Fatal("expected localhost:7450 to be on same subnet")
+	}
+	if !IsSameSubnetAddress("http://localhost:7450") {
+		t.Fatal("expected http://localhost:7450 to be on same subnet")
+	}
+	if !IsSameSubnetAddress("https://127.0.0.1:7450") {
+		t.Fatal("expected https://127.0.0.1:7450 to be on same subnet")
+	}
+	if IsSameSubnetAddress("") {
+		t.Fatal("expected empty string to return false")
+	}
+	if IsSameSubnetAddress("not-an-ip-address-12345.invalid") {
+		t.Fatal("expected unresolvable invalid address to return false")
 	}
 }

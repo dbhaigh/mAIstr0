@@ -4,6 +4,7 @@ package cluster
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ type NodeStatus struct {
 	Address       string                       `json:"address"` // base URL the orchestrator can reach the node at
 	Hardware      hardware.Info                `json:"hardware"`
 	Models        []engine.Model               `json:"models"`
+	Capabilities  []string                     `json:"capabilities,omitempty"`
 	GPUHistory    []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
 	NPUHistory    []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
 	SystemHistory []hardware.SystemUsageSample `json:"system_history,omitempty"`
@@ -32,6 +34,74 @@ type NodeStatus struct {
 	Healthy       bool                         `json:"healthy"`
 	Leader        bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
 	VersionError  string                       `json:"version_error,omitempty"`
+}
+
+// EffectiveCapabilities returns the node's advertised capabilities, deriving them
+// from models and hardware if not explicitly declared.
+func (n NodeStatus) EffectiveCapabilities() []string {
+	seen := make(map[string]bool)
+	var caps []string
+	add := func(c string) {
+		c = strings.ToLower(strings.TrimSpace(c))
+		if c != "" && !seen[c] {
+			seen[c] = true
+			caps = append(caps, c)
+		}
+	}
+	for _, c := range n.Capabilities {
+		add(c)
+	}
+	for _, m := range n.Models {
+		for _, t := range m.Tags {
+			add(t)
+			switch t {
+			case "code":
+				add("coder")
+			case "math":
+				add("math")
+				add("analyst")
+			case "creative":
+				add("creative")
+				add("writer")
+			case "summarize":
+				add("summarizer")
+			case "translate":
+				add("translator")
+			case "reasoning":
+				add("high-quality")
+			case "vision":
+				add("vision")
+			case "fast":
+				add("fast")
+			}
+		}
+		if m.SizeGB >= 7.0 || strings.Contains(strings.ToLower(m.Name), "r1") {
+			add("high-quality")
+		}
+		lower := strings.ToLower(m.Name)
+		if strings.Contains(lower, "coder") || strings.Contains(lower, "code") {
+			add("coder")
+		}
+		if strings.Contains(lower, "llama3") || strings.Contains(lower, "qwen2.5") || strings.Contains(lower, "phi4") || strings.Contains(lower, "mistral") {
+			add("long-context")
+		}
+	}
+	if n.Hardware.HasGPU {
+		add("gpu")
+		add("fast")
+	}
+	if n.Hardware.HasNPU {
+		add("npu")
+		add("fast")
+	}
+	if n.Hardware.TotalRAMMB >= 16*1024 {
+		add("long-context")
+	}
+	if len(caps) == 0 {
+		add("general")
+	}
+	sort.Strings(caps)
+	return caps
 }
 
 // Registry is a thread-safe store of known nodes.

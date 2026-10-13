@@ -16,19 +16,24 @@ import (
 // process starts, so downloading belongs in the server's model manager rather
 // than being treated as an Ollama pull operation.
 type VLLM struct {
-	baseURL string
-	client  *http.Client
+	baseURL     string
+	client      *http.Client
+	probeClient *http.Client
 }
 
 func NewVLLM(baseURL string) *VLLM {
-	return &VLLM{baseURL: strings.TrimRight(baseURL, "/"), client: &http.Client{Timeout: 10 * time.Minute}}
+	return &VLLM{
+		baseURL:     strings.TrimRight(baseURL, "/"),
+		client:      &http.Client{Timeout: 10 * time.Minute},
+		probeClient: &http.Client{Timeout: 5 * time.Second},
+	}
 }
 
 func (v *VLLM) Name() string { return "vllm" }
 func (v *VLLM) URL() string  { return v.baseURL }
 
 func (v *VLLM) Available() bool {
-	resp, err := v.client.Get(v.baseURL + "/v1/models")
+	resp, err := v.probeClient.Get(v.baseURL + "/v1/models")
 	if err != nil {
 		return false
 	}

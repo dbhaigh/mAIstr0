@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
@@ -57,6 +58,108 @@ func TestRecentReturnsNewestBoundedSnapshot(t *testing.T) {
 	}
 	if got := manager.Recent(0); len(got) != 0 {
 		t.Fatalf("Recent(0) = %#v, want empty result (first task %q)", got, first.ID)
+	}
+}
+
+func TestTaskHistorySyncMergesMissingAndReplacesReplicaState(t *testing.T) {
+	leader, err := OpenManager(filepath.Join(t.TempDir(), "leader.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leader.Close()
+	followerPath := filepath.Join(t.TempDir(), "follower.db")
+	follower, err := OpenManager(followerPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := leader.CreateChecked("Replicated task", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work", Description: "Complete work"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader.CompleteSubtask(created.ID, "work", "saved output", nil)
+	snapshot := leader.All()
+
+	if err := follower.MergeMissing(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	replica, ok := follower.Get(created.ID)
+	if !ok || replica.Subtasks[0].Output != "saved output" {
+		t.Fatalf("task history was not imported: %#v", replica)
+	}
+
+	replica.Description = "stale local state"
+	if err := follower.ReplaceFromSync([]*Task{replica}); err != nil {
+		t.Fatal(err)
+	}
+	replica.Description = "authoritative state"
+	replica.UpdatedAt = replica.UpdatedAt.Add(-time.Hour)
+	if err := follower.ReplaceFromSync([]*Task{replica}); err != nil {
+		t.Fatal(err)
+	}
+	if err := follower.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenManager(followerPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	stored, _ := restarted.Get(created.ID)
+	if stored.Description != "authoritative state" {
+		t.Fatalf("authoritative task replica was not durable: %q", stored.Description)
+	}
+}
+
+func TestReplicaSyncRecoversProgressWithoutImportingRestartArtifacts(t *testing.T) {
+	leader := NewManager()
+	created := leader.Create("Recover peer progress", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work"},
+	}})
+	running, _ := leader.Get(created.ID)
+
+	activeReplica := NewManager()
+	if err := activeReplica.MergeMissing([]*Task{running}); err != nil {
+		t.Fatal(err)
+	}
+	restartArtifact := cloneTask(running)
+	restartArtifact.Status = StatusFailed
+	restartArtifact.Error = interruptedTaskError
+	restartArtifact.UpdatedAt = restartArtifact.UpdatedAt.Add(time.Hour)
+	restartArtifact.Subtasks[0].Status = StatusFailed
+	if err := activeReplica.MergeFromReplica([]*Task{restartArtifact}); err != nil {
+		t.Fatal(err)
+	}
+	stillRunning, _ := activeReplica.Get(created.ID)
+	if stillRunning.Status != StatusRunning {
+		t.Fatalf("replica restart artifact overwrote active coordinator state: %q", stillRunning.Status)
+	}
+
+	leader.CompleteSubtask(created.ID, "work", "peer completed output", nil)
+	if err := activeReplica.MergeFromReplica(leader.All()); err != nil {
+		t.Fatal(err)
+	}
+	recovered, _ := activeReplica.Get(created.ID)
+	if recovered.Status != StatusCompleted || !strings.Contains(recovered.Result, "peer completed output") {
+		t.Fatalf("completed peer progress did not recover interrupted state: %#v", recovered)
+	}
+
+	orphanReplica := NewManager()
+	if err := orphanReplica.MergeFromReplica([]*Task{running}); err != nil {
+		t.Fatal(err)
+	}
+	orphaned, _ := orphanReplica.Get(created.ID)
+	if orphaned.Status != StatusFailed || orphaned.Error != coordinatorChangedTaskError || !orphaned.Resumable {
+		t.Fatalf("orphaned running task was not made resumable: %#v", orphaned)
+	}
+	if err := orphanReplica.MergeFromReplica(leader.All()); err != nil {
+		t.Fatal(err)
+	}
+	recovered, _ = orphanReplica.Get(created.ID)
+	if recovered.Status != StatusCompleted || !strings.Contains(recovered.Result, "peer completed output") {
+		t.Fatalf("peer completion did not replace coordinator-change recovery: %#v", recovered)
 	}
 }
 

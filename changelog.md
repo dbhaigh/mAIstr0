@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.4 - 2026-10-13
 
 ### Added
 
@@ -8,11 +8,15 @@
 - Process-level integration coverage for secure pairing, authenticated requests,
   streaming inference, and restoring conversations after restart.
 - A system-status API and dashboard warning when persistent memory is unavailable.
+- LM Studio support and automatic discovery/rescanning of local model engines.
 - LAN orchestrator election based on node capability, with stable-ID tie
   breaking and a local worker on the elected orchestrator.
+- Synchronization of node memory and task history across joined and peer clusters.
 - Shared `execute_workflow` support for Pi and DeepSeek, including dependency
   scheduling, output contracts, retries, review gates, and persistent human
   approval.
+- Task checkpointing, dependency-aware execution, and capability-based model
+  scheduling.
 - Windows NPU utilization reporting using DXCore adapter identification and
   GPU Engine counters when available.
 
@@ -27,6 +31,13 @@
   heuristic decomposition as the default.
 - Restore in-progress work after an orchestrator restart as failed with an
   interruption reason instead of presenting it as still running.
+
+### Validation
+
+- `go test ./...`
+- `go vet ./...`
+- `node --test web/app_test.js`
+- Windows and Linux release builds
 
 ## 0.0.3 - 2026-10-10
 

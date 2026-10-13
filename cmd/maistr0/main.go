@@ -99,6 +99,7 @@ func main() {
 	var dashboardURL, effectiveTrayMode string
 	var autoOpen bool
 	var closeOrchestrator func()
+	var closeNode func()
 
 	switch *role {
 	case "node":
@@ -109,7 +110,15 @@ func main() {
 		if *memoryPath != "" {
 			cfg.MemoryPath = *memoryPath
 		}
-		agent := nodeagent.New(cfg)
+		agent, err := nodeagent.NewWithPersistentTasks(cfg)
+		if err != nil {
+			log.Fatalf("failed to open node task history: %v", err)
+		}
+		closeNode = func() {
+			if err := agent.Close(); err != nil {
+				log.Printf("node shutdown: %v", err)
+			}
+		}
 		if cfg.DiscoveryEnabled {
 			agent.SetDiscovery(discovery.Listen(agent.ID()))
 		}
@@ -148,7 +157,15 @@ func main() {
 		if err := srv.SetLocalNodeDashboard(localURL(nodeCfg.ListenAddr)); err != nil {
 			log.Fatalf("failed to configure local worker dashboard: %v", err)
 		}
-		agent := nodeagent.New(nodeCfg)
+		agent, err := nodeagent.NewWithPersistentTasks(nodeCfg)
+		if err != nil {
+			log.Fatalf("failed to open node task history: %v", err)
+		}
+		closeNode = func() {
+			if err := agent.Close(); err != nil {
+				log.Printf("node shutdown: %v", err)
+			}
+		}
 		if err := srv.InitializeIdentity(); err != nil {
 			log.Fatalf("failed to initialize orchestrator identity: %v", err)
 		}
@@ -213,6 +230,9 @@ func main() {
 		LogFilePath:  logFilePath,
 		LogDirectory: filepath.Dir(logFilePath),
 		OnQuit: func() {
+			if closeNode != nil {
+				closeNode()
+			}
 			if closeOrchestrator != nil {
 				closeOrchestrator()
 			}

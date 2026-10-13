@@ -132,6 +132,12 @@ The dashboard provides three views:
 - **Memory & Learning** for cluster experience, recommendations, and learned
   facts.
 
+Joined nodes exchange their local experiences, facts, dialogues, and routing
+history with the orchestrator, then merge the cluster snapshot back into their
+own stores. Standalone peer clusters use the elected node to relay the same
+memory snapshots between members. The scheduler uses successful and failed
+node/model/task outcomes to improve future assignments.
+
 The Cluster & Workload **Setup** tab checks each node's engine and model
 readiness, refreshes an empty model registry, and links to node settings for
 engine configuration and default-model selection.
@@ -148,17 +154,20 @@ telemetry was fresh enough to influence the assignment; telemetry older than
 workflow subtasks waiting on dependencies, with node-reported utilization
 penalties applied only when the telemetry sample timestamp is current.
 
-Use **Refresh all model registries** in the Nodes section to refresh model
-lists across the cluster, or refresh an individual node. Registries are also
-refreshed automatically by nodes. To edit a node's properties, right-click its
-card in the Nodes section. The properties dialog
+Nodes scan for local LLM servers at startup and refresh their model lists
+automatically. Use **Rescan engines & models** on an online node card to detect
+servers started or installed later, or **Rescan all nodes** to scan every online
+node. Configured engines are retained alongside locally discovered engines.
+To edit a node's properties, right-click its card in the Nodes section. The properties dialog
 can change its model engine and URL, default and disabled models, advertised
 and orchestrator addresses, discovery, tray and browser behavior, and memory
 path. Node identity and listen address are shown as read-only settings.
 
 ## Model engines
 
-Nodes detect local Ollama and FastFlowLM services by default. Configure
+Nodes detect local Ollama, LM Studio, and FastFlowLM services by default. LM
+Studio is discovered at `http://127.0.0.1:1234` and can also be configured at
+another OpenAI-compatible server URL. Configure
 additional or remote engines in a node configuration file:
 
 ```json
@@ -168,12 +177,16 @@ additional or remote engines in a node configuration file:
   "pairing_pin": "<six-digit-pin>",
   "engines": [
     { "name": "ollama", "url": "http://127.0.0.1:11434" },
+    { "name": "lmstudio", "url": "http://127.0.0.1:1234" },
     { "name": "vllm", "url": "http://127.0.0.1:8000" }
   ]
 }
 ```
 
-Ollama and vLLM/FastFlowLM support token streaming for generation. Other
+LM Studio, vLLM, and FastFlowLM use the OpenAI-compatible chat-completions API.
+The scheduler adds a GPU preference to models advertised by GPU-equipped
+nodes; this is a routing preference and does not guarantee that the engine
+will use the GPU. Ollama and OpenAI-compatible engines support token streaming. Other
 engines can still serve requests, but their streamed responses may arrive as
 a single completed chunk. Temperature and maximum-token settings are passed
 to engines that support those options.

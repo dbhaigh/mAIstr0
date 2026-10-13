@@ -31,6 +31,8 @@ var (
 	bucketAgentSessions = []byte("agent_sessions")
 )
 
+var experienceFingerprintIndexKey = []byte("experience-fingerprint-index-v1")
+
 // ErrNotFound is returned when a requested record does not exist.
 var ErrNotFound = errors.New("memory: record not found")
 
@@ -141,7 +143,7 @@ func (s *Store) MergeSnapshot(snapshot Snapshot) error {
 		}
 	}
 	for _, f := range snapshot.Facts {
-		if _, err := s.PutFact(f); err != nil {
+		if err := s.mergeFact(f); err != nil {
 			return err
 		}
 	}
@@ -154,15 +156,95 @@ func (s *Store) MergeSnapshot(snapshot Snapshot) error {
 	return nil
 }
 
+func (s *Store) mergeFact(incoming Fact) error {
+	if incoming.Key == "" {
+		return errors.New("memory: fact key is required")
+	}
+	if incoming.Scope == "" {
+		incoming.Scope = "cluster"
+	}
+	if incoming.UpdatedAt.IsZero() {
+		incoming.UpdatedAt = incoming.CreatedAt
+	}
+	if incoming.UpdatedAt.IsZero() {
+		incoming.UpdatedAt = time.Now()
+	}
+	if incoming.CreatedAt.IsZero() || incoming.UpdatedAt.Before(incoming.CreatedAt) {
+		incoming.CreatedAt = incoming.UpdatedAt
+	}
+
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketFacts)
+		key := []byte(incoming.Scope + "|" + incoming.Key)
+		if raw := b.Get(key); raw != nil {
+			var current Fact
+			if err := json.Unmarshal(raw, &current); err != nil {
+				return err
+			}
+			if incoming.UpdatedAt.Before(current.UpdatedAt) ||
+				(incoming.UpdatedAt.Equal(current.UpdatedAt) && !factWinsTie(incoming, current)) {
+				return nil
+			}
+			if current.CreatedAt.Before(incoming.CreatedAt) {
+				incoming.CreatedAt = current.CreatedAt
+			}
+			if current.Hits > incoming.Hits {
+				incoming.Hits = current.Hits
+			}
+		}
+		buf, err := json.Marshal(incoming)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, buf)
+	})
+}
+
+func factWinsTie(incoming, current Fact) bool {
+	if incoming.Source != current.Source {
+		return incoming.Source < current.Source
+	}
+	return incoming.Value > current.Value
+}
+
 func experienceFingerprint(e Experience) []byte {
-	return []byte(fmt.Sprintf("experience|%s|%s|%s|%s|%s|%s|%d|%s", e.CreatedAt.UTC().Format(time.RFC3339Nano), e.NodeID, e.Model, e.Kind, e.Description, e.Output, e.DurationMs, e.Error))
+	e.ID = 0
+	fingerprint, err := json.Marshal(e)
+	if err != nil {
+		return []byte(fmt.Sprintf("experience|%s|%s|%s", e.CreatedAt.UTC().Format(time.RFC3339Nano), e.NodeID, e.Model))
+	}
+	return fingerprint
+}
+
+func experienceFingerprintKey(e Experience) []byte {
+	return []byte("imported:" + fmt.Sprintf("%x", sha256.Sum256(experienceFingerprint(e))))
+}
+
+func (s *Store) ensureExperienceFingerprintIndex() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(bucketMeta)
+		if meta.Get(experienceFingerprintIndexKey) != nil {
+			return nil
+		}
+		experiences := tx.Bucket(bucketExperiences)
+		if err := experiences.ForEach(func(_, value []byte) error {
+			var experience Experience
+			if err := json.Unmarshal(value, &experience); err != nil {
+				return err
+			}
+			return meta.Put(experienceFingerprintKey(experience), []byte{1})
+		}); err != nil {
+			return err
+		}
+		return meta.Put(experienceFingerprintIndexKey, []byte{1})
+	})
 }
 
 func (s *Store) mergeExperience(e Experience) error {
-	key := "imported:" + fmt.Sprintf("%x", sha256.Sum256(experienceFingerprint(e)))
+	key := experienceFingerprintKey(e)
 	return s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(bucketMeta)
-		if meta.Get([]byte(key)) != nil {
+		if meta.Get(key) != nil {
 			return nil
 		}
 		b := tx.Bucket(bucketExperiences)
@@ -181,7 +263,7 @@ func (s *Store) mergeExperience(e Experience) error {
 		if err := b.Put(itob(id), buf); err != nil {
 			return err
 		}
-		return meta.Put([]byte(key), []byte{1})
+		return meta.Put(key, []byte{1})
 	})
 }
 
@@ -262,6 +344,10 @@ func Open(path, owner string) (*Store, error) {
 	}
 
 	s := &Store{db: db, path: path, owner: owner, perfCache: make(map[string]*Performance)}
+	if err := s.ensureExperienceFingerprintIndex(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("memory: index experiences: %w", err)
+	}
 	s.loadPerfCache()
 	return s, nil
 }
@@ -334,7 +420,10 @@ func (s *Store) Record(e Experience) (Experience, error) {
 		if err != nil {
 			return err
 		}
-		return b.Put(itob(id), buf)
+		if err := b.Put(itob(id), buf); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketMeta).Put(experienceFingerprintKey(e), []byte{1})
 	})
 	if err != nil {
 		return Experience{}, err

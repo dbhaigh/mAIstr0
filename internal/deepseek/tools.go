@@ -43,6 +43,7 @@ func DefaultTools() []Tool {
 		&NodeLLMQueryTool{},
 		&ClusterLLMQueryTool{},
 		&ClusterParallelDispatchTool{},
+		&CreateSubAgentTool{},
 		&ExecuteWorkflowTool{},
 		&TestNodeModelTool{},
 		&ListNodeDialoguesTool{},
@@ -100,13 +101,26 @@ func (t *ExecuteWorkflowTool) Execute(ctx context.Context, h *Harness, _ *Sessio
 		return nil, "", "", "", errors.New("durable workflow execution is not configured")
 	}
 	var subtasks []scheduler.Subtask
-	if raw, exists := args["subtasks"]; exists {
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			return nil, "", "", "", fmt.Errorf("encode workflow plan: %w", err)
+	if rawGraph, exists := args["graph"]; exists {
+		encoded, err := json.Marshal(rawGraph)
+		if err == nil {
+			var g scheduler.TaskGraph
+			if err := json.Unmarshal(encoded, &g); err == nil {
+				if sorted, err := g.TopologicalSort(); err == nil && len(sorted) > 0 {
+					subtasks = sorted
+				}
+			}
 		}
-		if err := json.Unmarshal(encoded, &subtasks); err != nil {
-			return nil, "", "", "", fmt.Errorf("decode workflow plan: %w", err)
+	}
+	if len(subtasks) == 0 {
+		if raw, exists := args["subtasks"]; exists {
+			encoded, err := json.Marshal(raw)
+			if err != nil {
+				return nil, "", "", "", fmt.Errorf("encode workflow plan: %w", err)
+			}
+			if err := json.Unmarshal(encoded, &subtasks); err != nil {
+				return nil, "", "", "", fmt.Errorf("decode workflow plan: %w", err)
+			}
 		}
 	}
 	requireReview, _ := args["require_review"].(bool)
@@ -1296,4 +1310,128 @@ func (t *SessionMemoryTool) Execute(ctx context.Context, h *Harness, s *Session,
 	default:
 		return nil, "", "", "", fmt.Errorf("unknown memory action: %s", action)
 	}
+}
+
+// --- Tool: create_subagent ---
+
+type CreateSubAgentTool struct{}
+
+func (t *CreateSubAgentTool) Def() ToolDef {
+	return ToolDef{
+		Name:        "create_subagent",
+		Description: "Create a specialized virtual worker (sub-agent) at runtime from a 4-tuple specification: instruction/persona, required tools, required/preferred model capabilities, and context. Dynamically selects the best compute node and model, registers the virtual worker profile for scheduling, and optionally executes an initial task.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Identifier or title for the specialized sub-agent (e.g. 'sql-expert', 'patent-analyst').",
+				},
+				"role": map[string]any{
+					"type":        "string",
+					"description": "Optional role name for the worker profile (defaults to name).",
+				},
+				"instructions": map[string]any{
+					"type":        "string",
+					"description": "System prompt / persona instructions guiding how the worker behaves.",
+				},
+				"required_tools": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Optional list of tool names the sub-agent needs access to.",
+				},
+				"required_capabilities": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Capabilities the worker's node/model must support (e.g. 'coder', 'researcher', 'vision', 'math', 'long-context', 'fast', 'high-quality').",
+				},
+				"preferred_capabilities": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Optional bonus capabilities preferred for this sub-agent.",
+				},
+				"context": map[string]any{
+					"type":        "string",
+					"description": "Domain knowledge or background context for this sub-agent.",
+				},
+				"task": map[string]any{
+					"type":        "string",
+					"description": "Optional prompt/task to immediately execute with the created sub-agent.",
+				},
+			},
+			"required": []string{"name", "instructions"},
+		},
+	}
+}
+
+func (t *CreateSubAgentTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
+	name, _ := args["name"].(string)
+	instructions, _ := args["instructions"].(string)
+	role, _ := args["role"].(string)
+	contextStr, _ := args["context"].(string)
+	taskPrompt, _ := args["task"].(string)
+
+	var reqTools []string
+	if raw, ok := args["required_tools"].([]any); ok {
+		for _, v := range raw {
+			if str, ok := v.(string); ok {
+				reqTools = append(reqTools, str)
+			}
+		}
+	}
+	var reqCaps []string
+	if raw, ok := args["required_capabilities"].([]any); ok {
+		for _, v := range raw {
+			if str, ok := v.(string); ok {
+				reqCaps = append(reqCaps, str)
+			}
+		}
+	}
+	var prefCaps []string
+	if raw, ok := args["preferred_capabilities"].([]any); ok {
+		for _, v := range raw {
+			if str, ok := v.(string); ok {
+				prefCaps = append(prefCaps, str)
+			}
+		}
+	}
+
+	nodes := h.registry.Active()
+	factory := scheduler.NewSubAgentFactory()
+	worker, err := factory.Create(scheduler.SubAgentSpec{
+		Name:                  name,
+		Role:                  role,
+		Instruction:           instructions,
+		RequiredTools:         reqTools,
+		RequiredCapabilities:  reqCaps,
+		PreferredCapabilities: prefCaps,
+		Context:               contextStr,
+	}, nodes, nil)
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("create sub-agent: %w", err)
+	}
+
+	result := map[string]any{
+		"id":             worker.ID,
+		"name":           worker.Spec.Name,
+		"role":           worker.Spec.Role,
+		"node_id":        worker.NodeID,
+		"node_address":   worker.Address,
+		"model":          worker.Model,
+		"score":          worker.Score,
+		"required_tools": worker.Spec.RequiredTools,
+		"instruction":    worker.Spec.Instruction,
+	}
+
+	if strings.TrimSpace(taskPrompt) != "" {
+		formattedPrompt := worker.FormatPrompt(taskPrompt, "")
+		output, err := h.dispatchToNode(ctx, worker.Address, worker.Model, formattedPrompt)
+		if err != nil {
+			result["execution_error"] = err.Error()
+		} else {
+			result["output"] = output
+		}
+	}
+
+	return result, worker.NodeID, worker.Address, worker.Model, nil
 }

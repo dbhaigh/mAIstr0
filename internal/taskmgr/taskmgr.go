@@ -3,6 +3,7 @@
 package taskmgr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,9 @@ const (
 	StatusCancelled        Status = "cancelled"
 )
 
+const interruptedTaskError = "orchestrator restarted before the task completed"
+const coordinatorChangedTaskError = "coordinator changed before the task completed"
+
 // SubtaskResult tracks one assignment's execution outcome.
 type SubtaskResult struct {
 	scheduler.Assignment
@@ -44,15 +48,18 @@ type SubtaskResult struct {
 
 // Task is a submitted job and everything derived from it.
 type Task struct {
-	ID              string          `json:"id"`
-	Description     string          `json:"description"`
-	Status          Status          `json:"status"`
-	Subtasks        []SubtaskResult `json:"subtasks"`
-	RequireApproval bool            `json:"require_approval,omitempty"`
-	Result          string          `json:"result,omitempty"`
-	Error           string          `json:"error,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID              string               `json:"id"`
+	Description     string               `json:"description"`
+	Status          Status               `json:"status"`
+	Subtasks        []SubtaskResult      `json:"subtasks"`
+	Graph           *scheduler.TaskGraph `json:"graph,omitempty"`
+	Resumable       bool                 `json:"resumable,omitempty"`
+	LastCheckpoint  string               `json:"last_checkpoint,omitempty"`
+	RequireApproval bool                 `json:"require_approval,omitempty"`
+	Result          string               `json:"result,omitempty"`
+	Error           string               `json:"error,omitempty"`
+	CreatedAt       time.Time            `json:"created_at"`
+	UpdatedAt       time.Time            `json:"updated_at"`
 	ctx             context.Context
 	cancel          context.CancelFunc
 	changed         chan struct{}
@@ -121,8 +128,13 @@ func OpenManager(path string, finalizer Finalizer) (*Manager, error) {
 		return nil, fmt.Errorf("taskmgr: open %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("tasks"))
-		return err
+		if _, err := tx.CreateBucketIfNotExists([]byte("tasks")); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucketIfNotExists([]byte("checkpoints")); err != nil {
+			return err
+		}
+		return nil
 	}); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("taskmgr: initialize database: %w", err)
@@ -155,7 +167,8 @@ func (m *Manager) load() error {
 			task.changed = make(chan struct{})
 			if task.Status == StatusPending || task.Status == StatusRunning || task.Status == StatusSynthesis {
 				task.Status = StatusFailed
-				task.Error = "orchestrator restarted before the task completed"
+				task.Error = interruptedTaskError
+				task.Resumable = true
 				for i := range task.Subtasks {
 					if task.Subtasks[i].Status == StatusPending || task.Subtasks[i].Status == StatusRunning {
 						task.Subtasks[i].Status = StatusFailed
@@ -165,7 +178,17 @@ func (m *Manager) load() error {
 				task.UpdatedAt = time.Now()
 				interrupted[task.ID] = true
 				cancel()
-			} else if task.Status != StatusAwaitingApproval {
+			} else if task.Status == StatusAwaitingApproval {
+				task.Resumable = true
+			} else if task.Status == StatusCancelled || task.Status == StatusFailed {
+				for _, st := range task.Subtasks {
+					if st.Status == StatusCompleted {
+						task.Resumable = true
+						break
+					}
+				}
+				cancel()
+			} else {
 				cancel()
 			}
 			tasks = append(tasks, &task)
@@ -189,6 +212,7 @@ func (m *Manager) load() error {
 				if err := bucket.Put([]byte(task.ID), encoded); err != nil {
 					return err
 				}
+				_, _ = m.saveCheckpointInTx(tx, task)
 			}
 		}
 		return nil
@@ -232,15 +256,28 @@ func (m *Manager) CreateChecked(description string, assignments []scheduler.Assi
 // CreateWithOptionsChecked creates a persisted task with an optional approval
 // gate before final synthesis.
 func (m *Manager) CreateWithOptionsChecked(description string, assignments []scheduler.Assignment, requireApproval bool) (*Task, error) {
+	return m.CreateWithGraphAndOptionsChecked(description, nil, assignments, requireApproval)
+}
+
+// CreateWithGraphAndOptionsChecked creates a persisted task with an explicit task graph
+// and optional approval gate.
+func (m *Manager) CreateWithGraphAndOptionsChecked(description string, graph *scheduler.TaskGraph, assignments []scheduler.Assignment, requireApproval bool) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seq++
 	id := genID(m.seq)
 
 	results := make([]SubtaskResult, 0, len(assignments))
+	subtasksForGraph := make([]scheduler.Subtask, 0, len(assignments))
 	for _, a := range assignments {
-		a.Subtask = cloneSubtask(a.Subtask)
+		cloned := cloneSubtask(a.Subtask)
+		a.Subtask = cloned
+		subtasksForGraph = append(subtasksForGraph, cloned)
 		results = append(results, SubtaskResult{Assignment: a, Status: StatusPending})
+	}
+
+	if graph == nil && len(subtasksForGraph) > 0 {
+		graph, _ = scheduler.TaskGraphFromSubtasks(subtasksForGraph)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -249,6 +286,8 @@ func (m *Manager) CreateWithOptionsChecked(description string, assignments []sch
 		Description:     description,
 		Status:          StatusRunning,
 		Subtasks:        results,
+		Graph:           graph,
+		Resumable:       true,
 		RequireApproval: requireApproval,
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
@@ -259,7 +298,9 @@ func (m *Manager) CreateWithOptionsChecked(description string, assignments []sch
 	if len(results) == 0 {
 		t.Status = StatusFailed
 		t.Error = "task has no assigned subtasks"
+		t.Resumable = false
 	}
+	_, _ = m.saveCheckpointLocked(t)
 	if err := m.persistLocked(t); err != nil {
 		cancel()
 		return nil, err
@@ -335,14 +376,19 @@ func (m *Manager) CancelChecked(id string) (bool, error) {
 	t.cancel()
 	t.Status = StatusCancelled
 	t.Error = "task cancelled"
+	hasCompleted := false
 	for i := range t.Subtasks {
-		if t.Subtasks[i].Status == StatusPending || t.Subtasks[i].Status == StatusRunning {
+		if t.Subtasks[i].Status == StatusCompleted {
+			hasCompleted = true
+		} else if t.Subtasks[i].Status == StatusPending || t.Subtasks[i].Status == StatusRunning {
 			t.Subtasks[i].Status = StatusCancelled
 			t.Subtasks[i].Error = "task cancelled"
 		}
 	}
+	t.Resumable = hasCompleted
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
+	_, _ = m.saveCheckpointLocked(t)
 	return true, m.persistLocked(t)
 }
 
@@ -404,6 +450,151 @@ func (m *Manager) Recent(limit int) []*Task {
 		out = append(out, cloneTask(task))
 	}
 	return out
+}
+
+// MergeMissing imports tasks that are not already present. It is intended for
+// collecting history from peers without allowing stale replicas to overwrite
+// the current coordinator's task state.
+func (m *Manager) MergeMissing(tasks []*Task) error {
+	return m.syncTasks(tasks, false, false)
+}
+
+// MergeFromReplica imports missing tasks and newer peer updates while
+// protecting coordinator state from a replica's restart-recovery status.
+func (m *Manager) MergeFromReplica(tasks []*Task) error {
+	return m.syncTasks(tasks, false, true)
+}
+
+// ReplaceFromSync applies an authoritative coordinator snapshot to this
+// replica, even if its local copy has a newer timestamp from restart recovery.
+func (m *Manager) ReplaceFromSync(tasks []*Task) error {
+	return m.syncTasks(tasks, true, false)
+}
+
+func (m *Manager) syncTasks(tasks []*Task, replace, mergeReplicas bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, incoming := range tasks {
+		if incoming == nil || incoming.ID == "" {
+			return fmt.Errorf("taskmgr: synchronized task has no id")
+		}
+		current, exists := m.tasks[incoming.ID]
+		if exists && !replace {
+			if !mergeReplicas || !replicaOutranks(current, incoming) {
+				continue
+			}
+		}
+		if exists && replace {
+			currentJSON, err := json.Marshal(current)
+			if err != nil {
+				return fmt.Errorf("taskmgr: encode local task %s: %w", current.ID, err)
+			}
+			incomingJSON, err := json.Marshal(incoming)
+			if err != nil {
+				return fmt.Errorf("taskmgr: encode synchronized task %s: %w", incoming.ID, err)
+			}
+			if bytes.Equal(currentJSON, incomingJSON) {
+				continue
+			}
+		}
+
+		task := cloneTask(incoming)
+		if mergeReplicas && !exists {
+			interruptOrphanedTask(task)
+		}
+		task.ctx, task.cancel = context.WithCancel(context.Background())
+		task.changed = make(chan struct{})
+		if task.Status == StatusCompleted || task.Status == StatusFailed || task.Status == StatusCancelled {
+			task.cancel()
+		}
+		if _, err := m.saveCheckpointLocked(task); err != nil {
+			task.cancel()
+			return fmt.Errorf("taskmgr: checkpoint synchronized task %s: %w", task.ID, err)
+		}
+		if err := m.persistLocked(task); err != nil {
+			task.cancel()
+			return err
+		}
+		if exists && current.cancel != nil {
+			current.cancel()
+		}
+		m.tasks[task.ID] = task
+		if sequence := taskSequence(task.ID); sequence > m.seq {
+			m.seq = sequence
+		}
+	}
+	return nil
+}
+
+func replicaOutranks(current, incoming *Task) bool {
+	if isInterruptedTask(incoming) {
+		return false
+	}
+	if isInterruptedTask(current) {
+		if incoming.Status == StatusCompleted || incoming.Status == StatusAwaitingApproval ||
+			incoming.Status == StatusCancelled || incoming.Status == StatusFailed {
+			return true
+		}
+		return completedSubtaskCount(incoming) > completedSubtaskCount(current)
+	}
+	if incoming.UpdatedAt.After(current.UpdatedAt) {
+		return true
+	}
+	if incoming.UpdatedAt.Equal(current.UpdatedAt) {
+		return completedSubtaskCount(incoming) > completedSubtaskCount(current) ||
+			taskStatusRank(incoming.Status) > taskStatusRank(current.Status)
+	}
+	return false
+}
+
+func isInterruptedTask(task *Task) bool {
+	return task.Error == interruptedTaskError || task.Error == coordinatorChangedTaskError
+}
+
+func interruptOrphanedTask(task *Task) {
+	switch task.Status {
+	case StatusPending, StatusRunning, StatusSynthesis:
+		task.Status = StatusFailed
+		task.Error = coordinatorChangedTaskError
+		task.Resumable = true
+		for i := range task.Subtasks {
+			if task.Subtasks[i].Status == StatusPending || task.Subtasks[i].Status == StatusRunning {
+				task.Subtasks[i].Status = StatusFailed
+				task.Subtasks[i].Error = coordinatorChangedTaskError
+			}
+		}
+		task.UpdatedAt = time.Now()
+	}
+}
+
+func completedSubtaskCount(task *Task) int {
+	completed := 0
+	for _, subtask := range task.Subtasks {
+		if subtask.Status == StatusCompleted {
+			completed++
+		}
+	}
+	return completed
+}
+
+func taskStatusRank(status Status) int {
+	switch status {
+	case StatusCompleted:
+		return 6
+	case StatusAwaitingApproval:
+		return 5
+	case StatusSynthesis:
+		return 4
+	case StatusFailed, StatusCancelled:
+		return 3
+	case StatusRunning:
+		return 2
+	case StatusPending:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // StartSubtask marks a dispatched assignment as actively running.
@@ -611,18 +802,25 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 		if anyFailed {
 			t.Status = StatusFailed
 			t.Error = "one or more subtasks failed"
+			t.Resumable = true
 		} else if t.RequireApproval {
 			t.Status = StatusAwaitingApproval
+			t.Resumable = true
 		} else if m.finalizer != nil {
 			t.Status = StatusSynthesis
+			t.Resumable = true
 			finalize = m.finalizer
 			snapshot = cloneTask(t)
 		} else {
 			t.Status = StatusCompleted
+			t.Resumable = false
 		}
+	} else {
+		t.Resumable = true
 	}
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
+	_, _ = m.saveCheckpointLocked(t)
 	persistErr := m.persistLocked(t)
 	taskCtx := t.ctx
 	m.mu.Unlock()
@@ -651,8 +849,10 @@ func (m *Manager) ApproveChecked(taskID string) error {
 	}
 	if m.finalizer == nil {
 		t.Status = StatusCompleted
+		t.Resumable = false
 		t.UpdatedAt = time.Now()
 		signalChanged(t)
+		_, _ = m.saveCheckpointLocked(t)
 		err := m.persistLocked(t)
 		m.mu.Unlock()
 		return err
@@ -660,6 +860,7 @@ func (m *Manager) ApproveChecked(taskID string) error {
 	t.Status = StatusSynthesis
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
+	_, _ = m.saveCheckpointLocked(t)
 	snapshot := cloneTask(t)
 	taskCtx := t.ctx
 	finalize := m.finalizer
@@ -682,15 +883,19 @@ func (m *Manager) finishSynthesis(taskID string, taskCtx context.Context, snapsh
 	if err != nil {
 		t.Status = StatusFailed
 		t.Error = "result synthesis failed: " + err.Error()
+		t.Resumable = true
 	} else if strings.TrimSpace(result) == "" {
 		t.Status = StatusFailed
 		t.Error = "result synthesis failed: model returned an empty result"
+		t.Resumable = true
 	} else {
 		t.Result = strings.TrimSpace(result)
 		t.Status = StatusCompleted
+		t.Resumable = false
 	}
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
+	_, _ = m.saveCheckpointLocked(t)
 	persistErr = m.persistLocked(t)
 	m.mu.Unlock()
 	return persistErr
@@ -718,6 +923,9 @@ func cloneTask(t *Task) *Task {
 	for i := range cloned.Subtasks {
 		cloned.Subtasks[i].Subtask = cloneSubtask(t.Subtasks[i].Subtask)
 	}
+	if t.Graph != nil {
+		cloned.Graph = t.Graph.Clone()
+	}
 	return &cloned
 }
 
@@ -725,6 +933,8 @@ func cloneSubtask(subtask scheduler.Subtask) scheduler.Subtask {
 	subtask.Tags = append([]string(nil), subtask.Tags...)
 	subtask.DependsOn = append([]string(nil), subtask.DependsOn...)
 	subtask.RequiredFields = append([]string(nil), subtask.RequiredFields...)
+	subtask.RequiredCapabilities = append([]string(nil), subtask.RequiredCapabilities...)
+	subtask.PreferredCapabilities = append([]string(nil), subtask.PreferredCapabilities...)
 	return subtask
 }
 

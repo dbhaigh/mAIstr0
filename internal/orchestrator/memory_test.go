@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,54 @@ func TestMemorySyncMergesNodeLearning(t *testing.T) {
 
 	if bias := srv.mem.LearnedBias("node-a", "coder", "code"); bias <= 0 {
 		t.Errorf("expected node-reported success history to bias routing positively, got %.2f", bias)
+	}
+}
+
+func TestMemorySyncReplicatesNodeKnowledgeAndExperience(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Now()
+	snapshot := memory.Snapshot{
+		Experiences: []memory.Experience{
+			{Kind: "generate", TaskType: "code", Description: "write code", NodeID: "node-a", Model: "coder", Success: true, DurationMs: 100, CreatedAt: now},
+			{Kind: "generate", TaskType: "code", Description: "write code", NodeID: "node-a", Model: "coder", Success: true, DurationMs: 100, CreatedAt: now.Add(time.Second)},
+			{Kind: "generate", TaskType: "code", Description: "write code", NodeID: "node-a", Model: "coder", Success: true, DurationMs: 100, CreatedAt: now.Add(2 * time.Second)},
+		},
+		Facts: []memory.Fact{{
+			Key: "node-capability", Value: "node-a is reliable for code", Scope: "cluster",
+			Source: "node-a", CreatedAt: now, UpdatedAt: now,
+		}},
+		Performances: []memory.Performance{{
+			NodeID: "node-a", Model: "coder", TaskType: "code", Attempts: 3,
+			Successes: 3, TotalDuration: 300, AvgDurationMs: 100,
+			SuccessRate: 1, LastUsed: now.Add(2 * time.Second),
+		}},
+		Dialogues: []memory.DialogueRecord{{
+			ID: "cluster-dialogue", Participants: []string{"node-a", "orchestrator"},
+			Turns:     []memory.Turn{{Speaker: "node-a", Content: "use the code model", At: now}},
+			CreatedAt: now, UpdatedAt: now,
+		}},
+	}
+	body, err := json.Marshal(memorySyncRequest{NodeID: "node-a", Snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/memory/sync", bytes.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("memory sync returned %d: %s", response.Code, response.Body.String())
+	}
+	if bias := srv.mem.LearnedBias("node-a", "coder", "code"); bias <= 0 {
+		t.Fatalf("orchestrator did not learn from replicated experience, bias = %.2f", bias)
+	}
+
+	response = httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/memory/sync", nil))
+	var merged memory.Snapshot
+	if err := json.NewDecoder(response.Body).Decode(&merged); err != nil {
+		t.Fatalf("decode merged memory: %v", err)
+	}
+	if len(merged.Experiences) != 3 || len(merged.Facts) != 1 || len(merged.Dialogues) != 1 {
+		t.Fatalf("orchestrator snapshot did not retain all replicated memory: %+v", merged)
 	}
 }
 

@@ -14,11 +14,12 @@ import (
 )
 
 type createTaskRequest struct {
-	Description     string              `json:"description"`
-	Subtasks        []scheduler.Subtask `json:"subtasks,omitempty"`
-	PlanMode        string              `json:"plan_mode,omitempty"`
-	RequireReview   bool                `json:"require_review,omitempty"`
-	RequireApproval bool                `json:"require_approval,omitempty"`
+	Description     string               `json:"description"`
+	Subtasks        []scheduler.Subtask  `json:"subtasks,omitempty"`
+	Graph           *scheduler.TaskGraph `json:"graph,omitempty"`
+	PlanMode        string               `json:"plan_mode,omitempty"`
+	RequireReview   bool                 `json:"require_review,omitempty"`
+	RequireApproval bool                 `json:"require_approval,omitempty"`
 }
 
 type taskCreateError struct {
@@ -34,18 +35,40 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 		return nil, &taskCreateError{status: 400, err: errors.New("description is required")}
 	}
 	subtasks := req.Subtasks
+	graph := req.Graph
 	planMode := strings.ToLower(strings.TrimSpace(req.PlanMode))
 	modelPlanned := planMode == "auto"
+
 	switch planMode {
 	case "", "heuristic":
-		if len(subtasks) == 0 {
+		if graph != nil {
+			if err := graph.Validate(); err != nil {
+				return nil, &taskCreateError{status: 400, err: fmt.Errorf("invalid task graph: %w", err)}
+			}
+			sorted, err := graph.TopologicalSort()
+			if err != nil {
+				return nil, &taskCreateError{status: 400, err: fmt.Errorf("invalid task graph: %w", err)}
+			}
+			subtasks = sorted
+		} else if len(subtasks) == 0 {
 			subtasks = scheduler.Decompose(req.Description)
+			var err error
+			graph, err = scheduler.TaskGraphFromSubtasks(subtasks)
+			if err != nil {
+				return nil, &taskCreateError{status: 400, err: fmt.Errorf("build task graph: %w", err)}
+			}
+		} else {
+			var err error
+			graph, err = scheduler.TaskGraphFromSubtasks(subtasks)
+			if err != nil {
+				return nil, &taskCreateError{status: 400, err: fmt.Errorf("build task graph: %w", err)}
+			}
 		}
 	case "auto":
-		if len(subtasks) != 0 {
-			return nil, &taskCreateError{status: 400, err: errors.New("subtasks cannot be supplied with plan_mode auto")}
+		if len(subtasks) != 0 || graph != nil {
+			return nil, &taskCreateError{status: 400, err: errors.New("subtasks or graph cannot be supplied with plan_mode auto")}
 		}
-		planned, err := s.planSubtasks(ctx, req.Description)
+		plannedGraph, plannedSubtasks, err := s.planSubtasks(ctx, req.Description)
 		if err != nil {
 			status := 502
 			if errors.Is(err, scheduler.ErrNoHealthyNodes) {
@@ -57,7 +80,8 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 			}
 			return nil, &taskCreateError{status: status, err: fmt.Errorf("create structured task plan: %w", err)}
 		}
-		subtasks = planned
+		graph = plannedGraph
+		subtasks = plannedSubtasks
 	default:
 		return nil, &taskCreateError{status: 400, err: errors.New("plan_mode must be heuristic or auto")}
 	}
@@ -76,6 +100,13 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 		if err != nil {
 			return nil, &taskCreateError{status: 400, err: err}
 		}
+		if graph != nil {
+			reviewerNode := subtasks[len(subtasks)-1]
+			_ = graph.AddNode(reviewerNode)
+			for _, dep := range reviewerNode.DependsOn {
+				_ = graph.AddEdge(dep, reviewerNode.ID)
+			}
+		}
 	}
 	assignments, err := scheduler.AssignWithExperience(subtasks, s.schedulerNodes(), s.experience())
 	if err != nil {
@@ -84,7 +115,7 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 	if len(assignments) != len(subtasks) {
 		return nil, &taskCreateError{status: 503, err: errors.New("scheduler returned an incomplete assignment")}
 	}
-	task, err := s.tasks.CreateWithOptionsChecked(req.Description, assignments, req.RequireApproval)
+	task, err := s.tasks.CreateWithGraphAndOptionsChecked(req.Description, graph, assignments, req.RequireApproval)
 	if err != nil {
 		return nil, &taskCreateError{status: 500, err: fmt.Errorf("could not persist task: %w", err)}
 	}
@@ -143,46 +174,73 @@ func addReviewerSubtask(subtasks []scheduler.Subtask) []scheduler.Subtask {
 	})
 }
 
-func (s *Server) planSubtasks(ctx context.Context, description string) ([]scheduler.Subtask, error) {
+func (s *Server) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
 	planning := scheduler.Subtask{ID: "plan", Description: "Create a workflow plan", TaskType: "general"}
 	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{planning}, s.schedulerNodes(), s.experience())
 	if err != nil {
-		return nil, fmt.Errorf("select planning model: %w", err)
+		return nil, nil, fmt.Errorf("select planning model: %w", err)
 	}
 	if len(assignments) != 1 {
-		return nil, errors.New("scheduler returned no planning model")
+		return nil, nil, errors.New("scheduler returned no planning model")
 	}
-	prompt := fmt.Sprintf(`You are the mAIstr0 workflow planner. Convert the user's request into a small, executable dependency-aware task plan. Return only one JSON object with this shape:
-{"subtasks":[{"id":"research","description":"...","role":"researcher","task_type":"general","depends_on":[],"expected_output":"...","output_format":"text","required_fields":[],"max_retries":0}]}
+	prompt := fmt.Sprintf(`You are the mAIstr0 workflow planner. Convert the user's request into a small, executable dependency-aware task plan. Return only one JSON object with either this shape:
+{"graph":{"nodes":{"research":{"id":"research","description":"...","role":"researcher","task_type":"general","depends_on":[],"expected_output":"...","output_format":"text","required_capabilities":[]}},"edges":[]}}
+or this shape:
+{"subtasks":[{"id":"research","description":"...","role":"researcher","task_type":"general","depends_on":[],"expected_output":"...","output_format":"text","required_capabilities":[],"max_retries":0}]}
 
 Use only these roles: researcher, analyst, coder, writer, reviewer, summarizer, translator, general.
 Use task_type values supported by a local model registry when relevant: code, summarize, translate, math, vision, creative, general.
-Make independent tasks parallel; add depends_on only when a task genuinely needs another task's result. Keep the plan focused, use 1-8 tasks, and set expected_output for each task. Use output_format json and required_fields only when the result must be machine-readable. Set max_retries to 0 unless a bounded retry on output validation is useful; the maximum is 2.
+Supported capability tags: researcher, coder, long-context, vision, math, fast, high-quality.
+Make independent tasks parallel; add depends_on only when a task genuinely needs another task's result. Keep the plan focused, use 1-8 tasks, and set expected_output for each task. Use output_format json and required_fields only when the result must be machine-readable. JSON output gets one corrective retry by default; use max_retries 0 for plain-text output and at most 2 for any task.
 User request:
 %s`, strings.TrimSpace(description))
 	output, err := s.callNodeGenerateWithOptionsContext(ctx, assignments[0].Address, assignments[0].Model, prompt, 0.1, 2048)
 	if err != nil {
-		return nil, fmt.Errorf("planning model %s on node %s: %w", assignments[0].Model, assignments[0].NodeID, err)
+		return nil, nil, fmt.Errorf("planning model %s on node %s: %w", assignments[0].Model, assignments[0].NodeID, err)
 	}
 	payload, err := extractJSONObject(output)
 	if err != nil {
-		return nil, fmt.Errorf("planning model returned invalid JSON: %w", err)
+		return nil, nil, fmt.Errorf("planning model returned invalid JSON: %w", err)
 	}
-	var plan struct {
-		Subtasks []scheduler.Subtask `json:"subtasks"`
+	var raw struct {
+		Graph    *scheduler.TaskGraph         `json:"graph,omitempty"`
+		Nodes    map[string]scheduler.Subtask `json:"nodes,omitempty"`
+		Edges    []scheduler.Edge             `json:"edges,omitempty"`
+		Subtasks []scheduler.Subtask          `json:"subtasks,omitempty"`
 	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&plan); err != nil {
-		return nil, fmt.Errorf("decode planner response: %w", err)
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, nil, fmt.Errorf("decode planner response: %w", err)
 	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return nil, fmt.Errorf("decode planner response: %w", err)
+
+	var graph *scheduler.TaskGraph
+	if raw.Graph != nil && len(raw.Graph.Nodes) > 0 {
+		graph = raw.Graph
+	} else if len(raw.Nodes) > 0 {
+		graph = &scheduler.TaskGraph{
+			Nodes: raw.Nodes,
+			Edges: raw.Edges,
+		}
+	} else if len(raw.Subtasks) > 0 {
+		var err error
+		graph, err = scheduler.TaskGraphFromSubtasks(raw.Subtasks)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build graph from planner subtasks: %w", err)
+		}
+	} else {
+		return nil, nil, errors.New("planner response contains neither graph nor subtasks")
 	}
-	if len(plan.Subtasks) > 8 {
-		return nil, errors.New("planning model returned more than 8 subtasks")
+
+	if len(graph.Nodes) > 8 {
+		return nil, nil, errors.New("planning model returned more than 8 subtasks")
 	}
-	return plan.Subtasks, nil
+	if err := graph.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("planner graph validation: %w", err)
+	}
+	sorted, err := graph.TopologicalSort()
+	if err != nil {
+		return nil, nil, fmt.Errorf("planner graph sort: %w", err)
+	}
+	return graph, sorted, nil
 }
 
 func extractJSONObject(output string) ([]byte, error) {
@@ -224,6 +282,28 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
+func normalizeTaskOutput(subtask scheduler.Subtask, output string) string {
+	if subtask.OutputFormat != "json" {
+		return output
+	}
+	trimmed := strings.TrimSpace(output)
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) >= 3 {
+		opening := strings.TrimSpace(strings.TrimSuffix(lines[0], "\r"))
+		closing := strings.TrimSpace(strings.TrimSuffix(lines[len(lines)-1], "\r"))
+		if (opening == "```" || strings.EqualFold(opening, "```json")) && closing == "```" {
+			trimmed = strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+		}
+	}
+	if len(trimmed) >= 4 && strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		inner := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+		if strings.HasPrefix(inner, "{") && json.Valid([]byte(inner)) {
+			return inner
+		}
+	}
+	return trimmed
+}
+
 func validateTaskOutput(subtask scheduler.Subtask, output string) error {
 	if strings.TrimSpace(output) == "" {
 		return errors.New("worker returned an empty result")
@@ -231,6 +311,7 @@ func validateTaskOutput(subtask scheduler.Subtask, output string) error {
 	if subtask.OutputFormat != "json" {
 		return nil
 	}
+	output = normalizeTaskOutput(subtask, output)
 	var object map[string]json.RawMessage
 	decoder := json.NewDecoder(strings.NewReader(output))
 	if err := decoder.Decode(&object); err != nil {

@@ -3,6 +3,9 @@ const nodesList = document.getElementById("nodes-list");
 const routingList = document.getElementById("routing-list");
 const discoveryList = document.getElementById("discovery-list");
 const tasksList = document.getElementById("tasks-list");
+const taskHistorySearch = document.getElementById("task-history-search");
+const taskHistoryStatus = document.getElementById("task-history-status");
+const taskHistoryCount = document.getElementById("task-history-count");
 const taskInput = document.getElementById("task-input");
 const taskAutoPlan = document.getElementById("task-auto-plan");
 const taskRequireReview = document.getElementById("task-require-review");
@@ -126,6 +129,7 @@ let pairingTargetNode = null;
 let currentPairingStatus = null;
 let pairingSetupFocused = false;
 let pairingPromptShown = false;
+let pairingDialogAutoOpened = false;
 
 // Tab Switching
 navTabs.forEach((tab) => {
@@ -213,7 +217,7 @@ function openPairingDialog(node = null) {
       ? currentPairingStatus.joined ? "Re-pair node" : "Join cluster"
       : "Connect to orchestrator";
     if (description) description.textContent = joiningNode
-      ? "Enter the orchestrator HTTPS address and one-use PIN shown on its Setup page."
+      ? "Enter the orchestrator HTTPS address. Nodes on the same subnet connect automatically; otherwise enter the one-use PIN shown on its Setup page."
       : "Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.";
     if (joiningNode) {
       pairingAddress.value = currentPairingStatus.orchestrator_addr || pairingAddress.value;
@@ -254,7 +258,7 @@ async function loadPairingStatus() {
     if (status.role === "orchestrator") {
       if (pairingPinView) pairingPinView.hidden = false;
       if (pairingNodeConnect) pairingNodeConnect.hidden = true;
-      if (pairingInstructions) pairingInstructions.textContent = "Add a node to this cluster by generating a one-use PIN, then entering it on that node.";
+      if (pairingInstructions) pairingInstructions.textContent = "Nodes on the same subnet join this cluster automatically. Nodes on different subnets can join using a one-use PIN generated here.";
       const hasPIN = Boolean(status.pin);
       if (pairingPinRegenerateBtn) {
         pairingPinRegenerateBtn.textContent = hasPIN ? "Generate / replace pairing PIN" : "Generate pairing PIN";
@@ -277,13 +281,15 @@ async function loadPairingStatus() {
       if (pairingConnectOpenBtn) pairingConnectOpenBtn.textContent = status.joined
         ? "Re-pair / change orchestrator"
         : "Enter address and pairing PIN";
-      if (pairingInstructions) pairingInstructions.textContent = "Join this node to an orchestrator with the one-use PIN shown on its Setup page. You can also re-pair this node to another cluster here.";
+      if (pairingInstructions) pairingInstructions.textContent = "Nodes on the same subnet join an orchestrator automatically. You can also connect to an orchestrator using the one-use PIN shown on its Setup page.";
       if (status.orchestrator_addr && pairingAddress && !pairingAddress.value) {
         pairingAddress.value = status.orchestrator_addr;
       }
       if (pairingState) {
         pairingState.textContent = status.joined
           ? `Connected to ${status.orchestrator_addr || "the orchestrator"}.`
+          : status.auto_join_available
+            ? `Connecting automatically to ${status.orchestrator_addr || "a discovered cluster"} on this subnet.`
           : status.trusted
             ? "Pairing succeeded. Waiting for the node to register with the orchestrator."
             : "Not paired. Enter the orchestrator HTTPS address and its one-use PIN.";
@@ -295,11 +301,18 @@ async function loadPairingStatus() {
         document.getElementById("setup-pairing-tab")?.click();
       }
       const invitationPending = await checkPairingInvitation();
-      if (!invitationPending && !status.joined && !pairingPromptShown) {
+      if (status.auto_join_available && pairingDialogAutoOpened) {
+        pairingConnectDialog?.close();
+        pairingDialogAutoOpened = false;
+        pairingPromptShown = false;
+      }
+      if (!invitationPending && !status.joined && !status.auto_join_available && !pairingPromptShown) {
         pairingPromptShown = true;
+        pairingDialogAutoOpened = true;
         openPairingDialog();
       } else if (status.joined) {
         pairingPromptShown = false;
+        pairingDialogAutoOpened = false;
       }
     }
 
@@ -1696,9 +1709,9 @@ function sortNodesByCapability(nodes) {
 
 function gpuGaugeMarkup(node, size = 40) {
   const hardware = node.hardware || {};
+  if (!hardware.has_gpu) return "";
   const utilization = Number(hardware.gpu_utilization_percent);
   if (!hardware.gpu_stats_available || !Number.isFinite(utilization)) {
-    if (!hardware.has_gpu) return `<span class="gpu-gauge-unavailable" role="img" aria-label="No GPU detected">CPU node</span>`;
     return `<span class="gpu-gauge-unavailable" role="img" aria-label="GPU utilization unavailable">GPU n/a</span>`;
   }
   const value = Math.max(0, Math.min(100, utilization));
@@ -1738,101 +1751,107 @@ function npuGaugeMarkup(node, size = 40) {
     </span>`;
 }
 
-function acceleratorHistoryMarkup(node, type) {
-  const label = type.toUpperCase();
-  const history = (node[`${type}_history`] || []).slice(-60);
-  const points = history
-    .map((sample, index) => ({
-      index,
-      value: Number(sample.utilization_percent),
-      available: sample.available,
-    }))
-    .filter((sample) => sample.available && Number.isFinite(sample.value));
-  if (!points.length) {
-    const message = node.hardware?.[`has_${type}`] ? `${label} telemetry unavailable` : `No ${label} detected`;
-    return `<div class="accelerator-history-empty">${message}</div>`;
-  }
+function nodeAcceleratorMarkup(node, size = 46) {
+  const hardware = node.hardware || {};
+  const gpuGauge = gpuGaugeMarkup(node, size);
+  const npuGauge = npuGaugeMarkup(node, size);
+  const gauges = gpuGauge || npuGauge
+    ? `<div class="node-accelerator-gauges">${gpuGauge}${npuGauge}</div>`
+    : "";
+  return `${gauges}
+    ${hardware.has_gpu ? `<div class="row"><span>GPU</span><span>${escapeHtml(hardware.gpu_vendor || "enabled")}</span></div>` : ""}
+    ${hardware.has_npu ? `<div class="row"><span>NPU</span><span>${escapeHtml(hardware.npu_vendor || "enabled")}</span></div>` : ""}`;
+}
 
-  const width = 180;
-  const height = 48;
-  const left = 10;
-  const right = 176;
-  const top = 5;
+function resourceHistoryMarkup(node) {
+  const hardware = node.hardware || {};
+  const systemHistory = Array.isArray(node.system_history) ? node.system_history.slice(-60) : [];
+  const series = [
+    ...(hardware.has_gpu ? [{
+      key: "gpu",
+      label: "GPU",
+      samples: Array.isArray(node.gpu_history) ? node.gpu_history.slice(-60) : [],
+      availableKey: "available",
+      valueKey: "utilization_percent",
+      currentAvailable: hardware.gpu_stats_available,
+      currentValue: hardware.gpu_utilization_percent,
+    }] : []),
+    ...(hardware.has_npu ? [{
+      key: "npu",
+      label: "NPU",
+      samples: Array.isArray(node.npu_history) ? node.npu_history.slice(-60) : [],
+      availableKey: "available",
+      valueKey: "utilization_percent",
+      currentAvailable: hardware.npu_stats_available,
+      currentValue: hardware.npu_utilization_percent,
+    }] : []),
+    {
+      key: "cpu",
+      label: "CPU",
+      samples: systemHistory,
+      availableKey: "cpu_available",
+      valueKey: "cpu_utilization_percent",
+      currentAvailable: hardware.cpu_stats_available,
+      currentValue: hardware.cpu_utilization_percent,
+    },
+    {
+      key: "ram",
+      label: "RAM",
+      samples: systemHistory,
+      availableKey: "memory_available",
+      valueKey: "memory_usage_percent",
+      currentAvailable: hardware.memory_stats_available,
+      currentValue: hardware.memory_usage_percent,
+    },
+  ];
+  const sampleCount = Math.max(1, ...series.map((item) => item.samples.length));
+  const left = 8;
+  const right = 172;
+  const top = 7;
   const bottom = 39;
-  const denominator = Math.max(history.length - 1, 1);
-  const x = (index) => left + (index / denominator) * (right - left);
+  const x = (index) => left + (index / Math.max(sampleCount - 1, 1)) * (right - left);
   const y = (value) => bottom - (Math.max(0, Math.min(100, value)) / 100) * (bottom - top);
-  const segments = [];
-  let segment = [];
-  history.forEach((sample, index) => {
-    const value = Number(sample.utilization_percent);
-    if (!sample.available || !Number.isFinite(value)) {
-      if (segment.length) segments.push(segment);
-      segment = [];
-      return;
-    }
-    segment.push({ x: x(index), y: y(value) });
-  });
-  if (segment.length) segments.push(segment);
-  const paths = segments
-    .filter((items) => items.length > 1)
-    .map((items) => `<path class="accelerator-history-line" d="${items.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}"></path>`)
-    .join("");
-  const isolatedPoints = segments
-    .filter((items) => items.length === 1)
-    .map(([point]) => `<circle class="accelerator-history-point" cx="${point.x}" cy="${point.y}" r="2.5"></circle>`)
-    .join("");
-  const latest = points[points.length - 1];
-  const lastPoint = { x: x(latest.index), y: y(latest.value) };
-  const latestPoint = segments.some((items) => items.length === 1 && items[0].x === lastPoint.x)
-    ? ""
-    : `<circle class="accelerator-history-point" cx="${lastPoint.x}" cy="${lastPoint.y}" r="2.5"></circle>`;
-  return `
-    <div class="accelerator-history">
-      <div class="accelerator-history-heading"><span>${label} utilization</span><strong>${Math.round(latest.value)}%</strong></div>
-      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${label} utilization history for ${escapeHtml(node.id)}">
-        <path class="accelerator-history-grid" d="M${left},${top}H${right} M${left},${(top + bottom) / 2}H${right} M${left},${bottom}H${right}"></path>
-        ${paths}
-        ${isolatedPoints}
-        ${latestPoint}
-      </svg>
-      <small>Recent samples · up to 5-minute window</small>
-    </div>`;
-}
-
-function gpuHistoryMarkup(node) {
-  return acceleratorHistoryMarkup(node, "gpu");
-}
-
-function npuHistoryMarkup(node) {
-  return acceleratorHistoryMarkup(node, "npu");
-}
-
-function systemHistoryMarkup(node) {
-  const history = (node.system_history || []).slice(-60);
-  if (!history.length) {
-    return '<div class="system-history-empty">CPU and memory history is warming up.</div>';
-  }
-  const line = (availableKey, valueKey, className) => {
-    const points = history.flatMap((sample, index) => {
-      const value = Number(sample[valueKey]);
-      return sample[availableKey] && Number.isFinite(value)
-        ? [{ x: 8 + index * 164 / Math.max(history.length - 1, 1), y: 39 - Math.max(0, Math.min(100, value)) * 0.32 }]
-        : [];
+  const paths = series.map((item) => {
+    const offset = sampleCount - item.samples.length;
+    const segments = [];
+    let segment = [];
+    item.samples.forEach((sample, index) => {
+      const value = Number(sample[item.valueKey]);
+      if (!sample[item.availableKey] || !Number.isFinite(value)) {
+        if (segment.length) segments.push(segment);
+        segment = [];
+        return;
+      }
+      segment.push({ x: x(offset + index), y: y(value) });
     });
-    if (points.length < 2) return "";
-    return `<path class="${className}" d="${points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}"></path>`;
-  };
-  const cpuValue = node.hardware?.cpu_stats_available ? `${node.hardware.cpu_utilization_percent}%` : "n/a";
-  const memoryValue = node.hardware?.memory_stats_available ? `${node.hardware.memory_usage_percent}%` : "n/a";
-  return `<div class="system-history">
-    <div class="gpu-history-heading"><span>CPU ${cpuValue} · RAM ${memoryValue}</span><span>Recent</span></div>
-    <svg viewBox="0 0 180 48" role="img" aria-label="CPU and memory utilization history for ${escapeHtml(node.id)}">
-      <path class="gpu-history-grid" d="M8,7H172 M8,23H172 M8,39H172"></path>
-      ${line("cpu_available", "cpu_utilization_percent", "system-history-cpu")}
-      ${line("memory_available", "memory_usage_percent", "system-history-memory")}
+    if (segment.length) segments.push(segment);
+    return segments.map((points) => points.length === 1
+      ? `<circle class="resource-history-point resource-history-${item.key}" cx="${points[0].x.toFixed(1)}" cy="${points[0].y.toFixed(1)}" r="2.5"></circle>`
+      : `<path class="resource-history-line resource-history-${item.key}" d="${points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}"></path>`)
+      .join("");
+  }).join("");
+  const legend = series.map((item) => {
+    const value = Number(item.currentValue);
+    const current = item.currentAvailable && Number.isFinite(value)
+      ? `${Math.round(Math.max(0, Math.min(100, value)))}%`
+      : "n/a";
+    return `<span class="resource-history-item"><i class="resource-history-swatch resource-history-${item.key}"></i>${item.label} ${current}</span>`;
+  }).join("");
+  const labels = series.map((item) => item.label);
+  const historyLabel = labels.length > 1
+    ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`
+    : labels[0];
+  const hasSamples = series.some((item) => item.samples.some((sample) =>
+    sample[item.availableKey] && Number.isFinite(Number(sample[item.valueKey]))
+  ));
+  return `<div class="resource-history">
+    <div class="resource-history-heading"><strong>Resource utilization</strong><span>Recent · up to 5 minutes</span></div>
+    <div class="resource-history-legend">${legend}</div>
+    <svg viewBox="0 0 180 48" role="img" aria-label="${historyLabel} utilization history for ${escapeHtml(node.id)}">
+      <path class="resource-history-grid" d="M${left},${top}H${right} M${left},${(top + bottom) / 2}H${right} M${left},${bottom}H${right}"></path>
+      ${paths}
     </svg>
-    <small>CPU · RAM · up to 5-minute window</small>
+    ${hasSamples ? "" : '<small class="resource-history-empty">Resource telemetry history is warming up.</small>'}
   </div>`;
 }
 
@@ -1986,29 +2005,24 @@ function renderNodes(nodes) {
   for (const n of ordered) {
     const card = document.createElement("div");
     card.className = "card" + (n.id === leaderID ? " leader" : "");
-    const gpuGauge = gpuGaugeMarkup(n, 46);
-    const npuGauge = npuGaugeMarkup(n, 46);
     const modelTags = (n.models || [])
       .map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`)
       .join("");
     const nodeActions = n.healthy
       ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
-         <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Refresh local registry</button>
+         <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
          <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>`
       : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
     card.innerHTML = `
-      <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3><div class="node-accelerator-gauges">${gpuGauge}${npuGauge}</div></div>
+      <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
       ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
       <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ''}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ''}</div>
       <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
       <div class="row"><span>OS / Arch</span><span>${escapeHtml(n.hardware.os)}/${escapeHtml(n.hardware.arch)}</span></div>
       <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
       <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
-      <div class="row"><span>GPU</span><span>${n.hardware.has_gpu ? escapeHtml(n.hardware.gpu_vendor || "enabled") : "none"}</span></div>
-      <div class="row"><span>NPU</span><span>${n.hardware.has_npu ? escapeHtml(n.hardware.npu_vendor || "enabled") : "none"}</span></div>
-      ${gpuHistoryMarkup(n)}
-      ${npuHistoryMarkup(n)}
-      ${systemHistoryMarkup(n)}
+      ${nodeAcceleratorMarkup(n)}
+      ${resourceHistoryMarkup(n)}
       ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
       <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
       <div class="row"><span>Score</span><span>${n.hardware.score.toFixed(1)}</span></div>
@@ -2246,7 +2260,7 @@ async function saveNodeProperties(nodeId, form) {
 async function refreshNodeModels(nodeId) {
   const button = [...(nodesList?.querySelectorAll(".node-model-refresh") || [])]
     .find((candidate) => candidate.dataset.node === nodeId);
-  if (button) button.textContent = "Refreshing...";
+  if (button) button.textContent = "Rescanning...";
   try {
     await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/refresh`, { method: "POST" });
     lastFetchedModels.delete(nodeId);
@@ -2259,18 +2273,18 @@ async function refreshNodeModels(nodeId) {
 
 refreshAllModelsBtn?.addEventListener("click", async () => {
   refreshAllModelsBtn.disabled = true;
-  refreshAllModelsBtn.textContent = "Refreshing...";
+  refreshAllModelsBtn.textContent = "Rescanning...";
   try {
     await fetchJSON("/api/nodes/models/refresh", { method: "POST" });
     await refresh();
-    refreshAllModelsBtn.textContent = "Registries refreshed";
+    refreshAllModelsBtn.textContent = "Rescan complete";
   } catch (err) {
     refreshAllModelsBtn.textContent = "Refresh failed";
     console.error("all-node model refresh failed", err);
   } finally {
     setTimeout(() => {
       refreshAllModelsBtn.disabled = false;
-      refreshAllModelsBtn.textContent = "↻ Refresh all model registries";
+      refreshAllModelsBtn.textContent = "↻ Rescan all nodes";
     }, 1800);
   }
 });
@@ -2547,37 +2561,138 @@ function renderDiscovery(peers) {
 
 function renderTasks(tasks) {
   if (!tasksList) return;
+  const expandedTaskIds = new Set(
+    Array.from(tasksList.querySelectorAll?.(".task-details-row:not([hidden])") || [])
+      .map((item) => item.dataset.taskId)
+      .filter(Boolean)
+  );
   tasksList.innerHTML = "";
   if (!tasks || tasks.length === 0) {
-    tasksList.innerHTML = '<p style="color:var(--muted)">No tasks submitted yet.</p>';
+    tasksList.innerHTML = '<p class="task-history-empty">No tasks submitted yet.</p>';
+    if (taskHistoryCount) taskHistoryCount.textContent = "0 tasks";
     return;
   }
-  const orderedTasks = [...tasks].sort((a, b) =>
+  const query = (taskHistorySearch?.value || "").trim().toLowerCase();
+  const statusFilter = taskHistoryStatus?.value || "all";
+  const orderedTasks = [...tasks]
+    .filter((task) => {
+      const status = task.status || "unknown";
+      if (statusFilter !== "all" && status !== statusFilter) return false;
+      if (!query) return true;
+      const searchable = [
+      task.id, task.description, status, task.result, task.error,
+      ...(task.subtasks || []).flatMap((item) => [
+        item.subtask?.id, item.subtask?.description, item.subtask?.role,
+        item.subtask?.task_type, item.node_id, item.model, item.output, item.error,
+      ]),
+      ].filter(Boolean).join(" ").toLowerCase();
+      return searchable.includes(query);
+    })
+    .sort((a, b) =>
     new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
   );
-  for (const t of orderedTasks) {
-    const card = document.createElement("div");
-    card.className = "card";
+  if (taskHistoryCount) {
+    taskHistoryCount.textContent = `Showing ${orderedTasks.length} of ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
+  }
+  if (orderedTasks.length === 0) {
+    tasksList.innerHTML = '<p class="task-history-empty">No tasks match the selected filters.</p>';
+    return;
+  }
+
+  const validStatuses = new Set(["pending", "running", "synthesizing", "awaiting_approval", "completed", "failed", "cancelled"]);
+  const table = document.createElement("table");
+  table.className = "task-history-table";
+  table.innerHTML = `
+    <thead><tr>
+      <th scope="col"><span class="sr-only">Expand</span></th>
+      <th scope="col">Task</th>
+      <th scope="col">Task ID</th>
+      <th scope="col">Steps</th>
+      <th scope="col">Status</th>
+    </tr></thead>
+  `;
+  const tbody = document.createElement("tbody");
+  table.appendChild(tbody);
+  tasksList.appendChild(table);
+  for (const [index, t] of orderedTasks.entries()) {
+    const status = validStatuses.has(t.status) ? t.status : "unknown";
+    const isExpanded = expandedTaskIds.has(t.id);
+    const subtasks = t.subtasks || [];
+    const completedCount = subtasks.filter((subtask) => subtask.status === "completed").length;
+    const formatDate = (value) => {
+      if (!value) return "Unknown";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
+    };
     const subtaskHTML = (t.subtasks || [])
       .map(
-        (s) => `
-        <div class="row"><span>${escapeHtml(s.subtask.id)} · ${escapeHtml(s.subtask.role || s.subtask.task_type)} (${escapeHtml(s.subtask.task_type)}) &rarr; ${escapeHtml(s.node_id)} / ${escapeHtml(s.model)}</span>
-        <span class="badge ${s.status}">${s.status}</span></div>
-        ${s.score_factors ? `<details class="routing-score-details"><summary>Routing score ${Number(s.score || 0).toFixed(1)}</summary><div class="catalog-tags">Model match +${Number(s.score_factors.model_match || 0).toFixed(1)} · hardware +${Number(s.score_factors.hardware || 0).toFixed(1)} · load −${Number(s.score_factors.load_penalty || 0).toFixed(1)} (${s.score_factors.active_tasks || 0} active + ${s.score_factors.queued_tasks || 0} queued) · GPU −${Number(s.score_factors.gpu_utilization_penalty || 0).toFixed(1)} · NPU −${Number(s.score_factors.npu_utilization_penalty || 0).toFixed(1)} · learned ${Number(s.score_factors.learned_bias || 0) >= 0 ? "+" : ""}${Number(s.score_factors.learned_bias || 0).toFixed(1)} · telemetry ${s.score_factors.telemetry_fresh ? `fresh (${s.score_factors.telemetry_age_ms || 0}ms)` : "stale/unavailable, ignored"}</div></details>` : ""}
-        ${s.output ? `<div class="subtask-output-wrap"><button class="copy-output-btn" type="button" data-copy-output="${encodeURIComponent(s.output)}">Copy</button><div class="subtask-output">${escapeHtml(s.output)}</div></div>` : ""}
-        ${s.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(s.error)}</div>` : ""}
+      (s) => {
+        const subtaskStatus = validStatuses.has(s.status) ? s.status : "unknown";
+        const subtask = s.subtask || {};
+        return `
+      <article class="task-step">
+        <div class="task-step-heading"><strong>${escapeHtml(subtask.id || "Subtask")}</strong><span class="badge ${subtaskStatus}">${escapeHtml(subtaskStatus.replaceAll("_", " "))}</span></div>
+        <div class="task-step-target">${escapeHtml(subtask.role || subtask.task_type || "Task step")} · ${escapeHtml(subtask.task_type || "general")} · ${escapeHtml(s.node_id || "Unassigned")} / ${escapeHtml(s.model || "No model")}</div>
+        ${subtask.description ? `<p>${escapeHtml(subtask.description)}</p>` : ""}
+        ${s.error ? `<p class="task-error-reason"><strong>Failure reason:</strong> ${escapeHtml(s.error)}</p>` : ""}
+        ${s.score_factors ? `<details class="routing-score-details"><summary>Routing score ${Number(s.score || 0).toFixed(1)}</summary><div class="catalog-tags">Model match +${Number(s.score_factors.model_match || 0).toFixed(1)} · capability +${Number(s.score_factors.capability_score || 0).toFixed(1)} · quality +${Number(s.score_factors.model_quality_score || 0).toFixed(1)} · hardware +${Number(s.score_factors.hardware || 0).toFixed(1)} · GPU preference +${Number(s.score_factors.gpu_compatibility_score || 0).toFixed(1)} · load −${Number(s.score_factors.load_penalty || 0).toFixed(1)} (${s.score_factors.active_tasks || 0} active + ${s.score_factors.queued_tasks || 0} queued) · topology −${Number(s.score_factors.topology_score || 0).toFixed(1)} · GPU −${Number(s.score_factors.gpu_utilization_penalty || 0).toFixed(1)} · NPU −${Number(s.score_factors.npu_utilization_penalty || 0).toFixed(1)} · learned ${Number(s.score_factors.learned_bias || 0) >= 0 ? "+" : ""}${Number(s.score_factors.learned_bias || 0).toFixed(1)} · telemetry ${s.score_factors.telemetry_fresh ? `fresh (${s.score_factors.telemetry_age_ms || 0}ms)` : "stale/unavailable, ignored"}</div></details>` : ""}
+        ${s.output ? `<div class="subtask-output-wrap"><button class="copy-output-btn" type="button" data-copy-output="${encodeURIComponent(s.output)}">Copy output</button><pre class="subtask-output">${escapeHtml(s.output)}</pre></div>` : ""}
+      </article>
       `
+      }
       )
       .join("");
-    card.innerHTML = `
-      <h3>${escapeHtml(t.id)} <span class="badge ${t.status}">${escapeHtml(t.status)}</span>${t.status === "running" || t.status === "awaiting_approval" ? ` <button class="cancel-task-btn" type="button" data-task-id="${escapeHtml(t.id)}">Cancel</button>` : ""}${t.status === "awaiting_approval" ? ` <button class="approve-task-btn primary-btn" type="button" data-task-id="${escapeHtml(t.id)}">Approve and synthesize</button>` : ""}</h3>
-      <div class="row"><span colspan="2">${escapeHtml(t.description)}</span></div>
-      ${t.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(t.error)}</div>` : ""}
-      ${subtaskHTML}
-      ${t.result ? `<div class="subtask-output-wrap"><strong>Task result</strong><div class="subtask-output">${escapeHtml(t.result)}</div></div>` : ""}
+    const item = document.createElement("tr");
+    item.className = `task-history-row task-history-row-${status}`;
+    item.dataset.taskId = t.id;
+    item.innerHTML = `
+      <td><button class="task-expand-btn" type="button" aria-expanded="${isExpanded}" aria-controls="task-details-${index}" aria-label="Show details for ${escapeHtml(t.description || t.id)}"><span class="task-expand-icon" aria-hidden="true">›</span></button></td>
+      <td><span class="task-history-title" title="${escapeHtml(t.description || t.id)}">${escapeHtml(t.description || t.id)}</span></td>
+      <td><span class="task-history-id" title="${escapeHtml(t.id)}">${escapeHtml(t.id)}</span></td>
+      <td>${subtasks.length ? `${completedCount} / ${subtasks.length}` : "—"}</td>
+      <td><span class="badge ${status}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
     `;
-    tasksList.appendChild(card);
-    card.querySelector(".cancel-task-btn")?.addEventListener("click", async (event) => {
+    const detailsRow = document.createElement("tr");
+    detailsRow.id = `task-details-${index}`;
+    detailsRow.className = "task-details-row";
+    detailsRow.dataset.taskId = t.id;
+    detailsRow.hidden = !isExpanded;
+    detailsRow.innerHTML = `
+      <td colspan="5"><div class="task-details-content">
+      <div class="task-menu-meta">
+        <span>Created ${escapeHtml(formatDate(t.created_at))}</span>
+        ${t.updated_at ? `<span>Updated ${escapeHtml(formatDate(t.updated_at))}</span>` : ""}
+      </div>
+      <div class="task-actions">
+        ${status === "running" || status === "awaiting_approval" ? `<button class="cancel-task-btn" type="button" data-task-id="${escapeHtml(t.id)}">Cancel</button>` : ""}
+        ${status === "awaiting_approval" ? `<button class="approve-task-btn primary-btn" type="button" data-task-id="${escapeHtml(t.id)}">Approve and synthesize</button>` : ""}
+        ${t.resumable && (status === "failed" || status === "cancelled") ? `<button class="resume-task-btn primary-btn" type="button" data-task-id="${escapeHtml(t.id)}">Resume</button>` : ""}
+      </div>
+      ${t.error ? `<p class="task-error-reason"><strong>Task failure reason:</strong> ${escapeHtml(t.error)}</p>` : ""}
+      ${t.last_checkpoint ? `<div class="task-checkpoint">Last checkpoint: ${escapeHtml(t.last_checkpoint)}</div>` : ""}
+      ${subtasks.length ? `<div class="task-subtasks">${subtaskHTML}</div>` : '<p class="task-history-empty">No subtasks recorded.</p>'}
+      ${t.result ? `<section class="task-result"><h4>Final result</h4><pre class="subtask-output">${escapeHtml(t.result)}</pre></section>` : ""}
+      </div></td>
+    `;
+    tbody.appendChild(item);
+    tbody.appendChild(detailsRow);
+    const expandButton = item.querySelector(".task-expand-btn");
+    expandButton?.addEventListener("click", () => {
+      detailsRow.hidden = !detailsRow.hidden;
+      expandButton.setAttribute("aria-expanded", String(!detailsRow.hidden));
+      expandButton.setAttribute("aria-label", `${detailsRow.hidden ? "Show" : "Hide"} details for ${t.description || t.id}`);
+    });
+    detailsRow.querySelector(".resume-task-btn")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/resume`, { method: "POST" });
+      } catch (err) {
+        button.disabled = false;
+        if (submitStatus) submitStatus.textContent = `Unable to resume ${t.id}: ${err.message}`;
+      }
+    });
+    detailsRow.querySelector(".cancel-task-btn")?.addEventListener("click", async (event) => {
       const button = event.currentTarget;
       button.disabled = true;
       try {
@@ -2586,7 +2701,7 @@ function renderTasks(tasks) {
         if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err.message}`;
       }
     });
-    card.querySelector(".approve-task-btn")?.addEventListener("click", async (event) => {
+    detailsRow.querySelector(".approve-task-btn")?.addEventListener("click", async (event) => {
       const button = event.currentTarget;
       button.disabled = true;
       try {
@@ -2596,11 +2711,14 @@ function renderTasks(tasks) {
         if (submitStatus) submitStatus.textContent = `Unable to approve ${t.id}: ${err.message}`;
       }
     });
-    card.querySelectorAll("[data-copy-output]").forEach((button) => {
+    detailsRow.querySelectorAll("[data-copy-output]").forEach((button) => {
       button.addEventListener("click", () => copyText(decodeURIComponent(button.dataset.copyOutput), button));
     });
   }
 }
+
+taskHistorySearch?.addEventListener("input", () => renderTasks(window.latestTasks || []));
+taskHistoryStatus?.addEventListener("change", () => renderTasks(window.latestTasks || []));
 
 async function copyText(text, button) {
   try {

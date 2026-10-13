@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/peeridentity"
+	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
 type pullTestEngine struct {
@@ -38,6 +40,128 @@ func (e *pullTestEngine) Chat(string, []engine.ChatMessage) (string, error) {
 func (e *pullTestEngine) Pull(model string) error {
 	e.pulls = append(e.pulls, model)
 	return nil
+}
+
+func TestHandlePropertiesLoadsAndSavesCompleteProperties(t *testing.T) {
+	engineURL := "http://127.0.0.1:1235"
+	agent := newAgentWithEngineDetector(config.NodeConfig{
+		NodeID:           "node-properties-test",
+		ListenAddr:       ":7451",
+		AdvertiseAddr:    "https://10.0.0.2:7451",
+		OrchestratorAddr: "https://orchestrator:7450",
+		DefaultModel:     "qwen3-4b",
+		DisabledModels:   []string{"disabled-model"},
+		Engines:          []config.EngineConfig{{Name: "lmstudio", URL: engineURL}},
+		DiscoveryEnabled: true,
+		TrayMode:         "hidden",
+		MemoryPath:       filepath.Join(t.TempDir(), "node.db"),
+	}, nil, func() []engine.Engine { return nil })
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close test agent: %v", err)
+		}
+	})
+
+	getProperties := func() nodeProperties {
+		response := httptest.NewRecorder()
+		agent.handleProperties(response, httptest.NewRequest(http.MethodGet, "/properties", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET properties returned %d: %s", response.Code, response.Body.String())
+		}
+		var props nodeProperties
+		if err := json.NewDecoder(response.Body).Decode(&props); err != nil {
+			t.Fatal(err)
+		}
+		return props
+	}
+
+	props := getProperties()
+	if props.ID != "node-properties-test" || props.ListenAddr != ":7451" ||
+		props.AdvertiseAddr != "https://10.0.0.2:7451" ||
+		props.OrchestratorAddr != "https://orchestrator:7450" ||
+		props.DefaultModel != "qwen3-4b" || props.EngineName != "lmstudio" ||
+		props.EngineURL != engineURL || !props.DiscoveryEnabled || props.TrayMode != "hidden" ||
+		len(props.DisabledModels) != 1 || props.DisabledModels[0] != "disabled-model" {
+		t.Fatalf("GET properties did not return the populated node configuration: %+v", props)
+	}
+
+	update := nodeProperties{
+		AdvertiseAddr:    "https://10.0.0.3:7451",
+		OrchestratorAddr: "https://new-orchestrator:7450",
+		DefaultModel:     "new-model",
+		DisabledModels:   []string{"old-model", "new-model"},
+		EngineName:       "lmstudio",
+		EngineURL:        engineURL,
+		AutoOpenBrowser:  true,
+		TrayMode:         "taskbar",
+		MemoryPath:       "C:\\node\\memory.db",
+	}
+	body, err := json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	agent.handleProperties(response, httptest.NewRequest(http.MethodPatch, "/properties", bytes.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("PATCH properties returned %d: %s", response.Code, response.Body.String())
+	}
+
+	props = getProperties()
+	if props.AdvertiseAddr != update.AdvertiseAddr ||
+		props.OrchestratorAddr != update.OrchestratorAddr ||
+		props.DefaultModel != update.DefaultModel ||
+		props.EngineName != update.EngineName || props.EngineURL != update.EngineURL ||
+		!props.AutoOpenBrowser || props.TrayMode != update.TrayMode ||
+		props.MemoryPath != update.MemoryPath || len(props.DisabledModels) != 2 {
+		t.Fatalf("saved node properties were not retained: %+v", props)
+	}
+}
+
+func TestPrioritizeAcceleratedEnginesPrefersLMStudioOnGPU(t *testing.T) {
+	engines := []engine.Engine{
+		&pullTestEngine{name: "ollama"},
+		&pullTestEngine{name: "fastflowlm"},
+		&pullTestEngine{name: "lmstudio"},
+	}
+	ordered := prioritizeAcceleratedEngines(engines, hardware.Info{HasGPU: true, HasNPU: true})
+	var names []string
+	for _, e := range ordered {
+		names = append(names, e.Name())
+	}
+	if got, want := strings.Join(names, ","), "lmstudio,fastflowlm,ollama"; got != want {
+		t.Fatalf("accelerated engine order = %q, want %q", got, want)
+	}
+}
+
+func TestRefreshDetectedEnginesFindsNewEngineAlongsideExistingOne(t *testing.T) {
+	detected := []engine.Engine{&pullTestEngine{name: "ollama"}}
+	agent := newAgentWithEngineDetector(config.NodeConfig{
+		NodeID: "engine-rescan-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	}, nil, func() []engine.Engine {
+		return append([]engine.Engine(nil), detected...)
+	})
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close test agent: %v", err)
+		}
+	})
+
+	detected = append(detected, &pullTestEngine{name: "lmstudio"})
+	agent.enginesMu.Lock()
+	agent.lastEngineScan = time.Now().Add(-engineDetectionInterval)
+	agent.enginesMu.Unlock()
+	agent.refreshDetectedEngines()
+
+	foundLMStudio := false
+	for _, e := range agent.engineSnapshot() {
+		if e.Name() == "lmstudio" {
+			foundLMStudio = true
+			break
+		}
+	}
+	if !foundLMStudio {
+		t.Fatal("LM Studio was not discovered while another engine was already available")
+	}
 }
 
 func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
@@ -91,6 +215,54 @@ func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
 	}
 }
 
+func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
+	orchestrator, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), "orchestrator-auto-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/pairing/join" {
+			t.Errorf("pairing path = %q", r.URL.Path)
+		}
+		var request nodePairingRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		if request.Role != "node" || request.ID != "node-auto-test" || request.CertificatePEM == "" {
+			t.Errorf("unexpected pairing request: %#v", request)
+		}
+		// PIN is empty for auto-join on same subnet
+		if request.PIN != "" {
+			t.Errorf("expected empty PIN, got %q", request.PIN)
+		}
+		_ = json.NewEncoder(w).Encode(nodePairingResponse{
+			ID: orchestrator.ID(), Role: "orchestrator", CertificatePEM: orchestrator.CertificatePEM(),
+		})
+	}))
+	defer server.Close()
+
+	agent := New(config.NodeConfig{
+		NodeID: "node-auto-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if agent.Memory() != nil {
+		t.Cleanup(func() { _ = agent.Memory().Close() })
+	}
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	requestBody, _ := json.Marshal(map[string]string{"address": server.URL, "pin": ""})
+	request := httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(requestBody))
+	response := httptest.NewRecorder()
+	agent.handlePairingConnect(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("auto-join without PIN returned %d: %s", response.Code, response.Body.String())
+	}
+	if !agent.identity.IsTrustedID(orchestrator.ID()) || agent.getOrchestratorAddr() != server.URL {
+		t.Fatal("node did not trust and select the auto-joined orchestrator")
+	}
+}
+
 func TestPairingStatusRequestsPINForUntrustedOrchestrator(t *testing.T) {
 	agent := New(config.NodeConfig{
 		NodeID: "node-awaiting-pairing", OrchestratorAddr: "https://orchestrator.local:7450",
@@ -104,6 +276,23 @@ func TestPairingStatusRequestsPINForUntrustedOrchestrator(t *testing.T) {
 	agent.handlePairingStatus(response, httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"pairing_required":true`) {
 		t.Fatalf("pairing status returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestPairingStatusOffersAutomaticJoinOnSameSubnet(t *testing.T) {
+	agent := New(config.NodeConfig{
+		NodeID: "node-same-subnet", OrchestratorAddr: "https://127.0.0.1:7450",
+		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if agent.Memory() != nil {
+		t.Cleanup(func() { _ = agent.Memory().Close() })
+	}
+
+	response := httptest.NewRecorder()
+	agent.handlePairingStatus(response, httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil))
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"auto_join_available":true`) {
+		t.Fatalf("pairing status did not report automatic same-subnet joining: %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -201,6 +390,74 @@ func TestFormerOrchestratorWorkerJoinsNewLeader(t *testing.T) {
 	}
 }
 
+func TestPersistentTaskHistorySurvivesAgentRestart(t *testing.T) {
+	cfg := config.NodeConfig{
+		NodeID:     "persistent-task-history-test",
+		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	}
+	agent, err := NewWithPersistentTasks(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := agent.tasks.CreateChecked("Persist this task", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := NewWithPersistentTasks(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	restored, ok := restarted.tasks.Get(created.ID)
+	if !ok || restored.Description != "Persist this task" {
+		t.Fatalf("task history was not restored: %#v", restored)
+	}
+}
+
+func TestTaskReplicaRequiresCurrentOrchestrator(t *testing.T) {
+	agent := New(config.NodeConfig{
+		NodeID:     "task-replica-test",
+		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if agent.mem != nil {
+		defer agent.mem.Close()
+	}
+	agent.setOrchestratorID("current-orchestrator")
+	source := taskmgr.NewManager()
+	task, err := source.CreateChecked("Replicated from coordinator", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(source.All())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/tasks/replica", bytes.NewReader(body))
+	request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Subject: pkix.Name{CommonName: "old-orchestrator"}}}}
+	response := httptest.NewRecorder()
+	agent.handleTaskReplica(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("replica from former coordinator returned %d, want forbidden", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/tasks/replica", bytes.NewReader(body))
+	request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Subject: pkix.Name{CommonName: "current-orchestrator"}}}}
+	response = httptest.NewRecorder()
+	agent.handleTaskReplica(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("replica from current coordinator returned %d: %s", response.Code, response.Body.String())
+	}
+	replica, ok := agent.tasks.Get(task.ID)
+	if !ok || replica.Description != task.Description {
+		t.Fatalf("coordinator task was not replicated: %#v", replica)
+	}
+}
+
 func TestNodeControlInspectsLocalEngineWithoutSelfTLSRequest(t *testing.T) {
 	agent := New(config.NodeConfig{
 		NodeID: "node-local-control-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
@@ -210,6 +467,7 @@ func TestNodeControlInspectsLocalEngineWithoutSelfTLSRequest(t *testing.T) {
 	}
 	defer agent.Memory().Close()
 	agent.engines = []engine.Engine{engine.NewSimulated()}
+	agent.detectedEngines = nil
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -283,6 +541,71 @@ func TestNodeControlRoutesRemoteInspectionThroughOrchestrator(t *testing.T) {
 	}
 }
 
+func TestDeferredAndManualRescanKeepConfiguredAndDiscoveredEngines(t *testing.T) {
+	configuredServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"configured-model"}]}`))
+	}))
+	defer configuredServer.Close()
+
+	discovered := []engine.Engine{&pullTestEngine{name: "detected-at-start"}}
+	scans := 0
+	agent := newAgentWithEngineDetector(config.NodeConfig{
+		NodeID:     "engine-discovery-test",
+		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+		Engines: []config.EngineConfig{{
+			Name: "lmstudio",
+			URL:  configuredServer.URL,
+		}},
+	}, nil, func() []engine.Engine {
+		scans++
+		return append([]engine.Engine(nil), discovered...)
+	})
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+
+	engineNames := func() []string {
+		names := make([]string, 0)
+		for _, configured := range agent.engineSnapshot() {
+			names = append(names, configured.Name())
+		}
+		return names
+	}
+	if scans != 0 {
+		t.Fatalf("constructor discovery scans = %d, want 0", scans)
+	}
+	if got := strings.Join(engineNames(), ","); got != "lmstudio" {
+		t.Fatalf("engines before the deferred scan = %q, want the configured engine", got)
+	}
+
+	agent.refreshDetectedEngines()
+	if scans != 1 {
+		t.Fatalf("initial deferred discovery scans = %d, want 1", scans)
+	}
+	if got := strings.Join(engineNames(), ","); got != "lmstudio,detected-at-start" {
+		t.Fatalf("engines after deferred scan = %q, want configured and discovered engines", got)
+	}
+
+	discovered = []engine.Engine{&pullTestEngine{name: "detected-after-install"}}
+	response := httptest.NewRecorder()
+	agent.handleModelsRefresh(response, httptest.NewRequest(http.MethodPost, "/models/refresh", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("manual rescan returned %d: %s", response.Code, response.Body.String())
+	}
+	if scans != 2 {
+		t.Fatalf("discovery scans after manual rescan = %d, want 2", scans)
+	}
+	if got := strings.Join(engineNames(), ","); got != "lmstudio,detected-after-install" {
+		t.Fatalf("engines after rescan = %q, want configured and newly discovered engines", got)
+	}
+}
+
 func TestNodeModelsLocalRequestsWithoutSelfTLS(t *testing.T) {
 	agent := New(config.NodeConfig{
 		NodeID: "node-local-models-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
@@ -292,7 +615,7 @@ func TestNodeModelsLocalRequestsWithoutSelfTLS(t *testing.T) {
 	}
 	defer agent.Memory().Close()
 	agent.engines = []engine.Engine{engine.NewSimulated()}
-	agent.enginesConfigured = true
+	agent.detectedEngines = nil
 
 	selfRequests := 0
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -851,5 +1174,25 @@ func TestNodeChatAndDialogueEndpoints(t *testing.T) {
 	}
 	if len(fetchedDlg.Messages) != 5 {
 		t.Errorf("expected 5 messages in fetched dialogue, got %d", len(fetchedDlg.Messages))
+	}
+}
+
+func TestTaskSubmissionProxyUsesLongTimeoutClient(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer upstream.Close()
+
+	agent := New(config.NodeConfig{})
+	agent.orchestratorAddr = upstream.URL
+	agent.peerClient = &http.Client{Timeout: 10 * time.Millisecond}
+	agent.dispatchClient = &http.Client{Timeout: time.Second}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"description":"test"}`))
+	agent.handleAPITasksPost(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("proxied task submission returned %d: %s", response.Code, response.Body.String())
 	}
 }

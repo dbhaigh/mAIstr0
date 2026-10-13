@@ -708,6 +708,139 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 	}
 }
 
+func TestAutoJoinOnSameSubnetWithoutPIN(t *testing.T) {
+	srv := newTestServer(t)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.identity = identity
+	activePIN, err := identity.NewPairingPIN()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "node.json"), "subnet-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(pairingJoinRequest{
+		ID: node.ID(), Role: "node", PIN: "", CertificatePEM: node.CertificatePEM(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
+	request.TLS = &tls.ConnectionState{}
+	request.RemoteAddr = "127.0.0.1:54321" // loopback is on the same subnet
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("auto-join on same subnet returned %d: %s", response.Code, response.Body.String())
+	}
+	if !identity.IsTrustedID(node.ID()) {
+		t.Fatal("node certificate was not pinned by orchestrator")
+	}
+
+	// The active pairing PIN must remain untouched so off-subnet nodes can still use it
+	if !identity.VerifyPairingPIN(activePIN) {
+		t.Fatal("active pairing PIN should not have been consumed by auto-join on same subnet")
+	}
+}
+
+func TestAutoJoinOnSameSubnetWithInvalidPIN(t *testing.T) {
+	srv := newTestServer(t)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.identity = identity
+	activePIN, err := identity.NewPairingPIN()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "node.json"), "subnet-node-wrong-pin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(pairingJoinRequest{
+		ID: node.ID(), Role: "node", PIN: "000000", CertificatePEM: node.CertificatePEM(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
+	request.TLS = &tls.ConnectionState{}
+	request.RemoteAddr = "127.0.0.1:54321" // loopback is on the same subnet
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("auto-join with wrong PIN on same subnet returned %d: %s", response.Code, response.Body.String())
+	}
+	if !identity.IsTrustedID(node.ID()) {
+		t.Fatal("node certificate was not pinned by orchestrator")
+	}
+
+	// Active PIN must still be valid
+	if !identity.VerifyPairingPIN(activePIN) {
+		t.Fatal("active pairing PIN should still be valid")
+	}
+}
+
+func TestPairingFromDifferentSubnetRequiresPIN(t *testing.T) {
+	srv := newTestServer(t)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.identity = identity
+	pin, err := identity.NewPairingPIN()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "node.json"), "remote-subnet-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt 1: No PIN from remote subnet (192.0.2.1) -> must be rejected with 401
+	bodyNoPIN, err := json.Marshal(pairingJoinRequest{
+		ID: node.ID(), Role: "node", PIN: "", CertificatePEM: node.CertificatePEM(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqNoPIN := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(bodyNoPIN))
+	reqNoPIN.TLS = &tls.ConnectionState{}
+	reqNoPIN.RemoteAddr = "192.0.2.1:54321"
+	respNoPIN := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(respNoPIN, reqNoPIN)
+	if respNoPIN.Code != http.StatusUnauthorized {
+		t.Fatalf("remote subnet join without PIN returned %d, want 401", respNoPIN.Code)
+	}
+
+	// Attempt 2: Valid PIN from remote subnet -> must succeed with 200
+	bodyWithPIN, err := json.Marshal(pairingJoinRequest{
+		ID: node.ID(), Role: "node", PIN: pin, CertificatePEM: node.CertificatePEM(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqWithPIN := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(bodyWithPIN))
+	reqWithPIN.TLS = &tls.ConnectionState{}
+	reqWithPIN.RemoteAddr = "192.0.2.1:54321"
+	respWithPIN := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(respWithPIN, reqWithPIN)
+	if respWithPIN.Code != http.StatusOK {
+		t.Fatalf("remote subnet join with valid PIN returned %d: %s", respWithPIN.Code, respWithPIN.Body.String())
+	}
+	if !identity.IsTrustedID(node.ID()) {
+		t.Fatal("node certificate was not pinned after valid PIN pairing")
+	}
+}
+
 func TestPairingPINCanBeRegeneratedFromLoopback(t *testing.T) {
 	srv := newTestServer(t)
 	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)

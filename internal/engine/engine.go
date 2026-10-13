@@ -75,15 +75,35 @@ type ModelManager interface {
 func DetectAll() []Engine {
 	candidates := []Engine{
 		NewOllama("http://127.0.0.1:11434"),
+		detectLMStudio(),
 		NewFastFlowLM("http://127.0.0.1:8000"),
 	}
 	var found []Engine
 	for _, e := range candidates {
+		if e == nil {
+			continue
+		}
 		if e.Available() {
 			found = append(found, e)
 		}
 	}
 	return found
+}
+
+func detectLMStudio() Engine {
+	return firstAvailableLMStudio(
+		NewLMStudio("http://127.0.0.1:1234"),
+		NewLMStudio("http://127.0.0.1:1235"),
+	)
+}
+
+func firstAvailableLMStudio(candidates ...*LMStudio) Engine {
+	for _, candidate := range candidates {
+		if candidate.Available() {
+			return candidate
+		}
+	}
+	return nil
 }
 
 func NewConfigured(name, baseURL string) Engine {
@@ -92,6 +112,8 @@ func NewConfigured(name, baseURL string) Engine {
 		return NewOllama(baseURL)
 	case "vllm":
 		return NewVLLM(baseURL)
+	case "lmstudio":
+		return NewLMStudio(baseURL)
 	case "fastflowlm":
 		return NewFastFlowLM(baseURL)
 	default:

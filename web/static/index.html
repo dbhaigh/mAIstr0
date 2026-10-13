@@ -235,7 +235,7 @@
     </section>
 
     <section id="nodes-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-nodes-tab" hidden>
-      <div class="section-heading"><h2>Nodes</h2><button id="refresh-all-models-btn" class="icon-button" type="button" title="Refresh model registries on all nodes">↻ Refresh all model registries</button></div>
+      <div class="section-heading"><h2>Nodes</h2><button id="refresh-all-models-btn" class="icon-button" type="button" title="Rescan local LLM servers and model registries on all online nodes">↻ Rescan all nodes</button></div>
       <div id="nodes-list" class="cards"></div>
     </section>
 
@@ -252,7 +252,23 @@
 
     <section id="tasks-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-tasks-tab" hidden>
       <div class="section-heading"><h2>Tasks</h2><button id="copy-tasks-btn" class="icon-button" type="button" title="Copy all task results" aria-label="Copy all task results">Copy results</button></div>
-      <div id="tasks-list" class="cards"></div>
+      <div class="task-history-toolbar">
+        <label for="task-history-search">Search history</label>
+        <input id="task-history-search" type="search" placeholder="Task ID, description, node, or result">
+        <label for="task-history-status">Status</label>
+        <select id="task-history-status">
+          <option value="all">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="running">Running</option>
+          <option value="synthesizing">Synthesizing</option>
+          <option value="awaiting_approval">Awaiting approval</option>
+          <option value="completed">Completed</option>
+          <option value="failed">Failed</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <span id="task-history-count" class="panel-caption" aria-live="polite"></span>
+      </div>
+      <div id="tasks-list" class="task-history-list"></div>
     </section>
   </main>
 
@@ -293,7 +309,7 @@
       <p id="pairing-dialog-description">Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.</p>
       <div class="pairing-connect-fields">
         <label id="pairing-address-field">Orchestrator HTTPS address<input id="pairing-address" type="url" placeholder="https://192.168.1.10:7450" required /></label>
-        <label>One-use PIN<input id="pairing-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required /></label>
+        <label>One-use PIN (optional on same subnet)<input id="pairing-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="([0-9]{6})?" maxlength="6" placeholder="123456" /></label>
       </div>
       <p id="pairing-status" class="setup-status" role="status" aria-live="polite"></p>
       <div class="pairing-dialog-actions">
@@ -348,7 +364,7 @@
           <h3>Model service</h3>
           <div class="node-properties-grid">
             <label>Default model<input name="default_model" placeholder="Automatic best match" /></label>
-            <label>Engine<select name="engine_name"><option value="ollama">Ollama</option><option value="vllm">vLLM</option><option value="fastflowlm">FastFlowLM</option></select></label>
+            <label>Engine<select name="engine_name"><option value="ollama">Ollama</option><option value="lmstudio">LM Studio</option><option value="vllm">vLLM</option><option value="fastflowlm">FastFlowLM</option></select></label>
             <label class="wide-field">Engine URL<input name="engine_url" placeholder="http://127.0.0.1:11434" /></label>
             <label class="wide-field">Disabled models<textarea name="disabled_models" rows="2" placeholder="One model per line"></textarea></label>
           </div>

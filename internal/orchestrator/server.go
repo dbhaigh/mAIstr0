@@ -35,30 +35,32 @@ import (
 )
 
 type Server struct {
-	registry           *cluster.Registry
-	tasks              *taskmgr.Manager
-	client             *http.Client // short timeout, for node proxy/status calls
-	dispatcher         *http.Client // long timeout, subtask execution can cold-load a model
-	dispatchSlots      chan struct{}
-	discovery          *discovery.Listener
-	selfID             string
-	discoveryEnabled   bool
-	events             *hub.Hub
-	agentMu            sync.RWMutex
-	agents             map[string]agent.Backend
-	activeHarness      string
-	sessionHarnesses   map[string]string
-	sessionCancels     map[string]context.CancelFunc
-	sessionCancelsMu   sync.Mutex
-	mem                *memory.Store
-	selfScore          float64 // announced on the LAN for orchestrator election
-	leaderMu           sync.Mutex
-	lastLeaderID       string // last announced leader, to log transitions once
-	discoveredNodes    map[string]bool
-	identityPath       string
-	identity           *peeridentity.Identity
-	advertiseAddr      string
-	localNodeDashboard string
+	registry            *cluster.Registry
+	tasks               *taskmgr.Manager
+	client              *http.Client // short timeout, for node proxy/status calls
+	dispatcher          *http.Client // long timeout, subtask execution can cold-load a model
+	dispatchSlots       chan struct{}
+	discovery           *discovery.Listener
+	selfID              string
+	discoveryEnabled    bool
+	events              *hub.Hub
+	agentMu             sync.RWMutex
+	agents              map[string]agent.Backend
+	activeHarness       string
+	sessionHarnesses    map[string]string
+	sessionCancels      map[string]context.CancelFunc
+	sessionCancelsMu    sync.Mutex
+	mem                 *memory.Store
+	selfScore           float64 // announced on the LAN for orchestrator election
+	leaderMu            sync.Mutex
+	lastLeaderID        string // last announced leader, to log transitions once
+	discoveredNodes     map[string]bool
+	identityPath        string
+	identity            *peeridentity.Identity
+	advertiseAddr       string
+	localNodeDashboard  string
+	taskHistorySyncMu   sync.Mutex
+	taskHistoryRecovery sync.Once
 }
 
 const discoveryRequestTimeout = 5 * time.Second
@@ -410,9 +412,12 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/events", s.events.ServeHTTP)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
+	mux.HandleFunc("GET /api/tasks/resumable", s.handleListResumableTasks)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
 	mux.HandleFunc("POST /api/tasks/{id}/approve", s.handleApproveTask)
+	mux.HandleFunc("POST /api/tasks/{id}/resume", s.handleResumeTask)
+	mux.HandleFunc("GET /api/tasks/{id}/checkpoints", s.handleTaskCheckpoints)
 
 	// Interactive agent backend endpoints
 	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessionsList)
@@ -483,6 +488,7 @@ func (s *Server) Run(listenAddr string) error {
 	}
 	go s.healthSweepLoop()
 	go s.broadcastLoop()
+	go s.taskHistorySyncLoop()
 	if s.discoveryEnabled {
 		if s.discovery == nil {
 			s.discovery = discovery.Listen(s.selfID)
@@ -798,6 +804,7 @@ func (s *Server) dispatch(taskID string, a scheduler.Assignment) {
 				started := time.Now()
 				output, attemptErr, retryable = s.executeSubtask(ctx, current, attemptPrompt)
 				if attemptErr == nil {
+					output = normalizeTaskOutput(current.Subtask, output)
 					attemptErr = validateTaskOutput(current.Subtask, output)
 					if attemptErr != nil {
 						retryable = false
@@ -844,7 +851,7 @@ func validationRetryPrompt(prompt string, validationErr error, output string) st
 	if len(output) > maxPriorOutputBytes {
 		output = output[:maxPriorOutputBytes]
 	}
-	return fmt.Sprintf("%s\n\nYour previous result did not pass validation: %s\nRevise it and return a corrected result. Previous result:\n%s",
+	return fmt.Sprintf("%s\n\nYour previous result did not pass validation: %s\nReturn exactly one corrected JSON object with no extra outer braces, markdown fences, or commentary. Previous result:\n%s",
 		prompt, validationErr, output)
 }
 

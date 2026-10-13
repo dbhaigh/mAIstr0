@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -312,10 +314,12 @@ func OutboundIP() string {
 	return "127.0.0.1"
 }
 
+var interfaceAddrs = net.InterfaceAddrs
+
 // firstLANIP returns the first non-loopback, non-link-local IPv4 address of
 // any local interface, or "" if none exists.
 func firstLANIP() string {
-	addrs, err := net.InterfaceAddrs()
+	addrs, err := interfaceAddrs()
 	if err != nil {
 		return ""
 	}
@@ -338,7 +342,7 @@ func firstLANIP() string {
 // go out on the local network, never to 127.0.0.1.
 func broadcastAddrs() []net.IP {
 	var out []net.IP
-	addrs, err := net.InterfaceAddrs()
+	addrs, err := interfaceAddrs()
 	if err != nil {
 		return out
 	}
@@ -365,6 +369,64 @@ func broadcastAddrs() []net.IP {
 		out = append(out, bcast)
 	}
 	return out
+}
+
+// IsSameSubnet reports whether the given IP is on the same subnet as any of
+// this host's local network interfaces (including loopback).
+func IsSameSubnet(target net.IP) bool {
+	if target == nil {
+		return false
+	}
+	if target.IsLoopback() {
+		return true
+	}
+	if ip4 := target.To4(); ip4 != nil {
+		target = ip4
+	}
+	addrs, err := interfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ones, _ := ipNet.Mask.Size()
+		if ones == 0 {
+			continue
+		}
+		if ipNet.Contains(target) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSameSubnetAddress parses an IP, host:port, or URL and reports whether
+// the target IP is on the same subnet as any local interface.
+func IsSameSubnetAddress(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		parsed, err := url.Parse(addr)
+		if err == nil && parsed.Hostname() != "" {
+			addr = parsed.Hostname()
+		}
+	}
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	if addr == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return false
+	}
+	return IsSameSubnet(ip)
 }
 
 func itoa(n int) string {

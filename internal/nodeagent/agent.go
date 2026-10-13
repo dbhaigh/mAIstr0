@@ -35,16 +35,19 @@ import (
 )
 
 type Agent struct {
-	cfg               config.NodeConfig
-	engines           []engine.Engine
-	enginesMu         sync.RWMutex
-	enginesConfigured bool
-	hwMu              sync.RWMutex
-	hw                hardware.Info
-	gpuHistory        []hardware.GPUUsageSample
-	npuHistory        []hardware.NPUUsageSample
-	systemHistory     []hardware.SystemUsageSample
-	identity          *peeridentity.Identity
+	cfg             config.NodeConfig
+	engines         []engine.Engine
+	detectedEngines []engine.Engine
+	enginesMu       sync.RWMutex
+	engineScanMu    sync.Mutex
+	engineDetector  func() []engine.Engine
+	lastEngineScan  time.Time
+	hwMu            sync.RWMutex
+	hw              hardware.Info
+	gpuHistory      []hardware.GPUUsageSample
+	npuHistory      []hardware.NPUUsageSample
+	systemHistory   []hardware.SystemUsageSample
+	identity        *peeridentity.Identity
 
 	discoveryListener *discovery.Listener
 	events            *hub.Hub
@@ -118,6 +121,32 @@ func (a *Agent) setOrchestratorID(id string) {
 }
 
 func New(cfg config.NodeConfig) *Agent {
+	return newAgent(cfg, taskmgr.NewManager())
+}
+
+// NewWithPersistentTasks opens this node's durable task history before
+// starting the agent. memoryPath, when configured, gets a separate file so a
+// process running both node and orchestrator roles does not share databases.
+func NewWithPersistentTasks(cfg config.NodeConfig) (*Agent, error) {
+	if cfg.NodeID == "" {
+		cfg.NodeID = DefaultNodeID()
+	}
+	taskPath := taskmgr.DefaultPath(cfg.NodeID)
+	if cfg.MemoryPath != "" {
+		taskPath = cfg.MemoryPath + ".node-tasks"
+	}
+	tasks, err := taskmgr.OpenManager(taskPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("nodeagent: open task history: %w", err)
+	}
+	return newAgent(cfg, tasks), nil
+}
+
+func newAgent(cfg config.NodeConfig, tasks *taskmgr.Manager) *Agent {
+	return newAgentWithEngineDetector(cfg, tasks, engine.DetectAll)
+}
+
+func newAgentWithEngineDetector(cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) *Agent {
 	if cfg.NodeID == "" {
 		cfg.NodeID = DefaultNodeID()
 	}
@@ -128,35 +157,31 @@ func New(cfg config.NodeConfig) *Agent {
 	for _, m := range cfg.DisabledModels {
 		disabled[m] = true
 	}
-	engines := engine.DetectAll()
-	enginesConfigured := len(cfg.Engines) > 0
-	if len(cfg.Engines) > 0 {
-		engines = nil
-		for _, configured := range cfg.Engines {
-			if e := engine.NewConfigured(configured.Name, configured.URL); e != nil {
-				engines = append(engines, e)
-			}
+	configuredEngines := make([]engine.Engine, 0, len(cfg.Engines))
+	for _, configured := range cfg.Engines {
+		if e := engine.NewConfigured(configured.Name, configured.URL); e != nil {
+			configuredEngines = append(configuredEngines, e)
 		}
 	}
 	hw := hardware.Detect()
-	if !enginesConfigured && hw.HasNPU {
-		engines = prioritizeNPUEngines(engines)
+	if detector == nil {
+		detector = engine.DetectAll
 	}
 	a := &Agent{
-		cfg:               cfg,
-		engines:           engines,
-		enginesConfigured: enginesConfigured,
-		hw:                hw,
-		disabledModels:    disabled,
-		defaultModel:      cfg.DefaultModel,
-		peerClient:        &http.Client{Timeout: 5 * time.Second},
-		dispatchClient:    &http.Client{Timeout: 10 * time.Minute},
-		streamClient:      &http.Client{},
-		tasks:             taskmgr.NewManager(),
-		orchestratorAddr:  cfg.OrchestratorAddr,
-		events:            hub.New(),
-		dialogues:         make(map[string]*Dialogue),
-		dialogueCancels:   make(map[string]context.CancelFunc),
+		cfg:              cfg,
+		engines:          configuredEngines,
+		engineDetector:   detector,
+		hw:               hw,
+		disabledModels:   disabled,
+		defaultModel:     cfg.DefaultModel,
+		peerClient:       &http.Client{Timeout: 5 * time.Second},
+		dispatchClient:   &http.Client{Timeout: 10 * time.Minute},
+		streamClient:     &http.Client{},
+		tasks:            tasks,
+		orchestratorAddr: cfg.OrchestratorAddr,
+		events:           hub.New(),
+		dialogues:        make(map[string]*Dialogue),
+		dialogueCancels:  make(map[string]context.CancelFunc),
 	}
 	if store, err := memory.Open(cfg.MemoryPath, cfg.NodeID); err != nil {
 		log.Printf("nodeagent: memory unavailable, running stateless: %v", err)
@@ -167,15 +192,38 @@ func New(cfg config.NodeConfig) *Agent {
 	return a
 }
 
-func prioritizeNPUEngines(engines []engine.Engine) []engine.Engine {
+// Close flushes and releases the persistent task and memory stores.
+func (a *Agent) Close() error {
+	var closeErr error
+	if a.tasks != nil {
+		closeErr = errors.Join(closeErr, a.tasks.Close())
+	}
+	if a.mem != nil {
+		closeErr = errors.Join(closeErr, a.mem.Close())
+	}
+	return closeErr
+}
+
+func prioritizeAcceleratedEngines(engines []engine.Engine, hw hardware.Info) []engine.Engine {
 	ordered := make([]engine.Engine, 0, len(engines))
-	for _, e := range engines {
-		if e.Name() == "fastflowlm" {
-			ordered = append(ordered, e)
+	priorities := make([]string, 0, 2)
+	if hw.HasGPU {
+		priorities = append(priorities, "lmstudio")
+	}
+	if hw.HasNPU {
+		priorities = append(priorities, "fastflowlm")
+	}
+	preferred := make(map[string]bool, len(priorities))
+	for _, name := range priorities {
+		preferred[name] = true
+		for _, e := range engines {
+			if e.Name() == name {
+				ordered = append(ordered, e)
+			}
 		}
 	}
 	for _, e := range engines {
-		if e.Name() != "fastflowlm" {
+		if !preferred[e.Name()] {
 			ordered = append(ordered, e)
 		}
 	}
@@ -233,6 +281,7 @@ func (a *Agent) PairLocalOrchestrator(orchestratorID, certificatePEM, address st
 type nodePairingRequest struct {
 	ID             string `json:"id"`
 	Role           string `json:"role"`
+	PeerAddr       string `json:"peer_addr,omitempty"`
 	PIN            string `json:"pin"`
 	CertificatePEM string `json:"certificate_pem"`
 }
@@ -249,7 +298,7 @@ func (a *Agent) pairOrchestrator(candidate orchestratorCandidate) error {
 }
 
 // PairWithOrchestrator enrolls this node at a user-selected orchestrator
-// using its one-use out-of-band PIN.
+// using its one-use out-of-band PIN or automatically if on the same subnet.
 func (a *Agent) PairWithOrchestrator(address, pin string) error {
 	address, err := normalizeOrchestratorAddress(address)
 	if err != nil {
@@ -289,11 +338,12 @@ func (a *Agent) pairWithAddress(address, expectedID, pin string) (resultErr erro
 		return errors.New("node identity is not initialized")
 	}
 	if pin == "" {
-		return errors.New("pairing PIN is required")
+		log.Printf("nodeagent: attempting auto-join with orchestrator at %s", address)
+	} else {
+		log.Printf("nodeagent: starting pairing with orchestrator at %s", address)
 	}
-	log.Printf("nodeagent: starting pairing with orchestrator at %s", address)
 	body, err := json.Marshal(nodePairingRequest{
-		ID: a.cfg.NodeID, Role: "node", PIN: pin, CertificatePEM: a.identity.CertificatePEM(),
+		ID: a.cfg.NodeID, Role: "node", PeerAddr: a.cfg.AdvertiseAddr, PIN: pin, CertificatePEM: a.identity.CertificatePEM(),
 	})
 	if err != nil {
 		return fmt.Errorf("encode pairing request: %w", err)
@@ -393,6 +443,7 @@ type statusResponse struct {
 	NPUHistory    []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
 	SystemHistory []hardware.SystemUsageSample `json:"system_history,omitempty"`
 	Models        []engine.Model               `json:"models"`
+	Capabilities  []string                     `json:"capabilities,omitempty"`
 	DefaultModel  string                       `json:"default_model,omitempty"`
 	FastScore     float64                      `json:"fast_score"`
 	ActiveTasks   int                          `json:"active_tasks"`
@@ -427,35 +478,59 @@ func (a *Agent) enabledModels() []engine.Model {
 	return out
 }
 
-// refreshDetectedEngines handles Ollama starting after the node agent. An
-// explicitly configured engine is authoritative and must not be replaced by
-// automatic localhost detection.
+const engineDetectionInterval = 10 * time.Second
+
+// refreshDetectedEngines periodically detects engines started after the node
+// agent, even when another engine was already available.
 func (a *Agent) refreshDetectedEngines() {
-	if a.enginesConfigured {
-		return
-	}
+	a.engineScanMu.Lock()
+	defer a.engineScanMu.Unlock()
+
 	a.enginesMu.RLock()
-	needsDetection := len(a.engines) == 0
+	needsDetection := time.Since(a.lastEngineScan) >= engineDetectionInterval
 	a.enginesMu.RUnlock()
-	if !needsDetection {
-		return
+	if needsDetection {
+		a.scanDetectedEnginesLocked()
 	}
-	engines := engine.DetectAll()
-	if a.hardwareSnapshot().HasNPU {
-		engines = prioritizeNPUEngines(engines)
+}
+
+func (a *Agent) rescanDetectedEngines() {
+	a.engineScanMu.Lock()
+	defer a.engineScanMu.Unlock()
+	a.scanDetectedEnginesLocked()
+}
+
+func (a *Agent) scanDetectedEnginesLocked() {
+	detector := a.engineDetector
+	if detector == nil {
+		detector = engine.DetectAll
 	}
+	engines := detector()
+	engines = prioritizeAcceleratedEngines(engines, a.hardwareSnapshot())
 	a.enginesMu.Lock()
-	if len(a.engines) == 0 {
-		a.engines = engines
-	}
+	a.detectedEngines = engines
+	a.lastEngineScan = time.Now()
 	a.enginesMu.Unlock()
 }
 
 func (a *Agent) engineSnapshot() []engine.Engine {
 	a.enginesMu.RLock()
-	engines := append([]engine.Engine(nil), a.engines...)
+	configured := append([]engine.Engine(nil), a.engines...)
+	detected := append([]engine.Engine(nil), a.detectedEngines...)
 	a.enginesMu.RUnlock()
-	return engines
+	engines := make([]engine.Engine, 0, len(configured)+len(detected))
+	seen := make(map[string]struct{}, len(configured)+len(detected))
+	for _, group := range [][]engine.Engine{configured, detected} {
+		for _, e := range group {
+			key := strings.ToLower(e.Name()) + "\x00" + engineURL(e)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			engines = append(engines, e)
+		}
+	}
+	return prioritizeAcceleratedEngines(engines, a.hardwareSnapshot())
 }
 
 // ModelState pairs a discovered model with whether it is currently enabled
@@ -494,6 +569,7 @@ func (a *Agent) status() statusResponse {
 	active := a.activeTasks
 	a.mu.Unlock()
 	hw := a.hardwareSnapshot()
+	models := a.reportedModelList()
 	return statusResponse{
 		ID:            a.cfg.NodeID,
 		Version:       version.String(),
@@ -503,7 +579,8 @@ func (a *Agent) status() statusResponse {
 		GPUHistory:    a.gpuHistorySnapshot(),
 		NPUHistory:    a.npuHistorySnapshot(),
 		SystemHistory: a.systemHistorySnapshot(),
-		Models:        a.reportedModelList(),
+		Models:        models,
+		Capabilities:  cluster.NodeStatus{Hardware: hw, Models: models}.EffectiveCapabilities(),
 		DefaultModel:  a.defaultModelName(),
 		FastScore:     fastScore(hw),
 		ActiveTasks:   active,
@@ -878,6 +955,11 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("POST /submit", a.handleSubmit)
 	mux.HandleFunc("GET /tasks", a.handleTasksList)
 	mux.HandleFunc("GET /tasks/{id}", a.handleTaskGet)
+	mux.HandleFunc("POST /tasks/{id}/cancel", a.handleTaskCancel)
+	mux.HandleFunc("POST /tasks/sync", a.handleTaskSync)
+	mux.HandleFunc("POST /tasks/replica", a.handleTaskReplica)
+	mux.HandleFunc("GET /memory/sync", a.handlePeerMemorySyncGet)
+	mux.HandleFunc("POST /memory/sync", a.handlePeerMemorySyncPost)
 
 	// Node-to-node LLM conversation: /peer/message answers an inbound
 	// utterance from another node's model, /peer/converse drives a full
@@ -910,6 +992,9 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("GET /api/tasks", a.handleAPITasksList)
 	mux.HandleFunc("GET /api/tasks/{id}", a.handleAPITaskGet)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", a.handleAPITaskCancel)
+	mux.HandleFunc("POST /api/tasks/{id}/approve", a.handleAPITaskApprove)
+	mux.HandleFunc("POST /api/tasks/{id}/resume", a.handleAPITaskResume)
+	mux.HandleFunc("GET /api/tasks/{id}/checkpoints", a.handleAPITaskCheckpoints)
 	mux.HandleFunc("POST /api/generate", a.handleGenerate)
 	mux.HandleFunc("POST /api/chat", a.handleChat)
 	mux.HandleFunc("POST /api/nodes/{id}/dialogues", a.handleAPINodeDialogue)
@@ -959,6 +1044,8 @@ func (a *Agent) Run() error {
 	go a.modelRefreshLoop()
 	go a.peerPollLoop()
 	go a.sseSubscribeLoop()
+	go a.taskHistorySyncLoop()
+	go a.syncPeerMemoryLoop()
 	go a.broadcastLoop()
 	go a.syncMemoryToOrchestrator()
 
@@ -1248,9 +1335,15 @@ func (a *Agent) subscribeOnce(addr string) error {
 		var snap struct {
 			Nodes       []cluster.NodeStatus `json:"nodes"`
 			MemberCount int                  `json:"member_count"`
+			Tasks       []*taskmgr.Task      `json:"tasks"`
 		}
 		if err := json.Unmarshal([]byte(data), &snap); err != nil {
 			continue
+		}
+		if len(snap.Tasks) > 0 {
+			if err := a.tasks.ReplaceFromSync(snap.Tasks); err != nil {
+				log.Printf("nodeagent: could not apply task snapshot from orchestrator: %v", err)
+			}
 		}
 		a.mu.Lock()
 		// The list is authoritative: an ejected node is removed here as soon
@@ -1475,7 +1568,8 @@ func (a *Agent) proxy(w http.ResponseWriter, r *http.Request, addr, path string)
 	}
 
 	client := a.peerClient
-	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
+	taskSubmission := r.Method == http.MethodPost && path == "/api/tasks"
+	if taskSubmission || strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
 		client = a.dispatchClient
 	}
 

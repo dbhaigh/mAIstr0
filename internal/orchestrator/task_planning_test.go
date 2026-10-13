@@ -24,7 +24,7 @@ func TestAutoPlanRunsRoleTasksWithValidationAndReview(t *testing.T) {
 		switch r.URL.Path {
 		case "/generate":
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"output": `{"subtasks":[{"id":"implementation","description":"Implement the requested change","role":"coder","task_type":"code","expected_output":"A JSON object with an answer field","output_format":"json","required_fields":["answer"],"max_retries":1}]}`,
+				"output": `{"subtasks":[{"id":"implementation","description":"Implement the requested change","role":"coder","task_type":"code","expected_output":"A JSON object with an answer field","output_format":"json","required_fields":["answer"]}]}`,
 			})
 		case "/execute":
 			var request struct {
@@ -163,5 +163,191 @@ func TestReviewerMustExplicitlyApprove(t *testing.T) {
 	}
 	if err := validateTaskOutput(reviewer[0], `{"approved":true,"issues":[]}`); err != nil {
 		t.Fatalf("positive review was rejected: %v", err)
+	}
+	if err := validateTaskOutput(reviewer[0], "```json\n{\"approved\":true,\"issues\":[]}\n```"); err != nil {
+		t.Fatalf("fenced positive review was rejected: %v", err)
+	}
+	if got := normalizeTaskOutput(reviewer[0], `{{"approved":true,"issues":[]}}`); got != `{"approved":true,"issues":[]}` {
+		t.Fatalf("redundant JSON braces were not normalized: %q", got)
+	}
+	if err := validateTaskOutput(reviewer[0], `{{"approved":true,"issues":[]}}`); err != nil {
+		t.Fatalf("redundantly-braced positive review was rejected: %v", err)
+	}
+	if got := normalizeTaskOutput(reviewer[0], "```json\n{\"approved\":true,\"issues\":[]}\n```"); got != `{"approved":true,"issues":[]}` {
+		t.Fatalf("fenced JSON output was not normalized: %q", got)
+	}
+}
+
+func TestFencedJSONOutputAllowsDependentSubtaskToRun(t *testing.T) {
+	var dependentPrompt atomic.Value
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			SubtaskID string `json:"subtask_id"`
+			Prompt    string `json:"prompt"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode execute request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		output := "```json\n{\"answer\":\"ready\"}\n```"
+		if request.SubtaskID == "follow-up" {
+			dependentPrompt.Store(request.Prompt)
+			output = "follow-up completed"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": output})
+	}))
+	defer worker.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "workflow-worker", Address: worker.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general-model", Tags: []string{"general"}}},
+	})
+	task, err := srv.createTask(context.Background(), createTaskRequest{
+		Description: "Run a coordinator step and then a dependent step",
+		Subtasks: []scheduler.Subtask{
+			{
+				ID: "coordinator", Description: "Produce the coordinator result", Role: "general",
+				TaskType: "general", OutputFormat: "json", RequiredFields: []string{"answer"},
+			},
+			{
+				ID: "follow-up", Description: "Use the coordinator result", Role: "general",
+				TaskType: "general", DependsOn: []string{"coordinator"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	completed, err := srv.tasks.Wait(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != taskmgr.StatusCompleted {
+		t.Fatalf("workflow did not complete: %+v", completed)
+	}
+	if prompt, ok := dependentPrompt.Load().(string); !ok || !strings.Contains(prompt, "Prerequisite coordinator:\n{\"answer\":\"ready\"}") {
+		t.Fatalf("dependent step did not receive normalized coordinator output: %q", prompt)
+	}
+}
+
+func TestTaskGraphCreationAndResumeEndpoints(t *testing.T) {
+	srv := newTestServer(t)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "step output"})
+	}))
+	defer worker.Close()
+
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "test-node", Address: worker.URL, Healthy: true,
+		Capabilities: []string{"coder", "researcher"},
+		Models:       []engine.Model{{Name: "test-model", Tags: []string{"code"}}},
+	})
+
+	// 1. Create a DAG task via POST /api/tasks
+	graph := scheduler.NewTaskGraph()
+	_ = graph.AddNode(scheduler.Subtask{ID: "n1", Description: "Step 1", Role: "coder", RequiredCapabilities: []string{"coder"}})
+	_ = graph.AddNode(scheduler.Subtask{ID: "n2", Description: "Step 2", Role: "researcher", DependsOn: []string{"n1"}})
+	_ = graph.AddEdge("n1", "n2")
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"description": "Two-step DAG task",
+		"graph":       graph,
+	})
+
+	createRec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/tasks", bytes.NewReader(reqBody)))
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create task returned %d: %s", createRec.Code, createRec.Body.String())
+	}
+
+	var created taskmgr.Task
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" {
+		t.Fatalf("expected non-empty task ID")
+	}
+
+	// 2. Query checkpoints
+	cpRec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(cpRec, httptest.NewRequest(http.MethodGet, "/api/tasks/"+created.ID+"/checkpoints", nil))
+	if cpRec.Code != http.StatusOK {
+		t.Fatalf("get checkpoints returned %d: %s", cpRec.Code, cpRec.Body.String())
+	}
+	var cps []taskmgr.Checkpoint
+	if err := json.Unmarshal(cpRec.Body.Bytes(), &cps); err != nil {
+		t.Fatal(err)
+	}
+	if len(cps) == 0 {
+		t.Fatalf("expected at least one checkpoint, got %d", len(cps))
+	}
+
+	// 3. Complete step n1, then cancel
+	srv.tasks.CompleteSubtask(created.ID, "n1", "n1 output", nil)
+	cancelRec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(cancelRec, httptest.NewRequest(http.MethodPost, "/api/tasks/"+created.ID+"/cancel", nil))
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("cancel returned %d: %s", cancelRec.Code, cancelRec.Body.String())
+	}
+
+	// 4. Query resumable tasks
+	resumableRec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(resumableRec, httptest.NewRequest(http.MethodGet, "/api/tasks/resumable", nil))
+	if resumableRec.Code != http.StatusOK {
+		t.Fatalf("get resumable returned %d: %s", resumableRec.Code, resumableRec.Body.String())
+	}
+	var resumable []*taskmgr.Task
+	if err := json.Unmarshal(resumableRec.Body.Bytes(), &resumable); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range resumable {
+		if r.ID == created.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected task %s to be listed as resumable, got: %+v", created.ID, resumable)
+	}
+
+	// 5. Resume task
+	resumeRec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(resumeRec, httptest.NewRequest(http.MethodPost, "/api/tasks/"+created.ID+"/resume", nil))
+	if resumeRec.Code != http.StatusOK {
+		t.Fatalf("resume returned %d: %s", resumeRec.Code, resumeRec.Body.String())
+	}
+	var resumed taskmgr.Task
+	if err := json.Unmarshal(resumeRec.Body.Bytes(), &resumed); err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != taskmgr.StatusRunning {
+		t.Fatalf("expected resumed status running, got %s", resumed.Status)
+	}
+}
+
+func TestCycleDetectionInCreateTask(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Create cyclic graph: a -> b -> a
+	graph := scheduler.NewTaskGraph()
+	_ = graph.AddNode(scheduler.Subtask{ID: "a", Description: "A", DependsOn: []string{"b"}})
+	_ = graph.AddNode(scheduler.Subtask{ID: "b", Description: "B", DependsOn: []string{"a"}})
+	_ = graph.AddEdge("b", "a")
+	_ = graph.AddEdge("a", "b")
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"description": "Cyclic task",
+		"graph":       graph,
+	})
+
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tasks", bytes.NewReader(reqBody)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for cycle, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

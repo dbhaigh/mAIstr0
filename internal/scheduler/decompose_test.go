@@ -74,6 +74,19 @@ func TestValidatePlanAddsAgentAndOutputDefaults(t *testing.T) {
 	}
 }
 
+func TestValidatePlanDefaultsJSONRepairRetry(t *testing.T) {
+	plan, err := ValidatePlan([]Subtask{{
+		ID: "coordinate", Description: "Return machine-readable coordination data",
+		OutputFormat: "json", RequiredFields: []string{"assignments"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan[0].MaxRetries != 1 {
+		t.Fatalf("JSON max retries = %d, want one correction retry", plan[0].MaxRetries)
+	}
+}
+
 func TestValidatePlanRejectsInvalidAgentAndOutputContracts(t *testing.T) {
 	tests := []struct {
 		name    string

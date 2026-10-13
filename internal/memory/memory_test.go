@@ -146,6 +146,30 @@ func TestFactsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotDoesNotReplaceNewerFactWithStaleReplica(t *testing.T) {
+	s := newTestStore(t)
+	newerAt := time.Now()
+	if _, err := s.PutFact(Fact{
+		Key: "preferred-model", Value: "new-model", Scope: "cluster",
+		Source: "node-a", UpdatedAt: newerAt,
+	}); err != nil {
+		t.Fatalf("put current fact: %v", err)
+	}
+	if err := s.MergeSnapshot(Snapshot{Facts: []Fact{{
+		Key: "preferred-model", Value: "old-model", Scope: "cluster",
+		Source: "node-b", UpdatedAt: newerAt.Add(-time.Minute),
+	}}}); err != nil {
+		t.Fatalf("merge stale snapshot: %v", err)
+	}
+	fact, err := s.GetFact("cluster", "preferred-model")
+	if err != nil {
+		t.Fatalf("get merged fact: %v", err)
+	}
+	if fact.Value != "new-model" {
+		t.Fatalf("stale replica replaced newer fact: %+v", fact)
+	}
+}
+
 func TestDialoguePersistence(t *testing.T) {
 	s := newTestStore(t)
 	participants := []string{"node:a", "node:b"}

@@ -2,6 +2,9 @@ package nodeagent
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +28,7 @@ func newTestAgent(t *testing.T, id string) *Agent {
 		MemoryPath:    filepath.Join(t.TempDir(), id+".db"),
 	})
 	a.engines = []engine.Engine{engine.NewSimulated()}
+	a.detectedEngines = nil
 	t.Cleanup(func() {
 		if a.mem != nil {
 			_ = a.mem.Close()
@@ -145,12 +149,118 @@ func TestNodeRecordsExperienceToMemory(t *testing.T) {
 	}
 }
 
+func TestStandaloneLeaderReplicatesMemoryAndLearnsPeerExperience(t *testing.T) {
+	leader := newTestAgent(t, "node-a")
+	peer := newTestAgent(t, "node-b")
+	if _, err := leader.mem.PutFact(memory.Fact{Key: "leader-note", Value: "from node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.mem.PutFact(memory.Fact{Key: "peer-note", Value: "from node-b"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := peer.mem.Record(memory.Experience{
+			Kind: "generate", TaskType: "code", NodeID: "node-b", Model: "coder",
+			Success: true, DurationMs: 100,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	peerMux := http.NewServeMux()
+	peerMux.HandleFunc("GET /memory/sync", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, peer.mem.Snapshot())
+	})
+	peerMux.HandleFunc("POST /memory/sync", func(w http.ResponseWriter, r *http.Request) {
+		var snapshot memory.Snapshot
+		if err := json.NewDecoder(r.Body).Decode(&snapshot); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := peer.mem.MergeSnapshot(snapshot); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	peerServer := httptest.NewServer(peerMux)
+	defer peerServer.Close()
+
+	leader.mu.Lock()
+	leader.peers = []cluster.NodeStatus{
+		{ID: "node-a", Healthy: true, Leader: true},
+		{ID: "node-b", Address: peerServer.URL, Healthy: true},
+	}
+	leader.mu.Unlock()
+
+	leader.syncPeerMemory()
+	leader.syncPeerMemory()
+
+	if bias := leader.mem.LearnedBias("node-b", "coder", "code"); bias <= 0 {
+		t.Fatalf("leader did not learn from peer experience, bias = %.2f", bias)
+	}
+	if got := len(leader.mem.Experiences(10)); got != 3 {
+		t.Fatalf("repeated sync duplicated peer experiences: got %d, want 3", got)
+	}
+	if _, err := leader.mem.GetFact("cluster", "peer-note"); err != nil {
+		t.Fatalf("peer fact was not replicated to leader: %v", err)
+	}
+	if _, err := peer.mem.GetFact("cluster", "leader-note"); err != nil {
+		t.Fatalf("leader fact was not replicated to peer: %v", err)
+	}
+	if got := len(peer.mem.Experiences(10)); got != 3 {
+		t.Fatalf("repeated sync duplicated experiences on peer: got %d, want 3", got)
+	}
+}
+
+func TestPeerMemoryReplicaRequiresClusterMemberAndCurrentLeader(t *testing.T) {
+	a := newTestAgent(t, "node-a")
+	a.mu.Lock()
+	a.peers = []cluster.NodeStatus{
+		{ID: "node-a", Healthy: true, Leader: true},
+		{ID: "node-b", Healthy: true},
+	}
+	a.mu.Unlock()
+
+	requestWithPeer := func(method, peerID string) *http.Request {
+		request := httptest.NewRequest(method, "/memory/sync", strings.NewReader(`{}`))
+		request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{
+			Subject: pkix.Name{CommonName: peerID},
+		}}}
+		return request
+	}
+
+	unauthorized := httptest.NewRecorder()
+	a.handlePeerMemorySyncGet(unauthorized, httptest.NewRequest(http.MethodGet, "/memory/sync", nil))
+	if unauthorized.Code != http.StatusForbidden {
+		t.Fatalf("unauthenticated memory read returned %d, want forbidden", unauthorized.Code)
+	}
+
+	memberRead := httptest.NewRecorder()
+	a.handlePeerMemorySyncGet(memberRead, requestWithPeer(http.MethodGet, "node-b"))
+	if memberRead.Code != http.StatusOK {
+		t.Fatalf("paired member memory read returned %d: %s", memberRead.Code, memberRead.Body.String())
+	}
+
+	nonLeaderWrite := httptest.NewRecorder()
+	a.handlePeerMemorySyncPost(nonLeaderWrite, requestWithPeer(http.MethodPost, "node-b"))
+	if nonLeaderWrite.Code != http.StatusForbidden {
+		t.Fatalf("replica from non-leader returned %d, want forbidden", nonLeaderWrite.Code)
+	}
+
+	leaderWrite := httptest.NewRecorder()
+	a.handlePeerMemorySyncPost(leaderWrite, requestWithPeer(http.MethodPost, "node-a"))
+	if leaderWrite.Code != http.StatusNoContent {
+		t.Fatalf("replica from current leader returned %d: %s", leaderWrite.Code, leaderWrite.Body.String())
+	}
+}
+
 type blockingEngine struct {
 	started chan struct{}
 }
 
-func (b *blockingEngine) Name() string      { return "blocking" }
-func (b *blockingEngine) Available() bool    { return true }
+func (b *blockingEngine) Name() string    { return "blocking" }
+func (b *blockingEngine) Available() bool { return true }
 func (b *blockingEngine) ListModels() ([]engine.Model, error) {
 	return []engine.Model{{Name: "blocking"}}, nil
 }
