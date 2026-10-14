@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Retry automatic task planning with another advertised node/model when the
+  selected planning model fails, and return an explicit error if no candidate
+  succeeds.
 - Allow task-history and memory bootstraps to transfer histories larger than
   64 MiB using protocol-v2 cursor pages and bounded POST batches, without
   advancing peer watermarks before a transfer completes.
@@ -11,6 +14,7 @@
 
 ### Added
 
+- Regression coverage for planner model failover after a model-load failure.
 - Regression coverage for multi-page transfer, watermark handling, and task
   and memory snapshots larger than 64 MiB.
 

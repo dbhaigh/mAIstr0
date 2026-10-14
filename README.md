@@ -262,7 +262,9 @@ Submit work through `POST /api/tasks` with a JSON body such as
 `{"description":"Summarize this report"}`. By default, mAIstr0 preserves its
 heuristic decomposition. Set `"plan_mode":"auto"` to have a local coordinator
 model produce a structured plan with agent roles and dependencies; invalid
-plans are rejected rather than silently run. Work is rejected with a service
+plans are rejected rather than silently run. If the selected coordinator
+model fails, the planner retries with another advertised node/model; if no
+candidate succeeds, the failure is returned. Work is rejected with a service
 unavailable response if any planned subtask has no compatible model, rather
 than accepting only part of the request. Query task status and results through
 `GET /api/tasks` or `GET /api/tasks/{id}`. Cancel a running task with

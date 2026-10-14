@@ -12,6 +12,7 @@ import (
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
@@ -226,19 +227,42 @@ func addReviewerSubtask(subtasks []scheduler.Subtask) []scheduler.Subtask {
 
 func (p *taskPlanner) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
 	planning := scheduler.Subtask{ID: "plan", Description: "Create a workflow plan", TaskType: "general"}
-	assignments, err := p.scheduler.AssignWithExperience([]scheduler.Subtask{planning}, p.nodes(), p.experience)
-	if err != nil {
-		wrapped := fmt.Errorf("select planning model: %w", err)
-		var unassignable *scheduler.UnassignableSubtasksError
-		if errors.Is(err, scheduler.ErrNoHealthyNodes) || errors.As(err, &unassignable) {
-			return nil, nil, apperr.UnavailableError(wrapped)
+	nodes := p.nodes()
+	failedModels := make(map[string]map[string]struct{})
+	var lastModelErr error
+	var output string
+	for {
+		candidates := make([]cluster.NodeStatus, len(nodes))
+		for i, node := range nodes {
+			candidates[i] = node
+			if len(failedModels[node.ID]) == 0 {
+				continue
+			}
+			candidates[i].Models = make([]engine.Model, 0, len(node.Models))
+			for _, model := range node.Models {
+				if _, failed := failedModels[node.ID][model.Name]; !failed {
+					candidates[i].Models = append(candidates[i].Models, model)
+				}
+			}
 		}
-		return nil, nil, apperr.UpstreamError(wrapped)
-	}
-	if len(assignments) != 1 {
-		return nil, nil, apperr.UpstreamError(errors.New("scheduler returned no planning model"))
-	}
-	prompt := fmt.Sprintf(`You are the mAIstr0 workflow planner. Convert the user's request into a small, executable dependency-aware task plan. Return only one JSON object with either this shape:
+		assignments, err := p.scheduler.AssignWithExperience([]scheduler.Subtask{planning}, candidates, p.experience)
+		if err != nil {
+			if lastModelErr != nil {
+				return nil, nil, apperr.UpstreamError(fmt.Errorf("all planning model attempts failed: %w", lastModelErr))
+			}
+			wrapped := fmt.Errorf("select planning model: %w", err)
+			var unassignable *scheduler.UnassignableSubtasksError
+			if errors.Is(err, scheduler.ErrNoHealthyNodes) || errors.As(err, &unassignable) {
+				return nil, nil, apperr.UnavailableError(wrapped)
+			}
+			return nil, nil, apperr.UpstreamError(wrapped)
+		}
+		if len(assignments) != 1 {
+			return nil, nil, apperr.UpstreamError(errors.New("scheduler returned no planning model"))
+		}
+
+		assignment := assignments[0]
+		prompt := fmt.Sprintf(`You are the mAIstr0 workflow planner. Convert the user's request into a small, executable dependency-aware task plan. Return only one JSON object with either this shape:
 {"graph":{"nodes":{"research":{"id":"research","description":"...","role":"researcher","task_type":"general","depends_on":[],"expected_output":"...","output_format":"text","required_capabilities":[]}},"edges":[]}}
 or this shape:
 {"subtasks":[{"id":"research","description":"...","role":"researcher","task_type":"general","depends_on":[],"expected_output":"...","output_format":"text","required_capabilities":[],"max_retries":0}]}
@@ -249,10 +273,21 @@ Supported capability tags: researcher, coder, long-context, vision, math, fast, 
 Make independent tasks parallel; add depends_on only when a task genuinely needs another task's result. Keep the plan focused, use 1-8 tasks, and set expected_output for each task. Use output_format json and required_fields only when the result must be machine-readable. JSON output gets one corrective retry by default; use max_retries 0 for plain-text output and at most 2 for any task.
 User request:
 %s`, strings.TrimSpace(description))
-	output, err := p.model.callNodeGenerateWithOptionsContext(ctx, assignments[0].Address, assignments[0].Model, prompt, 0.1, 2048)
-	if err != nil {
-		return nil, nil, apperr.UpstreamError(fmt.Errorf("planning model %s on node %s: %w", assignments[0].Model, assignments[0].NodeID, err))
+		output, err = p.model.callNodeGenerateWithOptionsContext(ctx, assignment.Address, assignment.Model, prompt, 0.1, 2048)
+		if err == nil {
+			break
+		}
+		lastModelErr = fmt.Errorf("planning model %s on node %s: %w", assignment.Model, assignment.NodeID, err)
+		if ctx.Err() != nil {
+			return nil, nil, apperr.UpstreamError(lastModelErr)
+		}
+		if failedModels[assignment.NodeID] == nil {
+			failedModels[assignment.NodeID] = make(map[string]struct{})
+		}
+		failedModels[assignment.NodeID][assignment.Model] = struct{}{}
 	}
+
+	var err error
 	payload, err := extractJSONObject(output)
 	if err != nil {
 		return nil, nil, apperr.UpstreamError(fmt.Errorf("planning model returned invalid JSON: %w", err))

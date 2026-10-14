@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,18 @@ import (
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
+
+type fallbackPlannerModel struct {
+	models []string
+}
+
+func (m *fallbackPlannerModel) callNodeGenerateWithOptionsContext(_ context.Context, _ string, model, _ string, _ float64, _ int) (string, error) {
+	m.models = append(m.models, model)
+	if model == "llava-v1.5-7b-llamafile" {
+		return "", errors.New("model failed to load")
+	}
+	return `{"subtasks":[{"id":"work","description":"Do the work","expected_output":"Result"}]}`, nil
+}
 
 func TestAutoPlanRunsRoleTasksWithValidationAndReview(t *testing.T) {
 	var executeCalls atomic.Int32
@@ -90,6 +103,35 @@ func TestAutoPlanRunsRoleTasksWithValidationAndReview(t *testing.T) {
 	}
 	if !strings.Contains(receivedPrompt, "approved") || !strings.Contains(receivedPrompt, "You are the reviewer agent") {
 		t.Fatalf("reviewer instructions missing from dispatched prompt: %s", receivedPrompt)
+	}
+}
+
+func TestAutoPlanRetriesWithAnotherModelAfterModelLoadFailure(t *testing.T) {
+	model := &fallbackPlannerModel{}
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "vision-node", Address: "http://vision-node", Healthy: true,
+			DefaultModel: "llava-v1.5-7b-llamafile",
+			Models:       []engine.Model{{Name: "llava-v1.5-7b-llamafile", Tags: []string{"general", "vision"}}},
+		},
+		{
+			ID: "general-node", Address: "http://general-node", Healthy: true,
+			Models: []engine.Model{{Name: "general-model", Tags: []string{"general"}}},
+		},
+	}
+	planner := newTaskPlanner(schedulerAdapter{}, nil, nil, model, func() []cluster.NodeStatus {
+		return nodes
+	}, nil)
+
+	graph, subtasks, err := planner.planSubtasks(context.Background(), "Do a task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.models) != 2 || model.models[0] != "llava-v1.5-7b-llamafile" || model.models[1] != "general-model" {
+		t.Fatalf("planning model attempts = %v, want llava failure followed by general-model", model.models)
+	}
+	if graph == nil || len(subtasks) != 1 || subtasks[0].ID != "work" {
+		t.Fatalf("alternate planner response was not used: graph=%+v subtasks=%+v", graph, subtasks)
 	}
 }
 

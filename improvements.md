@@ -5,6 +5,15 @@ Repo: `C:\Users\ahaigh\source\repos\mAIstr0` (Go 1.27, bbolt, embedded web dashb
 Baseline when this plan was written: `go test ./...`, `go vet ./...`, and `node --test web/app_test.js` all pass.
 There are uncommitted changes in the working tree, including new `dispatch_pool.go` files.
 
+## Recent implementation update — 2026-10-14
+
+- Automatic task planning now retries using another advertised node/model when
+  the selected planning model fails, rather than aborting after the first
+  dispatch error. If no candidate succeeds, the planner returns the final
+  model error.
+- Added regression coverage for falling back from a model-load failure to a
+  different planning model.
+
 ## Ground rules for every phase
 
 - Each phase goes into its own branch or PR, and the build stays green between phases.
