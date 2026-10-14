@@ -9,7 +9,12 @@ import (
 	"strings"
 )
 
-const SyncProtocolVersion = 1
+const (
+	SyncProtocolVersion      = 2
+	FirstSyncProtocolVersion = 1
+	SyncPageCursorHeader     = "X-Maistr0-Sync-Cursor"
+	SyncPageUpperHeader      = "X-Maistr0-Sync-Upper-Watermarks"
+)
 
 const legacyOrigin = "legacy"
 
@@ -17,6 +22,14 @@ const (
 	SyncVersionHeader    = "X-Maistr0-Sync-Version"
 	SyncWatermarksHeader = "X-Maistr0-Sync-Watermarks"
 )
+
+func SupportsIncrementalSync(version int) bool {
+	return version >= FirstSyncProtocolVersion && version <= SyncProtocolVersion
+}
+
+func SupportsSyncPages(version int) bool {
+	return version == SyncProtocolVersion
+}
 
 func SetSyncRequestHeaders(request *http.Request, watermarks map[string]uint64) error {
 	return SetSyncHeaders(request.Header, watermarks)
@@ -44,6 +57,76 @@ func ReadSyncResponseHeaders(response *http.Response) (int, map[string]uint64, e
 	return ReadSyncHeaders(response.Header)
 }
 
+func SetSyncPageRequestHeaders(request *http.Request, cursor, upper map[string]uint64) error {
+	cursorBytes, err := json.Marshal(cursor)
+	if err != nil {
+		return err
+	}
+	upperBytes, err := json.Marshal(upper)
+	if err != nil {
+		return err
+	}
+	request.Header.Set(SyncPageCursorHeader, base64.RawURLEncoding.EncodeToString(cursorBytes))
+	request.Header.Set(SyncPageUpperHeader, base64.RawURLEncoding.EncodeToString(upperBytes))
+	return nil
+}
+
+func ReadSyncPageRequestHeaders(request *http.Request) (map[string]uint64, map[string]uint64, error) {
+	cursorHeader := request.Header.Get(SyncPageCursorHeader)
+	upperHeader := request.Header.Get(SyncPageUpperHeader)
+	if cursorHeader == "" && upperHeader == "" {
+		return nil, nil, nil
+	}
+	if cursorHeader == "" || upperHeader == "" {
+		return nil, nil, fmt.Errorf("memory: incomplete sync page request headers")
+	}
+	cursor, err := decodeWatermarksHeader(cursorHeader, "sync page cursor")
+	if err != nil {
+		return nil, nil, err
+	}
+	upper, err := decodeWatermarksHeader(upperHeader, "sync page upper watermarks")
+	if err != nil {
+		return nil, nil, err
+	}
+	return cursor, upper, nil
+}
+
+func SetSyncPageResponseHeader(response http.ResponseWriter, cursor map[string]uint64) error {
+	if len(cursor) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(cursor)
+	if err != nil {
+		return err
+	}
+	response.Header().Set(SyncPageCursorHeader, base64.RawURLEncoding.EncodeToString(encoded))
+	return nil
+}
+
+func ReadSyncPageResponseHeader(response *http.Response) (map[string]uint64, bool, error) {
+	header := response.Header.Get(SyncPageCursorHeader)
+	if header == "" {
+		return nil, false, nil
+	}
+	cursor, err := decodeWatermarksHeader(header, "sync page cursor")
+	return cursor, true, err
+}
+
+func decodeWatermarksHeader(header, name string) (map[string]uint64, error) {
+	encoded, err := base64.RawURLEncoding.DecodeString(header)
+	if err != nil {
+		return nil, fmt.Errorf("memory: invalid %s encoding: %w", name, err)
+	}
+	var watermarks map[string]uint64
+	if err := json.Unmarshal(encoded, &watermarks); err != nil {
+		return nil, fmt.Errorf("memory: invalid %s: %w", name, err)
+	}
+	if watermarks == nil {
+		watermarks = make(map[string]uint64)
+	}
+	return watermarks, nil
+}
+
 func ReadSyncHeaders(headers http.Header) (int, map[string]uint64, error) {
 	versionHeader := headers.Get(SyncVersionHeader)
 	if versionHeader == "" {
@@ -69,7 +152,7 @@ func ReadSyncHeaders(headers http.Header) (int, map[string]uint64, error) {
 }
 
 func SnapshotForPeer(store Store, peerVersion int, watermarks map[string]uint64) Snapshot {
-	if peerVersion != SyncProtocolVersion {
+	if !SupportsIncrementalSync(peerVersion) {
 		return store.Snapshot()
 	}
 	localWatermarks := store.Watermarks()

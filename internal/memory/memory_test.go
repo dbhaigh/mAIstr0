@@ -131,6 +131,9 @@ func TestSnapshotForPeerNegotiatesIncrementalAndFullFallback(t *testing.T) {
 	if len(incremental.Experiences) != 1 {
 		t.Fatalf("incremental experiences = %d, want 1", len(incremental.Experiences))
 	}
+	if legacyIncremental := SnapshotForPeer(store, FirstSyncProtocolVersion, map[string]uint64{origin: 2}); len(legacyIncremental.Experiences) != 1 {
+		t.Fatalf("version 1 peer got %d experiences, want the incremental record", len(legacyIncremental.Experiences))
+	}
 	if legacy := SnapshotForPeer(store, 0, map[string]uint64{origin: 2}); len(legacy.Experiences) != 3 {
 		t.Fatalf("legacy peer got %d experiences, want full snapshot", len(legacy.Experiences))
 	}

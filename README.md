@@ -150,19 +150,24 @@ The dashboard provides three views:
 Joined nodes synchronize experiences, facts, dialogues, and routing history
 with the orchestrator every 30 seconds. Standalone peer clusters use the
 elected node to relay memory between members every 15 seconds. Memory records
-carry optional origin and sequence metadata; version 1 peers exchange only
-records newer than their persisted per-peer watermarks. A peer without version
-1 support receives a full snapshot, and a peer whose watermark is ahead of the
-sender also triggers a full snapshot. Legacy memory databases are backfilled
-when opened without changing their existing record fields.
+carry optional origin and sequence metadata; version 1 and newer peers exchange
+only records newer than their persisted per-peer watermarks. Protocol version 2
+adds cursor-based paging for large snapshots while keeping the upper watermark
+fixed for the duration of a transfer. Intermediate pages do not advance the
+receiver's peer watermark. Older peers retain the unpaged compatibility path,
+and a peer whose watermark is ahead of the sender triggers a full snapshot.
+Legacy memory databases are backfilled when opened without changing their
+existing record fields.
 
 Task history is synchronized separately every 15 seconds; the orchestrator
-starts its task-history loop after a short startup delay. Version 1 task sync
-also sends only records newer than each peer's watermark, while older peers
-receive full snapshots. Task records also carry optional origin and sequence
-metadata, and legacy task databases are backfilled automatically. Memory and
-task-history sync requests are limited to 64 MiB. The scheduler uses successful
-and failed node/model/task outcomes to improve future assignments.
+starts its task-history loop after a short startup delay. Version 1 and newer
+task sync sends only records newer than each peer's watermark, while older
+peers receive full snapshots. Task records also carry optional origin and
+sequence metadata, and legacy task databases are backfilled automatically.
+Memory and task-history requests remain limited to 64 MiB each; larger
+histories transfer in multiple bounded pages. A single record larger than the
+limit is rejected explicitly. The scheduler uses successful and failed
+node/model/task outcomes to improve future assignments.
 
 The Cluster & Workload **Setup** tab checks each node's engine and model
 readiness, refreshes an empty model registry, and links to node settings for

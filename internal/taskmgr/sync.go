@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/memory"
 )
 
 // MergeMissing imports tasks that are not already present. It is intended for
@@ -179,7 +181,7 @@ func (m *Manager) SnapshotForPeer(version int, watermarks map[string]uint64) []*
 func (m *Manager) SnapshotAndWatermarksForPeer(version int, watermarks map[string]uint64) ([]*Task, map[string]uint64) {
 	tasks := m.All()
 	localWatermarks := SnapshotWatermarks(tasks)
-	if version != 1 {
+	if !memory.SupportsIncrementalSync(version) {
 		return tasks, localWatermarks
 	}
 	for origin, sequence := range watermarks {

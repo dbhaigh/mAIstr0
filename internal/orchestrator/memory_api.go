@@ -208,13 +208,47 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	log.Printf("orchestrator: memory sync direction=orchestrator->node event=send_start remote=%s body_bytes=unknown", r.RemoteAddr)
 	snapshot := memory.Snapshot{}
+	var responseWatermarks map[string]uint64
 	if s.mem != nil {
 		peerVersion, watermarks, err := memory.ReadSyncRequestHeaders(r)
 		if err != nil {
 			http.Error(w, "invalid memory sync headers: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		cursor, upper, err := memory.ReadSyncPageRequestHeaders(r)
+		if err != nil {
+			http.Error(w, "invalid memory sync page headers: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if cursor != nil && !memory.SupportsSyncPages(peerVersion) {
+			http.Error(w, "memory sync pagination requires protocol version 2", http.StatusBadRequest)
+			return
+		}
 		snapshot = memory.SnapshotForPeer(s.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
+		responseWatermarks = snapshot.Watermarks
+		if memory.SupportsSyncPages(peerVersion) {
+			if cursor == nil {
+				cursor = make(map[string]uint64)
+				upper = snapshot.Watermarks
+			}
+			page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, maxMemorySyncBodyBytes, 0)
+			if err != nil {
+				http.Error(w, "could not page memory snapshot: "+err.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
+			snapshot = page
+			responseWatermarks = upper
+			if more {
+				if err := memory.SetSyncPageResponseHeader(w, nextCursor); err != nil {
+					http.Error(w, "could not encode memory sync page cursor: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+	}
+	if err := memory.SetSyncResponseHeaders(w, responseWatermarks); err != nil {
+		http.Error(w, "could not encode memory sync watermarks: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
 	writeJSON(response, http.StatusOK, snapshot)

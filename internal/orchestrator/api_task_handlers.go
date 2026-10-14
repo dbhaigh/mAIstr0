@@ -34,7 +34,35 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid task sync headers: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	cursor, upper, err := memory.ReadSyncPageRequestHeaders(r)
+	if err != nil {
+		http.Error(w, "invalid task sync page headers: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if cursor != nil && !memory.SupportsSyncPages(version) {
+		http.Error(w, "task sync pagination requires protocol version 2", http.StatusBadRequest)
+		return
+	}
 	tasks, currentWatermarks := s.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
+	if memory.SupportsSyncPages(version) {
+		if cursor == nil {
+			cursor = make(map[string]uint64)
+			upper = currentWatermarks
+		}
+		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, maxReplicatedTaskHistoryBytes)
+		if err != nil {
+			http.Error(w, "could not page task history: "+err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+		tasks = page
+		currentWatermarks = upper
+		if more {
+			if err := memory.SetSyncPageResponseHeader(w, nextCursor); err != nil {
+				http.Error(w, "could not encode task sync page cursor: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
 	if err := memory.SetSyncResponseHeaders(w, currentWatermarks); err != nil {
 		http.Error(w, "could not encode task sync watermarks: "+err.Error(), http.StatusInternalServerError)
 		return

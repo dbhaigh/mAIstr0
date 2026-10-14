@@ -134,6 +134,9 @@ func TestIncrementalTaskSnapshotsAndOutOfOrderMerge(t *testing.T) {
 	if full := replica.SnapshotForPeer(0, map[string]uint64{"task:leader": older.Sequence}); len(full) != 1 {
 		t.Fatalf("legacy peer received %d tasks, want full snapshot", len(full))
 	}
+	if incremental := replica.SnapshotForPeer(1, map[string]uint64{"task:leader": older.Sequence}); len(incremental) != 1 {
+		t.Fatalf("version 1 peer received %d tasks, want the incremental update", len(incremental))
+	}
 	if marks := replica.Watermarks(); marks["task:leader"] != newer.Sequence {
 		t.Fatalf("task watermarks = %v, want task:leader=%d", marks, newer.Sequence)
 	}

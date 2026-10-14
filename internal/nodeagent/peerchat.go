@@ -427,28 +427,18 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 	fetchStarted := time.Now()
 	log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_start node_id=%s peer=%s body_bytes=unknown",
 		a.cfg.NodeID, addr)
-	getRequest, err := http.NewRequest(http.MethodGet, strings.TrimRight(addr, "/")+"/api/memory/sync", nil)
-	if err != nil {
-		return fmt.Errorf("create orchestrator snapshot request: %w", err)
-	}
-	if err := memory.SetSyncRequestHeaders(getRequest, memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peerID))); err != nil {
-		return fmt.Errorf("set orchestrator sync headers: %w", err)
-	}
-	resp, err := a.peerClient.Do(getRequest)
+	remoteSnapshot, bodyBytes, err := fetchMemorySyncSnapshot(
+		a.peerClient,
+		strings.TrimRight(addr, "/")+"/api/memory/sync",
+		memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peerID)),
+	)
 	if err != nil {
 		log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_failed node_id=%s peer=%s body_bytes=0 elapsed=%s stage=request error=%v",
 			a.cfg.NodeID, addr, time.Since(fetchStarted), err)
 		return fmt.Errorf("fetch merged snapshot: %w", err)
 	}
-	status := resp.StatusCode
-	remoteSnapshot, bodyBytes, err := decodeMemorySyncResponse(resp)
-	if err != nil {
-		log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_failed node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
-			a.cfg.NodeID, addr, status, bodyBytes, time.Since(fetchStarted), err)
-		return fmt.Errorf("read merged snapshot: %w", err)
-	}
 	log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_complete node_id=%s peer=%s status=%d body_bytes=%d records=%d elapsed=%s",
-		a.cfg.NodeID, addr, status, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(fetchStarted))
+		a.cfg.NodeID, addr, http.StatusOK, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(fetchStarted))
 	mergeStarted := time.Now()
 	if err := a.mem.MergeSnapshotFrom(remoteSnapshot, peerID); err != nil {
 		log.Printf("nodeagent: memory sync direction=orchestrator->node event=merge_failed node_id=%s peer=%s body_bytes=%d elapsed=%s error=%v",
@@ -459,47 +449,37 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 		a.cfg.NodeID, addr, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(mergeStarted))
 
 	snapshot := memory.SnapshotForPeer(a.mem, remoteSnapshot.SyncVersion, remoteSnapshot.Watermarks)
-	body, err := json.Marshal(map[string]any{
-		"node_id":      a.cfg.NodeID,
-		"sync_version": memory.SyncProtocolVersion,
-		"snapshot":     snapshot,
+	bodies, err := marshalMemorySnapshotPages(snapshot, maxMemorySyncBodyBytes, func(page memory.Snapshot) ([]byte, error) {
+		return json.Marshal(map[string]any{
+			"node_id":      a.cfg.NodeID,
+			"sync_version": memory.SyncProtocolVersion,
+			"snapshot":     page,
+		})
 	})
 	if err != nil {
 		return fmt.Errorf("encode local snapshot: %w", err)
 	}
-	if int64(len(body)) > maxMemorySyncBodyBytes {
-		return fmt.Errorf("local snapshot exceeds the %d-byte sync limit", maxMemorySyncBodyBytes)
-	}
 	postStarted := time.Now()
-	log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_start node_id=%s peer=%s body_bytes=%d records=%d",
-		a.cfg.NodeID, addr, len(body), memorySyncRecordCount(snapshot))
-	postRequest, err := http.NewRequest(http.MethodPost, strings.TrimRight(addr, "/")+"/api/memory/sync", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create local snapshot request: %w", err)
+	var totalBodyBytes int64
+	for _, body := range bodies {
+		totalBodyBytes += int64(len(body))
 	}
-	postRequest.Header.Set("Content-Type", "application/json")
-	if err := memory.SetSyncRequestHeaders(postRequest, a.mem.Watermarks()); err != nil {
-		return fmt.Errorf("set local sync headers: %w", err)
-	}
-	resp, err = a.peerClient.Do(postRequest)
+	log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_start node_id=%s peer=%s body_bytes=%d pages=%d records=%d",
+		a.cfg.NodeID, addr, totalBodyBytes, len(bodies), memorySyncRecordCount(snapshot))
+	sentBytes, err := postMemorySnapshotPages(
+		a.peerClient,
+		strings.TrimRight(addr, "/")+"/api/memory/sync",
+		bodies,
+		a.mem.Watermarks(),
+	)
 	if err != nil {
 		log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_failed node_id=%s peer=%s body_bytes=%d elapsed=%s error=%v",
-			a.cfg.NodeID, addr, len(body), time.Since(postStarted), err)
+			a.cfg.NodeID, addr, sentBytes, time.Since(postStarted), err)
 		return fmt.Errorf("send local snapshot: %w", err)
 	}
-	status = resp.StatusCode
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
-		log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_failed node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s",
-			a.cfg.NodeID, addr, status, len(body), time.Since(postStarted))
-		return fmt.Errorf("orchestrator returned %s: %s", resp.Status, strings.TrimSpace(string(message)))
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
 	log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_complete node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s",
-		a.cfg.NodeID, addr, status, len(body), time.Since(postStarted))
-	if remoteSnapshot.SyncVersion == memory.SyncProtocolVersion {
+		a.cfg.NodeID, addr, http.StatusOK, sentBytes, time.Since(postStarted))
+	if memory.SupportsIncrementalSync(remoteSnapshot.SyncVersion) {
 		if err := a.mem.SetPeerWatermarks(peerID, snapshot.Watermarks); err != nil {
 			return fmt.Errorf("persist orchestrator watermarks: %w", err)
 		}

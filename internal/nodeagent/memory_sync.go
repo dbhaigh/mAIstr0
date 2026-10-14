@@ -56,10 +56,43 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid memory sync headers: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	cursor, upper, err := memory.ReadSyncPageRequestHeaders(r)
+	if err != nil {
+		http.Error(w, "invalid memory sync page headers: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if cursor != nil && !memory.SupportsSyncPages(peerVersion) {
+		http.Error(w, "memory sync pagination requires protocol version 2", http.StatusBadRequest)
+		return
+	}
 	started := time.Now()
 	log.Printf("nodeagent: memory sync direction=node->peer event=send_start node_id=%s peer_id=%s body_bytes=unknown", a.cfg.NodeID, peerID)
 	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
 	snapshot := memory.SnapshotForPeer(a.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
+	responseWatermarks := snapshot.Watermarks
+	if memory.SupportsSyncPages(peerVersion) {
+		if cursor == nil {
+			cursor = make(map[string]uint64)
+			upper = snapshot.Watermarks
+		}
+		page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, maxMemorySyncBodyBytes, 0)
+		if err != nil {
+			http.Error(w, "could not page memory snapshot: "+err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+		snapshot = page
+		responseWatermarks = upper
+		if more {
+			if err := memory.SetSyncPageResponseHeader(w, nextCursor); err != nil {
+				http.Error(w, "could not encode memory sync page cursor: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	if err := memory.SetSyncResponseHeaders(w, responseWatermarks); err != nil {
+		http.Error(w, "could not encode memory sync watermarks: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(response, http.StatusOK, snapshot)
 	log.Printf("nodeagent: memory sync direction=node->peer event=send_complete node_id=%s peer_id=%s status=%d body_bytes=%d elapsed=%s error=%v",
 		a.cfg.NodeID, peerID, http.StatusOK, response.bytesWritten, time.Since(started), response.writeErr)
@@ -127,6 +160,152 @@ func marshalMemorySnapshot(snapshot memory.Snapshot) ([]byte, error) {
 	return body, nil
 }
 
+type memorySyncHTTPClient interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, watermarks map[string]uint64) (memory.Snapshot, int64, error) {
+	result := memory.Snapshot{
+		Experiences:  make([]memory.Experience, 0),
+		Facts:        make([]memory.Fact, 0),
+		Performances: make([]memory.Performance, 0),
+		Dialogues:    make([]memory.DialogueRecord, 0),
+	}
+	var cursor, upper map[string]uint64
+	var totalBytes int64
+	for {
+		request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		if err != nil {
+			return memory.Snapshot{}, totalBytes, err
+		}
+		if err := memory.SetSyncRequestHeaders(request, watermarks); err != nil {
+			return memory.Snapshot{}, totalBytes, err
+		}
+		if cursor != nil {
+			if err := memory.SetSyncPageRequestHeaders(request, cursor, upper); err != nil {
+				return memory.Snapshot{}, totalBytes, err
+			}
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			return memory.Snapshot{}, totalBytes, err
+		}
+		version, responseWatermarks, err := memory.ReadSyncResponseHeaders(response)
+		if err != nil {
+			response.Body.Close()
+			return memory.Snapshot{}, totalBytes, err
+		}
+		nextCursor, more, err := memory.ReadSyncPageResponseHeader(response)
+		if err != nil {
+			response.Body.Close()
+			return memory.Snapshot{}, totalBytes, err
+		}
+		page, bodyBytes, err := decodeMemorySyncResponse(response)
+		totalBytes += bodyBytes
+		if err != nil {
+			return memory.Snapshot{}, totalBytes, err
+		}
+		if version == 0 {
+			version = page.SyncVersion
+		}
+		if more && !memory.SupportsSyncPages(version) {
+			return memory.Snapshot{}, totalBytes, fmt.Errorf("peer paginated a memory snapshot without protocol version 2")
+		}
+		if more && len(nextCursor) == 0 {
+			return memory.Snapshot{}, totalBytes, fmt.Errorf("peer returned an empty memory sync page cursor")
+		}
+		result.Experiences = append(result.Experiences, page.Experiences...)
+		result.Facts = append(result.Facts, page.Facts...)
+		result.Performances = append(result.Performances, page.Performances...)
+		result.Dialogues = append(result.Dialogues, page.Dialogues...)
+		if !more {
+			result.SyncVersion = version
+			result.Watermarks = page.Watermarks
+			if result.Watermarks == nil {
+				result.Watermarks = responseWatermarks
+			}
+			return result, totalBytes, nil
+		}
+		if len(responseWatermarks) == 0 {
+			return memory.Snapshot{}, totalBytes, fmt.Errorf("peer omitted memory sync watermarks during pagination")
+		}
+		cursor = nextCursor
+		upper = responseWatermarks
+	}
+}
+
+func marshalMemorySnapshotPages(snapshot memory.Snapshot, maxBytes int64, wrap func(memory.Snapshot) ([]byte, error)) ([][]byte, error) {
+	base := memory.Snapshot{
+		Experiences:  make([]memory.Experience, 0),
+		Facts:        make([]memory.Fact, 0),
+		Performances: make([]memory.Performance, 0),
+		Dialogues:    make([]memory.DialogueRecord, 0),
+		SyncVersion:  snapshot.SyncVersion,
+		Watermarks:   snapshot.Watermarks,
+	}
+	baseJSON, err := json.Marshal(base)
+	if err != nil {
+		return nil, err
+	}
+	wrappedBase, err := wrap(base)
+	if err != nil {
+		return nil, err
+	}
+	envelopeBytes := len(wrappedBase) - len(baseJSON)
+	if envelopeBytes < 0 {
+		return nil, fmt.Errorf("memory snapshot wrapper is smaller than its payload")
+	}
+	pages, err := memory.SplitSnapshot(snapshot, maxBytes, envelopeBytes)
+	if err != nil {
+		return nil, err
+	}
+	bodies := make([][]byte, 0, len(pages))
+	for _, page := range pages {
+		body, err := wrap(page)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(body)) > maxBytes {
+			return nil, fmt.Errorf("memory snapshot page exceeds the %d-byte sync limit", maxBytes)
+		}
+		bodies = append(bodies, body)
+	}
+	return bodies, nil
+}
+
+func postMemorySnapshotPages(client memorySyncHTTPClient, endpoint string, bodies [][]byte, watermarks map[string]uint64) (int64, error) {
+	var totalBytes int64
+	for _, body := range bodies {
+		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return totalBytes, err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		if err := memory.SetSyncRequestHeaders(request, watermarks); err != nil {
+			return totalBytes, err
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			return totalBytes, err
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+			return totalBytes, fmt.Errorf("peer returned %s: %s", response.Status, strings.TrimSpace(string(message)))
+		}
+		_, copyErr := io.Copy(io.Discard, response.Body)
+		closeErr := response.Body.Close()
+		totalBytes += int64(len(body))
+		if copyErr != nil {
+			return totalBytes, copyErr
+		}
+		if closeErr != nil {
+			return totalBytes, closeErr
+		}
+	}
+	return totalBytes, nil
+}
+
 func decodeMemorySyncResponse(resp *http.Response) (memory.Snapshot, int64, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -179,32 +358,19 @@ func (a *Agent) syncPeerMemory() {
 		fetchStarted := time.Now()
 		log.Printf("nodeagent: memory sync direction=peer->node event=receive_start node_id=%s peer_id=%s body_bytes=unknown",
 			a.cfg.NodeID, peer.ID)
-		request, err := http.NewRequest(http.MethodGet, strings.TrimRight(peer.Address, "/")+"/memory/sync", nil)
-		if err == nil {
-			err = memory.SetSyncRequestHeaders(request, memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peer.ID)))
-		}
+		snapshot, bodyBytes, err := fetchMemorySyncSnapshot(
+			a.peerClient,
+			strings.TrimRight(peer.Address, "/")+"/memory/sync",
+			memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peer.ID)),
+		)
 		if err != nil {
 			log.Printf("nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s body_bytes=0 elapsed=%s stage=request error=%v",
 				a.cfg.NodeID, peer.ID, time.Since(fetchStarted), err)
-			continue
-		}
-		resp, err := a.peerClient.Do(request)
-		if err != nil {
-			log.Printf("nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s body_bytes=0 elapsed=%s stage=request error=%v",
-				a.cfg.NodeID, peer.ID, time.Since(fetchStarted), err)
-			log.Printf("nodeagent: cluster memory fetch from %s failed: %v", peer.ID, err)
-			continue
-		}
-		status := resp.StatusCode
-		snapshot, bodyBytes, err := decodeMemorySyncResponse(resp)
-		if err != nil {
-			log.Printf("nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
-				a.cfg.NodeID, peer.ID, status, bodyBytes, time.Since(fetchStarted), err)
 			log.Printf("nodeagent: cluster memory fetch from %s failed: %v", peer.ID, err)
 			continue
 		}
 		log.Printf("nodeagent: memory sync direction=peer->node event=receive_complete node_id=%s peer_id=%s status=%d body_bytes=%d records=%d elapsed=%s",
-			a.cfg.NodeID, peer.ID, status, bodyBytes, memorySyncRecordCount(snapshot), time.Since(fetchStarted))
+			a.cfg.NodeID, peer.ID, http.StatusOK, bodyBytes, memorySyncRecordCount(snapshot), time.Since(fetchStarted))
 		mergeStarted := time.Now()
 		if err := a.mem.MergeSnapshotFrom(snapshot, peer.ID); err != nil {
 			log.Printf("nodeagent: memory sync direction=peer->node event=merge_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s error=%v",
@@ -229,44 +395,35 @@ func (a *Agent) syncPeerMemory() {
 			peerWatermarks = remoteSnapshot.Watermarks
 		}
 		outgoing := memory.SnapshotForPeer(a.mem, peerVersion, peerWatermarks)
-		body, err := marshalMemorySnapshot(outgoing)
+		bodies, err := marshalMemorySnapshotPages(outgoing, maxMemorySyncBodyBytes, func(page memory.Snapshot) ([]byte, error) {
+			return marshalMemorySnapshot(page)
+		})
 		if err != nil {
 			log.Printf("nodeagent: cluster memory encode for %s failed: %v", peer.ID, err)
 			continue
 		}
 		sendStarted := time.Now()
-		log.Printf("nodeagent: memory sync direction=node->peer event=send_start node_id=%s peer_id=%s body_bytes=%d",
-			a.cfg.NodeID, peer.ID, len(body))
-		req, err := http.NewRequest(http.MethodPost, strings.TrimRight(peer.Address, "/")+"/memory/sync", bytes.NewReader(body))
-		if err != nil {
-			log.Printf("nodeagent: memory sync direction=node->peer event=send_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s stage=request error=%v",
-				a.cfg.NodeID, peer.ID, len(body), time.Since(sendStarted), err)
-			log.Printf("nodeagent: cluster memory request for %s failed: %v", peer.ID, err)
-			continue
+		var totalBodyBytes int64
+		for _, body := range bodies {
+			totalBodyBytes += int64(len(body))
 		}
-		req.Header.Set("Content-Type", "application/json")
-		if err := memory.SetSyncRequestHeaders(req, a.mem.Watermarks()); err != nil {
-			log.Printf("nodeagent: memory sync direction=node->peer event=send_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s stage=headers error=%v",
-				a.cfg.NodeID, peer.ID, len(body), time.Since(sendStarted), err)
-			continue
-		}
-		resp, err := a.peerClient.Do(req)
+		log.Printf("nodeagent: memory sync direction=node->peer event=send_start node_id=%s peer_id=%s body_bytes=%d pages=%d",
+			a.cfg.NodeID, peer.ID, totalBodyBytes, len(bodies))
+		sentBytes, err := postMemorySnapshotPages(
+			a.peerClient,
+			strings.TrimRight(peer.Address, "/")+"/memory/sync",
+			bodies,
+			a.mem.Watermarks(),
+		)
 		if err != nil {
-			log.Printf("nodeagent: memory sync direction=node->peer event=send_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s stage=send error=%v",
-				a.cfg.NodeID, peer.ID, len(body), time.Since(sendStarted), err)
+			log.Printf("nodeagent: memory sync direction=node->peer event=send_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s error=%v",
+				a.cfg.NodeID, peer.ID, sentBytes, time.Since(sendStarted), err)
 			log.Printf("nodeagent: cluster memory replication to %s failed: %v", peer.ID, err)
 			continue
 		}
-		status := resp.StatusCode
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
 		log.Printf("nodeagent: memory sync direction=node->peer event=send_complete node_id=%s peer_id=%s status=%d body_bytes=%d elapsed=%s",
-			a.cfg.NodeID, peer.ID, status, len(body), time.Since(sendStarted))
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			log.Printf("nodeagent: cluster memory replication to %s rejected: %s", peer.ID, resp.Status)
-			continue
-		}
-		if fetched && peerVersion == memory.SyncProtocolVersion {
+			a.cfg.NodeID, peer.ID, http.StatusNoContent, sentBytes, time.Since(sendStarted))
+		if fetched && memory.SupportsIncrementalSync(peerVersion) {
 			if err := a.mem.SetPeerWatermarks(peer.ID, outgoing.Watermarks); err != nil {
 				log.Printf("nodeagent: persist memory watermarks for %s failed: %v", peer.ID, err)
 			}

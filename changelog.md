@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Allow task-history and memory bootstraps to transfer histories larger than
+  64 MiB using protocol-v2 cursor pages and bounded POST batches, without
+  advancing peer watermarks before a transfer completes.
+- Reject a single sync record that exceeds the per-request limit explicitly.
+
+### Added
+
+- Regression coverage for multi-page transfer, watermark handling, and task
+  and memory snapshots larger than 64 MiB.
+
 ## 0.0.5 - 2026-10-14
 
 ### Added
