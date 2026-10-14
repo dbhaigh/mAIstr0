@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/subtask.schema.json",
+  "title": "Subtask",
+  "type": "object",
+  "required": ["id", "description", "task_type", "tags"],
+  "properties": {
+    "id": {"type": "string"},
+    "description": {"type": "string"},
+    "role": {"type": "string"},
+    "task_type": {"type": "string"},
+    "tags": {"type": ["array", "null"], "items": {"type": "string"}},
+    "depends_on": {"type": "array", "items": {"type": "string"}},
+    "expected_output": {"type": "string"},
+    "output_format": {"type": "string"},
+    "required_fields": {"type": "array", "items": {"type": "string"}},
+    "max_retries": {"type": "integer"},
+    "required_capabilities": {"type": "array", "items": {"type": "string"}},
+    "preferred_capabilities": {"type": "array", "items": {"type": "string"}},
+    "min_model_size_gb": {"type": "number"},
+    "preferred_model": {"type": "string"}
+  },
+  "additionalProperties": true
+}

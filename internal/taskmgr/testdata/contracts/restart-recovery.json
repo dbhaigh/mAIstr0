@@ -1,0 +1,26 @@
+{
+  "pending": {
+    "initial_status": "pending",
+    "status": "failed",
+    "resumable": true,
+    "subtasks": [
+      "failed"
+    ]
+  },
+  "running": {
+    "initial_status": "running",
+    "status": "failed",
+    "resumable": true,
+    "subtasks": [
+      "failed"
+    ]
+  },
+  "synthesizing": {
+    "initial_status": "synthesizing",
+    "status": "failed",
+    "resumable": true,
+    "subtasks": [
+      "completed"
+    ]
+  }
+}

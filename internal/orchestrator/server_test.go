@@ -16,6 +16,7 @@ import (
 
 	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
@@ -39,6 +40,34 @@ func newTestServer(t *testing.T) *Server {
 		_ = srv.Close()
 	})
 	return srv
+}
+
+func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
+	cfg := config.OrchestratorConfig{
+		Harness:          " DEEPSEEK ",
+		DiscoveryEnabled: true,
+		MemoryPath:       filepath.Join(t.TempDir(), "orchestrator.db"),
+	}
+	srv, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close test server: %v", err)
+		}
+	})
+	if srv.HarnessName() != "deepseek" {
+		t.Fatalf("harness = %q, want deepseek", srv.HarnessName())
+	}
+	if srv.dispatcher.limit != config.DefaultDispatchConcurrency {
+		t.Fatalf("dispatch limit = %d, want %d", srv.dispatcher.limit, config.DefaultDispatchConcurrency)
+	}
+
+	cfg.DiscoveryEnabled = false
+	if _, err := NewWithConfig(cfg); err == nil || !strings.Contains(err.Error(), "discovery_enabled") {
+		t.Fatalf("invalid config error = %v, want discovery_enabled validation error", err)
+	}
 }
 
 func TestYieldedDashboardPreservesLocalPairingAccess(t *testing.T) {
@@ -279,7 +308,7 @@ func TestPiProviderRoutesToLocalClusterAndParsesTools(t *testing.T) {
 		Models:       []engine.Model{{Name: "local-model", Tags: []string{"general"}}},
 		DefaultModel: "local-model",
 	})
-	provider := &localPiProvider{server: srv}
+	provider := &localPiProvider{generate: srv}
 	var streamed strings.Builder
 	completion, err := provider.Complete(context.Background(), piagent.CompletionRequest{
 		Model: "local-model",
@@ -363,7 +392,7 @@ func TestPiExecutesClusterToolsAndReceivesResults(t *testing.T) {
 		Models:       []engine.Model{{Name: "local-model", Tags: []string{"general"}}},
 		DefaultModel: "local-model",
 	})
-	backend := srv.agents["pi"]
+	backend := srv.harness.backend("pi")
 	toolSet := make(map[string]bool)
 	for _, tool := range backend.ListTools() {
 		toolNames = append(toolNames, tool.Name)
@@ -380,10 +409,10 @@ func TestPiExecutesClusterToolsAndReceivesResults(t *testing.T) {
 			t.Errorf("Pi tool catalog is missing %q", name)
 		}
 	}
-	if piTools, deepSeekTools := backend.ListTools(), srv.agents["deepseek"].ListTools(); !reflect.DeepEqual(piTools, deepSeekTools) {
+	if piTools, deepSeekTools := backend.ListTools(), srv.harness.backend("deepseek").ListTools(); !reflect.DeepEqual(piTools, deepSeekTools) {
 		t.Fatalf("Pi tools differ from DeepSeek tools:\nPi: %#v\nDeepSeek: %#v", piTools, deepSeekTools)
 	}
-	if piTools, deepSeekTools := backend.ListTools(), srv.agents["deepseek"].ListTools(); !reflect.DeepEqual(piTools, deepSeekTools) {
+	if piTools, deepSeekTools := backend.ListTools(), srv.harness.backend("deepseek").ListTools(); !reflect.DeepEqual(piTools, deepSeekTools) {
 		t.Fatalf("Pi tools differ from DeepSeek tools:\nPi: %#v\nDeepSeek: %#v", piTools, deepSeekTools)
 	}
 	session, err := backend.CreateSession("tool access", agent.SessionConfig{CoordinatorModel: "local-model"})
@@ -645,7 +674,7 @@ func TestAnthropicTextBlocksAndRequestValidation(t *testing.T) {
 
 func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 	srv := newTestServer(t)
-	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +718,7 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &joined); err != nil {
 		t.Fatal(err)
 	}
-	if joined.ID != srv.selfID || joined.Peers[node.ID()] != node.CertificatePEM() {
+	if joined.ID != srv.SelfID() || joined.Peers[node.ID()] != node.CertificatePEM() {
 		t.Fatalf("pairing response did not return the trusted roster: %#v", joined)
 	}
 
@@ -710,7 +739,7 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 
 func TestAutoJoinOnSameSubnetWithoutPIN(t *testing.T) {
 	srv := newTestServer(t)
-	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +779,7 @@ func TestAutoJoinOnSameSubnetWithoutPIN(t *testing.T) {
 
 func TestAutoJoinOnSameSubnetWithInvalidPIN(t *testing.T) {
 	srv := newTestServer(t)
-	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -790,7 +819,7 @@ func TestAutoJoinOnSameSubnetWithInvalidPIN(t *testing.T) {
 
 func TestPairingFromDifferentSubnetRequiresPIN(t *testing.T) {
 	srv := newTestServer(t)
-	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +872,7 @@ func TestPairingFromDifferentSubnetRequiresPIN(t *testing.T) {
 
 func TestPairingPINCanBeRegeneratedFromLoopback(t *testing.T) {
 	srv := newTestServer(t)
-	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -885,7 +914,7 @@ func TestPairingPINCanBeRegeneratedFromLoopback(t *testing.T) {
 
 func TestOrchestratorPairingIsRejected(t *testing.T) {
 	srv := newTestServer(t)
-	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.selfID)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -924,7 +953,7 @@ func TestOrchestratorPairingIsRejected(t *testing.T) {
 
 func TestDiscoveredNodeStatusAllowsSlowPeerResponse(t *testing.T) {
 	srv := newTestServer(t)
-	srv.selfID = "orchestrator-slow-node-test"
+	srv.election.selfID = "orchestrator-slow-node-test"
 	if err := srv.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
@@ -935,7 +964,7 @@ func TestDiscoveredNodeStatusAllowsSlowPeerResponse(t *testing.T) {
 	if err := srv.identity.TrustPeerDetails(peer.ID(), peer.CertificatePEM(), "node", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := peer.TrustPeer(srv.selfID, srv.identity.CertificatePEM()); err != nil {
+	if err := peer.TrustPeer(srv.SelfID(), srv.identity.CertificatePEM()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1392,6 +1421,76 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	}
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
 		t.Fatalf("dispatch attempts = (%d, %d), want (1, 1)", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+func TestIndependentSubtasksDispatchConcurrently(t *testing.T) {
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	nodes := make([]*httptest.Server, 0, 2)
+	for _, id := range []string{"node-a", "node-b"} {
+		nodeID := id
+		node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			started <- nodeID
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]string{"output": nodeID + " output"})
+		}))
+		nodes = append(nodes, node)
+		defer node.Close()
+	}
+
+	srv := newTestServer(t)
+	if err := srv.tasks.Close(); err != nil {
+		t.Fatal(err)
+	}
+	srv.tasks = taskmgr.NewManagerWithFinalizer(func(context.Context, *taskmgr.Task) (string, error) {
+		return "combined output", nil
+	})
+	srv.dispatcher.tasks = srv.tasks
+	srv.planner.tasks = srv.tasks
+	assignments := make([]scheduler.Assignment, 0, len(nodes))
+	for i, node := range nodes {
+		id := []string{"node-a", "node-b"}[i]
+		srv.registry.Upsert(cluster.NodeStatus{
+			ID: id, Address: node.URL, Healthy: true,
+			MaxConcurrentTasks: 1, AvailableCapacity: 1,
+		})
+		assignments = append(assignments, scheduler.Assignment{
+			Subtask: scheduler.Subtask{ID: id, Description: "independent work"},
+			NodeID:  id, Address: node.URL, Model: "test",
+		})
+	}
+	task, err := srv.tasks.CreateChecked("Parallel dispatch", assignments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, assignment := range assignments {
+		if err := srv.submitDispatch(task.ID, assignment); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case id := <-started:
+			seen[id] = true
+		case <-time.After(time.Second):
+			close(release)
+			t.Fatal("independent subtasks were not dispatched concurrently")
+		}
+	}
+	close(release)
+	if len(seen) != 2 {
+		t.Fatalf("dispatched nodes = %v, want both nodes", seen)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	completed, err := srv.tasks.Wait(waitCtx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != taskmgr.StatusCompleted {
+		t.Fatalf("task status = %s, want completed: %+v", completed.Status, completed)
 	}
 }
 

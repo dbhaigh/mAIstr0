@@ -1,0 +1,78 @@
+{
+  "name": "task-create-heuristic",
+  "request": {
+    "method": "POST",
+    "path": "/api/tasks",
+    "body": {
+      "description": "Summarize this report"
+    }
+  },
+  "expected_response": {
+    "status": 202,
+    "content_type": "application/json",
+    "body": {
+      "created_at": "\u003cTIME\u003e",
+      "description": "Summarize this report",
+      "graph": {
+        "edges": [],
+        "nodes": {
+          "sub-a": {
+            "description": "Summarize this report",
+            "id": "sub-a",
+            "output_format": "text",
+            "role": "summarizer",
+            "tags": [
+              "summarize",
+              "general"
+            ],
+            "task_type": "summarize"
+          }
+        }
+      },
+      "id": "\u003cTASK_ID\u003e",
+      "last_checkpoint": "\u003cCHECKPOINT_ID\u003e",
+      "origin": "\u003cTASK_ORIGIN\u003e",
+      "resumable": true,
+      "sequence": 0,
+      "status": "running",
+      "subtasks": [
+        {
+          "address": "\u003cWORKER_URL\u003e",
+          "model": "simulated-general",
+          "node_id": "simulated-worker",
+          "score": 0,
+          "score_factors": {
+            "active_tasks": 0,
+            "gpu_utilization_penalty": 0,
+            "hardware": 0,
+            "learned_bias": 0,
+            "load_penalty": 0,
+            "model_match": 15,
+            "npu_utilization_penalty": 0,
+            "queued_tasks": 0,
+            "telemetry_fresh": false
+          },
+          "status": "pending",
+          "subtask": {
+            "description": "Summarize this report",
+            "id": "sub-a",
+            "output_format": "text",
+            "role": "summarizer",
+            "tags": [
+              "summarize",
+              "general"
+            ],
+            "task_type": "summarize"
+          }
+        }
+      ],
+      "updated_at": "\u003cTIME\u003e"
+    }
+  },
+  "normalization_rules": [
+    "Replace timestamps with \u003cTIME\u003e.",
+    "Replace generated task and checkpoint IDs with \u003cTASK_ID\u003e and \u003cCHECKPOINT_ID\u003e.",
+    "Replace local worker URLs with \u003cWORKER_URL\u003e.",
+    "Normalize volatile scores, task origins, and sequences as documented by the Go contract tests."
+  ]
+}

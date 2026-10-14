@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/score-factors.schema.json",
+  "title": "ScoreFactors",
+  "type": "object",
+  "required": ["model_match", "hardware", "active_tasks", "queued_tasks", "load_penalty", "gpu_utilization_penalty", "npu_utilization_penalty", "learned_bias", "telemetry_fresh"],
+  "properties": {
+    "model_match": {"type": "number"},
+    "hardware": {"type": "number"},
+    "active_tasks": {"type": "integer"},
+    "queued_tasks": {"type": "integer"},
+    "pending_dependents": {"type": "integer"},
+    "capacity_penalty": {"type": "number"},
+    "load_penalty": {"type": "number"},
+    "gpu_compatibility_score": {"type": "number"},
+    "gpu_utilization_penalty": {"type": "number"},
+    "npu_utilization_penalty": {"type": "number"},
+    "cpu_utilization_penalty": {"type": "number"},
+    "memory_usage_penalty": {"type": "number"},
+    "capability_score": {"type": "number"},
+    "matched_capabilities": {"type": "array", "items": {"type": "string"}},
+    "model_quality_score": {"type": "number"},
+    "topology_score": {"type": "number"},
+    "learned_bias": {"type": "number"},
+    "telemetry_fresh": {"type": "boolean"},
+    "telemetry_age_ms": {"type": "integer"}
+  },
+  "additionalProperties": true
+}

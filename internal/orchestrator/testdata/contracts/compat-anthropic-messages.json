@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "content": [
+      {
+        "text": "[simulated response from simulated-general] processed prompt of 55 chars",
+        "type": "text"
+      }
+    ],
+    "id": "msg-simulated-worker",
+    "model": "simulated-general",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "input_tokens": 13,
+      "output_tokens": 18
+    }
+  }
+}

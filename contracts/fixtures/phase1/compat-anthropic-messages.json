@@ -1,0 +1,45 @@
+{
+  "name": "compat-anthropic-messages",
+  "request": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "body": {
+      "model": "simulated-general",
+      "max_tokens": 64,
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    }
+  },
+  "expected_response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "content": [
+        {
+          "text": "[simulated response from simulated-general] processed prompt of 55 chars",
+          "type": "text"
+        }
+      ],
+      "id": "msg-simulated-worker",
+      "model": "simulated-general",
+      "role": "assistant",
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "input_tokens": 13,
+        "output_tokens": 18
+      }
+    }
+  },
+  "normalization_rules": [
+    "Replace timestamps with \u003cTIME\u003e.",
+    "Replace generated task and checkpoint IDs with \u003cTASK_ID\u003e and \u003cCHECKPOINT_ID\u003e.",
+    "Replace local worker URLs with \u003cWORKER_URL\u003e.",
+    "Normalize volatile scores, task origins, and sequences as documented by the Go contract tests."
+  ]
+}

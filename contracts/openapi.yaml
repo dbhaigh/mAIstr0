@@ -1,0 +1,662 @@
+openapi: 3.1.0
+info:
+  title: mAIstr0 HTTP API
+  version: 1.0.0
+  description: >-
+    HTTP routes exposed by both the orchestrator and node agent. Server-specific
+    route registrations are listed in x-maistr0-registered-routes and checked
+    against the Go mux registration source by contracts/contracts_test.go.
+servers:
+  - url: https://localhost:7450
+    description: Orchestrator
+  - url: http://localhost:7451
+    description: Node agent
+paths:
+  /:
+    get:
+      responses: {"200": {description: Embedded dashboard or static asset}}
+  /status:
+    get:
+      responses: {"200": {description: Node health status}}
+  /execute:
+    post:
+      responses: {"200": {description: Execute a subtask}}
+  /generate:
+    post:
+      responses: {"200": {description: Generate text on the node}}
+  /chat:
+    post:
+      responses: {"200": {description: Chat on the node}}
+  /dialogues:
+    get:
+      responses: {"200": {description: List dialogues}}
+    post:
+      responses: {"200": {description: Create a dialogue}}
+  /dialogues/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Get a dialogue}}
+    delete:
+      responses: {"200": {description: Delete a dialogue}}
+  /dialogues/{id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Add a dialogue message}}
+  /dialogues/{id}/chat:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Send a dialogue chat turn}}
+  /dialogues/{id}/interrupt:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Interrupt a dialogue}}
+  /dialogues/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Cancel a dialogue}}
+  /models:
+    get:
+      responses: {"200": {description: List configured models}}
+    patch:
+      responses: {"200": {description: Update configured models}}
+  /models/all:
+    get:
+      responses: {"200": {description: List all available models}}
+  /models/refresh:
+    post:
+      responses: {"200": {description: Refresh model inventory}}
+  /models/pull:
+    post:
+      responses: {"200": {description: Pull a model}}
+  /engine:
+    get:
+      responses: {"200": {description: Get engine information}}
+  /properties:
+    get:
+      responses: {"200": {description: Get node properties}}
+    patch:
+      responses: {"200": {description: Update node properties}}
+  /peers:
+    get:
+      responses: {"200": {description: List known peers}}
+  /submit:
+    post:
+      responses: {"200": {description: Submit work to the orchestrator}}
+  /tasks:
+    get:
+      responses: {"200": {description: List tasks}}
+    post:
+      responses: {"200": {description: Create a task}}
+  /tasks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Get a task}}
+  /tasks/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Cancel a task}}
+  /tasks/sync:
+    post:
+      responses: {"200": {description: Synchronize task history}}
+  /tasks/replica:
+    post:
+      responses: {"200": {description: Apply a task replica}}
+  /memory/sync:
+    get:
+      responses: {"200": {description: Get peer memory sync data}}
+    post:
+      responses: {"200": {description: Apply peer memory sync data}}
+  /peer/message:
+    post:
+      responses: {"200": {description: Handle a peer message}}
+  /peer/converse:
+    post:
+      responses: {"200": {description: Converse with a peer}}
+  /memory/experiences:
+    get:
+      responses: {"200": {description: List memory experiences}}
+  /memory/insights:
+    get:
+      responses: {"200": {description: Get memory insights}}
+  /memory/facts:
+    get:
+      responses: {"200": {description: List memory facts}}
+    post:
+      responses: {"200": {description: Store a memory fact}}
+  /api/version:
+    get:
+      responses: {"200": {description: Get API version}}
+  /api/status:
+    get:
+      responses: {"200": {description: Get node or cluster status}}
+  /api/pairing/join:
+    post:
+      responses: {"200": {description: Join a cluster}}
+  /api/pairing/status:
+    get:
+      responses: {"200": {description: Get pairing status}}
+  /api/pairing/pin:
+    post:
+      responses: {"200": {description: Regenerate the pairing PIN}}
+  /api/pairing/connect:
+    post:
+      responses: {"200": {description: Connect to a cluster}}
+  /api/pairing/roster:
+    get:
+      responses: {"200": {description: Get the pairing roster}}
+  /api/pairing/invitation:
+    get:
+      responses: {"200": {description: Get invitation status}}
+    post:
+      responses: {"200": {description: Create a pairing invitation}}
+  /api/pairing/invitation/accept:
+    post:
+      responses: {"200": {description: Accept an invitation}}
+  /api/pairing/invitation/reject:
+    post:
+      responses: {"200": {description: Reject an invitation}}
+  /api/nodes:
+    get:
+      responses: {"200": {description: List cluster nodes}}
+  /api/nodes/all:
+    get:
+      responses: {"200": {description: List all cluster nodes}}
+  /api/nodes/register:
+    post:
+      responses: {"200": {description: Register a node}}
+  /api/nodes/models/refresh:
+    post:
+      responses: {"200": {description: Refresh models on all nodes}}
+  /api/nodes/{id}/eject:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Eject a node}}
+  /api/nodes/{id}/models:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Get node models}}
+    patch:
+      responses: {"200": {description: Update node models}}
+  /api/nodes/{id}/pairing/connect:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Pair with a node}}
+  /api/nodes/{id}/properties:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Get node properties}}
+    patch:
+      responses: {"200": {description: Update node properties}}
+  /api/nodes/{id}/engines:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: List node engines}}
+  /api/nodes/{id}/models/refresh:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Refresh node models}}
+  /api/nodes/{id}/models/pull:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Pull a model on a node}}
+  /api/nodes/{id}/generate:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Generate text on a node}}
+  /api/nodes/{id}/chat:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Chat with a node}}
+  /api/nodes/{id}/dialogues:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Proxy dialogue listing to a node}}
+    post:
+      responses: {"200": {description: Proxy dialogue creation to a node}}
+  /api/nodes/{id}/dialogues/:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Proxy nested dialogue routes to a node}}
+    post:
+      responses: {"200": {description: Proxy nested dialogue routes to a node}}
+  /api/nodes/{id}/models/{model}/generate:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+      - $ref: "#/components/parameters/Model"
+    post:
+      responses: {"200": {description: Generate with a node model}}
+  /api/nodes/{id}/models/{model}/test:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+      - $ref: "#/components/parameters/Model"
+    post:
+      responses: {"200": {description: Test a node model}}
+  /api/nodes/{id}/peer-converse:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Broker a node-to-node conversation}}
+  /api/discovery:
+    get:
+      responses: {"200": {description: List discovered instances}}
+  /api/discovery/{id}/pairing/invite:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Invite a discovered instance}}
+  /api/events:
+    get:
+      responses: {"200": {description: Subscribe to server events}}
+  /api/tasks:
+    get:
+      responses: {"200": {description: List tasks}}
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description]
+              properties:
+                description: {type: string}
+                subtasks:
+                  type: array
+                  items: {$ref: "#/components/schemas/Subtask"}
+                graph: {$ref: "#/components/schemas/TaskGraph"}
+                plan_mode: {type: string}
+                require_review: {type: boolean}
+                require_approval: {type: boolean}
+              additionalProperties: true
+      responses:
+        "202": {description: Task accepted}
+        "400": {description: Invalid task request}
+        "503": {description: No healthy node can accept the task}
+  /api/tasks/resumable:
+    get:
+      responses: {"200": {description: List resumable tasks}}
+  /api/tasks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Get a task}}
+  /api/tasks/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Cancel a task}}
+  /api/tasks/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Approve a task}}
+  /api/tasks/{id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Resume a task}}
+  /api/tasks/{id}/checkpoints:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: List task checkpoints}}
+  /api/dialogues:
+    get:
+      responses: {"200": {description: List dialogues}}
+    post:
+      responses: {"200": {description: Create a dialogue}}
+  /api/dialogues/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Get a dialogue}}
+    delete:
+      responses: {"200": {description: Delete a dialogue}}
+  /api/dialogues/{id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Add a dialogue message}}
+  /api/dialogues/{id}/interrupt:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Interrupt a dialogue}}
+  /api/dialogues/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Cancel a dialogue}}
+  /api/peer/converse:
+    post:
+      responses: {"200": {description: Converse with a peer}}
+  /api/memory/experiences:
+    get:
+      responses: {"200": {description: List memory experiences}}
+  /api/memory/insights:
+    get:
+      responses: {"200": {description: Get memory insights}}
+  /api/memory/recommendations:
+    get:
+      responses: {"200": {description: Get memory recommendations}}
+  /api/memory/facts:
+    get:
+      responses: {"200": {description: List memory facts}}
+    post:
+      responses: {"200": {description: Store a memory fact}}
+  /api/memory/facts/{key}:
+    parameters:
+      - $ref: "#/components/parameters/Key"
+    delete:
+      responses: {"200": {description: Delete a memory fact}}
+  /api/memory/dialogues:
+    get:
+      responses: {"200": {description: List memory dialogues}}
+  /api/memory/dialogues/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Get a memory dialogue}}
+  /api/memory/sync:
+    get:
+      responses: {"200": {description: Get memory synchronization data}}
+    post:
+      responses: {"200": {description: Apply memory synchronization data}}
+  /api/memory/prune:
+    post:
+      responses: {"200": {description: Prune old memory records}}
+  /api/agent/:
+    get:
+      responses: {"200": {description: Proxy agent API route}}
+    post:
+      responses: {"200": {description: Proxy agent API route}}
+    patch:
+      responses: {"200": {description: Proxy agent API route}}
+    delete:
+      responses: {"200": {description: Proxy agent API route}}
+  /api/agent/sessions:
+    get:
+      responses: {"200": {description: List agent sessions}}
+    post:
+      responses: {"200": {description: Create an agent session}}
+  /api/agent/sessions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses: {"200": {description: Get an agent session}}
+    delete:
+      responses: {"200": {description: Delete an agent session}}
+  /api/agent/sessions/{id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Send an agent message}}
+  /api/agent/sessions/{id}/interrupt:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Interrupt an agent session}}
+  /api/agent/sessions/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      responses: {"200": {description: Cancel an agent session}}
+  /api/agent/tools:
+    get:
+      responses: {"200": {description: List agent tools}}
+  /api/agent/models:
+    get:
+      responses: {"200": {description: List agent models}}
+  /api/agent/stats:
+    get:
+      responses: {"200": {description: Get agent statistics}}
+  /api/agent/backend:
+    get:
+      responses: {"200": {description: Get agent backend}}
+    patch:
+      responses: {"200": {description: Update agent backend}}
+  /api/models:
+    get:
+      responses: {"200": {description: List cluster models}}
+  /api/generate:
+    post:
+      responses: {"200": {description: Generate text through the cluster}}
+  /api/tags:
+    get:
+      responses: {"200": {description: List model tags}}
+  /api/chat:
+    post:
+      responses: {"200": {description: Chat through the cluster}}
+  /api/models/catalog:
+    get:
+      responses: {"200": {description: List model catalog}}
+  /v1/models:
+    get:
+      responses: {"200": {description: OpenAI-compatible model list}}
+  /v1/chat/completions:
+    post:
+      responses: {"200": {description: OpenAI-compatible chat completion}}
+  /v1/completions:
+    post:
+      responses: {"200": {description: OpenAI-compatible completion}}
+  /v1/messages:
+    post:
+      responses: {"200": {description: Anthropic-compatible message}}
+components:
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string}
+    Key:
+      name: key
+      in: path
+      required: true
+      schema: {type: string}
+    Model:
+      name: model
+      in: path
+      required: true
+      schema: {type: string}
+  schemas:
+    NodeConfig:
+      $ref: "./schemas/node-config.schema.json"
+    OrchestratorConfig:
+      $ref: "./schemas/orchestrator-config.schema.json"
+    Task:
+      $ref: "./schemas/task.schema.json"
+    SubtaskResult:
+      $ref: "./schemas/subtask-result.schema.json"
+    Subtask:
+      $ref: "./schemas/subtask.schema.json"
+    TaskGraph:
+      $ref: "./schemas/task-graph.schema.json"
+    Assignment:
+      $ref: "./schemas/assignment.schema.json"
+    ScoreFactors:
+      $ref: "./schemas/score-factors.schema.json"
+    NodeStatus:
+      $ref: "./schemas/node-status.schema.json"
+    Announcement:
+      $ref: "./schemas/announcement.schema.json"
+    Experience:
+      $ref: "./schemas/experience.schema.json"
+    Fact:
+      $ref: "./schemas/fact.schema.json"
+    Performance:
+      $ref: "./schemas/performance.schema.json"
+    DialogueRecord:
+      $ref: "./schemas/dialogue-record.schema.json"
+    Snapshot:
+      $ref: "./schemas/snapshot.schema.json"
+x-maistr0-registered-routes:
+  - "orchestrator|POST /api/pairing/join"
+  - "orchestrator|GET /api/pairing/status"
+  - "orchestrator|GET /api/status"
+  - "orchestrator|POST /api/pairing/pin"
+  - "orchestrator|POST /api/pairing/connect"
+  - "orchestrator|GET /api/pairing/roster"
+  - "orchestrator|POST /api/nodes/register"
+  - "orchestrator|POST /api/nodes/{id}/eject"
+  - "orchestrator|GET /api/nodes"
+  - "orchestrator|GET /api/nodes/all"
+  - "orchestrator|POST /api/nodes/models/refresh"
+  - "orchestrator|GET /api/version"
+  - "orchestrator|GET /api/nodes/{id}/models"
+  - "orchestrator|PATCH /api/nodes/{id}/models"
+  - "orchestrator|POST /api/nodes/{id}/pairing/connect"
+  - "orchestrator|GET /api/nodes/{id}/properties"
+  - "orchestrator|PATCH /api/nodes/{id}/properties"
+  - "orchestrator|GET /api/nodes/{id}/engines"
+  - "orchestrator|POST /api/nodes/{id}/models/refresh"
+  - "orchestrator|POST /api/nodes/{id}/models/pull"
+  - "orchestrator|GET /api/discovery"
+  - "orchestrator|POST /api/discovery/{id}/pairing/invite"
+  - "orchestrator|GET /api/events"
+  - "orchestrator|POST /api/tasks"
+  - "orchestrator|GET /api/tasks"
+  - "orchestrator|GET /api/tasks/resumable"
+  - "orchestrator|GET /api/tasks/{id}"
+  - "orchestrator|POST /api/tasks/{id}/cancel"
+  - "orchestrator|POST /api/tasks/{id}/approve"
+  - "orchestrator|POST /api/tasks/{id}/resume"
+  - "orchestrator|GET /api/tasks/{id}/checkpoints"
+  - "orchestrator|GET /api/agent/sessions"
+  - "orchestrator|POST /api/agent/sessions"
+  - "orchestrator|GET /api/agent/sessions/{id}"
+  - "orchestrator|DELETE /api/agent/sessions/{id}"
+  - "orchestrator|POST /api/agent/sessions/{id}/messages"
+  - "orchestrator|POST /api/agent/sessions/{id}/interrupt"
+  - "orchestrator|POST /api/agent/sessions/{id}/cancel"
+  - "orchestrator|GET /api/agent/tools"
+  - "orchestrator|GET /api/agent/models"
+  - "orchestrator|GET /api/agent/stats"
+  - "orchestrator|GET /api/agent/backend"
+  - "orchestrator|PATCH /api/agent/backend"
+  - "orchestrator|GET /api/models"
+  - "orchestrator|POST /api/generate"
+  - "orchestrator|GET /api/tags"
+  - "orchestrator|POST /api/chat"
+  - "orchestrator|POST /api/nodes/{id}/generate"
+  - "orchestrator|POST /api/nodes/{id}/chat"
+  - "orchestrator|POST /api/nodes/{id}/dialogues"
+  - "orchestrator|GET /api/nodes/{id}/dialogues"
+  - "orchestrator|/api/nodes/{id}/dialogues/"
+  - "orchestrator|POST /api/nodes/{id}/models/{model}/generate"
+  - "orchestrator|POST /api/nodes/{id}/models/{model}/test"
+  - "orchestrator|GET /v1/models"
+  - "orchestrator|POST /v1/chat/completions"
+  - "orchestrator|POST /v1/completions"
+  - "orchestrator|POST /v1/messages"
+  - "orchestrator|GET /api/models/catalog"
+  - "orchestrator|GET /api/memory/experiences"
+  - "orchestrator|GET /api/memory/insights"
+  - "orchestrator|GET /api/memory/recommendations"
+  - "orchestrator|GET /api/memory/facts"
+  - "orchestrator|POST /api/memory/facts"
+  - "orchestrator|DELETE /api/memory/facts/{key}"
+  - "orchestrator|GET /api/memory/dialogues"
+  - "orchestrator|GET /api/memory/dialogues/{id}"
+  - "orchestrator|POST /api/memory/sync"
+  - "orchestrator|GET /api/memory/sync"
+  - "orchestrator|POST /api/memory/prune"
+  - "orchestrator|POST /api/nodes/{id}/peer-converse"
+  - "orchestrator|/"
+  - "node|/status"
+  - "node|GET /api/version"
+  - "node|GET /api/status"
+  - "node|GET /api/pairing/status"
+  - "node|POST /api/pairing/connect"
+  - "node|POST /api/pairing/invitation"
+  - "node|GET /api/pairing/invitation"
+  - "node|POST /api/pairing/invitation/accept"
+  - "node|POST /api/pairing/invitation/reject"
+  - "node|/execute"
+  - "node|POST /generate"
+  - "node|POST /chat"
+  - "node|POST /dialogues"
+  - "node|GET /dialogues"
+  - "node|GET /dialogues/{id}"
+  - "node|DELETE /dialogues/{id}"
+  - "node|POST /dialogues/{id}/messages"
+  - "node|POST /dialogues/{id}/chat"
+  - "node|POST /dialogues/{id}/interrupt"
+  - "node|POST /dialogues/{id}/cancel"
+  - "node|/models"
+  - "node|/models/all"
+  - "node|POST /models/refresh"
+  - "node|/models/pull"
+  - "node|/engine"
+  - "node|/properties"
+  - "node|GET /peers"
+  - "node|POST /submit"
+  - "node|GET /tasks"
+  - "node|GET /tasks/{id}"
+  - "node|POST /tasks/{id}/cancel"
+  - "node|POST /tasks/sync"
+  - "node|POST /tasks/replica"
+  - "node|GET /memory/sync"
+  - "node|POST /memory/sync"
+  - "node|POST /peer/message"
+  - "node|POST /peer/converse"
+  - "node|GET /memory/experiences"
+  - "node|GET /memory/insights"
+  - "node|GET /memory/facts"
+  - "node|POST /memory/facts"
+  - "node|GET /api/nodes"
+  - "node|GET /api/nodes/all"
+  - "node|GET /api/nodes/{id}/models"
+  - "node|PATCH /api/nodes/{id}/models"
+  - "node|POST /api/nodes/{id}/pairing/connect"
+  - "node|GET /api/nodes/{id}/properties"
+  - "node|PATCH /api/nodes/{id}/properties"
+  - "node|GET /api/nodes/{id}/engines"
+  - "node|POST /api/nodes/{id}/models/refresh"
+  - "node|POST /api/nodes/{id}/models/pull"
+  - "node|GET /api/discovery"
+  - "node|POST /api/discovery/{id}/pairing/invite"
+  - "node|GET /api/events"
+  - "node|POST /api/tasks"
+  - "node|GET /api/tasks"
+  - "node|GET /api/tasks/{id}"
+  - "node|POST /api/tasks/{id}/cancel"
+  - "node|POST /api/tasks/{id}/approve"
+  - "node|POST /api/tasks/{id}/resume"
+  - "node|GET /api/tasks/{id}/checkpoints"
+  - "node|POST /api/generate"
+  - "node|POST /api/chat"
+  - "node|POST /api/nodes/{id}/dialogues"
+  - "node|GET /api/nodes/{id}/dialogues"
+  - "node|/api/nodes/{id}/dialogues/"
+  - "node|POST /api/dialogues"
+  - "node|GET /api/dialogues"
+  - "node|GET /api/dialogues/{id}"
+  - "node|DELETE /api/dialogues/{id}"
+  - "node|POST /api/dialogues/{id}/messages"
+  - "node|POST /api/dialogues/{id}/interrupt"
+  - "node|POST /api/dialogues/{id}/cancel"
+  - "node|POST /api/peer/converse"
+  - "node|GET /api/memory/experiences"
+  - "node|GET /api/memory/sync"
+  - "node|GET /api/memory/insights"
+  - "node|/api/agent/"
+  - "node|/"

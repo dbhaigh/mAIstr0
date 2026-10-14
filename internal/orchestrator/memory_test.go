@@ -136,6 +136,43 @@ func TestMemorySyncReplicatesNodeKnowledgeAndExperience(t *testing.T) {
 	}
 }
 
+func TestMemorySyncGetReturnsIncrementalSnapshotForCurrentPeer(t *testing.T) {
+	srv := newTestServer(t)
+	for range 3 {
+		if _, err := srv.mem.Record(memory.Experience{Description: "record"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	full := srv.mem.Snapshot()
+	origin := full.Experiences[0].Origin
+	request := httptest.NewRequest(http.MethodGet, "/api/memory/sync", nil)
+	if err := memory.SetSyncRequestHeaders(request, map[string]uint64{origin: 2}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("incremental memory sync returned %d: %s", response.Code, response.Body.String())
+	}
+	var incremental memory.Snapshot
+	if err := json.NewDecoder(response.Body).Decode(&incremental); err != nil {
+		t.Fatal(err)
+	}
+	if incremental.SyncVersion != memory.SyncProtocolVersion || len(incremental.Experiences) != 1 {
+		t.Fatalf("incremental snapshot = version %d, experiences %d", incremental.SyncVersion, len(incremental.Experiences))
+	}
+
+	legacyResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(legacyResponse, httptest.NewRequest(http.MethodGet, "/api/memory/sync", nil))
+	var legacy memory.Snapshot
+	if err := json.NewDecoder(legacyResponse.Body).Decode(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.Experiences) != 3 {
+		t.Fatalf("legacy peer received %d experiences, want full snapshot", len(legacy.Experiences))
+	}
+}
+
 func TestSchedulerLearnsFromDispatchOutcomes(t *testing.T) {
 	srv := newTestServer(t)
 

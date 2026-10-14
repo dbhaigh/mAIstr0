@@ -1,0 +1,120 @@
+{
+  "name": "task-get-explicit-graph",
+  "request": {
+    "method": "GET",
+    "path": "/api/tasks/{id}",
+    "setup": "POST the explicit graph workflow and wait for completion."
+  },
+  "expected_response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "created_at": "\u003cTIME\u003e",
+      "description": "Graph workflow",
+      "graph": {
+        "edges": [
+          {
+            "from": "prepare",
+            "to": "summarize"
+          }
+        ],
+        "nodes": {
+          "prepare": {
+            "description": "Prepare the source",
+            "id": "prepare",
+            "role": "general",
+            "tags": null,
+            "task_type": "general"
+          },
+          "summarize": {
+            "depends_on": [
+              "prepare"
+            ],
+            "description": "Summarize the source",
+            "id": "summarize",
+            "role": "summarizer",
+            "tags": null,
+            "task_type": "general"
+          }
+        }
+      },
+      "id": "\u003cTASK_ID\u003e",
+      "last_checkpoint": "\u003cCHECKPOINT_ID\u003e",
+      "origin": "\u003cTASK_ORIGIN\u003e",
+      "result": "[simulated response from simulated-general] processed prompt of 457 chars",
+      "sequence": 0,
+      "status": "completed",
+      "subtasks": [
+        {
+          "address": "\u003cWORKER_URL\u003e",
+          "model": "simulated-general",
+          "node_id": "simulated-worker",
+          "output": "[simulated response from simulated-general] processed prompt of 177 chars",
+          "score": 0,
+          "score_factors": {
+            "active_tasks": 0,
+            "gpu_utilization_penalty": 0,
+            "hardware": 0,
+            "learned_bias": 0,
+            "load_penalty": 0,
+            "model_match": 30,
+            "npu_utilization_penalty": 0,
+            "queued_tasks": 0,
+            "telemetry_fresh": false
+          },
+          "status": "completed",
+          "subtask": {
+            "description": "Prepare the source",
+            "id": "prepare",
+            "output_format": "text",
+            "role": "general",
+            "tags": [
+              "general"
+            ],
+            "task_type": "general"
+          }
+        },
+        {
+          "address": "\u003cWORKER_URL\u003e",
+          "model": "simulated-general",
+          "node_id": "simulated-worker",
+          "output": "[simulated response from simulated-general] processed prompt of 278 chars",
+          "score": 0,
+          "score_factors": {
+            "active_tasks": 0,
+            "gpu_utilization_penalty": 0,
+            "hardware": 0,
+            "learned_bias": 0,
+            "load_penalty": 0,
+            "model_match": 30,
+            "npu_utilization_penalty": 0,
+            "pending_dependents": 0,
+            "queued_tasks": 0,
+            "telemetry_fresh": false
+          },
+          "status": "completed",
+          "subtask": {
+            "depends_on": [
+              "prepare"
+            ],
+            "description": "Summarize the source",
+            "id": "summarize",
+            "output_format": "text",
+            "role": "summarizer",
+            "tags": [
+              "general"
+            ],
+            "task_type": "general"
+          }
+        }
+      ],
+      "updated_at": "\u003cTIME\u003e"
+    }
+  },
+  "normalization_rules": [
+    "Replace timestamps with \u003cTIME\u003e.",
+    "Replace generated task and checkpoint IDs with \u003cTASK_ID\u003e and \u003cCHECKPOINT_ID\u003e.",
+    "Replace local worker URLs with \u003cWORKER_URL\u003e.",
+    "Normalize volatile scores, task origins, and sequences as documented by the Go contract tests."
+  ]
+}

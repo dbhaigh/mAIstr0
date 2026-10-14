@@ -2,14 +2,26 @@ package taskmgr
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/scheduler"
+	bolt "go.etcd.io/bbolt"
 )
+
+func managerBoltDB(t *testing.T, manager *Manager) *bolt.DB {
+	t.Helper()
+	store, ok := manager.store.(*boltStore)
+	if !ok {
+		t.Fatal("manager does not use a Bolt store")
+	}
+	return store.db
+}
 
 func TestTaskSnapshotsAndAggregateResult(t *testing.T) {
 	manager := NewManager()
@@ -212,6 +224,148 @@ func TestDependenciesGateWorkAndPassPrerequisiteOutput(t *testing.T) {
 	input, ok := manager.InputForSubtask(task.ID, "summary")
 	if !ok || !strings.Contains(input, "Research findings") || !strings.Contains(input, "Summarize") {
 		t.Fatalf("dependent input did not include prerequisite output: %q", input)
+	}
+}
+
+func TestWaitForDependenciesReturnsOnContextCancellation(t *testing.T) {
+	manager := NewManager()
+	task := manager.Create("Wait for prerequisite", []scheduler.Assignment{
+		{Subtask: scheduler.Subtask{ID: "root"}},
+		{Subtask: scheduler.Subtask{ID: "dependent", DependsOn: []string{"root"}}},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool, 1)
+	go func() {
+		done <- manager.WaitForDependencies(ctx, task.ID, "dependent")
+	}()
+	cancel()
+	select {
+	case ready := <-done:
+		if ready {
+			t.Fatal("cancelled dependency wait reported ready")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dependency wait did not unblock after cancellation")
+	}
+}
+
+func TestTaskReadsProceedWhilePersistenceIsBlocked(t *testing.T) {
+	manager, err := OpenManager(filepath.Join(t.TempDir(), "tasks.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close task manager: %v", err)
+		}
+	})
+	task, err := manager.CreateChecked("Persist outside manager lock", []scheduler.Assignment{
+		{Subtask: scheduler.Subtask{ID: "work"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := managerBoltDB(t, manager)
+
+	dbLocked := make(chan struct{})
+	releaseDB := make(chan struct{})
+	dbErr := make(chan error, 1)
+	go func() {
+		dbErr <- db.Update(func(*bolt.Tx) error {
+			close(dbLocked)
+			<-releaseDB
+			return nil
+		})
+	}()
+	<-dbLocked
+
+	current, ok := manager.Get(task.ID)
+	if !ok {
+		t.Fatal("created task disappeared")
+	}
+	started := make(chan error, 1)
+	go func() {
+		started <- manager.StartSubtaskChecked(task.ID, "work")
+	}()
+	<-current.changed
+
+	deadline := time.Now().Add(time.Second)
+	lockAvailable := false
+	for time.Now().Before(deadline) {
+		if manager.mu.TryRLock() {
+			lockAvailable = true
+			manager.mu.RUnlock()
+			break
+		}
+		runtime.Gosched()
+	}
+	close(releaseDB)
+	if err := <-dbErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	if !lockAvailable {
+		t.Fatal("manager map lock remained held while BoltDB persistence was blocked")
+	}
+}
+
+func TestSameTaskPersistenceRemainsOrdered(t *testing.T) {
+	manager, err := OpenManager(filepath.Join(t.TempDir(), "tasks.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close task manager: %v", err)
+		}
+	})
+	task, err := manager.CreateChecked("Serialize task writes", []scheduler.Assignment{
+		{Subtask: scheduler.Subtask{ID: "work"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := managerBoltDB(t, manager)
+
+	dbLocked := make(chan struct{})
+	releaseDB := make(chan struct{})
+	dbErr := make(chan error, 1)
+	go func() {
+		dbErr <- db.Update(func(*bolt.Tx) error {
+			close(dbLocked)
+			<-releaseDB
+			return nil
+		})
+	}()
+	<-dbLocked
+	current, _ := manager.Get(task.ID)
+	started := make(chan error, 1)
+	go func() { started <- manager.StartSubtaskChecked(task.ID, "work") }()
+	<-current.changed
+
+	completed := make(chan error, 1)
+	go func() { completed <- manager.CompleteSubtaskChecked(task.ID, "work", "done", nil) }()
+	close(releaseDB)
+	if err := <-dbErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-completed; err != nil {
+		t.Fatal(err)
+	}
+
+	var persisted Task
+	if err := db.View(func(tx *bolt.Tx) error {
+		return json.Unmarshal(tx.Bucket([]byte("tasks")).Get([]byte(task.ID)), &persisted)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != StatusCompleted || persisted.Subtasks[0].Status != StatusCompleted {
+		t.Fatalf("persisted task lost the later completion: %+v", persisted)
 	}
 }
 

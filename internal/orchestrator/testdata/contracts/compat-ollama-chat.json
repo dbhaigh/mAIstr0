@@ -1,0 +1,16 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "created_at": "\u003cTIME\u003e",
+    "done": true,
+    "done_reason": "stop",
+    "eval_count": 18,
+    "message": {
+      "content": "[simulated response from simulated-general] processed prompt of 55 chars",
+      "role": "assistant"
+    },
+    "model": "simulated-general",
+    "total_duration": 0
+  }
+}

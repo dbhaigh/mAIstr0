@@ -1,0 +1,39 @@
+{
+  "name": "compat-ollama-chat",
+  "request": {
+    "method": "POST",
+    "path": "/api/chat",
+    "body": {
+      "model": "simulated-general",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ],
+      "stream": false
+    }
+  },
+  "expected_response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "created_at": "\u003cTIME\u003e",
+      "done": true,
+      "done_reason": "stop",
+      "eval_count": 18,
+      "message": {
+        "content": "[simulated response from simulated-general] processed prompt of 55 chars",
+        "role": "assistant"
+      },
+      "model": "simulated-general",
+      "total_duration": 0
+    }
+  },
+  "normalization_rules": [
+    "Replace timestamps with \u003cTIME\u003e.",
+    "Replace generated task and checkpoint IDs with \u003cTASK_ID\u003e and \u003cCHECKPOINT_ID\u003e.",
+    "Replace local worker URLs with \u003cWORKER_URL\u003e.",
+    "Normalize volatile scores, task origins, and sequences as documented by the Go contract tests."
+  ]
+}

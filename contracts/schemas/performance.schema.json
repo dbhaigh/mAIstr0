@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/performance.schema.json",
+  "title": "Performance",
+  "type": "object",
+  "required": ["node_id", "model", "task_type", "attempts", "successes", "failures", "total_duration_ms", "avg_duration_ms", "success_rate", "rating_sum", "last_used"],
+  "properties": {
+    "node_id": {"type": "string"},
+    "origin": {"type": "string"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "model": {"type": "string"},
+    "task_type": {"type": "string"},
+    "attempts": {"type": "integer"},
+    "successes": {"type": "integer"},
+    "failures": {"type": "integer"},
+    "total_duration_ms": {"type": "integer"},
+    "avg_duration_ms": {"type": "integer"},
+    "success_rate": {"type": "number"},
+    "rating_sum": {"type": "number"},
+    "last_used": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

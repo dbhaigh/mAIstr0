@@ -1,20 +1,344 @@
 package memory
 
 import (
+	"encoding/json"
+	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-func newTestStore(t *testing.T) *Store {
+func newTestStore(t *testing.T) Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"), "test-owner")
-	if err != nil {
-		t.Fatalf("open store: %v", err)
+	return NewInMemoryStore()
+}
+
+func TestMergeSnapshotReplayIsIdempotent(t *testing.T) {
+	source := newTestStore(t)
+	if _, err := source.Record(Experience{
+		Description: "record once", NodeID: "node", Model: "model", Success: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	if _, err := source.PutFact(Fact{Key: "fact", Value: "value"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.AppendDialogueTurn("dialogue", []string{"node"}, "topic", Turn{
+		Speaker: "node", Content: "turn", At: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := source.Snapshot()
+
+	destination := newTestStore(t)
+	if err := destination.MergeSnapshotFrom(snapshot, "source-node"); err != nil {
+		t.Fatal(err)
+	}
+	before := destination.Snapshot()
+	if err := destination.MergeSnapshotFrom(snapshot, "source-node"); err != nil {
+		t.Fatal(err)
+	}
+	after := destination.Snapshot()
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("replaying snapshot changed state:\nbefore: %+v\nafter:  %+v", before, after)
+	}
+}
+
+func TestOutOfOrderSnapshotsConverge(t *testing.T) {
+	store := newTestStore(t)
+	origin := "origin-a"
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := Snapshot{
+		Experiences: []Experience{{
+			Origin: origin, Sequence: 2, Description: "second", CreatedAt: base.Add(time.Second),
+		}},
+		Facts: []Fact{{
+			Key: "fact", Value: "new", Scope: "cluster", Source: "source-a",
+			Origin: origin, Sequence: 4, CreatedAt: base, UpdatedAt: base.Add(time.Second),
+		}},
+		Performances: []Performance{{
+			NodeID: "node", Model: "model", TaskType: "general", Attempts: 5,
+			Origin: origin, Sequence: 6,
+		}},
+		Dialogues: []DialogueRecord{{
+			ID: "dialogue", Participants: []string{"node"}, Topic: "topic",
+			Turns:  []Turn{{Speaker: "node", Content: "new", At: base.Add(time.Second)}},
+			Origin: origin, Sequence: 8, CreatedAt: base, UpdatedAt: base.Add(time.Second),
+		}},
+		Watermarks: map[string]uint64{origin: 8},
+	}
+	older := Snapshot{
+		Experiences: []Experience{{
+			Origin: origin, Sequence: 1, Description: "first", CreatedAt: base,
+		}},
+		Facts: []Fact{{
+			Key: "fact", Value: "old", Scope: "cluster", Source: "source-a",
+			Origin: origin, Sequence: 3, CreatedAt: base, UpdatedAt: base,
+		}},
+		Performances: []Performance{{
+			NodeID: "node", Model: "model", TaskType: "general", Attempts: 2,
+			Origin: origin, Sequence: 5,
+		}},
+		Dialogues: []DialogueRecord{{
+			ID: "dialogue", Participants: []string{"node"}, Topic: "topic",
+			Turns:  []Turn{{Speaker: "node", Content: "old", At: base}},
+			Origin: origin, Sequence: 7, CreatedAt: base, UpdatedAt: base,
+		}},
+		Watermarks: map[string]uint64{origin: 7},
+	}
+	if err := store.MergeSnapshotFrom(newer, "peer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MergeSnapshotFrom(older, "peer"); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := store.Snapshot()
+	if len(snapshot.Experiences) != 2 {
+		t.Fatalf("experiences after out-of-order merge = %d, want 2", len(snapshot.Experiences))
+	}
+	fact, err := store.GetFact("cluster", "fact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fact.Value != "new" {
+		t.Fatalf("stale fact won out-of-order merge: %+v", fact)
+	}
+	if len(snapshot.Performances) != 1 || snapshot.Performances[0].Attempts != 5 {
+		t.Fatalf("stale performance won out-of-order merge: %+v", snapshot.Performances)
+	}
+	if len(snapshot.Dialogues) != 1 || len(snapshot.Dialogues[0].Turns) != 2 {
+		t.Fatalf("dialogue turns did not converge: %+v", snapshot.Dialogues)
+	}
+}
+
+func TestSnapshotForPeerNegotiatesIncrementalAndFullFallback(t *testing.T) {
+	store := newTestStore(t)
+	for range 3 {
+		if _, err := store.Record(Experience{Description: "record"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	full := store.Snapshot()
+	if len(full.Experiences) != 3 || full.SyncVersion != SyncProtocolVersion {
+		t.Fatalf("full snapshot = %+v", full)
+	}
+	origin := full.Experiences[0].Origin
+	incremental := SnapshotForPeer(store, SyncProtocolVersion, map[string]uint64{origin: 2})
+	if len(incremental.Experiences) != 1 {
+		t.Fatalf("incremental experiences = %d, want 1", len(incremental.Experiences))
+	}
+	if legacyIncremental := SnapshotForPeer(store, FirstSyncProtocolVersion, map[string]uint64{origin: 2}); len(legacyIncremental.Experiences) != 1 {
+		t.Fatalf("version 1 peer got %d experiences, want the incremental record", len(legacyIncremental.Experiences))
+	}
+	if legacy := SnapshotForPeer(store, 0, map[string]uint64{origin: 2}); len(legacy.Experiences) != 3 {
+		t.Fatalf("legacy peer got %d experiences, want full snapshot", len(legacy.Experiences))
+	}
+	if reset := SnapshotForPeer(store, SyncProtocolVersion, map[string]uint64{origin: 99}); len(reset.Experiences) != 3 {
+		t.Fatalf("peer with ahead watermark got %d experiences, want full fallback", len(reset.Experiences))
+	}
+
+	request, err := http.NewRequest(http.MethodGet, "https://example.test/memory/sync", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SetSyncRequestHeaders(request, full.Watermarks); err != nil {
+		t.Fatal(err)
+	}
+	version, watermarks, err := ReadSyncRequestHeaders(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != SyncProtocolVersion || !reflect.DeepEqual(watermarks, full.Watermarks) {
+		t.Fatalf("decoded sync headers = version %d, watermarks %v", version, watermarks)
+	}
+	legacyRequest, _ := http.NewRequest(http.MethodGet, "https://example.test/memory/sync", nil)
+	if version, marks, err := ReadSyncRequestHeaders(legacyRequest); err != nil || version != 0 || marks != nil {
+		t.Fatalf("legacy sync headers = version %d, watermarks %v, err %v", version, marks, err)
+	}
+
+	encoded, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyWire struct {
+		Experiences []Experience `json:"experiences"`
+	}
+	if err := json.Unmarshal(encoded, &legacyWire); err != nil {
+		t.Fatalf("legacy peer could not decode extended snapshot: %v", err)
+	}
+	if len(legacyWire.Experiences) != len(full.Experiences) {
+		t.Fatalf("legacy peer decoded %d experiences, want %d", len(legacyWire.Experiences), len(full.Experiences))
+	}
+}
+
+func TestWatermarksPersistAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watermarks.db")
+	store, err := Open(path, "local-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Record(Experience{Description: "persisted"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPeerWatermarks("peer-node", map[string]uint64{"remote-node": 42}); err != nil {
+		t.Fatal(err)
+	}
+	wantWatermarks := store.Watermarks()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path, "local-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got := reopened.Watermarks(); !reflect.DeepEqual(got, wantWatermarks) {
+		t.Fatalf("watermarks after restart = %v, want %v", got, wantWatermarks)
+	}
+	if got := reopened.PeerWatermarks("peer-node"); !reflect.DeepEqual(got, map[string]uint64{"remote-node": 42}) {
+		t.Fatalf("peer watermarks after restart = %v", got)
+	}
+}
+
+func TestSnapshotWatermarksNeverOutrunIncludedRecords(t *testing.T) {
+	stores := []struct {
+		name  string
+		store Store
+	}{
+		{name: "in-memory", store: NewInMemoryStore()},
+	}
+	boltStore, err := Open(filepath.Join(t.TempDir(), "snapshot.db"), "snapshot-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stores = append(stores, struct {
+		name  string
+		store Store
+	}{name: "bbolt", store: boltStore})
+
+	for _, test := range stores {
+		t.Run(test.name, func(t *testing.T) {
+			defer test.store.Close()
+			done := make(chan struct{})
+			errs := make(chan error, 1)
+			go func() {
+				defer close(done)
+				for range 250 {
+					if _, err := test.store.Record(Experience{Description: "record"}); err != nil {
+						errs <- err
+						return
+					}
+				}
+			}()
+			for {
+				snapshot := test.store.Snapshot()
+				maxSequence := make(map[string]uint64)
+				for _, experience := range snapshot.Experiences {
+					if experience.Sequence > maxSequence[experience.Origin] {
+						maxSequence[experience.Origin] = experience.Sequence
+					}
+				}
+				for origin, sequence := range snapshot.Watermarks {
+					if sequence > maxSequence[origin] {
+						t.Fatalf("snapshot watermark for %s is %d, but included records reach only %d",
+							origin, sequence, maxSequence[origin])
+					}
+				}
+				select {
+				case err := <-errs:
+					t.Fatal(err)
+				case <-done:
+					select {
+					case err := <-errs:
+						t.Fatal(err)
+					default:
+					}
+					return
+				default:
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkSnapshotPayloadSizes10KExperiences(b *testing.B) {
+	store := NewInMemoryStore()
+	defer store.Close()
+	for i := range 10_000 {
+		if _, err := store.Record(Experience{Description: strings.Repeat("x", 80) + string(rune(i))}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	full := store.Snapshot()
+	origin := full.Experiences[0].Origin
+	incremental := store.SnapshotSince(map[string]uint64{origin: 9_990})
+	fullPayload, err := json.Marshal(full)
+	if err != nil {
+		b.Fatal(err)
+	}
+	incrementalPayload, err := json.Marshal(incremental)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if len(incrementalPayload) >= len(fullPayload) {
+		b.Fatalf("incremental payload size %d is not smaller than full payload %d", len(incrementalPayload), len(fullPayload))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = json.Marshal(full)
+		_, _ = json.Marshal(incremental)
+	}
+	b.ReportMetric(float64(len(fullPayload)), "full-bytes")
+	b.ReportMetric(float64(len(incrementalPayload)), "incremental-bytes")
+}
+
+func TestConcurrentRecordPersistsPerformanceAggregate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := Open(path, "concurrent-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const writers, recordsPerWriter = 8, 40
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*recordsPerWriter)
+	for range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range recordsPerWriter {
+				_, err := store.Record(Experience{
+					TaskType: "code", NodeID: "node", Model: "model", Success: true,
+				})
+				if err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path, "concurrent-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	performances := reopened.Performances()
+	if len(performances) != 1 || performances[0].Attempts != writers*recordsPerWriter {
+		t.Fatalf("persisted performances = %+v, want %d attempts", performances, writers*recordsPerWriter)
+	}
 }
 
 func TestRecordAndRecall(t *testing.T) {

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/announcement.schema.json",
+  "title": "Announcement",
+  "type": "object",
+  "required": ["role", "id", "http_addr", "peer_addr"],
+  "properties": {
+    "role": {"type": "string", "enum": ["orchestrator", "node"]},
+    "id": {"type": "string"},
+    "http_addr": {"type": "string"},
+    "peer_addr": {"type": "string"},
+    "score": {"type": "number"},
+    "members": {"type": "integer"},
+    "elected": {"type": "boolean"},
+    "orchestrator_id": {"type": "string"}
+  },
+  "additionalProperties": true
+}

@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -23,6 +24,57 @@ import (
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
+type blockingExecutionEngine struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func mustNewTestAgent(t *testing.T, cfg config.NodeConfig) *Agent {
+	t.Helper()
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agent
+}
+
+func mustNewTestAgentWithEngineDetector(t *testing.T, cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) *Agent {
+	t.Helper()
+	agent, err := newAgentWithEngineDetector(cfg, tasks, detector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agent
+}
+
+func TestNewRejectsInvalidConfiguration(t *testing.T) {
+	_, err := New(config.NodeConfig{ListenAddr: "invalid"})
+	if err == nil || !strings.Contains(err.Error(), "listen_addr") {
+		t.Fatalf("New error = %v, want listen_addr validation error", err)
+	}
+}
+
+func (e *blockingExecutionEngine) Name() string    { return "blocking" }
+func (e *blockingExecutionEngine) Available() bool { return true }
+func (e *blockingExecutionEngine) ListModels() ([]engine.Model, error) {
+	return []engine.Model{{Name: "model"}}, nil
+}
+func (e *blockingExecutionEngine) Generate(string, string) (string, error) {
+	return "done", nil
+}
+func (e *blockingExecutionEngine) Chat(string, []engine.ChatMessage) (string, error) {
+	return "done", nil
+}
+func (e *blockingExecutionEngine) GenerateWithOptions(ctx context.Context, _, _ string, _ engine.GenerationOptions) (string, error) {
+	e.started <- struct{}{}
+	select {
+	case <-e.release:
+		return "done", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 type pullTestEngine struct {
 	name  string
 	pulls []string
@@ -42,9 +94,64 @@ func (e *pullTestEngine) Pull(model string) error {
 	return nil
 }
 
+func TestHandleExecuteEnforcesAdvertisedConcurrencyLimit(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "execution-limit-test", MaxConcurrentTasks: 1,
+		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close test agent: %v", err)
+		}
+	})
+	eng := &blockingExecutionEngine{started: make(chan struct{}, 2), release: make(chan struct{})}
+	agent.engines = []engine.Engine{eng}
+
+	runRequest := func() *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/execute", strings.NewReader(`{"subtask_id":"work","model":"model","prompt":"test"}`))
+		agent.handleExecute(response, request)
+		return response
+	}
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { firstDone <- runRequest() }()
+	select {
+	case <-eng.started:
+	case <-time.After(time.Second):
+		t.Fatal("first execution did not start")
+	}
+	secondDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { secondDone <- runRequest() }()
+	select {
+	case <-eng.started:
+		t.Fatal("second execution started while node capacity was full")
+	case <-time.After(30 * time.Millisecond):
+	}
+	status := agent.status()
+	if status.ActiveTasks != 1 || status.AvailableCapacity != 0 || status.MaxConcurrentTasks != 1 {
+		t.Fatalf("status does not advertise saturated capacity: %+v", status)
+	}
+
+	close(eng.release)
+	for range 2 {
+		select {
+		case response := <-firstDone:
+			if response.Code != http.StatusOK {
+				t.Fatalf("first execution returned %d: %s", response.Code, response.Body.String())
+			}
+		case response := <-secondDone:
+			if response.Code != http.StatusOK {
+				t.Fatalf("second execution returned %d: %s", response.Code, response.Body.String())
+			}
+		case <-time.After(time.Second):
+			t.Fatal("execution did not complete after capacity was released")
+		}
+	}
+}
+
 func TestHandlePropertiesLoadsAndSavesCompleteProperties(t *testing.T) {
 	engineURL := "http://127.0.0.1:1235"
-	agent := newAgentWithEngineDetector(config.NodeConfig{
+	agent := mustNewTestAgentWithEngineDetector(t, config.NodeConfig{
 		NodeID:           "node-properties-test",
 		ListenAddr:       ":7451",
 		AdvertiseAddr:    "https://10.0.0.2:7451",
@@ -135,7 +242,7 @@ func TestPrioritizeAcceleratedEnginesPrefersLMStudioOnGPU(t *testing.T) {
 
 func TestRefreshDetectedEnginesFindsNewEngineAlongsideExistingOne(t *testing.T) {
 	detected := []engine.Engine{&pullTestEngine{name: "ollama"}}
-	agent := newAgentWithEngineDetector(config.NodeConfig{
+	agent := mustNewTestAgentWithEngineDetector(t, config.NodeConfig{
 		NodeID: "engine-rescan-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	}, nil, func() []engine.Engine {
 		return append([]engine.Engine(nil), detected...)
@@ -187,7 +294,7 @@ func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
 	}))
 	defer server.Close()
 
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-pair-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if agent.Memory() != nil {
@@ -242,7 +349,7 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	}))
 	defer server.Close()
 
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-auto-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if agent.Memory() != nil {
@@ -264,7 +371,7 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 }
 
 func TestPairingStatusRequestsPINForUntrustedOrchestrator(t *testing.T) {
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-awaiting-pairing", OrchestratorAddr: "https://orchestrator.local:7450",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
@@ -280,7 +387,7 @@ func TestPairingStatusRequestsPINForUntrustedOrchestrator(t *testing.T) {
 }
 
 func TestPairingStatusOffersAutomaticJoinOnSameSubnet(t *testing.T) {
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-same-subnet", OrchestratorAddr: "https://127.0.0.1:7450",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
@@ -305,7 +412,7 @@ func TestFormerOrchestratorWorkerJoinsNewLeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "former-orchestrator-worker", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if err := agent.InitializeIdentity(); err != nil {
@@ -419,7 +526,7 @@ func TestPersistentTaskHistorySurvivesAgentRestart(t *testing.T) {
 }
 
 func TestTaskReplicaRequiresCurrentOrchestrator(t *testing.T) {
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID:     "task-replica-test",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
@@ -459,7 +566,7 @@ func TestTaskReplicaRequiresCurrentOrchestrator(t *testing.T) {
 }
 
 func TestNodeControlInspectsLocalEngineWithoutSelfTLSRequest(t *testing.T) {
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-local-control-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if err := agent.InitializeIdentity(); err != nil {
@@ -509,7 +616,7 @@ func TestNodeControlRoutesRemoteInspectionThroughOrchestrator(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-control-client", OrchestratorAddr: server.URL,
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
@@ -553,7 +660,7 @@ func TestDeferredAndManualRescanKeepConfiguredAndDiscoveredEngines(t *testing.T)
 
 	discovered := []engine.Engine{&pullTestEngine{name: "detected-at-start"}}
 	scans := 0
-	agent := newAgentWithEngineDetector(config.NodeConfig{
+	agent := mustNewTestAgentWithEngineDetector(t, config.NodeConfig{
 		NodeID:     "engine-discovery-test",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 		Engines: []config.EngineConfig{{
@@ -607,7 +714,7 @@ func TestDeferredAndManualRescanKeepConfiguredAndDiscoveredEngines(t *testing.T)
 }
 
 func TestNodeModelsLocalRequestsWithoutSelfTLS(t *testing.T) {
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-local-models-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if err := agent.InitializeIdentity(); err != nil {
@@ -693,7 +800,7 @@ func TestNodeModelsRemoteRequestsRequirePinnedPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-models-client", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if err := agent.InitializeIdentity(); err != nil {
@@ -771,7 +878,11 @@ func TestNodeModelsRemoteRequestsRequirePinnedPeer(t *testing.T) {
 func TestModelPullUsesRequestedEngine(t *testing.T) {
 	first := &pullTestEngine{name: "first"}
 	target := &pullTestEngine{name: "target"}
-	agent := &Agent{engines: []engine.Engine{first, target}}
+	agent := &Agent{
+		engineComponent:    &engineComponent{engines: []engine.Engine{first, target}, telemetry: &telemetryComponent{}, state: &agentState{}},
+		telemetryComponent: &telemetryComponent{},
+		agentState:         &agentState{},
+	}
 	request := httptest.NewRequest(http.MethodPost, "/models/pull", strings.NewReader(`{"model":"qwen2.5:7b","engine":"target"}`))
 	response := httptest.NewRecorder()
 	agent.handleModelPull(response, request)
@@ -787,7 +898,11 @@ func TestModelPullUsesRequestedEngine(t *testing.T) {
 }
 
 func TestModelPullRejectsUnknownRequestedEngine(t *testing.T) {
-	agent := &Agent{engines: []engine.Engine{&pullTestEngine{name: "configured"}}}
+	agent := &Agent{
+		engineComponent:    &engineComponent{engines: []engine.Engine{&pullTestEngine{name: "configured"}}, telemetry: &telemetryComponent{}, state: &agentState{}},
+		telemetryComponent: &telemetryComponent{},
+		agentState:         &agentState{},
+	}
 	request := httptest.NewRequest(http.MethodPost, "/models/pull", strings.NewReader(`{"model":"model","engine":"missing"}`))
 	response := httptest.NewRecorder()
 	agent.handleModelPull(response, request)
@@ -823,7 +938,7 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 	}))
 	defer pairServer.Close()
 
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-invitation-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if err := agent.InitializeIdentity(); err != nil {
@@ -953,7 +1068,7 @@ func TestAppendSystemUsageSampleKeepsBoundedRecentHistory(t *testing.T) {
 }
 
 func TestNodeStatusIncludesCopiedGPUHistory(t *testing.T) {
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "gpu-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if agent.Memory() != nil {
@@ -980,7 +1095,7 @@ func TestNodeStatusIncludesCopiedGPUHistory(t *testing.T) {
 }
 
 func TestNodeStatusIncludesCopiedNPUHistory(t *testing.T) {
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "npu-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if agent.Memory() != nil {
@@ -1004,7 +1119,7 @@ func TestNodeStatusIncludesCopiedNPUHistory(t *testing.T) {
 }
 
 func TestNodeStatusIncludesCopiedSystemHistory(t *testing.T) {
-	agent := New(config.NodeConfig{
+	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "system-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if agent.Memory() != nil {
@@ -1038,7 +1153,7 @@ func TestSystemStatusReportsPersistenceAvailability(t *testing.T) {
 		{name: "unavailable", memory: t.TempDir(), available: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			agent := New(config.NodeConfig{NodeID: "system-status-test", MemoryPath: test.memory})
+			agent := mustNewTestAgent(t, config.NodeConfig{NodeID: "system-status-test", MemoryPath: test.memory})
 			if agent.Memory() != nil {
 				t.Cleanup(func() { _ = agent.Memory().Close() })
 			}
@@ -1076,7 +1191,7 @@ func TestNodeChatAndDialogueEndpoints(t *testing.T) {
 		ListenAddr: ":0",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	}
-	agent := New(cfg)
+	agent := mustNewTestAgent(t, cfg)
 	t.Cleanup(func() { _ = agent.Memory().Close() })
 	// Ensure simulated engine is present for deterministic unit testing
 	agent.engines = append([]engine.Engine{engine.NewSimulated()}, agent.engines...)
@@ -1184,7 +1299,7 @@ func TestTaskSubmissionProxyUsesLongTimeoutClient(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	agent := New(config.NodeConfig{})
+	agent := mustNewTestAgent(t, config.NodeConfig{})
 	agent.orchestratorAddr = upstream.URL
 	agent.peerClient = &http.Client{Timeout: 10 * time.Millisecond}
 	agent.dispatchClient = &http.Client{Timeout: time.Second}

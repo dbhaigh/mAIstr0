@@ -1,0 +1,27 @@
+{
+  "name": "compat-ollama-chat-stream",
+  "request": {
+    "method": "POST",
+    "path": "/api/chat",
+    "body": {
+      "model": "simulated-general",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    }
+  },
+  "expected_response": {
+    "status": 200,
+    "content_type": "application/x-ndjson",
+    "body": "{\"created_at\":\"\u003cTIME\u003e\",\"done\":false,\"message\":{\"role\":\"assistant\",\"content\":\"[simulated response from simulated-g\"},\"model\":\"simulated-general\"}\n{\"created_at\":\"\u003cTIME\u003e\",\"done\":false,\"message\":{\"role\":\"assistant\",\"content\":\"eneral] processed prompt of 55 chars\"},\"model\":\"simulated-general\"}\n{\"created_at\":\"\u003cTIME\u003e\",\"done\":true,\"done_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"model\":\"simulated-general\"}\n"
+  },
+  "normalization_rules": [
+    "Replace local worker URLs with \u003cWORKER_URL\u003e.",
+    "Normalize created timestamps and duration values to zero.",
+    "Keep event ordering, event names, payload shapes, and terminal events unchanged."
+  ]
+}

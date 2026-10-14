@@ -16,7 +16,7 @@ type DeepSeek struct {
 	harness *deepseek.Harness
 }
 
-func NewDeepSeek(registry *cluster.Registry, dispatcher *http.Client, store *memory.Store, events *hub.Hub) *DeepSeek {
+func NewDeepSeek(registry *cluster.Registry, dispatcher *http.Client, store memory.Store, events *hub.Hub) *DeepSeek {
 	h := deepseek.New(registry, dispatcher)
 	h.SetMemory(store)
 	h.SetEventsHub(events)

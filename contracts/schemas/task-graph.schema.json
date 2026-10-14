@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/task-graph.schema.json",
+  "title": "TaskGraph",
+  "type": "object",
+  "required": ["nodes", "edges"],
+  "properties": {
+    "nodes": {"type": ["object", "null"], "additionalProperties": {"$ref": "subtask.schema.json"}},
+    "edges": {"type": ["array", "null"], "items": {"type": "object", "required": ["from", "to"], "properties": {"from": {"type": "string"}, "to": {"type": "string"}}, "additionalProperties": true}},
+    "parallel_groups": {"type": "array", "items": {"type": "object", "required": ["subtasks"], "properties": {"id": {"type": "string"}, "subtasks": {"type": "array", "items": {"$ref": "subtask.schema.json"}}, "additionalProperties": true}}},
+    "chains": {"type": "array", "items": {"type": "object", "required": ["subtasks"], "properties": {"id": {"type": "string"}, "subtasks": {"type": "array", "items": {"$ref": "subtask.schema.json"}}, "additionalProperties": true}}}
+  },
+  "additionalProperties": true
+}

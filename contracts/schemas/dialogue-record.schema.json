@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/dialogue-record.schema.json",
+  "title": "DialogueRecord",
+  "type": "object",
+  "required": ["id", "participants", "turns", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string"},
+    "origin": {"type": "string"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "participants": {"type": ["array", "null"], "items": {"type": "string"}},
+    "topic": {"type": "string"},
+    "turns": {"type": ["array", "null"], "items": {"type": "object", "required": ["speaker", "content", "at"], "properties": {"speaker": {"type": "string"}, "node_id": {"type": "string"}, "model": {"type": "string"}, "content": {"type": "string"}, "duration_ms": {"type": "integer"}, "at": {"type": "string", "format": "date-time"}}, "additionalProperties": true}},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

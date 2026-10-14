@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "content_type": "text/event-stream",
+  "body": "data: {\"choices\":[{\"delta\":{\"content\":\"[simulated response from simulated-g\"},\"finish_reason\":null,\"index\":0}],\"created\":0,\"id\":\"chatcmpl-maistr0\",\"model\":\"simulated-general\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"eneral] processed prompt of 55 chars\"},\"finish_reason\":null,\"index\":0}],\"created\":0,\"id\":\"chatcmpl-maistr0\",\"model\":\"simulated-general\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"created\":0,\"id\":\"chatcmpl-maistr0\",\"model\":\"simulated-general\",\"object\":\"chat.completion.chunk\"}\n\ndata: [DONE]\n\n"
+}

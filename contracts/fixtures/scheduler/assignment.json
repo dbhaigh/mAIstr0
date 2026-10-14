@@ -1,0 +1,137 @@
+{
+  "name": "assignment",
+  "request": {
+    "nodes": [
+      {
+        "id": "worker-a",
+        "version": "",
+        "address": "https://worker-a",
+        "hardware": {
+          "os": "",
+          "arch": "",
+          "cpu_cores": 0,
+          "cpu_stats_available": false,
+          "total_ram_mb": 0,
+          "memory_stats_available": false,
+          "has_gpu": false,
+          "gpu_stats_available": false,
+          "gpu_utilization_percent": 0,
+          "has_npu": false,
+          "npu_stats_available": false,
+          "npu_utilization_percent": 0,
+          "score": 50
+        },
+        "models": [
+          {
+            "name": "general-model",
+            "engine": "simulated",
+            "tags": [
+              "general"
+            ]
+          }
+        ],
+        "telemetry_at": "0001-01-01T00:00:00Z",
+        "default_model": "general-model",
+        "fast_score": 0,
+        "active_tasks": 0,
+        "last_seen": "0001-01-01T00:00:00Z",
+        "healthy": true,
+        "leader": false
+      }
+    ],
+    "models": [
+      {
+        "name": "general-model",
+        "engine": "simulated",
+        "tags": [
+          "general"
+        ]
+      }
+    ],
+    "subtasks": [
+      {
+        "id": "write",
+        "description": "Write the summary",
+        "role": "writer",
+        "task_type": "general",
+        "tags": null,
+        "depends_on": [
+          "research"
+        ]
+      },
+      {
+        "id": "research",
+        "description": "Research the report",
+        "role": "researcher",
+        "task_type": "general",
+        "tags": null
+      }
+    ]
+  },
+  "expected_response": {
+    "assignments": [
+      {
+        "subtask": {
+          "id": "research",
+          "description": "Research the report",
+          "role": "researcher",
+          "task_type": "general",
+          "tags": [
+            "general"
+          ],
+          "output_format": "text"
+        },
+        "node_id": "worker-a",
+        "address": "https://worker-a",
+        "model": "general-model",
+        "score": 46,
+        "score_factors": {
+          "model_match": 30,
+          "hardware": 15,
+          "active_tasks": 0,
+          "queued_tasks": 0,
+          "load_penalty": 0,
+          "gpu_utilization_penalty": 0,
+          "npu_utilization_penalty": 0,
+          "topology_score": 1,
+          "learned_bias": 0,
+          "telemetry_fresh": false
+        }
+      },
+      {
+        "subtask": {
+          "id": "write",
+          "description": "Write the summary",
+          "role": "writer",
+          "task_type": "general",
+          "tags": [
+            "general"
+          ],
+          "depends_on": [
+            "research"
+          ],
+          "output_format": "text"
+        },
+        "node_id": "worker-a",
+        "address": "https://worker-a",
+        "model": "general-model",
+        "score": 35,
+        "score_factors": {
+          "model_match": 30,
+          "hardware": 15,
+          "active_tasks": 0,
+          "queued_tasks": 1,
+          "pending_dependents": 1,
+          "load_penalty": 10,
+          "gpu_utilization_penalty": 0,
+          "npu_utilization_penalty": 0,
+          "learned_bias": 0,
+          "telemetry_fresh": false
+        }
+      }
+    ]
+  },
+  "normalization_rules": [
+    "No normalization; fixed inputs produce deterministic scores and assignments."
+  ]
+}
