@@ -28,6 +28,7 @@ type ScoreFactors struct {
 	ActiveTasks           int      `json:"active_tasks"`
 	QueuedTasks           int      `json:"queued_tasks"`
 	PendingDependents     int      `json:"pending_dependents,omitempty"`
+	CapacityPenalty       float64  `json:"capacity_penalty,omitempty"`
 	LoadPenalty           float64  `json:"load_penalty"`
 	GPUCompatibilityScore float64  `json:"gpu_compatibility_score,omitempty"`
 	GPUUtilizationPenalty float64  `json:"gpu_utilization_penalty"`
@@ -241,6 +242,10 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, load map[st
 
 		hardwareScore := hw.Score * cfg.HardwareWeight
 		loadPenalty := float64(load[n.ID])*cfg.LoadPenaltyWeight + float64(pendingDependents[n.ID])*cfg.DependentPenaltyWeight
+		capacityPenalty := 0.0
+		if n.MaxConcurrentTasks > 0 && load[n.ID] >= n.MaxConcurrentTasks {
+			capacityPenalty = float64(load[n.ID]-n.MaxConcurrentTasks+1) * cfg.LoadPenaltyWeight
+		}
 		gpuCompatibilityScore := 0.0
 		if hw.HasGPU {
 			gpuCompatibilityScore = cfg.GPUCompatibilityBonus
@@ -268,6 +273,7 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, load map[st
 			ActiveTasks:           n.ActiveTasks,
 			QueuedTasks:           load[n.ID] - n.ActiveTasks,
 			PendingDependents:     pendingDependents[n.ID],
+			CapacityPenalty:       capacityPenalty,
 			LoadPenalty:           loadPenalty,
 			GPUCompatibilityScore: gpuCompatibilityScore,
 			GPUUtilizationPenalty: gpuPenalty,
@@ -284,7 +290,7 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, load map[st
 		}
 
 		score := factors.ModelMatch + factors.Hardware + factors.GPUCompatibilityScore + factors.CapabilityScore +
-			factors.ModelQualityScore + factors.TopologyScore - factors.LoadPenalty -
+			factors.ModelQualityScore + factors.TopologyScore - factors.LoadPenalty - factors.CapacityPenalty -
 			factors.GPUUtilizationPenalty - factors.NPUUtilizationPenalty -
 			factors.CPUUtilizationPenalty - factors.MemoryUsagePenalty + factors.LearnedBias
 

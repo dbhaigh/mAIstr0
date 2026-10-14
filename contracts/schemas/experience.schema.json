@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/experience.schema.json",
+  "title": "Experience",
+  "type": "object",
+  "required": ["id", "kind", "description", "success", "duration_ms", "created_at"],
+  "properties": {
+    "id": {"type": "integer", "minimum": 0},
+    "origin": {"type": "string"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "kind": {"type": "string"},
+    "task_type": {"type": "string"},
+    "description": {"type": "string"},
+    "prompt": {"type": "string"},
+    "output": {"type": "string"},
+    "node_id": {"type": "string"},
+    "model": {"type": "string"},
+    "tool": {"type": "string"},
+    "session_id": {"type": "string"},
+    "success": {"type": "boolean"},
+    "error": {"type": "string"},
+    "duration_ms": {"type": "integer"},
+    "rating": {"type": "number"},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

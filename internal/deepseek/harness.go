@@ -36,7 +36,7 @@ type Harness struct {
 	sessionsMu sync.RWMutex
 
 	events           *hub.Hub
-	mem              *memory.Store
+	mem              memory.Store
 	style            string
 	workflowExecutor func(context.Context, string, []scheduler.Subtask, bool) (string, error)
 
@@ -88,7 +88,7 @@ func (h *Harness) SetEventsHub(events *hub.Hub) {
 
 // SetMemory attaches the persistent cluster memory the harness recalls from
 // and learns into. Without it the harness still works, just statelessly.
-func (h *Harness) SetMemory(store *memory.Store) {
+func (h *Harness) SetMemory(store memory.Store) {
 	h.mem = store
 	if store != nil {
 		h.RegisterTool(&RecallMemoryTool{})
@@ -99,7 +99,7 @@ func (h *Harness) SetMemory(store *memory.Store) {
 }
 
 // Memory returns the attached memory store (may be nil).
-func (h *Harness) Memory() *memory.Store { return h.mem }
+func (h *Harness) Memory() memory.Store { return h.mem }
 
 // remember persists one agent action so future sessions can recall it and
 // the scheduler can learn which node/model pairings actually work.

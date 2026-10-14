@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/fact.schema.json",
+  "title": "Fact",
+  "type": "object",
+  "required": ["key", "value", "hits", "created_at", "updated_at"],
+  "properties": {
+    "key": {"type": "string"},
+    "origin": {"type": "string"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "value": {"type": "string"},
+    "scope": {"type": "string"},
+    "source": {"type": "string"},
+    "hits": {"type": "integer"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

@@ -51,10 +51,16 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "memory store unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	peerVersion, watermarks, err := memory.ReadSyncRequestHeaders(r)
+	if err != nil {
+		http.Error(w, "invalid memory sync headers: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	started := time.Now()
 	log.Printf("nodeagent: memory sync direction=node->peer event=send_start node_id=%s peer_id=%s body_bytes=unknown", a.cfg.NodeID, peerID)
 	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
-	writeJSON(response, http.StatusOK, a.mem.Snapshot())
+	snapshot := memory.SnapshotForPeer(a.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
+	writeJSON(response, http.StatusOK, snapshot)
 	log.Printf("nodeagent: memory sync direction=node->peer event=send_complete node_id=%s peer_id=%s status=%d body_bytes=%d elapsed=%s error=%v",
 		a.cfg.NodeID, peerID, http.StatusOK, response.bytesWritten, time.Since(started), response.writeErr)
 }
@@ -86,7 +92,7 @@ func (a *Agent) handlePeerMemorySyncPost(w http.ResponseWriter, r *http.Request)
 	}
 	decodeElapsed := time.Since(decodeStarted)
 	mergeStarted := time.Now()
-	if err := a.mem.MergeSnapshot(snapshot); err != nil {
+	if err := a.mem.MergeSnapshotFrom(snapshot, peerID); err != nil {
 		log.Printf("nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s body_bytes=%d status=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
 			a.cfg.NodeID, peerID, bodyBytes, http.StatusInternalServerError, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
 		http.Error(w, "could not merge cluster memory: "+err.Error(), http.StatusInternalServerError)
@@ -165,6 +171,7 @@ func (a *Agent) syncPeerMemory() {
 	}
 
 	peers := a.Peers()
+	remoteSnapshots := make(map[string]memory.Snapshot)
 	for _, peer := range peers {
 		if !peer.Healthy || peer.ID == a.cfg.NodeID || peer.Address == "" {
 			continue
@@ -172,7 +179,16 @@ func (a *Agent) syncPeerMemory() {
 		fetchStarted := time.Now()
 		log.Printf("nodeagent: memory sync direction=peer->node event=receive_start node_id=%s peer_id=%s body_bytes=unknown",
 			a.cfg.NodeID, peer.ID)
-		resp, err := a.peerClient.Get(strings.TrimRight(peer.Address, "/") + "/memory/sync")
+		request, err := http.NewRequest(http.MethodGet, strings.TrimRight(peer.Address, "/")+"/memory/sync", nil)
+		if err == nil {
+			err = memory.SetSyncRequestHeaders(request, memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peer.ID)))
+		}
+		if err != nil {
+			log.Printf("nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s body_bytes=0 elapsed=%s stage=request error=%v",
+				a.cfg.NodeID, peer.ID, time.Since(fetchStarted), err)
+			continue
+		}
+		resp, err := a.peerClient.Do(request)
 		if err != nil {
 			log.Printf("nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s body_bytes=0 elapsed=%s stage=request error=%v",
 				a.cfg.NodeID, peer.ID, time.Since(fetchStarted), err)
@@ -190,23 +206,32 @@ func (a *Agent) syncPeerMemory() {
 		log.Printf("nodeagent: memory sync direction=peer->node event=receive_complete node_id=%s peer_id=%s status=%d body_bytes=%d records=%d elapsed=%s",
 			a.cfg.NodeID, peer.ID, status, bodyBytes, memorySyncRecordCount(snapshot), time.Since(fetchStarted))
 		mergeStarted := time.Now()
-		if err := a.mem.MergeSnapshot(snapshot); err != nil {
+		if err := a.mem.MergeSnapshotFrom(snapshot, peer.ID); err != nil {
 			log.Printf("nodeagent: memory sync direction=peer->node event=merge_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s error=%v",
 				a.cfg.NodeID, peer.ID, bodyBytes, time.Since(mergeStarted), err)
 			log.Printf("nodeagent: cluster memory import from %s failed: %v", peer.ID, err)
 		} else {
+			remoteSnapshots[peer.ID] = snapshot
 			log.Printf("nodeagent: memory sync direction=peer->node event=merge_complete node_id=%s peer_id=%s body_bytes=%d records=%d elapsed=%s",
 				a.cfg.NodeID, peer.ID, bodyBytes, memorySyncRecordCount(snapshot), time.Since(mergeStarted))
 		}
 	}
 
-	body, err := marshalMemorySnapshot(a.mem.Snapshot())
-	if err != nil {
-		log.Printf("nodeagent: cluster memory encode failed: %v", err)
-		return
-	}
 	for _, peer := range peers {
 		if !peer.Healthy || peer.ID == a.cfg.NodeID || peer.Address == "" {
+			continue
+		}
+		remoteSnapshot, fetched := remoteSnapshots[peer.ID]
+		peerVersion := 0
+		peerWatermarks := map[string]uint64(nil)
+		if fetched {
+			peerVersion = remoteSnapshot.SyncVersion
+			peerWatermarks = remoteSnapshot.Watermarks
+		}
+		outgoing := memory.SnapshotForPeer(a.mem, peerVersion, peerWatermarks)
+		body, err := marshalMemorySnapshot(outgoing)
+		if err != nil {
+			log.Printf("nodeagent: cluster memory encode for %s failed: %v", peer.ID, err)
 			continue
 		}
 		sendStarted := time.Now()
@@ -220,6 +245,11 @@ func (a *Agent) syncPeerMemory() {
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if err := memory.SetSyncRequestHeaders(req, a.mem.Watermarks()); err != nil {
+			log.Printf("nodeagent: memory sync direction=node->peer event=send_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s stage=headers error=%v",
+				a.cfg.NodeID, peer.ID, len(body), time.Since(sendStarted), err)
+			continue
+		}
 		resp, err := a.peerClient.Do(req)
 		if err != nil {
 			log.Printf("nodeagent: memory sync direction=node->peer event=send_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s stage=send error=%v",
@@ -234,6 +264,12 @@ func (a *Agent) syncPeerMemory() {
 			a.cfg.NodeID, peer.ID, status, len(body), time.Since(sendStarted))
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			log.Printf("nodeagent: cluster memory replication to %s rejected: %s", peer.ID, resp.Status)
+			continue
+		}
+		if fetched && peerVersion == memory.SyncProtocolVersion {
+			if err := a.mem.SetPeerWatermarks(peer.ID, outgoing.Watermarks); err != nil {
+				log.Printf("nodeagent: persist memory watermarks for %s failed: %v", peer.ID, err)
+			}
 		}
 	}
 }

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/task.schema.json",
+  "title": "Task",
+  "type": "object",
+  "required": ["id", "description", "status", "subtasks", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string"},
+    "origin": {"type": "string"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "description": {"type": "string"},
+    "status": {"type": "string", "enum": ["pending", "running", "synthesizing", "awaiting_approval", "completed", "failed", "cancelled"]},
+    "subtasks": {"type": ["array", "null"], "items": {"$ref": "subtask-result.schema.json"}},
+    "graph": {"$ref": "task-graph.schema.json"},
+    "resumable": {"type": "boolean"},
+    "last_checkpoint": {"type": "string"},
+    "require_approval": {"type": "boolean"},
+    "result": {"type": "string"},
+    "error": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

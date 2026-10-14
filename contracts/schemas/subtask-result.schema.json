@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/subtask-result.schema.json",
+  "title": "SubtaskResult",
+  "type": "object",
+  "required": ["subtask", "node_id", "address", "model", "score", "score_factors", "status"],
+  "properties": {
+    "subtask": {"$ref": "subtask.schema.json"},
+    "node_id": {"type": "string"},
+    "address": {"type": "string"},
+    "model": {"type": "string"},
+    "score": {"type": "number"},
+    "score_factors": {"$ref": "score-factors.schema.json"},
+    "status": {"type": "string"},
+    "output": {"type": "string"},
+    "error": {"type": "string"}
+  },
+  "additionalProperties": true
+}

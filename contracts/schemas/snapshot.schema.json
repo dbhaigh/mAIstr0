@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/snapshot.schema.json",
+  "title": "Snapshot",
+  "type": "object",
+  "required": ["experiences", "facts", "performances", "dialogues"],
+  "properties": {
+    "experiences": {"type": ["array", "null"], "items": {"$ref": "experience.schema.json"}},
+    "facts": {"type": ["array", "null"], "items": {"$ref": "fact.schema.json"}},
+    "performances": {"type": ["array", "null"], "items": {"$ref": "performance.schema.json"}},
+    "dialogues": {"type": ["array", "null"], "items": {"$ref": "dialogue-record.schema.json"}},
+    "sync_version": {"type": "integer"},
+    "watermarks": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+  },
+  "additionalProperties": true
+}

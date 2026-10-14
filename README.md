@@ -37,6 +37,14 @@ The default ports are `7450` for the orchestrator and `7451` for a node. Use
 election requires discovery. Node and orchestrator JSON configuration paths
 can be set with `--node-config` and `--orchestrator-config`.
 
+Concurrency can be tuned in those JSON files. The orchestrator's
+`max_concurrent_dispatches` setting defaults to `16` and caps subtask execution
+across the cluster. A node's `max_concurrent_tasks` setting defaults to `2`;
+the node advertises its active and remaining capacity in status/heartbeat
+updates, and both the orchestrator and node enforce that limit. These settings
+only affect new in-memory scheduling; they do not change task or memory storage
+formats.
+
 Cluster traffic uses mutual TLS with persistent per-instance certificates.
 The orchestrator displays and logs a six-digit, one-use pairing PIN that
 expires after 30 minutes; after each successful pairing it creates the next
@@ -72,6 +80,13 @@ the same menu.
 database cannot be opened, the dashboard shows a warning that conversation
 history and learned data will not survive restarts; the process continues
 without persistent memory.
+
+## API contracts and porting
+
+The [OpenAPI specification](./contracts/openapi.yaml), [JSON Schemas](./contracts/schemas/),
+and [porting guide](./contracts/PORTING.md) describe the language-neutral HTTP,
+configuration, task, scheduler, node, discovery, and memory contracts.
+
 ## Orchestrator agent backends
 
 The interactive orchestrator uses [Pi](https://github.com/earendil-works/pi)
@@ -132,11 +147,22 @@ The dashboard provides three views:
 - **Memory & Learning** for cluster experience, recommendations, and learned
   facts.
 
-Joined nodes exchange their local experiences, facts, dialogues, and routing
-history with the orchestrator, then merge the cluster snapshot back into their
-own stores. Standalone peer clusters use the elected node to relay the same
-memory snapshots between members. The scheduler uses successful and failed
-node/model/task outcomes to improve future assignments.
+Joined nodes synchronize experiences, facts, dialogues, and routing history
+with the orchestrator every 30 seconds. Standalone peer clusters use the
+elected node to relay memory between members every 15 seconds. Memory records
+carry optional origin and sequence metadata; version 1 peers exchange only
+records newer than their persisted per-peer watermarks. A peer without version
+1 support receives a full snapshot, and a peer whose watermark is ahead of the
+sender also triggers a full snapshot. Legacy memory databases are backfilled
+when opened without changing their existing record fields.
+
+Task history is synchronized separately every 15 seconds; the orchestrator
+starts its task-history loop after a short startup delay. Version 1 task sync
+also sends only records newer than each peer's watermark, while older peers
+receive full snapshots. Task records also carry optional origin and sequence
+metadata, and legacy task databases are backfilled automatically. Memory and
+task-history sync requests are limited to 64 MiB. The scheduler uses successful
+and failed node/model/task outcomes to improve future assignments.
 
 The Cluster & Workload **Setup** tab checks each node's engine and model
 readiness, refreshes an empty model registry, and links to node settings for
@@ -173,6 +199,7 @@ additional or remote engines in a node configuration file:
 ```json
 {
   "listen_addr": ":7451",
+  "max_concurrent_tasks": 2,
   "orchestrator_addr": "https://192.168.1.10:7450",
   "pairing_pin": "<six-digit-pin>",
   "engines": [
@@ -182,6 +209,39 @@ additional or remote engines in a node configuration file:
   ]
 }
 ```
+
+An orchestrator config can set the cluster-wide cap:
+
+```json
+{
+  "max_concurrent_dispatches": 16
+}
+```
+
+## Configuration validation
+
+Configuration is normalized before startup. Empty harness settings default to
+`pi` (harness names are trimmed and lowercased), empty tray modes default to
+`taskbar`, and zero or omitted concurrency settings use their documented
+defaults. Negative concurrency values are rejected. Orchestrator configs must
+keep LAN discovery enabled.
+
+Listen addresses must use `host:port` or `:port` syntax. A node's
+`orchestrator_addr` and `advertise_addr` must be empty or HTTPS URLs. Configured
+engine names must be `ollama`, `vllm`, `lmstudio`, or `fastflowlm`, and their
+`url` values must be HTTP or HTTPS URLs. A configured `pairing_pin` must contain
+exactly six digits. When `memory_path` is set, its parent directory must be
+creatable; missing parent directories are created as needed.
+
+Invalid settings are reported individually and prevent startup with exit code
+`2`.
+
+The SSE cluster snapshot includes dispatch queue depth, active global slots,
+dependency waiters, cumulative dispatch/dependency-wait duration, goroutine
+count, and each node's active/max/remaining task capacity. Increase the
+orchestrator cap to use more cluster-wide parallelism; increase a node's cap
+only when its local engine and hardware can safely serve more concurrent
+requests.
 
 LM Studio, vLLM, and FastFlowLM use the OpenAI-compatible chat-completions API.
 The scheduler adds a GPU preference to models advertised by GPU-equipped
@@ -276,6 +336,9 @@ node --test web/app_test.js
 
 The Go suite includes a process-level integration test for pairing, authenticated
 cluster requests, streaming inference, and session restoration after restart.
+Regenerate characterization contract fixtures with
+`go test ./internal/orchestrator ./internal/scheduler ./internal/taskmgr ./internal/config -args -update`;
+review the resulting golden-file changes before committing.
 The GitHub Actions workflow runs these checks and builds the application on
 Windows and Linux.
 

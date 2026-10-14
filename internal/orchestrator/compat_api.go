@@ -3,11 +3,14 @@ package orchestrator
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/apperr"
 )
 
 type ollamaOptions struct {
@@ -80,11 +83,11 @@ func (s *Server) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 	var request ollamaChatRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&request); err != nil {
-		writeOllamaError(w, http.StatusBadRequest, err.Error())
+		writeCompatError(w, apperr.Invalid(err), compatOllamaChat)
 		return
 	}
 	if len(request.Messages) == 0 {
-		writeOllamaError(w, http.StatusBadRequest, "messages is required")
+		writeCompatError(w, apperr.Invalid(errors.New("messages is required")), compatOllamaChat)
 		return
 	}
 	var prompt strings.Builder
@@ -93,7 +96,7 @@ func (s *Server) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 		case "system", "user", "assistant", "tool":
 			fmt.Fprintf(&prompt, "<|im_start|>%s\n%s<|im_end|>\n", message.Role, message.Content)
 		default:
-			writeOllamaError(w, http.StatusBadRequest, "unsupported message role: "+message.Role)
+			writeCompatError(w, apperr.Invalid(fmt.Errorf("unsupported message role: %s", message.Role)), compatOllamaChat)
 			return
 		}
 	}
@@ -108,7 +111,7 @@ func (s *Server) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 	if err != nil {
-		writeOllamaError(w, http.StatusBadRequest, err.Error())
+		writeCompatError(w, apperr.Invalid(err), compatOllamaGenerate)
 		return
 	}
 	var shape map[string]json.RawMessage
@@ -129,11 +132,11 @@ func (s *Server) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	var request ollamaGenerateRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
-		writeOllamaError(w, http.StatusBadRequest, err.Error())
+		writeCompatError(w, apperr.Invalid(err), compatOllamaGenerate)
 		return
 	}
 	if strings.TrimSpace(request.Prompt) == "" {
-		writeOllamaError(w, http.StatusBadRequest, "prompt is required")
+		writeCompatError(w, apperr.Invalid(errors.New("prompt is required")), compatOllamaGenerate)
 		return
 	}
 	temperature, maxTokens := ollamaGenerationOptions(request.Options)
@@ -159,20 +162,20 @@ func ollamaGenerationOptions(options ollamaOptions) (float64, int) {
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	var request anthropicRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&request); err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeCompatError(w, apperr.Invalid(err), compatAnthropic)
 		return
 	}
 	if request.MaxTokens <= 0 {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "max_tokens must be greater than zero")
+		writeCompatError(w, apperr.Invalid(errors.New("max_tokens must be greater than zero")), compatAnthropic)
 		return
 	}
 	system, err := anthropicText(request.System)
 	if err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "system: "+err.Error())
+		writeCompatError(w, apperr.Invalid(fmt.Errorf("system: %w", err)), compatAnthropic)
 		return
 	}
 	if len(request.Messages) == 0 {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "messages is required")
+		writeCompatError(w, apperr.Invalid(errors.New("messages is required")), compatAnthropic)
 		return
 	}
 	var prompt strings.Builder
@@ -181,12 +184,12 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	for _, message := range request.Messages {
 		if message.Role != "user" && message.Role != "assistant" {
-			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "message roles must be user or assistant")
+			writeCompatError(w, apperr.Invalid(errors.New("message roles must be user or assistant")), compatAnthropic)
 			return
 		}
 		content, err := anthropicText(message.Content)
 		if err != nil {
-			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			writeCompatError(w, apperr.Invalid(err), compatAnthropic)
 			return
 		}
 		fmt.Fprintf(&prompt, "<|im_start|>%s\n%s<|im_end|>\n", message.Role, content)
@@ -233,7 +236,7 @@ const (
 func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIRequest, stream bool, mode compatMode, handler http.HandlerFunc) {
 	body, err := json.Marshal(request)
 	if err != nil {
-		writeCompatError(w, http.StatusInternalServerError, mode, err.Error())
+		writeCompatError(w, apperr.InternalError(err), mode)
 		return
 	}
 	path := "/api/generate"
@@ -242,7 +245,7 @@ func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIR
 	}
 	fakeRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, path, bytes.NewReader(body))
 	if err != nil {
-		writeCompatError(w, http.StatusInternalServerError, mode, err.Error())
+		writeCompatError(w, apperr.InternalError(err), mode)
 		return
 	}
 	if stream {
@@ -269,7 +272,7 @@ func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIR
 	handler(recorder, fakeRequest)
 	var result generateAPIResponse
 	if err := json.Unmarshal(recorder.body.Bytes(), &result); err != nil {
-		writeCompatError(w, http.StatusBadGateway, mode, "invalid response from generation backend")
+		writeCompatError(w, apperr.UpstreamError(errors.New("invalid response from generation backend")), mode)
 		return
 	}
 	if recorder.status >= 400 || result.Error != "" {
@@ -277,7 +280,7 @@ func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIR
 		if status == 0 {
 			status = http.StatusInternalServerError
 		}
-		writeCompatError(w, status, mode, result.Error)
+		writeCompatError(w, apperr.FromStatusCode(status, errors.New(result.Error)), mode)
 		return
 	}
 	if mode == compatAnthropic {
@@ -311,265 +314,19 @@ func writeAnthropicError(w http.ResponseWriter, status int, kind, message string
 	writeJSON(w, status, map[string]any{"type": "error", "error": map[string]string{"type": kind, "message": message}})
 }
 
-func writeCompatError(w http.ResponseWriter, status int, mode compatMode, message string) {
+func writeCompatError(w http.ResponseWriter, err error, mode compatMode) {
+	status := apperr.StatusCode(err)
+	message := err.Error()
 	if message == "" {
 		message = http.StatusText(status)
 	}
 	if mode == compatAnthropic {
-		writeAnthropicError(w, status, "api_error", message)
+		kind := "api_error"
+		if errors.Is(err, apperr.InvalidInput) {
+			kind = "invalid_request_error"
+		}
+		writeAnthropicError(w, status, kind, message)
 		return
 	}
 	writeOllamaError(w, status, message)
-}
-
-type ollamaStreamWriter struct {
-	target  http.ResponseWriter
-	model   string
-	chat    bool
-	status  int
-	buffer  strings.Builder
-	flusher http.Flusher
-}
-
-func newOllamaStreamWriter(target http.ResponseWriter, model string, chat bool) *ollamaStreamWriter {
-	flusher, _ := target.(http.Flusher)
-	return &ollamaStreamWriter{target: target, model: model, chat: chat, flusher: flusher}
-}
-
-func (w *ollamaStreamWriter) Header() http.Header { return w.target.Header() }
-
-func (w *ollamaStreamWriter) WriteHeader(status int) {
-	if w.status != 0 {
-		return
-	}
-	w.status = status
-	if status < 400 {
-		w.target.Header().Set("Content-Type", "application/x-ndjson")
-		w.target.Header().Set("Cache-Control", "no-cache")
-	}
-	w.target.WriteHeader(status)
-}
-
-func (w *ollamaStreamWriter) Write(data []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.status >= 400 {
-		return w.target.Write(data)
-	}
-	w.buffer.Write(data)
-	for {
-		chunk := w.buffer.String()
-		newline := strings.IndexByte(chunk, '\n')
-		if newline < 0 {
-			break
-		}
-		line := strings.TrimSpace(chunk[:newline])
-		w.buffer.Reset()
-		w.buffer.WriteString(chunk[newline+1:])
-		if strings.HasPrefix(line, "data:") {
-			if err := w.consume(strings.TrimSpace(strings.TrimPrefix(line, "data:"))); err != nil {
-				return len(data), err
-			}
-		}
-	}
-	return len(data), nil
-}
-
-func (w *ollamaStreamWriter) consume(payload string) error {
-	var event struct {
-		Output string `json:"output"`
-		Error  string `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return err
-	}
-	if event.Error != "" {
-		return w.write(map[string]any{"error": event.Error, "done": true})
-	}
-	if event.Output == "" {
-		return nil
-	}
-	response := map[string]any{
-		"model": w.model, "created_at": time.Now().UTC(), "done": false,
-	}
-	if w.chat {
-		response["message"] = ollamaMessage{Role: "assistant", Content: event.Output}
-	} else {
-		response["response"] = event.Output
-	}
-	return w.write(response)
-}
-
-func (w *ollamaStreamWriter) write(value any) error {
-	if err := json.NewEncoder(w.target).Encode(value); err != nil {
-		return err
-	}
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
-	return nil
-}
-
-func (w *ollamaStreamWriter) finish() {
-	if w.status >= 400 {
-		return
-	}
-	if rest := strings.TrimSpace(w.buffer.String()); strings.HasPrefix(rest, "data:") {
-		_ = w.consume(strings.TrimSpace(strings.TrimPrefix(rest, "data:")))
-	}
-	value := map[string]any{"model": w.model, "created_at": time.Now().UTC(), "done": true, "done_reason": "stop"}
-	if w.chat {
-		value["message"] = ollamaMessage{Role: "assistant", Content: ""}
-	} else {
-		value["response"] = ""
-	}
-	_ = w.write(value)
-}
-
-type anthropicStreamWriter struct {
-	target  http.ResponseWriter
-	model   string
-	status  int
-	buffer  strings.Builder
-	flusher http.Flusher
-	started bool
-}
-
-func newAnthropicStreamWriter(target http.ResponseWriter, model string) *anthropicStreamWriter {
-	flusher, _ := target.(http.Flusher)
-	return &anthropicStreamWriter{target: target, model: model, flusher: flusher}
-}
-
-func (w *anthropicStreamWriter) Header() http.Header { return w.target.Header() }
-
-func (w *anthropicStreamWriter) WriteHeader(status int) {
-	if w.status != 0 {
-		return
-	}
-	w.status = status
-	if status < 400 {
-		w.target.Header().Set("Content-Type", "text/event-stream")
-		w.target.Header().Set("Cache-Control", "no-cache")
-	}
-	w.target.WriteHeader(status)
-}
-
-func (w *anthropicStreamWriter) Write(data []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.status >= 400 {
-		return w.target.Write(data)
-	}
-	w.buffer.Write(data)
-	for {
-		chunk := w.buffer.String()
-		newline := strings.IndexByte(chunk, '\n')
-		if newline < 0 {
-			break
-		}
-		line := strings.TrimSpace(chunk[:newline])
-		w.buffer.Reset()
-		w.buffer.WriteString(chunk[newline+1:])
-		if strings.HasPrefix(line, "data:") {
-			if err := w.consume(strings.TrimSpace(strings.TrimPrefix(line, "data:"))); err != nil {
-				return len(data), err
-			}
-		}
-	}
-	return len(data), nil
-}
-
-func (w *anthropicStreamWriter) consume(payload string) error {
-	var event struct {
-		Output string `json:"output"`
-		Error  string `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return err
-	}
-	if event.Error != "" {
-		return w.writeEvent("error", map[string]any{
-			"type": "error", "error": map[string]string{"type": "api_error", "message": event.Error},
-		})
-	}
-	if event.Output == "" {
-		return nil
-	}
-	if !w.started {
-		w.started = true
-		if err := w.writeEvent("message_start", map[string]any{
-			"type": "message_start", "message": map[string]any{
-				"id": "msg-maistr0", "type": "message", "role": "assistant", "model": w.model,
-				"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
-				"usage": map[string]int{"input_tokens": 0, "output_tokens": 0},
-			},
-		}); err != nil {
-			return err
-		}
-		if err := w.writeEvent("content_block_start", map[string]any{
-			"type": "content_block_start", "index": 0, "content_block": map[string]string{"type": "text", "text": ""},
-		}); err != nil {
-			return err
-		}
-	}
-	return w.writeEvent("content_block_delta", map[string]any{
-		"type": "content_block_delta", "index": 0,
-		"delta": map[string]string{"type": "text_delta", "text": event.Output},
-	})
-}
-
-func (w *anthropicStreamWriter) writeEvent(name string, value any) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w.target, "event: %s\ndata: %s\n\n", name, raw); err != nil {
-		return err
-	}
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
-	return nil
-}
-
-func (w *anthropicStreamWriter) finish() {
-	if w.status >= 400 {
-		return
-	}
-	if rest := strings.TrimSpace(w.buffer.String()); strings.HasPrefix(rest, "data:") {
-		_ = w.consume(strings.TrimSpace(strings.TrimPrefix(rest, "data:")))
-	}
-	if !w.started {
-		w.started = true
-		_ = w.writeEvent("message_start", map[string]any{
-			"type": "message_start", "message": map[string]any{
-				"id": "msg-maistr0", "type": "message", "role": "assistant", "model": w.model,
-				"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
-				"usage": map[string]int{"input_tokens": 0, "output_tokens": 0},
-			},
-		})
-		_ = w.writeEvent("content_block_start", map[string]any{
-			"type": "content_block_start", "index": 0, "content_block": map[string]string{"type": "text", "text": ""},
-		})
-	}
-	_ = w.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
-	_ = w.writeEvent("message_delta", map[string]any{
-		"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
-		"usage": map[string]int{"output_tokens": 0},
-	})
-	_ = w.writeEvent("message_stop", map[string]string{"type": "message_stop"})
-}
-
-func (w *anthropicStreamWriter) Flush() {
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
-}
-
-func (w *ollamaStreamWriter) Flush() {
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
 }

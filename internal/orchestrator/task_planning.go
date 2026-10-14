@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
@@ -22,17 +25,65 @@ type createTaskRequest struct {
 	RequireApproval bool                 `json:"require_approval,omitempty"`
 }
 
-type taskCreateError struct {
-	status int
-	err    error
+type taskScheduler interface {
+	AssignWithExperience([]scheduler.Subtask, []cluster.NodeStatus, scheduler.Experience) ([]scheduler.Assignment, error)
 }
 
-func (e *taskCreateError) Error() string { return e.err.Error() }
-func (e *taskCreateError) Unwrap() error { return e.err }
+type taskStore interface {
+	CreateWithGraphAndOptionsChecked(string, *scheduler.TaskGraph, []scheduler.Assignment, bool) (*taskmgr.Task, error)
+	CompleteSubtask(string, string, string, error)
+	Wait(context.Context, string) (*taskmgr.Task, error)
+	Cancel(string) bool
+}
+
+type taskDispatcher interface {
+	submitDispatch(string, scheduler.Assignment) error
+}
+
+type plannerModel interface {
+	callNodeGenerateWithOptionsContext(context.Context, string, string, string, float64, int) (string, error)
+}
+
+type taskPlanner struct {
+	scheduler  taskScheduler
+	tasks      taskStore
+	dispatch   taskDispatcher
+	model      plannerModel
+	nodes      func() []cluster.NodeStatus
+	experience scheduler.Experience
+}
+
+type schedulerAdapter struct{}
+
+func (schedulerAdapter) AssignWithExperience(subtasks []scheduler.Subtask, nodes []cluster.NodeStatus, experience scheduler.Experience) ([]scheduler.Assignment, error) {
+	return scheduler.AssignWithExperience(subtasks, nodes, experience)
+}
+
+func newTaskPlanner(
+	scheduler taskScheduler,
+	tasks taskStore,
+	dispatch taskDispatcher,
+	model plannerModel,
+	nodes func() []cluster.NodeStatus,
+	experience scheduler.Experience,
+) *taskPlanner {
+	return &taskPlanner{
+		scheduler: scheduler, tasks: tasks, dispatch: dispatch,
+		model: model, nodes: nodes, experience: experience,
+	}
+}
 
 func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmgr.Task, error) {
+	return s.planner.createTask(ctx, req)
+}
+
+func (s *Server) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
+	return s.planner.planSubtasks(ctx, description)
+}
+
+func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*taskmgr.Task, error) {
 	if strings.TrimSpace(req.Description) == "" {
-		return nil, &taskCreateError{status: 400, err: errors.New("description is required")}
+		return nil, apperr.Invalid(errors.New("description is required"))
 	}
 	subtasks := req.Subtasks
 	graph := req.Graph
@@ -43,11 +94,11 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 	case "", "heuristic":
 		if graph != nil {
 			if err := graph.Validate(); err != nil {
-				return nil, &taskCreateError{status: 400, err: fmt.Errorf("invalid task graph: %w", err)}
+				return nil, apperr.Invalid(fmt.Errorf("invalid task graph: %w", err))
 			}
 			sorted, err := graph.TopologicalSort()
 			if err != nil {
-				return nil, &taskCreateError{status: 400, err: fmt.Errorf("invalid task graph: %w", err)}
+				return nil, apperr.Invalid(fmt.Errorf("invalid task graph: %w", err))
 			}
 			subtasks = sorted
 		} else if len(subtasks) == 0 {
@@ -55,50 +106,41 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 			var err error
 			graph, err = scheduler.TaskGraphFromSubtasks(subtasks)
 			if err != nil {
-				return nil, &taskCreateError{status: 400, err: fmt.Errorf("build task graph: %w", err)}
+				return nil, apperr.Invalid(fmt.Errorf("build task graph: %w", err))
 			}
 		} else {
 			var err error
 			graph, err = scheduler.TaskGraphFromSubtasks(subtasks)
 			if err != nil {
-				return nil, &taskCreateError{status: 400, err: fmt.Errorf("build task graph: %w", err)}
+				return nil, apperr.Invalid(fmt.Errorf("build task graph: %w", err))
 			}
 		}
 	case "auto":
 		if len(subtasks) != 0 || graph != nil {
-			return nil, &taskCreateError{status: 400, err: errors.New("subtasks or graph cannot be supplied with plan_mode auto")}
+			return nil, apperr.Invalid(errors.New("subtasks or graph cannot be supplied with plan_mode auto"))
 		}
-		plannedGraph, plannedSubtasks, err := s.planSubtasks(ctx, req.Description)
+		plannedGraph, plannedSubtasks, err := p.planSubtasks(ctx, req.Description)
 		if err != nil {
-			status := 502
-			if errors.Is(err, scheduler.ErrNoHealthyNodes) {
-				status = 503
-			}
-			var unassignable *scheduler.UnassignableSubtasksError
-			if errors.As(err, &unassignable) {
-				status = 503
-			}
-			return nil, &taskCreateError{status: status, err: fmt.Errorf("create structured task plan: %w", err)}
+			return nil, fmt.Errorf("create structured task plan: %w", err)
 		}
 		graph = plannedGraph
 		subtasks = plannedSubtasks
 	default:
-		return nil, &taskCreateError{status: 400, err: errors.New("plan_mode must be heuristic or auto")}
+		return nil, apperr.Invalid(errors.New("plan_mode must be heuristic or auto"))
 	}
 
 	subtasks, err := scheduler.ValidatePlan(subtasks)
 	if err != nil {
-		status := 400
 		if modelPlanned {
-			status = 502
+			return nil, apperr.UpstreamError(err)
 		}
-		return nil, &taskCreateError{status: status, err: err}
+		return nil, apperr.Invalid(err)
 	}
 	if req.RequireReview {
 		subtasks = addReviewerSubtask(subtasks)
 		subtasks, err = scheduler.ValidatePlan(subtasks)
 		if err != nil {
-			return nil, &taskCreateError{status: 400, err: err}
+			return nil, apperr.Invalid(err)
 		}
 		if graph != nil {
 			reviewerNode := subtasks[len(subtasks)-1]
@@ -108,29 +150,36 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 			}
 		}
 	}
-	assignments, err := scheduler.AssignWithExperience(subtasks, s.schedulerNodes(), s.experience())
+	assignments, err := p.scheduler.AssignWithExperience(subtasks, p.nodes(), p.experience)
 	if err != nil {
-		return nil, &taskCreateError{status: 503, err: err}
+		return nil, apperr.UnavailableError(err)
 	}
 	if len(assignments) != len(subtasks) {
-		return nil, &taskCreateError{status: 503, err: errors.New("scheduler returned an incomplete assignment")}
+		return nil, apperr.UnavailableError(errors.New("scheduler returned an incomplete assignment"))
 	}
-	task, err := s.tasks.CreateWithGraphAndOptionsChecked(req.Description, graph, assignments, req.RequireApproval)
+	task, err := p.tasks.CreateWithGraphAndOptionsChecked(req.Description, graph, assignments, req.RequireApproval)
 	if err != nil {
-		return nil, &taskCreateError{status: 500, err: fmt.Errorf("could not persist task: %w", err)}
+		return nil, apperr.InternalError(fmt.Errorf("could not persist task: %w", err))
 	}
 	for _, assignment := range assignments {
-		go s.dispatch(task.ID, assignment)
+		if err := p.dispatch.submitDispatch(task.ID, assignment); err != nil {
+			log.Printf("orchestrator: could not queue subtask %s: %v", assignment.Subtask.ID, err)
+			p.tasks.CompleteSubtask(task.ID, assignment.Subtask.ID, "", err)
+		}
 	}
 	return task, nil
 }
 
 func (s *Server) executeWorkflow(ctx context.Context, description string, subtasks []scheduler.Subtask, requireReview bool) (string, error) {
+	return s.planner.executeWorkflow(ctx, description, subtasks, requireReview)
+}
+
+func (p *taskPlanner) executeWorkflow(ctx context.Context, description string, subtasks []scheduler.Subtask, requireReview bool) (string, error) {
 	planMode := ""
 	if len(subtasks) == 0 {
 		planMode = "auto"
 	}
-	task, err := s.createTask(ctx, createTaskRequest{
+	task, err := p.createTask(ctx, createTaskRequest{
 		Description:   description,
 		Subtasks:      subtasks,
 		PlanMode:      planMode,
@@ -139,18 +188,19 @@ func (s *Server) executeWorkflow(ctx context.Context, description string, subtas
 	if err != nil {
 		return "", err
 	}
-	result, err := s.tasks.Wait(ctx, task.ID)
+	result, err := p.tasks.Wait(ctx, task.ID)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-			_ = s.tasks.Cancel(task.ID)
+			_ = p.tasks.Cancel(task.ID)
+			return "", apperr.ConflictError(fmt.Errorf("workflow %s: %w", task.ID, err))
 		}
-		return "", fmt.Errorf("workflow %s: %w", task.ID, err)
+		return "", apperr.InternalError(fmt.Errorf("workflow %s: %w", task.ID, err))
 	}
 	if result.Status != taskmgr.StatusCompleted {
 		if result.Error != "" {
-			return "", fmt.Errorf("workflow %s %s: %s", task.ID, result.Status, result.Error)
+			return "", apperr.UpstreamError(fmt.Errorf("workflow %s %s: %s", task.ID, result.Status, result.Error))
 		}
-		return "", fmt.Errorf("workflow %s ended with status %s", task.ID, result.Status)
+		return "", apperr.UpstreamError(fmt.Errorf("workflow %s ended with status %s", task.ID, result.Status))
 	}
 	return result.Result, nil
 }
@@ -174,14 +224,19 @@ func addReviewerSubtask(subtasks []scheduler.Subtask) []scheduler.Subtask {
 	})
 }
 
-func (s *Server) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
+func (p *taskPlanner) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
 	planning := scheduler.Subtask{ID: "plan", Description: "Create a workflow plan", TaskType: "general"}
-	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{planning}, s.schedulerNodes(), s.experience())
+	assignments, err := p.scheduler.AssignWithExperience([]scheduler.Subtask{planning}, p.nodes(), p.experience)
 	if err != nil {
-		return nil, nil, fmt.Errorf("select planning model: %w", err)
+		wrapped := fmt.Errorf("select planning model: %w", err)
+		var unassignable *scheduler.UnassignableSubtasksError
+		if errors.Is(err, scheduler.ErrNoHealthyNodes) || errors.As(err, &unassignable) {
+			return nil, nil, apperr.UnavailableError(wrapped)
+		}
+		return nil, nil, apperr.UpstreamError(wrapped)
 	}
 	if len(assignments) != 1 {
-		return nil, nil, errors.New("scheduler returned no planning model")
+		return nil, nil, apperr.UpstreamError(errors.New("scheduler returned no planning model"))
 	}
 	prompt := fmt.Sprintf(`You are the mAIstr0 workflow planner. Convert the user's request into a small, executable dependency-aware task plan. Return only one JSON object with either this shape:
 {"graph":{"nodes":{"research":{"id":"research","description":"...","role":"researcher","task_type":"general","depends_on":[],"expected_output":"...","output_format":"text","required_capabilities":[]}},"edges":[]}}
@@ -194,13 +249,13 @@ Supported capability tags: researcher, coder, long-context, vision, math, fast, 
 Make independent tasks parallel; add depends_on only when a task genuinely needs another task's result. Keep the plan focused, use 1-8 tasks, and set expected_output for each task. Use output_format json and required_fields only when the result must be machine-readable. JSON output gets one corrective retry by default; use max_retries 0 for plain-text output and at most 2 for any task.
 User request:
 %s`, strings.TrimSpace(description))
-	output, err := s.callNodeGenerateWithOptionsContext(ctx, assignments[0].Address, assignments[0].Model, prompt, 0.1, 2048)
+	output, err := p.model.callNodeGenerateWithOptionsContext(ctx, assignments[0].Address, assignments[0].Model, prompt, 0.1, 2048)
 	if err != nil {
-		return nil, nil, fmt.Errorf("planning model %s on node %s: %w", assignments[0].Model, assignments[0].NodeID, err)
+		return nil, nil, apperr.UpstreamError(fmt.Errorf("planning model %s on node %s: %w", assignments[0].Model, assignments[0].NodeID, err))
 	}
 	payload, err := extractJSONObject(output)
 	if err != nil {
-		return nil, nil, fmt.Errorf("planning model returned invalid JSON: %w", err)
+		return nil, nil, apperr.UpstreamError(fmt.Errorf("planning model returned invalid JSON: %w", err))
 	}
 	var raw struct {
 		Graph    *scheduler.TaskGraph         `json:"graph,omitempty"`
@@ -209,7 +264,7 @@ User request:
 		Subtasks []scheduler.Subtask          `json:"subtasks,omitempty"`
 	}
 	if err := json.Unmarshal(payload, &raw); err != nil {
-		return nil, nil, fmt.Errorf("decode planner response: %w", err)
+		return nil, nil, apperr.UpstreamError(fmt.Errorf("decode planner response: %w", err))
 	}
 
 	var graph *scheduler.TaskGraph
@@ -224,21 +279,21 @@ User request:
 		var err error
 		graph, err = scheduler.TaskGraphFromSubtasks(raw.Subtasks)
 		if err != nil {
-			return nil, nil, fmt.Errorf("build graph from planner subtasks: %w", err)
+			return nil, nil, apperr.UpstreamError(fmt.Errorf("build graph from planner subtasks: %w", err))
 		}
 	} else {
-		return nil, nil, errors.New("planner response contains neither graph nor subtasks")
+		return nil, nil, apperr.UpstreamError(errors.New("planner response contains neither graph nor subtasks"))
 	}
 
 	if len(graph.Nodes) > 8 {
-		return nil, nil, errors.New("planning model returned more than 8 subtasks")
+		return nil, nil, apperr.UpstreamError(errors.New("planning model returned more than 8 subtasks"))
 	}
 	if err := graph.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("planner graph validation: %w", err)
+		return nil, nil, apperr.UpstreamError(fmt.Errorf("planner graph validation: %w", err))
 	}
 	sorted, err := graph.TopologicalSort()
 	if err != nil {
-		return nil, nil, fmt.Errorf("planner graph sort: %w", err)
+		return nil, nil, apperr.UpstreamError(fmt.Errorf("planner graph sort: %w", err))
 	}
 	return graph, sorted, nil
 }

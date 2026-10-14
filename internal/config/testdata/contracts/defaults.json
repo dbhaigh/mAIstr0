@@ -1,0 +1,24 @@
+{
+  "node": {
+    "node_id": "",
+    "listen_addr": ":7451",
+    "advertise_addr": "",
+    "orchestrator_addr": "",
+    "max_concurrent_tasks": 2,
+    "disabled_models": null,
+    "default_model": "",
+    "discovery_enabled": true,
+    "auto_open_browser": true,
+    "tray_mode": "taskbar",
+    "memory_path": ""
+  },
+  "orchestrator": {
+    "listen_addr": ":7450",
+    "harness": "pi",
+    "max_concurrent_dispatches": 16,
+    "discovery_enabled": true,
+    "auto_open_browser": true,
+    "tray_mode": "taskbar",
+    "memory_path": ""
+  }
+}

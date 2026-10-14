@@ -3,6 +3,7 @@ package memory
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ func perfKey(nodeID, model, taskType string) string {
 	return nodeID + "|" + model + "|" + strings.ToLower(taskType)
 }
 
-func (s *Store) loadPerfCache() {
+func (s *boltStore) loadPerfCache() {
 	_ = s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketPerf).ForEach(func(k, v []byte) error {
 			var p Performance
@@ -32,49 +33,59 @@ func (s *Store) loadPerfCache() {
 // updatePerformance folds one experience into the rolling per node+model
 // aggregate. This is the cluster's learning signal: repeated successes make
 // a pairing more attractive, failures and slow runs make it less so.
-func (s *Store) updatePerformance(e Experience) {
+func (s *boltStore) updatePerformance(e Experience) {
 	if e.NodeID == "" || e.Model == "" {
 		return
 	}
 	key := perfKey(e.NodeID, e.Model, e.TaskType)
 
 	s.mu.Lock()
-	p, ok := s.perfCache[key]
+	defer s.mu.Unlock()
+	current, ok := s.perfCache[key]
+	var snapshot Performance
 	if !ok {
 		taskType := e.TaskType
 		if taskType == "" {
 			taskType = "general"
 		}
-		p = &Performance{NodeID: e.NodeID, Model: e.Model, TaskType: strings.ToLower(taskType)}
-		s.perfCache[key] = p
-	}
-	p.Attempts++
-	if e.Success {
-		p.Successes++
+		snapshot = Performance{NodeID: e.NodeID, Model: e.Model, TaskType: strings.ToLower(taskType)}
 	} else {
-		p.Failures++
+		snapshot = *current
 	}
-	p.TotalDuration += e.DurationMs
-	p.AvgDurationMs = p.TotalDuration / int64(max(p.Attempts, 1))
-	p.SuccessRate = float64(p.Successes) / float64(max(p.Attempts, 1))
-	p.RatingSum += e.Rating
+	snapshot.Attempts++
+	if e.Success {
+		snapshot.Successes++
+	} else {
+		snapshot.Failures++
+	}
+	snapshot.TotalDuration += e.DurationMs
+	snapshot.AvgDurationMs = snapshot.TotalDuration / int64(max(snapshot.Attempts, 1))
+	snapshot.SuccessRate = float64(snapshot.Successes) / float64(max(snapshot.Attempts, 1))
+	snapshot.RatingSum += e.Rating
 
-	p.LastUsed = e.CreatedAt
-	snapshot := *p
-	s.mu.Unlock()
+	snapshot.LastUsed = e.CreatedAt
 
-	_ = s.db.Update(func(tx *bolt.Tx) error {
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		sequence, err := nextOriginSequence(tx, s.owner)
+		if err != nil {
+			return err
+		}
+		snapshot.Origin, snapshot.Sequence = s.owner, sequence
 		buf, err := json.Marshal(snapshot)
 		if err != nil {
 			return err
 		}
 		return tx.Bucket(bucketPerf).Put([]byte(key), buf)
-	})
+	}); err != nil {
+		log.Printf("memory: persist performance for %s: %v", key, err)
+		return
+	}
+	s.perfCache[key] = &snapshot
 }
 
 // Performances returns every learned node+model+taskType aggregate,
 // strongest first.
-func (s *Store) Performances() []Performance {
+func (s *boltStore) Performances() []Performance {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Performance, 0, len(s.perfCache))
@@ -93,53 +104,78 @@ func (s *Store) Performances() []Performance {
 // MergePerformances folds aggregates reported by another store (typically a
 // node pushing its local learning up to the orchestrator) into this one,
 // keeping whichever record has seen more evidence.
-func (s *Store) MergePerformances(incoming []Performance) {
+func (s *boltStore) MergePerformances(incoming []Performance) {
+	if err := s.mergePerformancesFrom(incoming, legacyOrigin); err != nil {
+		log.Printf("memory: merge performances: %v", err)
+	}
+}
+
+func (s *boltStore) mergePerformancesFrom(incoming []Performance, sourceOrigin string) error {
 	if len(incoming) == 0 {
-		return
+		return nil
 	}
 	s.mu.Lock()
-	merged := make([]Performance, 0, len(incoming))
-	for _, in := range incoming {
-		if in.NodeID == "" || in.Model == "" {
-			continue
-		}
-		if in.TaskType == "" {
-			in.TaskType = "general"
-		}
-		key := perfKey(in.NodeID, in.Model, in.TaskType)
-		existing, ok := s.perfCache[key]
-		if ok && existing.Attempts >= in.Attempts {
-			continue
-		}
-		copyOf := in
-		s.perfCache[key] = &copyOf
-		merged = append(merged, copyOf)
-	}
-	s.mu.Unlock()
-
-	if len(merged) == 0 {
-		return
-	}
-	_ = s.db.Update(func(tx *bolt.Tx) error {
+	defer s.mu.Unlock()
+	merged := make(map[string]Performance, len(incoming))
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketPerf)
-		for _, p := range merged {
-			buf, err := json.Marshal(p)
-			if err != nil {
+		for _, in := range incoming {
+			if in.NodeID == "" || in.Model == "" {
 				continue
 			}
-			if err := b.Put([]byte(perfKey(p.NodeID, p.Model, p.TaskType)), buf); err != nil {
+			if in.TaskType == "" {
+				in.TaskType = "general"
+			}
+			key := perfKey(in.NodeID, in.Model, in.TaskType)
+			existing, ok := merged[key]
+			if !ok {
+				if cached := s.perfCache[key]; cached != nil {
+					existing, ok = *cached, true
+				}
+			}
+			if ok && existing.Attempts >= in.Attempts {
+				if in.Origin != "" && in.Sequence > 0 {
+					if err := updateRecordWatermark(tx, in.Origin, in.Sequence); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			if in.Origin == "" || in.Sequence == 0 {
+				sequence, err := nextOriginSequence(tx, sourceOrigin)
+				if err != nil {
+					return err
+				}
+				in.Origin, in.Sequence = sourceOrigin, sequence
+			} else if err := updateRecordWatermark(tx, in.Origin, in.Sequence); err != nil {
 				return err
 			}
+			buf, err := json.Marshal(in)
+			if err != nil {
+				return err
+			}
+			if err := b.Put([]byte(key), buf); err != nil {
+				return err
+			}
+			merged[key] = in
 		}
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("memory: persist merged performances: %w", err)
+	}
+	for key, performance := range merged {
+		copyOf := performance
+		s.perfCache[key] = &copyOf
+	}
+	return nil
 }
 
 // LearnedBias returns a routing adjustment in roughly -10..+10 for a
 // node+model+taskType pairing, derived purely from recorded history. The
 // scheduler adds this to its static capability score so the cluster gets
 // better at placing work the longer it runs.
-func (s *Store) LearnedBias(nodeID, model, taskType string) float64 {
+func (s *boltStore) LearnedBias(nodeID, model, taskType string) float64 {
 	if s == nil {
 		return 0
 	}
@@ -156,6 +192,10 @@ func (s *Store) LearnedBias(nodeID, model, taskType string) float64 {
 	snapshot := *p
 	s.mu.RUnlock()
 
+	return learnedBias(snapshot)
+}
+
+func learnedBias(snapshot Performance) float64 {
 	if snapshot.Attempts < 2 {
 		return 0
 	}
@@ -189,21 +229,9 @@ func (s *Store) LearnedBias(nodeID, model, taskType string) float64 {
 	return bias
 }
 
-// Recommendation is advice derived from history for handling a task type.
-type Recommendation struct {
-	TaskType      string  `json:"task_type"`
-	NodeID        string  `json:"node_id"`
-	Model         string  `json:"model"`
-	SuccessRate   float64 `json:"success_rate"`
-	AvgDurationMs int64   `json:"avg_duration_ms"`
-	Attempts      int     `json:"attempts"`
-	Confidence    float64 `json:"confidence"`
-	Reason        string  `json:"reason"`
-}
-
 // Recommend returns the historically best node+model pairings for a task
 // type (or across all task types when taskType is empty).
-func (s *Store) Recommend(taskType string, limit int) []Recommendation {
+func (s *boltStore) Recommend(taskType string, limit int) []Recommendation {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -244,25 +272,8 @@ func (s *Store) Recommend(taskType string, limit int) []Recommendation {
 	return recs
 }
 
-// Insights is the learning summary surfaced to the agent and the dashboard.
-type Insights struct {
-	TotalExperiences int              `json:"total_experiences"`
-	Successes        int              `json:"successes"`
-	Failures         int              `json:"failures"`
-	SuccessRate      float64          `json:"success_rate"`
-	AvgDurationMs    int64            `json:"avg_duration_ms"`
-	TrackedPairings  int              `json:"tracked_pairings"`
-	Facts            int              `json:"facts"`
-	Dialogues        int              `json:"dialogues"`
-	TopPairings      []Recommendation `json:"top_pairings"`
-	WeakPairings     []Recommendation `json:"weak_pairings"`
-	TaskTypes        map[string]int   `json:"task_types"`
-	Lessons          []string         `json:"lessons"`
-	DatabasePath     string           `json:"database_path"`
-}
-
 // Insights computes what the cluster has learned so far.
-func (s *Store) Insights() Insights {
+func (s *boltStore) Insights() Insights {
 	ins := Insights{TaskTypes: map[string]int{}, DatabasePath: s.path}
 
 	var totalDuration int64
@@ -313,11 +324,11 @@ func (s *Store) Insights() Insights {
 	} else {
 		ins.TopPairings = all
 	}
-	ins.Lessons = s.lessons(all)
+	ins.Lessons = lessons(all)
 	return ins
 }
 
-func (s *Store) lessons(recs []Recommendation) []string {
+func lessons(recs []Recommendation) []string {
 	var out []string
 	for _, r := range recs {
 		if r.Attempts < 3 {
@@ -340,7 +351,7 @@ func (s *Store) lessons(recs []Recommendation) []string {
 
 // Prune deletes experiences older than the retention window, keeping the
 // learned performance aggregates intact.
-func (s *Store) Prune(olderThan time.Duration) (int, error) {
+func (s *boltStore) Prune(olderThan time.Duration) (int, error) {
 	cutoff := time.Now().Add(-olderThan)
 	removed := 0
 	err := s.db.Update(func(tx *bolt.Tx) error {
@@ -371,55 +382,11 @@ func (s *Store) Prune(olderThan time.Duration) (int, error) {
 
 // ContextBrief renders recalled experience and facts as a compact block the
 // agent can paste straight into an LLM prompt.
-func (s *Store) ContextBrief(query, taskType string, limit int) string {
+func (s *boltStore) ContextBrief(query, taskType string, limit int) string {
 	if s == nil {
 		return ""
 	}
-	recalled := s.Recall(SearchFilter{Query: query, TaskType: taskType, Limit: limit})
-	facts := s.Facts("cluster")
-	recs := s.Recommend(taskType, 3)
-
-	if len(recalled) == 0 && len(facts) == 0 && len(recs) == 0 {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString("<cluster_memory>\n")
-
-	if len(facts) > 0 {
-		sb.WriteString("Known facts:\n")
-		for i, f := range facts {
-			if i >= 8 {
-				break
-			}
-			sb.WriteString(fmt.Sprintf("- %s: %s\n", f.Key, f.Value))
-		}
-	}
-
-	if len(recs) > 0 {
-		sb.WriteString("Learned routing preferences:\n")
-		for _, r := range recs {
-			sb.WriteString(fmt.Sprintf("- %s on %s handles %s work well (%s)\n", r.Model, r.NodeID, r.TaskType, r.Reason))
-		}
-	}
-
-	if len(recalled) > 0 {
-		sb.WriteString("Relevant past experience:\n")
-		for _, e := range recalled {
-			status := "succeeded"
-			if !e.Success {
-				status = "failed: " + e.Error
-			}
-			sb.WriteString(fmt.Sprintf("- [%s] %s on %s/%s %s (%dms)\n",
-				e.CreatedAt.Format("2006-01-02 15:04"), truncate(e.Description, 160), e.NodeID, e.Model, status, e.DurationMs))
-			if e.Success && e.Output != "" {
-				sb.WriteString(fmt.Sprintf("  prior result: %s\n", truncate(oneLine(e.Output), 300)))
-			}
-		}
-	}
-
-	sb.WriteString("</cluster_memory>\n")
-	return sb.String()
+	return contextBrief(s, query, taskType, limit)
 }
 
 func oneLine(s string) string {

@@ -17,14 +17,15 @@ import (
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
 func newTestAgent(t *testing.T, id string) *Agent {
 	t.Helper()
-	a := New(config.NodeConfig{
+	a := mustNewTestAgent(t, config.NodeConfig{
 		NodeID:        id,
 		ListenAddr:    ":0",
-		AdvertiseAddr: "http://127.0.0.1:0",
+		AdvertiseAddr: "https://127.0.0.1:0",
 		MemoryPath:    filepath.Join(t.TempDir(), id+".db"),
 	})
 	a.engines = []engine.Engine{engine.NewSimulated()}
@@ -252,6 +253,71 @@ func TestPeerMemoryReplicaRequiresClusterMemberAndCurrentLeader(t *testing.T) {
 	a.handlePeerMemorySyncPost(leaderWrite, requestWithPeer(http.MethodPost, "node-a"))
 	if leaderWrite.Code != http.StatusNoContent {
 		t.Fatalf("replica from current leader returned %d: %s", leaderWrite.Code, leaderWrite.Body.String())
+	}
+}
+
+func TestPeerMemorySyncGetNegotiatesIncrementalSnapshot(t *testing.T) {
+	a := newTestAgent(t, "node-a")
+	for range 3 {
+		if _, err := a.mem.Record(memory.Experience{Description: "record"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.mu.Lock()
+	a.peers = []cluster.NodeStatus{
+		{ID: "node-a", Healthy: true, Leader: true},
+		{ID: "node-b", Healthy: true},
+	}
+	a.mu.Unlock()
+
+	full := a.mem.Snapshot()
+	origin := full.Experiences[0].Origin
+	request := httptest.NewRequest(http.MethodGet, "/memory/sync", nil)
+	request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{
+		Subject: pkix.Name{CommonName: "node-b"},
+	}}}
+	if err := memory.SetSyncRequestHeaders(request, map[string]uint64{origin: 2}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	a.handlePeerMemorySyncGet(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("incremental peer sync returned %d: %s", response.Code, response.Body.String())
+	}
+	var incremental memory.Snapshot
+	if err := json.NewDecoder(response.Body).Decode(&incremental); err != nil {
+		t.Fatal(err)
+	}
+	if incremental.SyncVersion != memory.SyncProtocolVersion || len(incremental.Experiences) != 1 {
+		t.Fatalf("incremental snapshot = version %d, experiences %d", incremental.SyncVersion, len(incremental.Experiences))
+	}
+}
+
+func TestTaskListReturnsIncrementalSnapshot(t *testing.T) {
+	a := newTestAgent(t, "node-a")
+	task := a.tasks.Create("task history", nil)
+	request := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	if err := memory.SetSyncRequestHeaders(request, map[string]uint64{"task:node-a": task.Sequence - 1}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	a.handleTasksList(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("task list returned %d: %s", response.Code, response.Body.String())
+	}
+	version, watermarks, err := memory.ReadSyncHeaders(response.Header())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != memory.SyncProtocolVersion || watermarks["task:node-a"] != task.Sequence {
+		t.Fatalf("task sync response headers = version %d, watermarks %v", version, watermarks)
+	}
+	var tasks []taskmgr.Task
+	if err := json.NewDecoder(response.Body).Decode(&tasks); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != task.ID {
+		t.Fatalf("incremental task list = %+v, want task %s", tasks, task.ID)
 	}
 }
 

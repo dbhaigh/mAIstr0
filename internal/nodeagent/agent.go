@@ -4,8 +4,6 @@
 package nodeagent
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,70 +15,36 @@ import (
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
-	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/version"
-	"github.com/maistr0/maistr0/web"
-	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
 type Agent struct {
-	cfg             config.NodeConfig
-	engines         []engine.Engine
-	detectedEngines []engine.Engine
-	enginesMu       sync.RWMutex
-	engineScanMu    sync.Mutex
-	engineDetector  func() []engine.Engine
-	lastEngineScan  time.Time
-	hwMu            sync.RWMutex
-	hw              hardware.Info
-	gpuHistory      []hardware.GPUUsageSample
-	npuHistory      []hardware.NPUUsageSample
-	systemHistory   []hardware.SystemUsageSample
-	identity        *peeridentity.Identity
+	*engineComponent
+	*telemetryComponent
+	*agentState
+	*identityComponent
+	*orchestratorLink
+	*executorComponent
+	*peerComponent
+	*dialogueComponent
 
-	discoveryListener *discovery.Listener
-	events            *hub.Hub
+	events *hub.Hub
 
-	peerClient     *http.Client // short timeout, for polling the orchestrator's node list
-	dispatchClient *http.Client // long timeout, peer-to-peer subtask execution can cold-load a model
-	streamClient   *http.Client // no timeout, kept open for the live /api/events subscription
-	tasks          *taskmgr.Manager
+	tasks *taskmgr.Manager
+	mem   memory.Store
+}
 
-	orchMu           sync.RWMutex
-	orchestratorAddr string
-	orchestratorID   string
-
-	mu               sync.Mutex
-	disabledModels   map[string]bool
-	defaultModel     string
-	activeTasks      int
-	peers            []cluster.NodeStatus
-	modelMu          sync.Mutex
-	reportedModels   []engine.Model
-	reportedAt       time.Time
-	joinedMu         sync.Mutex
-	joined           bool
-	pairingInviteMu  sync.Mutex
-	pairingInvite    *pairingInvitation
-	pairingAccepting bool
-
-	dialogues         map[string]*Dialogue
-	dialoguesMu       sync.RWMutex
-	dialogueCancels   map[string]context.CancelFunc
-	dialogueCancelsMu sync.Mutex
-
-	mem *memory.Store
+type peerDispatchJob struct {
+	taskID     string
+	assignment scheduler.Assignment
 }
 
 type pairingInvitation struct {
@@ -108,19 +72,7 @@ type Dialogue struct {
 	UpdatedAt time.Time            `json:"updated_at"`
 }
 
-func (a *Agent) getOrchestratorID() string {
-	a.orchMu.RLock()
-	defer a.orchMu.RUnlock()
-	return a.orchestratorID
-}
-
-func (a *Agent) setOrchestratorID(id string) {
-	a.orchMu.Lock()
-	a.orchestratorID = id
-	a.orchMu.Unlock()
-}
-
-func New(cfg config.NodeConfig) *Agent {
+func New(cfg config.NodeConfig) (*Agent, error) {
 	return newAgent(cfg, taskmgr.NewManager())
 }
 
@@ -128,35 +80,52 @@ func New(cfg config.NodeConfig) *Agent {
 // starting the agent. memoryPath, when configured, gets a separate file so a
 // process running both node and orchestrator roles does not share databases.
 func NewWithPersistentTasks(cfg config.NodeConfig) (*Agent, error) {
-	if cfg.NodeID == "" {
-		cfg.NodeID = DefaultNodeID()
+	cfg, err := normalizeAgentConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 	taskPath := taskmgr.DefaultPath(cfg.NodeID)
 	if cfg.MemoryPath != "" {
 		taskPath = cfg.MemoryPath + ".node-tasks"
 	}
-	tasks, err := taskmgr.OpenManager(taskPath, nil)
+	tasks, err := taskmgr.OpenManagerWithOrigin(taskPath, nil, "task:"+cfg.NodeID)
 	if err != nil {
 		return nil, fmt.Errorf("nodeagent: open task history: %w", err)
 	}
-	return newAgent(cfg, tasks), nil
+	return newAgentWithNormalizedConfig(cfg, tasks, engine.DetectAll), nil
 }
 
-func newAgent(cfg config.NodeConfig, tasks *taskmgr.Manager) *Agent {
+func newAgent(cfg config.NodeConfig, tasks *taskmgr.Manager) (*Agent, error) {
 	return newAgentWithEngineDetector(cfg, tasks, engine.DetectAll)
 }
 
-func newAgentWithEngineDetector(cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) *Agent {
+func newAgentWithEngineDetector(cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) (*Agent, error) {
+	cfg, err := normalizeAgentConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newAgentWithNormalizedConfig(cfg, tasks, detector), nil
+}
+
+func normalizeAgentConfig(cfg config.NodeConfig) (config.NodeConfig, error) {
+	cfg.Normalize()
 	if cfg.NodeID == "" {
 		cfg.NodeID = DefaultNodeID()
+	}
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
 	}
 	if cfg.AdvertiseAddr == "" {
 		cfg.AdvertiseAddr = "https://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr)
 	}
-	disabled := make(map[string]bool, len(cfg.DisabledModels))
-	for _, m := range cfg.DisabledModels {
-		disabled[m] = true
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
 	}
+	return cfg, nil
+}
+
+func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) *Agent {
+	tasks.SetSyncOrigin("task:" + cfg.NodeID)
 	configuredEngines := make([]engine.Engine, 0, len(cfg.Engines))
 	for _, configured := range cfg.Engines {
 		if e := engine.NewConfigured(configured.Name, configured.URL); e != nil {
@@ -164,37 +133,56 @@ func newAgentWithEngineDetector(cfg config.NodeConfig, tasks *taskmgr.Manager, d
 		}
 	}
 	hw := hardware.Detect()
-	if detector == nil {
-		detector = engine.DetectAll
-	}
+	state := newAgentState(cfg)
+	telemetry := newTelemetryComponent(hw)
+	executor := newExecutorComponent(cfg.MaxConcurrentTasks, state)
+	engines := newEngineComponent(configuredEngines, detector, telemetry, state)
+	identity := newIdentityComponent()
+	events := hub.New()
+	link := newOrchestratorLink(state, identity, telemetry, engines, tasks, events)
+	peers := newPeerComponent(
+		state, telemetry, engines, executor, tasks,
+		func() *http.Client { return link.peerClient },
+		config.DefaultDispatchConcurrency,
+	)
 	a := &Agent{
-		cfg:              cfg,
-		engines:          configuredEngines,
-		engineDetector:   detector,
-		hw:               hw,
-		disabledModels:   disabled,
-		defaultModel:     cfg.DefaultModel,
-		peerClient:       &http.Client{Timeout: 5 * time.Second},
-		dispatchClient:   &http.Client{Timeout: 10 * time.Minute},
-		streamClient:     &http.Client{},
-		tasks:            tasks,
-		orchestratorAddr: cfg.OrchestratorAddr,
-		events:           hub.New(),
-		dialogues:        make(map[string]*Dialogue),
-		dialogueCancels:  make(map[string]context.CancelFunc),
+		tasks:              tasks,
+		events:             events,
+		engineComponent:    engines,
+		telemetryComponent: telemetry,
+		agentState:         state,
+		identityComponent:  identity,
+		orchestratorLink:   link,
+		executorComponent:  executor,
+		peerComponent:      peers,
 	}
+	link.statusSnapshot = a.status
+	link.currentTasks = peers.currentTasks
 	if store, err := memory.Open(cfg.MemoryPath, cfg.NodeID); err != nil {
 		log.Printf("nodeagent: memory unavailable, running stateless: %v", err)
 	} else {
 		a.mem = store
 		log.Printf("nodeagent: memory store at %s", store.Path())
 	}
+	a.dialogueComponent = newDialogueComponent(a.cfg.NodeID, a.mem, a.engineComponent, a.executorComponent, a.remember)
 	return a
 }
 
 // Close flushes and releases the persistent task and memory stores.
 func (a *Agent) Close() error {
 	var closeErr error
+	if a.tasks != nil {
+		for _, task := range a.tasks.All() {
+			if task.Status == taskmgr.StatusPending || task.Status == taskmgr.StatusRunning || task.Status == taskmgr.StatusSynthesis {
+				if _, err := a.tasks.CancelChecked(task.ID); err != nil {
+					closeErr = errors.Join(closeErr, err)
+				}
+			}
+		}
+	}
+	if a.peerComponent != nil && a.peerComponent.dispatchPool != nil {
+		a.peerComponent.dispatchPool.Close()
+	}
 	if a.tasks != nil {
 		closeErr = errors.Join(closeErr, a.tasks.Close())
 	}
@@ -204,78 +192,36 @@ func (a *Agent) Close() error {
 	return closeErr
 }
 
-func prioritizeAcceleratedEngines(engines []engine.Engine, hw hardware.Info) []engine.Engine {
-	ordered := make([]engine.Engine, 0, len(engines))
-	priorities := make([]string, 0, 2)
-	if hw.HasGPU {
-		priorities = append(priorities, "lmstudio")
-	}
-	if hw.HasNPU {
-		priorities = append(priorities, "fastflowlm")
-	}
-	preferred := make(map[string]bool, len(priorities))
-	for _, name := range priorities {
-		preferred[name] = true
-		for _, e := range engines {
-			if e.Name() == name {
-				ordered = append(ordered, e)
-			}
-		}
-	}
-	for _, e := range engines {
-		if !preferred[e.Name()] {
-			ordered = append(ordered, e)
-		}
-	}
-	return ordered
-}
-
 // Memory exposes this node's persistent knowledge store (nil if the
 // database could not be opened).
-func (a *Agent) Memory() *memory.Store { return a.mem }
+func (a *Agent) Memory() memory.Store { return a.mem }
 
 // InitializeIdentity loads the node's persistent TLS identity before serving.
 func (a *Agent) InitializeIdentity() error {
-	if a.identity != nil {
+	if a.identityComponent.Initialized() {
 		return nil
 	}
-	path := peeridentity.DefaultPath(a.cfg.NodeID)
-	if a.cfg.MemoryPath != "" {
-		path = a.cfg.MemoryPath + ".identity"
+	if err := a.identityComponent.initialize(a.cfg.NodeID, a.cfg.MemoryPath, a.cfg.AdvertiseAddr); err != nil {
+		return err
 	}
-	identity, err := peeridentity.Open(path, a.cfg.NodeID)
+	transport, err := a.identityComponent.clientTransport()
 	if err != nil {
 		return err
 	}
-	if !strings.HasPrefix(strings.ToLower(a.cfg.AdvertiseAddr), "https://") {
-		return fmt.Errorf("node advertised address must use https for paired cluster traffic")
-	}
-	a.identity = identity
-	a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: identity.ClientTransport()}
-	a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: identity.ClientTransport()}
-	a.streamClient = &http.Client{Transport: identity.ClientTransport()}
+	a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: transport}
+	a.streamClient = &http.Client{Transport: transport}
 	return nil
 }
 
 func (a *Agent) IdentityCertificate() (string, error) {
-	if a.identity == nil {
-		return "", errors.New("node identity is not initialized")
-	}
-	return a.identity.CertificatePEM(), nil
+	return a.identityComponent.certificate()
 }
 
 // PairLocalOrchestrator establishes mutual certificate pins for a combined
 // orchestrator and worker running in one process.
 func (a *Agent) PairLocalOrchestrator(orchestratorID, certificatePEM, address string) error {
-	if a.identity == nil {
-		return errors.New("node identity is not initialized")
-	}
-	if err := a.identity.TrustPeerDetails(orchestratorID, certificatePEM, "orchestrator", address); err != nil {
-		return err
-	}
-	a.setOrchestratorAddr(address)
-	a.setOrchestratorID(orchestratorID)
-	return nil
+	return a.orchestratorLink.pairLocal(orchestratorID, certificatePEM, address)
 }
 
 type nodePairingRequest struct {
@@ -294,17 +240,13 @@ type nodePairingResponse struct {
 }
 
 func (a *Agent) pairOrchestrator(candidate orchestratorCandidate) error {
-	return a.pairWithAddress(candidate.address, candidate.id, a.cfg.PairingPIN)
+	return a.orchestratorLink.pairOrchestrator(candidate)
 }
 
 // PairWithOrchestrator enrolls this node at a user-selected orchestrator
 // using its one-use out-of-band PIN or automatically if on the same subnet.
 func (a *Agent) PairWithOrchestrator(address, pin string) error {
-	address, err := normalizeOrchestratorAddress(address)
-	if err != nil {
-		return err
-	}
-	return a.pairWithAddress(address, "", strings.TrimSpace(pin))
+	return a.orchestratorLink.pairWithOrchestrator(address, pin)
 }
 
 func normalizeOrchestratorAddress(address string) (string, error) {
@@ -328,62 +270,8 @@ func validPairingPIN(pin string) bool {
 	return true
 }
 
-func (a *Agent) pairWithAddress(address, expectedID, pin string) (resultErr error) {
-	defer func() {
-		if resultErr != nil {
-			log.Printf("nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
-		}
-	}()
-	if a.identity == nil {
-		return errors.New("node identity is not initialized")
-	}
-	if pin == "" {
-		log.Printf("nodeagent: attempting auto-join with orchestrator at %s", address)
-	} else {
-		log.Printf("nodeagent: starting pairing with orchestrator at %s", address)
-	}
-	body, err := json.Marshal(nodePairingRequest{
-		ID: a.cfg.NodeID, Role: "node", PeerAddr: a.cfg.AdvertiseAddr, PIN: pin, CertificatePEM: a.identity.CertificatePEM(),
-	})
-	if err != nil {
-		return fmt.Errorf("encode pairing request: %w", err)
-	}
-	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: a.identity.BootstrapTransport(),
-	}
-	resp, err := client.Post(address+"/api/pairing/join", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("pair with orchestrator at %s: %w", address, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("pairing rejected by orchestrator at %s: %s: %s", address, resp.Status, strings.TrimSpace(string(message)))
-	}
-	var result nodePairingResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode pairing response: %w", err)
-	}
-	if result.Role != "orchestrator" || result.ID == "" || (expectedID != "" && result.ID != expectedID) {
-		return fmt.Errorf("pairing server identity %q does not match discovered orchestrator %q", result.ID, expectedID)
-	}
-	if err := a.identity.TrustPeerDetails(result.ID, result.CertificatePEM, "orchestrator", address); err != nil {
-		return err
-	}
-	for id, certificate := range result.Peers {
-		if id == a.cfg.NodeID {
-			continue
-		}
-		if err := a.identity.TrustPeer(id, certificate); err != nil {
-			return fmt.Errorf("trust paired peer %q: %w", id, err)
-		}
-	}
-	a.cfg.PairingPIN = ""
-	a.setOrchestratorAddr(address)
-	a.setOrchestratorID(result.ID)
-	log.Printf("nodeagent: successfully paired with orchestrator %s at %s", result.ID, address)
-	return nil
+func (a *Agent) pairWithAddress(address, expectedID, pin string) error {
+	return a.orchestratorLink.pairWithAddress(address, expectedID, pin)
 }
 
 // remember persists one unit of local LLM work so the cluster can learn
@@ -401,21 +289,13 @@ func (a *Agent) remember(e memory.Experience) {
 }
 
 // DefaultNodeID generates a stable node ID from the hostname,
-// exported so callers (main.go) can compute it up front, e.g. to include it
-// in a shared discovery listener's self-exclusion set.
+// exported for callers that need the agent's default identity.
 func DefaultNodeID() string {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "node"
 	}
 	return hostname
-}
-
-// SetDiscovery attaches a (possibly shared) discovery listener the agent
-// will use to auto-resolve the orchestrator's address when none is
-// configured. Must be called before Run.
-func (a *Agent) SetDiscovery(l *discovery.Listener) {
-	a.discoveryListener = l
 }
 
 // ID returns this agent's node ID (auto-generated if not configured).
@@ -434,310 +314,45 @@ type executeResponse struct {
 }
 
 type statusResponse struct {
-	ID            string                       `json:"id"`
-	Version       string                       `json:"version"`
-	Address       string                       `json:"address"`
-	Hardware      hardware.Info                `json:"hardware"`
-	TelemetryAt   time.Time                    `json:"telemetry_at"`
-	GPUHistory    []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
-	NPUHistory    []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
-	SystemHistory []hardware.SystemUsageSample `json:"system_history,omitempty"`
-	Models        []engine.Model               `json:"models"`
-	Capabilities  []string                     `json:"capabilities,omitempty"`
-	DefaultModel  string                       `json:"default_model,omitempty"`
-	FastScore     float64                      `json:"fast_score"`
-	ActiveTasks   int                          `json:"active_tasks"`
-}
-
-func fastScore(hw hardware.Info) float64 {
-	return cluster.FastScore(hw)
-}
-
-func (a *Agent) enabledModels() []engine.Model {
-	a.refreshDetectedEngines()
-	engines := a.engineSnapshot()
-	a.mu.Lock()
-	disabled := make(map[string]bool, len(a.disabledModels))
-	for name, isDisabled := range a.disabledModels {
-		disabled[name] = isDisabled
-	}
-	a.mu.Unlock()
-	var out []engine.Model
-	for _, e := range engines {
-		models, err := e.ListModels()
-		if err != nil {
-			log.Printf("nodeagent: list models for engine %s failed: %v", e.Name(), err)
-			continue
-		}
-		for _, m := range models {
-			if !disabled[m.Name] {
-				out = append(out, m)
-			}
-		}
-	}
-	return out
-}
-
-const engineDetectionInterval = 10 * time.Second
-
-// refreshDetectedEngines periodically detects engines started after the node
-// agent, even when another engine was already available.
-func (a *Agent) refreshDetectedEngines() {
-	a.engineScanMu.Lock()
-	defer a.engineScanMu.Unlock()
-
-	a.enginesMu.RLock()
-	needsDetection := time.Since(a.lastEngineScan) >= engineDetectionInterval
-	a.enginesMu.RUnlock()
-	if needsDetection {
-		a.scanDetectedEnginesLocked()
-	}
-}
-
-func (a *Agent) rescanDetectedEngines() {
-	a.engineScanMu.Lock()
-	defer a.engineScanMu.Unlock()
-	a.scanDetectedEnginesLocked()
-}
-
-func (a *Agent) scanDetectedEnginesLocked() {
-	detector := a.engineDetector
-	if detector == nil {
-		detector = engine.DetectAll
-	}
-	engines := detector()
-	engines = prioritizeAcceleratedEngines(engines, a.hardwareSnapshot())
-	a.enginesMu.Lock()
-	a.detectedEngines = engines
-	a.lastEngineScan = time.Now()
-	a.enginesMu.Unlock()
-}
-
-func (a *Agent) engineSnapshot() []engine.Engine {
-	a.enginesMu.RLock()
-	configured := append([]engine.Engine(nil), a.engines...)
-	detected := append([]engine.Engine(nil), a.detectedEngines...)
-	a.enginesMu.RUnlock()
-	engines := make([]engine.Engine, 0, len(configured)+len(detected))
-	seen := make(map[string]struct{}, len(configured)+len(detected))
-	for _, group := range [][]engine.Engine{configured, detected} {
-		for _, e := range group {
-			key := strings.ToLower(e.Name()) + "\x00" + engineURL(e)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			engines = append(engines, e)
-		}
-	}
-	return prioritizeAcceleratedEngines(engines, a.hardwareSnapshot())
-}
-
-// ModelState pairs a discovered model with whether it is currently enabled
-// for scheduling, used by the GUI's per-node model configuration panel.
-type ModelState struct {
-	engine.Model
-	Enabled bool `json:"enabled"`
-	Default bool `json:"default"`
-}
-
-func (a *Agent) allModelsWithState() []ModelState {
-	a.refreshDetectedEngines()
-	a.mu.Lock()
-	disabled := make(map[string]bool, len(a.disabledModels))
-	for k, v := range a.disabledModels {
-		disabled[k] = v
-	}
-	a.mu.Unlock()
-
-	var out []ModelState
-	for _, e := range a.engineSnapshot() {
-		models, err := e.ListModels()
-		if err != nil {
-			log.Printf("nodeagent: list models for engine %s failed: %v", e.Name(), err)
-			continue
-		}
-		for _, m := range models {
-			out = append(out, ModelState{Model: m, Enabled: !disabled[m.Name], Default: m.Name == a.defaultModelName()})
-		}
-	}
-	return out
+	ID                 string                       `json:"id"`
+	Version            string                       `json:"version"`
+	Address            string                       `json:"address"`
+	Hardware           hardware.Info                `json:"hardware"`
+	TelemetryAt        time.Time                    `json:"telemetry_at"`
+	GPUHistory         []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
+	NPUHistory         []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
+	SystemHistory      []hardware.SystemUsageSample `json:"system_history,omitempty"`
+	Models             []engine.Model               `json:"models"`
+	Capabilities       []string                     `json:"capabilities,omitempty"`
+	DefaultModel       string                       `json:"default_model,omitempty"`
+	FastScore          float64                      `json:"fast_score"`
+	ActiveTasks        int                          `json:"active_tasks"`
+	MaxConcurrentTasks int                          `json:"max_concurrent_tasks"`
+	AvailableCapacity  int                          `json:"available_capacity"`
 }
 
 func (a *Agent) status() statusResponse {
-	a.mu.Lock()
-	active := a.activeTasks
-	a.mu.Unlock()
+	cfg := a.configSnapshot()
+	active := a.executorComponent.activeTaskCount()
 	hw := a.hardwareSnapshot()
 	models := a.reportedModelList()
 	return statusResponse{
-		ID:            a.cfg.NodeID,
-		Version:       version.String(),
-		Address:       a.cfg.AdvertiseAddr,
-		Hardware:      hw,
-		TelemetryAt:   a.telemetryTimestamp(),
-		GPUHistory:    a.gpuHistorySnapshot(),
-		NPUHistory:    a.npuHistorySnapshot(),
-		SystemHistory: a.systemHistorySnapshot(),
-		Models:        models,
-		Capabilities:  cluster.NodeStatus{Hardware: hw, Models: models}.EffectiveCapabilities(),
-		DefaultModel:  a.defaultModelName(),
-		FastScore:     fastScore(hw),
-		ActiveTasks:   active,
+		ID:                 cfg.NodeID,
+		Version:            version.String(),
+		Address:            cfg.AdvertiseAddr,
+		Hardware:           hw,
+		TelemetryAt:        a.telemetryTimestamp(),
+		GPUHistory:         a.gpuHistorySnapshot(),
+		NPUHistory:         a.npuHistorySnapshot(),
+		SystemHistory:      a.systemHistorySnapshot(),
+		Models:             models,
+		Capabilities:       cluster.NodeStatus{Hardware: hw, Models: models}.EffectiveCapabilities(),
+		DefaultModel:       a.defaultModelName(),
+		FastScore:          fastScore(hw),
+		ActiveTasks:        active,
+		MaxConcurrentTasks: cfg.MaxConcurrentTasks,
+		AvailableCapacity:  a.executorComponent.availableCapacity(cfg.MaxConcurrentTasks),
 	}
-}
-
-func (a *Agent) telemetryTimestamp() time.Time {
-	a.hwMu.RLock()
-	defer a.hwMu.RUnlock()
-	if len(a.gpuHistory) == 0 {
-		return time.Time{}
-	}
-	return a.gpuHistory[len(a.gpuHistory)-1].Timestamp
-}
-
-func (a *Agent) hardwareSnapshot() hardware.Info {
-	a.hwMu.RLock()
-	defer a.hwMu.RUnlock()
-	return a.hw
-}
-
-func (a *Agent) hardwareUsageLoop() {
-	refresh := func() {
-		utilization, freeMemoryMB, available := hardware.CurrentGPUUsage()
-		npuUtilization, npuAvailable := hardware.CurrentNPUUsage()
-		cpuUtilization, cpuAvailable, memoryUsage, memoryAvailable := hardware.CurrentSystemUsage()
-		sample := hardware.GPUUsageSample{
-			Timestamp: time.Now().UTC(), Available: available, Utilization: utilization,
-		}
-		systemSample := hardware.SystemUsageSample{
-			Timestamp: time.Now().UTC(), CPUAvailable: cpuAvailable, CPUUtilization: cpuUtilization,
-			MemoryAvailable: memoryAvailable, MemoryUtilization: memoryUsage,
-		}
-		npuSample := hardware.NPUUsageSample{
-			Timestamp: time.Now().UTC(), Available: npuAvailable, Utilization: npuUtilization,
-		}
-		a.hwMu.Lock()
-		a.hw.GPUStatsAvailable = available
-		a.hw.GPUUtilization = utilization
-		a.hw.GPUMemoryFreeMB = freeMemoryMB
-		a.gpuHistory = appendGPUUsageSample(a.gpuHistory, sample)
-		a.hw.NPUStatsAvailable = npuAvailable
-		a.hw.NPUUtilization = npuUtilization
-		a.npuHistory = appendNPUUsageSample(a.npuHistory, npuSample)
-		a.hw.CPUStatsAvailable = cpuAvailable
-		a.hw.CPUUtilization = cpuUtilization
-		a.hw.MemoryStatsAvailable = memoryAvailable
-		a.hw.MemoryUsage = memoryUsage
-		a.systemHistory = appendSystemUsageSample(a.systemHistory, systemSample)
-		a.hwMu.Unlock()
-	}
-	refresh()
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		refresh()
-	}
-}
-
-const gpuHistoryLimit = 60
-
-const npuHistoryLimit = 60
-
-const systemHistoryLimit = 60
-
-func appendGPUUsageSample(history []hardware.GPUUsageSample, sample hardware.GPUUsageSample) []hardware.GPUUsageSample {
-	if len(history) < gpuHistoryLimit {
-		return append(history, sample)
-	}
-	copy(history, history[1:])
-	history[len(history)-1] = sample
-	return history
-}
-
-func appendNPUUsageSample(history []hardware.NPUUsageSample, sample hardware.NPUUsageSample) []hardware.NPUUsageSample {
-	if len(history) < npuHistoryLimit {
-		return append(history, sample)
-	}
-	copy(history, history[1:])
-	history[len(history)-1] = sample
-	return history
-}
-
-func appendSystemUsageSample(history []hardware.SystemUsageSample, sample hardware.SystemUsageSample) []hardware.SystemUsageSample {
-	if len(history) < systemHistoryLimit {
-		return append(history, sample)
-	}
-	copy(history, history[1:])
-	history[len(history)-1] = sample
-	return history
-}
-
-func (a *Agent) gpuHistorySnapshot() []hardware.GPUUsageSample {
-	a.hwMu.RLock()
-	defer a.hwMu.RUnlock()
-	return append([]hardware.GPUUsageSample(nil), a.gpuHistory...)
-}
-
-func (a *Agent) npuHistorySnapshot() []hardware.NPUUsageSample {
-	a.hwMu.RLock()
-	defer a.hwMu.RUnlock()
-	return append([]hardware.NPUUsageSample(nil), a.npuHistory...)
-}
-
-func (a *Agent) systemHistorySnapshot() []hardware.SystemUsageSample {
-	a.hwMu.RLock()
-	defer a.hwMu.RUnlock()
-	return append([]hardware.SystemUsageSample(nil), a.systemHistory...)
-}
-
-func (a *Agent) reportedModelList() []engine.Model {
-	a.modelMu.Lock()
-	models := append([]engine.Model(nil), a.reportedModels...)
-	a.modelMu.Unlock()
-	return models
-}
-
-// refreshReportedModels updates the status cache without holding modelMu while
-// contacting an LLM server. Status and registration must stay responsive even
-// when a local model is loading or the engine is unavailable.
-func (a *Agent) refreshReportedModels() {
-	models := a.enabledModels()
-	a.modelMu.Lock()
-	a.reportedModels = models
-	a.reportedAt = time.Now()
-	a.modelMu.Unlock()
-}
-
-func (a *Agent) modelRefreshLoop() {
-	a.refreshReportedModels()
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		a.refreshReportedModels()
-	}
-}
-
-func (a *Agent) defaultModelName() string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.defaultModel
-}
-
-func (a *Agent) engineFor(model string) engine.Engine {
-	a.refreshDetectedEngines()
-	for _, e := range a.engineSnapshot() {
-		models, err := e.ListModels()
-		if err != nil {
-			continue
-		}
-		for _, m := range models {
-			if m.Name == model {
-				return e
-			}
-		}
-	}
-	return nil
 }
 
 type generateRequest struct {
@@ -856,18 +471,6 @@ type dialogueMessageResponse struct {
 	Error      string               `json:"error,omitempty"`
 }
 
-// InterruptDialogue cancels an in-flight dialogue turn on this node.
-func (a *Agent) InterruptDialogue(id string) bool {
-	a.dialogueCancelsMu.Lock()
-	cancel, ok := a.dialogueCancels[id]
-	a.dialogueCancelsMu.Unlock()
-	if ok && cancel != nil {
-		cancel()
-		return true
-	}
-	return false
-}
-
 type modelsPatchRequest struct {
 	DisabledModels []string `json:"disabled_models"`
 	DefaultModel   string   `json:"default_model"`
@@ -909,698 +512,6 @@ func portSuffix(listenAddr string) string {
 	return listenAddr
 }
 
-// Run starts the node's HTTP server and its background registration loop
-// with the orchestrator. It blocks until the server stops.
-func (a *Agent) Run() error {
-	if err := a.InitializeIdentity(); err != nil {
-		return fmt.Errorf("nodeagent: initialize cluster identity: %w", err)
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/status", a.handleStatus)
-	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"version": version.String()})
-	})
-	mux.HandleFunc("GET /api/status", a.handleSystemStatus)
-	mux.HandleFunc("GET /api/pairing/status", a.handlePairingStatus)
-	mux.HandleFunc("POST /api/pairing/connect", a.handlePairingConnect)
-	mux.HandleFunc("POST /api/pairing/invitation", a.handlePairingInvitation)
-	mux.Handle("GET /api/pairing/invitation", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationStatus)))
-	mux.Handle("POST /api/pairing/invitation/accept", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationAccept)))
-	mux.Handle("POST /api/pairing/invitation/reject", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationReject)))
-	mux.HandleFunc("/execute", a.handleExecute)
-	mux.HandleFunc("POST /generate", a.handleGenerate)
-	mux.HandleFunc("POST /chat", a.handleChat)
-	mux.HandleFunc("POST /dialogues", a.handleDialogueCreate)
-	mux.HandleFunc("GET /dialogues", a.handleDialogueList)
-	mux.HandleFunc("GET /dialogues/{id}", a.handleDialogueGet)
-	mux.HandleFunc("DELETE /dialogues/{id}", a.handleDialogueDelete)
-	mux.HandleFunc("POST /dialogues/{id}/messages", a.handleDialogueMessage)
-	mux.HandleFunc("POST /dialogues/{id}/chat", a.handleDialogueMessage)
-	mux.HandleFunc("POST /dialogues/{id}/interrupt", a.handleDialogueInterrupt)
-	mux.HandleFunc("POST /dialogues/{id}/cancel", a.handleDialogueInterrupt)
-
-	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch {
-			a.handleModelsPatch(w, r)
-			return
-		}
-		a.handleModelsGet(w, r)
-	})
-	mux.HandleFunc("/models/all", a.handleModelsAllGet)
-	mux.HandleFunc("POST /models/refresh", a.handleModelsRefresh)
-	mux.HandleFunc("/models/pull", a.handleModelPull)
-	mux.HandleFunc("/engine", a.handleEngineInfo)
-	mux.HandleFunc("/properties", a.handleProperties)
-	mux.HandleFunc("GET /peers", a.handlePeersGet)
-	mux.HandleFunc("POST /submit", a.handleSubmit)
-	mux.HandleFunc("GET /tasks", a.handleTasksList)
-	mux.HandleFunc("GET /tasks/{id}", a.handleTaskGet)
-	mux.HandleFunc("POST /tasks/{id}/cancel", a.handleTaskCancel)
-	mux.HandleFunc("POST /tasks/sync", a.handleTaskSync)
-	mux.HandleFunc("POST /tasks/replica", a.handleTaskReplica)
-	mux.HandleFunc("GET /memory/sync", a.handlePeerMemorySyncGet)
-	mux.HandleFunc("POST /memory/sync", a.handlePeerMemorySyncPost)
-
-	// Node-to-node LLM conversation: /peer/message answers an inbound
-	// utterance from another node's model, /peer/converse drives a full
-	// multi-round exchange between this node's LLM and a peer's LLM.
-	mux.HandleFunc("POST /peer/message", a.handlePeerMessage)
-	mux.HandleFunc("POST /peer/converse", a.handlePeerConverse)
-
-	mux.HandleFunc("GET /memory/experiences", a.handleMemoryExperiences)
-	mux.HandleFunc("GET /memory/insights", a.handleMemoryInsights)
-	mux.HandleFunc("GET /memory/facts", a.handleMemoryFacts)
-	mux.HandleFunc("POST /memory/facts", a.handleMemoryFacts)
-
-	// Every node serves the exact same control-plane GUI as the
-	// orchestrator, backed by /api/* aliases below, so any node shows the
-	// same cluster information and can submit work on its members' behalf.
-	mux.HandleFunc("GET /api/nodes", a.handleAPINodesGet)
-	mux.HandleFunc("GET /api/nodes/all", a.handleAPINodesGet)
-	mux.HandleFunc("GET /api/nodes/{id}/models", a.handleAPINodeModelsGet)
-	mux.HandleFunc("PATCH /api/nodes/{id}/models", a.handleAPINodeModelsPatch)
-	mux.HandleFunc("POST /api/nodes/{id}/pairing/connect", a.handleAPINodeControl)
-	mux.HandleFunc("GET /api/nodes/{id}/properties", a.handleAPINodeControl)
-	mux.HandleFunc("PATCH /api/nodes/{id}/properties", a.handleAPINodeControl)
-	mux.HandleFunc("GET /api/nodes/{id}/engines", a.handleAPINodeControl)
-	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", a.handleAPINodeControl)
-	mux.HandleFunc("POST /api/nodes/{id}/models/pull", a.handleAPINodeControl)
-	mux.HandleFunc("GET /api/discovery", a.handleAPIDiscovery)
-	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", a.handleAPIDiscoveryPairingInvite)
-	mux.HandleFunc("GET /api/events", a.events.ServeHTTP)
-	mux.HandleFunc("POST /api/tasks", a.handleAPITasksPost)
-	mux.HandleFunc("GET /api/tasks", a.handleAPITasksList)
-	mux.HandleFunc("GET /api/tasks/{id}", a.handleAPITaskGet)
-	mux.HandleFunc("POST /api/tasks/{id}/cancel", a.handleAPITaskCancel)
-	mux.HandleFunc("POST /api/tasks/{id}/approve", a.handleAPITaskApprove)
-	mux.HandleFunc("POST /api/tasks/{id}/resume", a.handleAPITaskResume)
-	mux.HandleFunc("GET /api/tasks/{id}/checkpoints", a.handleAPITaskCheckpoints)
-	mux.HandleFunc("POST /api/generate", a.handleGenerate)
-	mux.HandleFunc("POST /api/chat", a.handleChat)
-	mux.HandleFunc("POST /api/nodes/{id}/dialogues", a.handleAPINodeDialogue)
-	mux.HandleFunc("GET /api/nodes/{id}/dialogues", a.handleAPINodeDialogue)
-	mux.HandleFunc("/api/nodes/{id}/dialogues/", a.handleAPINodeDialogue)
-	mux.HandleFunc("POST /api/dialogues", a.handleDialogueCreate)
-	mux.HandleFunc("GET /api/dialogues", a.handleDialogueList)
-	mux.HandleFunc("GET /api/dialogues/{id}", a.handleDialogueGet)
-	mux.HandleFunc("DELETE /api/dialogues/{id}", a.handleDialogueDelete)
-	mux.HandleFunc("POST /api/dialogues/{id}/messages", a.handleDialogueMessage)
-	mux.HandleFunc("POST /api/dialogues/{id}/interrupt", a.handleDialogueInterrupt)
-	mux.HandleFunc("POST /api/dialogues/{id}/cancel", a.handleDialogueInterrupt)
-	mux.HandleFunc("POST /api/peer/converse", a.handlePeerConverse)
-	mux.HandleFunc("GET /api/memory/experiences", a.handleMemoryExperiences)
-	mux.HandleFunc("GET /api/memory/sync", a.handleAPIMemorySync)
-	mux.HandleFunc("GET /api/memory/insights", a.handleMemoryInsights)
-	mux.HandleFunc("/api/agent/", a.handleAPIAgentProxy)
-
-	staticFS, err := fs.Sub(web.StaticFiles, "static")
-	if err != nil {
-		log.Fatalf("nodeagent: embedded web assets missing: %v", err)
-	}
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
-
-	if a.cfg.DiscoveryEnabled {
-		if a.discoveryListener == nil {
-			a.discoveryListener = discovery.Listen(a.cfg.NodeID)
-		}
-		// Announce continuously: before joining this is how the cluster finds
-		// us, and after joining it keeps us visible in every LAN panel.
-		go discovery.Beacon(func() discovery.Announcement {
-			orchestratorID := ""
-			if a.isJoined() {
-				orchestratorID = a.getOrchestratorID()
-			}
-			return discovery.Announcement{
-				Role: "node", ID: a.cfg.NodeID,
-				HTTPAddr:       "http://" + discovery.OutboundIP() + portSuffix(a.cfg.ListenAddr),
-				PeerAddr:       a.cfg.AdvertiseAddr,
-				Score:          cluster.SelfScore(a.hardwareSnapshot()),
-				OrchestratorID: orchestratorID,
-			}
-		}, 5*time.Second, nil)
-	}
-	go a.hardwareUsageLoop()
-	go a.resolveOrchestratorAndRegister()
-	go a.modelRefreshLoop()
-	go a.peerPollLoop()
-	go a.sseSubscribeLoop()
-	go a.taskHistorySyncLoop()
-	go a.syncPeerMemoryLoop()
-	go a.broadcastLoop()
-	go a.syncMemoryToOrchestrator()
-
-	log.Printf("node agent %q listening on %s (advertised as %s)", a.cfg.NodeID, a.cfg.ListenAddr, a.cfg.AdvertiseAddr)
-	trustedHandler := a.identity.RequireTrustedPeer(mux)
-	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/api/pairing/invitation" {
-			a.handlePairingInvitation(w, r)
-			return
-		}
-		trustedHandler.ServeHTTP(w, r)
-	})
-	return peeridentity.ServeDual(
-		a.cfg.ListenAddr,
-		peeridentity.LoopbackOnly(mux),
-		secureHandler,
-		a.identity.ServerTLSConfig(),
-	)
-}
-
-func (a *Agent) getOrchestratorAddr() string {
-	a.orchMu.RLock()
-	defer a.orchMu.RUnlock()
-	return a.orchestratorAddr
-}
-
-func (a *Agent) setOrchestratorAddr(addr string) {
-	a.orchMu.Lock()
-	a.orchestratorAddr = addr
-	a.orchMu.Unlock()
-}
-
-func (a *Agent) markJoined() {
-	a.joinedMu.Lock()
-	a.joined = true
-	a.joinedMu.Unlock()
-}
-
-func (a *Agent) isJoined() bool {
-	a.joinedMu.Lock()
-	defer a.joinedMu.Unlock()
-	return a.joined
-}
-
-// resolveOrchestratorAndRegister starts registration without blocking discovery.
-func (a *Agent) resolveOrchestratorAndRegister() {
-	if a.getOrchestratorAddr() == "" && a.discoveryListener == nil {
-		log.Printf("nodeagent: discovery disabled and no orchestrator configured; registration will retry")
-	}
-	a.registrationLoop()
-}
-
-func (a *Agent) registrationLoop() {
-	register := func() {
-		candidates := a.orchestratorCandidates()
-		if len(candidates) == 0 {
-			if a.discoveryListener != nil {
-				a.setOrchestratorAddr("")
-			}
-			a.joinedMu.Lock()
-			a.joined = false
-			a.joinedMu.Unlock()
-			return
-		}
-		body, err := json.Marshal(a.status())
-		if err != nil {
-			return
-		}
-		for _, candidate := range candidates {
-			if !strings.HasPrefix(strings.ToLower(candidate.address), "https://") {
-				log.Printf("nodeagent: refusing insecure orchestrator address %q; use https", candidate.address)
-				continue
-			}
-			if !a.identity.IsTrustedID(candidate.id) {
-				if pairErr := a.pairOrchestrator(candidate); pairErr != nil {
-					log.Printf("nodeagent: pairing candidate %s failed: %v", candidate.id, pairErr)
-					continue
-				}
-			}
-			resp, postErr := a.peerClient.Post(candidate.address+"/api/nodes/register", "application/json", bytes.NewReader(body))
-			if postErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				resp.Body.Close()
-				previous := a.getOrchestratorAddr()
-				a.setOrchestratorAddr(candidate.address)
-				a.setOrchestratorID(candidate.id)
-				a.markJoined()
-				if previous != candidate.address {
-					log.Printf("nodeagent: election winner is %s at %s, switching orchestrator", candidate.id, candidate.address)
-				}
-				return
-			}
-			if resp != nil {
-				log.Printf("nodeagent: registration candidate %s rejected or unreachable: %v (status %s)", candidate.address, postErr, resp.Status)
-				resp.Body.Close()
-			} else if postErr != nil {
-				log.Printf("nodeagent: registration candidate %s unreachable: %v", candidate.address, postErr)
-			}
-		}
-		a.joinedMu.Lock()
-		a.joined = false
-		a.joinedMu.Unlock()
-		if a.discoveryListener != nil {
-			a.setOrchestratorAddr("")
-		}
-		log.Printf("nodeagent: no elected orchestrator accepted registration; discovery remains active")
-	}
-
-	// Give the orchestrator (often starting concurrently in the same
-	// process for --role=both) a moment to bind its listener before the
-	// first registration attempt, to avoid a noisy connection-refused log.
-	time.Sleep(1500 * time.Millisecond)
-	register()
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		register()
-	}
-}
-
-type orchestratorCandidate struct {
-	id      string
-	address string
-	score   float64
-	members int
-	elected bool
-}
-
-func (a *Agent) orchestratorCandidates() []orchestratorCandidate {
-	byAddress := make(map[string]orchestratorCandidate)
-	current := a.getOrchestratorAddr()
-	if current != "" {
-		host := strings.TrimPrefix(strings.TrimPrefix(current, "http://"), "https://")
-		if colon := strings.LastIndex(host, ":"); colon >= 0 {
-			host = host[:colon]
-		}
-		id := a.getOrchestratorID()
-		if id == "" {
-			id = "orchestrator-" + host
-		}
-		// A configured/local address is only a fallback until discovery proves
-		// which orchestrator currently owns the cluster.
-		byAddress[current] = orchestratorCandidate{id: id, address: current, score: -1}
-	}
-	if a.discoveryListener != nil {
-		for _, peer := range a.discoveryListener.Snapshot() {
-			if peer.Role != "orchestrator" || peer.PeerAddr == "" {
-				continue
-			}
-			candidate := orchestratorCandidate{id: peer.ID, address: peer.PeerAddr, score: peer.Score, members: peer.Members, elected: peer.Elected}
-			if existing, ok := byAddress[peer.PeerAddr]; !ok || candidate.score > existing.score || (candidate.score == existing.score && candidate.id < existing.id) {
-				byAddress[peer.PeerAddr] = candidate
-			}
-		}
-	}
-	candidates := make([]orchestratorCandidate, 0, len(byAddress))
-	for _, candidate := range byAddress {
-		candidates = append(candidates, candidate)
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].elected != candidates[j].elected {
-			return candidates[i].elected
-		}
-		if candidates[i].members != candidates[j].members {
-			return candidates[i].members > candidates[j].members
-		}
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		return candidates[i].id < candidates[j].id
-	})
-	return candidates
-}
-
-// peerPollLoop keeps a local cache of every node in the cluster (fetched
-// from the orchestrator's registry) so this node can display the status of
-// every other node and dispatch work directly to them, without every
-// request needing to go through the orchestrator.
-func (a *Agent) peerPollLoop() {
-	poll := func() {
-		addr := a.getOrchestratorAddr()
-		if addr == "" {
-			return
-		}
-		resp, err := a.peerClient.Get(addr + "/api/nodes")
-		if err != nil {
-			log.Printf("nodeagent: peer poll failed: %v", err)
-			return
-		}
-		defer resp.Body.Close()
-		var nodes []cluster.NodeStatus
-		if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
-			return
-		}
-		a.mu.Lock()
-		a.peers = nodes
-		a.mu.Unlock()
-		rosterResp, err := a.peerClient.Get(addr + "/api/pairing/roster")
-		if err != nil {
-			log.Printf("nodeagent: paired-peer roster refresh failed: %v", err)
-		} else {
-			var roster map[string]string
-			decodeErr := json.NewDecoder(rosterResp.Body).Decode(&roster)
-			_ = rosterResp.Body.Close()
-			if decodeErr != nil {
-				log.Printf("nodeagent: decode paired-peer roster: %v", decodeErr)
-			} else {
-				orchestratorID := a.getOrchestratorID()
-				for id, certificate := range roster {
-					if id == a.cfg.NodeID {
-						continue
-					}
-					if err := a.identity.TrustPeer(id, certificate); err != nil {
-						log.Printf("nodeagent: trust paired peer %q: %v", id, err)
-					}
-				}
-				if orchestratorID != "" {
-					for _, id := range a.identity.TrustedIDs() {
-						if id == orchestratorID {
-							continue
-						}
-						if _, ok := roster[id]; !ok {
-							if err := a.identity.RemovePeer(id); err != nil {
-								log.Printf("nodeagent: revoke stale peer %q: %v", id, err)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Give the orchestrator (often starting concurrently in the same
-	// process for --role=both) a moment to bind its listener before the
-	// first poll attempt, to avoid a noisy connection-refused log.
-	time.Sleep(1500 * time.Millisecond)
-	poll()
-	// This is a slow fallback only; sseSubscribeLoop below is the primary,
-	// real-time path and normally keeps a.peers fresh well within a second.
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		poll()
-	}
-}
-
-// sseSubscribeLoop keeps a live connection to the orchestrator's event
-// stream so this node's peer cache (and therefore its dashboard) updates in
-// real time as other nodes come online, instead of waiting on the slow
-// polling fallback above. It reconnects automatically if the stream drops.
-func (a *Agent) sseSubscribeLoop() {
-	time.Sleep(1500 * time.Millisecond)
-	for {
-		addr := a.getOrchestratorAddr()
-		if addr == "" {
-			time.Sleep(1 * time.Second)
-			continue
-		}
-		if err := a.subscribeOnce(addr); err != nil {
-			log.Printf("nodeagent: event stream to orchestrator lost, retrying: %v", err)
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
-
-func (a *Agent) subscribeOnce(addr string) error {
-	req, err := http.NewRequest(http.MethodGet, addr+"/api/events", nil)
-	if err != nil {
-		return err
-	}
-	resp, err := a.streamClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		if a.getOrchestratorAddr() != addr {
-			return errors.New("orchestrator changed, resubscribing")
-		}
-		line := scanner.Text()
-		data, ok := strings.CutPrefix(line, "data: ")
-		if !ok {
-			continue
-		}
-		var snap struct {
-			Nodes       []cluster.NodeStatus `json:"nodes"`
-			MemberCount int                  `json:"member_count"`
-			Tasks       []*taskmgr.Task      `json:"tasks"`
-		}
-		if err := json.Unmarshal([]byte(data), &snap); err != nil {
-			continue
-		}
-		if len(snap.Tasks) > 0 {
-			if err := a.tasks.ReplaceFromSync(snap.Tasks); err != nil {
-				log.Printf("nodeagent: could not apply task snapshot from orchestrator: %v", err)
-			}
-		}
-		a.mu.Lock()
-		// The list is authoritative: an ejected node is removed here as soon
-		// as the orchestrator broadcasts the post-ejection snapshot.
-		a.peers = append([]cluster.NodeStatus(nil), snap.Nodes...)
-		a.mu.Unlock()
-	}
-	return scanner.Err()
-}
-
-// broadcastLoop pushes this node's view of the cluster (peers, its own
-// task tracking, and LAN discovery) to every locally-connected dashboard in
-// real time, so the GUI never has to poll.
-func (a *Agent) broadcastLoop() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		a.publishSnapshot()
-	}
-}
-
-func (a *Agent) publishSnapshot() {
-	var disc []discovery.Peer
-	if a.discoveryListener != nil {
-		disc = a.discoveryListener.Snapshot()
-	}
-	snap := struct {
-		Nodes        []cluster.NodeStatus `json:"nodes"`
-		Tasks        []*taskmgr.Task      `json:"tasks"`
-		Discovery    []discovery.Peer     `json:"discovery"`
-		BuildVersion string               `json:"build_version"`
-		MemberCount  int                  `json:"member_count"`
-	}{
-		Nodes:        a.Peers(),
-		Tasks:        a.currentTasks(),
-		Discovery:    disc,
-		BuildVersion: version.String(),
-	}
-	snap.MemberCount = len(snap.Nodes)
-	data, err := json.Marshal(snap)
-	if err != nil {
-		return
-	}
-	a.events.Broadcast(data)
-}
-
-// currentTasks returns this node's task list if it is the current cluster
-// coordinator (the most capable live node), otherwise it fetches the
-// authoritative list from that coordinator.
-func (a *Agent) currentTasks() []*taskmgr.Task {
-	if a.isMostCapable() {
-		return a.tasks.All()
-	}
-	resp, err := a.peerClient.Get(a.mostCapableNode().Address + "/tasks")
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	var tasks []*taskmgr.Task
-	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
-		return nil
-	}
-	return tasks
-}
-
-// Peers returns the last known status of every node in the cluster.
-func (a *Agent) Peers() []cluster.NodeStatus {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make([]cluster.NodeStatus, len(a.peers))
-	copy(out, a.peers)
-	return out
-}
-
 type submitRequest struct {
 	Description string `json:"description"`
-}
-
-func (a *Agent) dispatchToPeer(taskID string, asg scheduler.Assignment) {
-	a.tasks.StartSubtask(taskID, asg.Subtask.ID)
-	available := false
-	for _, peer := range a.Peers() {
-		if peer.ID == asg.NodeID && peer.Healthy && peer.Address == asg.Address {
-			available = true
-			break
-		}
-	}
-	if !available && asg.NodeID != a.cfg.NodeID {
-		a.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", errors.New("node was ejected before dispatch"))
-		return
-	}
-	body, _ := json.Marshal(executeRequest{
-		SubtaskID: asg.Subtask.ID,
-		Model:     asg.Model,
-		Prompt:    asg.Subtask.Description,
-	})
-
-	resp, err := a.dispatchClient.Post(asg.Address+"/execute", "application/json", bytes.NewReader(body))
-	if err != nil {
-		a.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		a.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", errors.New("node returned "+resp.Status+": "+string(errBody)))
-		return
-	}
-
-	var out executeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		a.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", err)
-		return
-	}
-	if out.Error != "" {
-		a.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", errors.New(out.Error))
-		return
-	}
-	a.tasks.CompleteSubtask(taskID, asg.Subtask.ID, out.Output, nil)
-}
-
-// mostCapableNode returns the cluster's elected leader. The orchestrator's
-// registry enforces the election and marks the winner on every snapshot, so
-// a peer with the leader flag is authoritative; local scoring is only the
-// bootstrap fallback before the first snapshot arrives.
-func (a *Agent) mostCapableNode() cluster.NodeStatus {
-	hw := a.hardwareSnapshot()
-	self := cluster.NodeStatus{
-		ID:           a.cfg.NodeID,
-		Address:      a.cfg.AdvertiseAddr,
-		Hardware:     hw,
-		FastScore:    fastScore(hw),
-		DefaultModel: a.defaultModelName(),
-		ActiveTasks:  a.activeTaskCount(),
-		Healthy:      true,
-	}
-	best := self
-	for _, n := range a.Peers() {
-		if !n.Healthy {
-			continue
-		}
-		if n.Leader {
-			return n
-		}
-		if n.ID == self.ID {
-			continue
-		}
-		if cluster.CapabilityScore(n) > cluster.CapabilityScore(best) ||
-			(cluster.CapabilityScore(n) == cluster.CapabilityScore(best) && n.ID < best.ID) {
-			best = n
-		}
-	}
-	return best
-}
-
-func (a *Agent) fastestNode() cluster.NodeStatus {
-	hw := a.hardwareSnapshot()
-	self := cluster.NodeStatus{
-		ID:           a.cfg.NodeID,
-		Address:      a.cfg.AdvertiseAddr,
-		Hardware:     hw,
-		FastScore:    fastScore(hw),
-		DefaultModel: a.defaultModelName(),
-		ActiveTasks:  a.activeTaskCount(),
-		Healthy:      true,
-	}
-	best := self
-	for _, n := range a.Peers() {
-		if !n.Healthy || n.ID == self.ID {
-			continue
-		}
-		if n.FastScore > best.FastScore ||
-			(n.FastScore == best.FastScore && n.ID < best.ID) {
-			best = n
-		}
-	}
-	return best
-}
-
-func (a *Agent) isMostCapable() bool { return a.mostCapableNode().ID == a.cfg.NodeID }
-
-func (a *Agent) activeTaskCount() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.activeTasks
-}
-
-func (a *Agent) isFastest() bool { return a.fastestNode().ID == a.cfg.NodeID }
-
-func (a *Agent) peerAddress(id string) (string, bool) {
-	if id == a.cfg.NodeID {
-		return a.cfg.AdvertiseAddr, true
-	}
-	for _, n := range a.Peers() {
-		if n.ID == id {
-			return n.Address, true
-		}
-	}
-	return "", false
-}
-
-// proxy forwards the incoming request's method/body to addr+path and
-// copies the response straight back to the caller.
-func (a *Agent) proxy(w http.ResponseWriter, r *http.Request, addr, path string) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	req, err := http.NewRequest(r.Method, addr+path, bytes.NewReader(body))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	for k, v := range r.Header {
-		for _, val := range v {
-			req.Header.Add(k, val)
-		}
-	}
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	client := a.peerClient
-	taskSubmission := r.Method == http.MethodPost && path == "/api/tasks"
-	if taskSubmission || strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
-		client = a.dispatchClient
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		http.Error(w, "peer unreachable: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	for k, v := range resp.Header {
-		for _, val := range v {
-			w.Header().Add(k, val)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-
-	if flusher, ok := w.(http.Flusher); ok {
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := resp.Body.Read(buf)
-			if n > 0 {
-				_, _ = w.Write(buf[:n])
-				flusher.Flush()
-			}
-			if readErr != nil {
-				break
-			}
-		}
-		return
-	}
-
-	_, _ = io.Copy(w, resp.Body)
 }

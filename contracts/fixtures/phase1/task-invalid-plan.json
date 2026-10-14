@@ -1,0 +1,30 @@
+{
+  "name": "task-invalid-plan",
+  "request": {
+    "method": "POST",
+    "path": "/api/tasks",
+    "body": {
+      "description": "Missing dependency",
+      "subtasks": [
+        {
+          "id": "work",
+          "description": "Work",
+          "depends_on": [
+            "missing"
+          ]
+        }
+      ]
+    }
+  },
+  "expected_response": {
+    "status": 400,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "build task graph: scheduler: subtask work depends on unknown subtask missing\n"
+  },
+  "normalization_rules": [
+    "Replace timestamps with \u003cTIME\u003e.",
+    "Replace generated task and checkpoint IDs with \u003cTASK_ID\u003e and \u003cCHECKPOINT_ID\u003e.",
+    "Replace local worker URLs with \u003cWORKER_URL\u003e.",
+    "Normalize volatile scores, task origins, and sequences as documented by the Go contract tests."
+  ]
+}

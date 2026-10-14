@@ -6,6 +6,9 @@
 *.db
 *.db-shm
 *.db-wal
+!internal/memory/testdata/legacy-memory.db
+!internal/taskmgr/testdata/legacy-tasks.db
+.flm/*.tmp
 
 # Editor and operating-system files
 .vscode/

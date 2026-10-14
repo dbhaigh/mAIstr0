@@ -14,8 +14,12 @@ import (
 	"github.com/maistr0/maistr0/internal/piagent"
 )
 
+type localGenerateHandler interface {
+	handleGenerate(http.ResponseWriter, *http.Request)
+}
+
 type localPiProvider struct {
-	server       *Server
+	generate     localGenerateHandler
 	defaultModel string
 }
 
@@ -45,7 +49,7 @@ func (p *localPiProvider) Complete(ctx context.Context, request piagent.Completi
 	}
 	req.Header.Set("Content-Type", "application/json")
 	writer := &localPiResponseWriter{header: make(http.Header), onDelta: onDelta}
-	p.server.handleGenerate(writer, req)
+	p.generate.handleGenerate(writer, req)
 	writer.finish()
 
 	if writer.status >= http.StatusBadRequest {

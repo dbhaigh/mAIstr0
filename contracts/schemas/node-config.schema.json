@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/node-config.schema.json",
+  "title": "NodeConfig",
+  "type": "object",
+  "required": ["node_id", "listen_addr", "advertise_addr", "orchestrator_addr", "max_concurrent_tasks", "disabled_models", "default_model", "discovery_enabled", "auto_open_browser", "tray_mode", "memory_path"],
+  "properties": {
+    "node_id": {"type": "string"},
+    "listen_addr": {"type": "string"},
+    "advertise_addr": {"type": "string"},
+    "orchestrator_addr": {"type": "string"},
+    "max_concurrent_tasks": {"type": "integer"},
+    "pairing_pin": {"type": "string"},
+    "disabled_models": {"type": ["array", "null"], "items": {"type": "string"}},
+    "default_model": {"type": "string"},
+    "engines": {"type": "array", "items": {"type": "object", "required": ["name", "url"], "properties": {"name": {"type": "string"}, "url": {"type": "string"}, "registry_url": {"type": "string"}}, "additionalProperties": true}},
+    "discovery_enabled": {"type": "boolean"},
+    "auto_open_browser": {"type": "boolean"},
+    "tray_mode": {"type": "string", "enum": ["taskbar", "hidden"]},
+    "memory_path": {"type": "string"}
+  },
+  "additionalProperties": true
+}

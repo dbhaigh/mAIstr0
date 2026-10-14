@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.0.5 - 2026-10-14
+
+### Added
+
+- Versioned incremental synchronization for memory and task history, with
+  per-record origin/sequence metadata, persisted peer watermarks, idempotent
+  merges, legacy-record backfill, and full-snapshot fallback for older peers.
+- OpenAPI 3.1 and JSON Schema 2020-12 contracts for the orchestrator and node
+  APIs, configuration, task/scheduler structures, node status, discovery, and
+  memory records.
+- Exported HTTP request/response fixtures, generated scheduler scoring
+  fixtures, contract drift checks in CI, and a language-neutral porting guide.
+- Configuration normalization and validation, shared domain errors and worker
+  pool primitives, and persistence interfaces for memory and task history.
+
+### Changed
+
+- Split orchestrator, node-agent, and task-manager responsibilities into
+  focused components while preserving existing routes and wire formats.
+- Keep legacy bbolt databases and peers compatible; synchronization metadata is
+  optional and mixed-version peers continue to use full snapshots.
+
+### Validation
+
+- `go test ./...`
+- `go vet ./...`
+- `node --test web/app_test.js`
+- Windows, Linux, and Ubuntu Linux release builds
+
 ## 0.0.4 - 2026-10-13
 
 ### Added
@@ -12,6 +41,10 @@
 - LAN orchestrator election based on node capability, with stable-ID tie
   breaking and a local worker on the elected orchestrator.
 - Synchronization of node memory and task history across joined and peer clusters.
+- Versioned incremental memory and task-history synchronization with persisted
+  per-peer watermarks and full-snapshot fallback for legacy peers.
+- OpenAPI 3.1 and JSON Schema 2020-12 contracts, exported HTTP golden fixtures,
+  scheduler-generated assignment fixtures, and a language-neutral porting guide.
 - Shared `execute_workflow` support for Pi and DeepSeek, including dependency
   scheduling, output contracts, retries, review gates, and persistent human
   approval.
@@ -22,6 +55,8 @@
 
 ### Changed
 
+- Normalize node and orchestrator configuration in one place and validate all
+  settings before startup, reporting each invalid value with exit code 2.
 - Separate orchestrator and node-agent HTTP handlers from their server lifecycle
   and state-management code.
 - Keep DXCore COM object pointers typed to avoid unsafe integer-to-pointer

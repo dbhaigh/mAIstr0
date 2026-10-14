@@ -1,0 +1,18 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "models": [
+      {
+        "details": {
+          "family": "simulated"
+        },
+        "digest": "simulated-general",
+        "model": "simulated-general",
+        "modified_at": "\u003cTIME\u003e",
+        "name": "simulated-general",
+        "size": 0
+      }
+    ]
+  }
+}

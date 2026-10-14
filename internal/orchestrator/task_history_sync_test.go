@@ -41,7 +41,9 @@ func TestSyncTaskHistoryImportsAndReplicatesCompleteHistory(t *testing.T) {
 	server := &Server{
 		registry: cluster.NewRegistry(),
 		tasks:    taskmgr.NewManager(),
-		client:   peer.Client(),
+		nodeClient: &nodeClient{
+			client: peer.Client(),
+		},
 	}
 	server.registry.Upsert(cluster.NodeStatus{ID: "worker", Address: peer.URL})
 	server.syncTaskHistory()
@@ -75,7 +77,9 @@ func TestTaskListDoesNotWaitForPeerHistoryRecovery(t *testing.T) {
 	server := &Server{
 		registry: cluster.NewRegistry(),
 		tasks:    taskmgr.NewManager(),
-		client:   peer.Client(),
+		nodeClient: &nodeClient{
+			client: peer.Client(),
+		},
 	}
 	server.registry.Upsert(cluster.NodeStatus{ID: "worker", Address: peer.URL})
 

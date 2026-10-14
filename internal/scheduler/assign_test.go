@@ -62,6 +62,28 @@ func TestAssignKeepsCompatibleCandidateUnderHeavyLoadPenalty(t *testing.T) {
 	}
 }
 
+func TestAssignPrefersNodeWithAdvertisedCapacity(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "full", Address: "http://full", Healthy: true, ActiveTasks: 2,
+			MaxConcurrentTasks: 2, AvailableCapacity: 0,
+			Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+		{
+			ID: "available", Address: "http://available", Healthy: true,
+			MaxConcurrentTasks: 2, AvailableCapacity: 2,
+			Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+	}
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignments[0].NodeID != "available" {
+		t.Fatalf("assigned to %q despite the advertised capacity on the other node", assignments[0].NodeID)
+	}
+}
+
 func TestAssignPrefersLowerLiveGPUUtilization(t *testing.T) {
 	telemetryAt := time.Now()
 	nodes := []cluster.NodeStatus{

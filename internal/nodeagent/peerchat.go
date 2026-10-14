@@ -2,7 +2,6 @@ package nodeagent
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,150 +15,6 @@ import (
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
-
-// dialogueTurn advances a locally-hosted conversation by one turn: it
-// appends the incoming utterance, runs the node's LLM over the accumulated
-// history, stores the reply, and records the exchange in memory.
-func (a *Agent) dialogueTurn(id, model, system, role, content, kind string) (dialogueMessageResponse, error) {
-	return a.dialogueTurnContext(context.Background(), id, model, system, role, content, kind)
-}
-
-func (a *Agent) dialogueTurnContext(ctx context.Context, id, model, system, role, content, kind string) (dialogueMessageResponse, error) {
-	if role == "" {
-		role = "user"
-	}
-	if kind == "" {
-		kind = "dialogue_turn"
-	}
-
-	turnCtx, turnCancel := context.WithCancel(ctx)
-	a.dialogueCancelsMu.Lock()
-	a.dialogueCancels[id] = turnCancel
-	a.dialogueCancelsMu.Unlock()
-	defer func() {
-		a.dialogueCancelsMu.Lock()
-		delete(a.dialogueCancels, id)
-		a.dialogueCancelsMu.Unlock()
-		turnCancel()
-	}()
-
-	a.dialoguesMu.Lock()
-	dlg, ok := a.dialogues[id]
-	if !ok {
-		resolved := model
-		if resolved == "" {
-			resolved = a.defaultModelName()
-		}
-		if resolved == "" {
-			if enabled := a.enabledModels(); len(enabled) > 0 {
-				resolved = enabled[0].Name
-			}
-		}
-		dlg = &Dialogue{
-			ID:        id,
-			Model:     resolved,
-			System:    system,
-			Messages:  make([]engine.ChatMessage, 0),
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
-		if system != "" {
-			dlg.Messages = append(dlg.Messages, engine.ChatMessage{Role: "system", Content: system})
-		}
-		a.dialogues[id] = dlg
-	}
-	if model != "" {
-		dlg.Model = model
-	}
-	dlg.Messages = append(dlg.Messages, engine.ChatMessage{Role: role, Content: content})
-	dlg.UpdatedAt = time.Now()
-	modelName := dlg.Model
-	history := append([]engine.ChatMessage(nil), dlg.Messages...)
-	a.dialoguesMu.Unlock()
-
-	// Prior experience with this topic is injected as extra system context
-	// so each node answers with what the cluster already learned.
-	if brief := a.memoryBrief(content); brief != "" {
-		history = append([]engine.ChatMessage{{Role: "system", Content: brief}}, history...)
-	}
-
-	eng := a.engineFor(modelName)
-	if eng == nil {
-		return dialogueMessageResponse{DialogueID: id, Model: modelName},
-			fmt.Errorf("model not found on node %s: %s", a.cfg.NodeID, modelName)
-	}
-
-	a.mu.Lock()
-	a.activeTasks++
-	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
-		a.activeTasks--
-		a.mu.Unlock()
-	}()
-
-	start := time.Now()
-	reply, err := chatWithContext(turnCtx, eng, modelName, history)
-	if err != nil && turnCtx.Err() == nil {
-		reply, err = generateWithOptions(turnCtx, eng, modelName, flattenChatML(history), engine.GenerationOptions{})
-	}
-	duration := time.Since(start).Milliseconds()
-
-	if turnCtx.Err() != nil {
-		a.remember(memory.Experience{
-			Kind:        kind,
-			Description: truncateText(content, 400),
-			Prompt:      content,
-			Model:       modelName,
-			Success:     false,
-			Error:       "interrupted",
-			DurationMs:  duration,
-			Tags:        []string{"dialogue", id, "interrupted"},
-		})
-		return dialogueMessageResponse{DialogueID: id, Model: modelName, DurationMs: duration, Error: "dialogue turn interrupted"}, turnCtx.Err()
-	}
-
-	a.remember(memory.Experience{
-		Kind:        kind,
-		Description: truncateText(content, 400),
-		Prompt:      content,
-		Output:      reply,
-		Model:       modelName,
-		Success:     err == nil,
-		Error:       errText(err),
-		DurationMs:  duration,
-		Tags:        []string{"dialogue", id},
-	})
-
-	if err != nil {
-		return dialogueMessageResponse{DialogueID: id, Model: modelName, DurationMs: duration}, err
-	}
-
-	a.dialoguesMu.Lock()
-	dlg.Messages = append(dlg.Messages, engine.ChatMessage{Role: "assistant", Content: reply})
-	dlg.UpdatedAt = time.Now()
-	all := append([]engine.ChatMessage(nil), dlg.Messages...)
-	a.dialoguesMu.Unlock()
-
-	if a.mem != nil {
-		_ = a.mem.AppendDialogueTurn(id, []string{"node:" + a.cfg.NodeID}, "", memory.Turn{
-			Speaker: role, Content: content, At: time.Now(),
-		})
-		_ = a.mem.AppendDialogueTurn(id, []string{"node:" + a.cfg.NodeID}, "", memory.Turn{
-			Speaker: "node:" + a.cfg.NodeID, NodeID: a.cfg.NodeID, Model: modelName,
-			Content: reply, DurationMs: duration, At: time.Now(),
-		})
-	}
-
-	return dialogueMessageResponse{
-		DialogueID: id,
-		Model:      modelName,
-		Turn:       len(all) / 2,
-		Reply:      reply,
-		Messages:   all,
-		DurationMs: duration,
-	}, nil
-}
 
 func flattenChatML(msgs []engine.ChatMessage) string {
 	var sb strings.Builder
@@ -185,15 +40,6 @@ func truncateText(s string, max int) string {
 }
 
 // memoryBrief renders relevant prior experience for injection into a prompt.
-func (a *Agent) memoryBrief(query string) string {
-	if a.mem == nil {
-		return ""
-	}
-	return a.mem.ContextBrief(query, "", 4)
-}
-
-// experience exposes this node's learned history to the scheduler, or nil
-// when memory is unavailable.
 func (a *Agent) experience() scheduler.Experience {
 	if a.mem == nil {
 		return nil
@@ -570,8 +416,54 @@ func (a *Agent) syncMemoryToOrchestrator() {
 }
 
 func (a *Agent) syncOrchestratorMemory(addr string) error {
-	snapshot := a.mem.Snapshot()
-	body, err := json.Marshal(map[string]any{"node_id": a.cfg.NodeID, "snapshot": snapshot})
+	if a.mem == nil {
+		return fmt.Errorf("memory store unavailable")
+	}
+	peerID := a.getOrchestratorID()
+	if peerID == "" {
+		peerID = addr
+	}
+
+	fetchStarted := time.Now()
+	log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_start node_id=%s peer=%s body_bytes=unknown",
+		a.cfg.NodeID, addr)
+	getRequest, err := http.NewRequest(http.MethodGet, strings.TrimRight(addr, "/")+"/api/memory/sync", nil)
+	if err != nil {
+		return fmt.Errorf("create orchestrator snapshot request: %w", err)
+	}
+	if err := memory.SetSyncRequestHeaders(getRequest, memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peerID))); err != nil {
+		return fmt.Errorf("set orchestrator sync headers: %w", err)
+	}
+	resp, err := a.peerClient.Do(getRequest)
+	if err != nil {
+		log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_failed node_id=%s peer=%s body_bytes=0 elapsed=%s stage=request error=%v",
+			a.cfg.NodeID, addr, time.Since(fetchStarted), err)
+		return fmt.Errorf("fetch merged snapshot: %w", err)
+	}
+	status := resp.StatusCode
+	remoteSnapshot, bodyBytes, err := decodeMemorySyncResponse(resp)
+	if err != nil {
+		log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_failed node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
+			a.cfg.NodeID, addr, status, bodyBytes, time.Since(fetchStarted), err)
+		return fmt.Errorf("read merged snapshot: %w", err)
+	}
+	log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_complete node_id=%s peer=%s status=%d body_bytes=%d records=%d elapsed=%s",
+		a.cfg.NodeID, addr, status, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(fetchStarted))
+	mergeStarted := time.Now()
+	if err := a.mem.MergeSnapshotFrom(remoteSnapshot, peerID); err != nil {
+		log.Printf("nodeagent: memory sync direction=orchestrator->node event=merge_failed node_id=%s peer=%s body_bytes=%d elapsed=%s error=%v",
+			a.cfg.NodeID, addr, bodyBytes, time.Since(mergeStarted), err)
+		return fmt.Errorf("merge orchestrator snapshot: %w", err)
+	}
+	log.Printf("nodeagent: memory sync direction=orchestrator->node event=merge_complete node_id=%s peer=%s body_bytes=%d records=%d elapsed=%s",
+		a.cfg.NodeID, addr, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(mergeStarted))
+
+	snapshot := memory.SnapshotForPeer(a.mem, remoteSnapshot.SyncVersion, remoteSnapshot.Watermarks)
+	body, err := json.Marshal(map[string]any{
+		"node_id":      a.cfg.NodeID,
+		"sync_version": memory.SyncProtocolVersion,
+		"snapshot":     snapshot,
+	})
 	if err != nil {
 		return fmt.Errorf("encode local snapshot: %w", err)
 	}
@@ -581,13 +473,21 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 	postStarted := time.Now()
 	log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_start node_id=%s peer=%s body_bytes=%d records=%d",
 		a.cfg.NodeID, addr, len(body), memorySyncRecordCount(snapshot))
-	resp, err := a.peerClient.Post(strings.TrimRight(addr, "/")+"/api/memory/sync", "application/json", bytes.NewReader(body))
+	postRequest, err := http.NewRequest(http.MethodPost, strings.TrimRight(addr, "/")+"/api/memory/sync", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create local snapshot request: %w", err)
+	}
+	postRequest.Header.Set("Content-Type", "application/json")
+	if err := memory.SetSyncRequestHeaders(postRequest, a.mem.Watermarks()); err != nil {
+		return fmt.Errorf("set local sync headers: %w", err)
+	}
+	resp, err = a.peerClient.Do(postRequest)
 	if err != nil {
 		log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_failed node_id=%s peer=%s body_bytes=%d elapsed=%s error=%v",
 			a.cfg.NodeID, addr, len(body), time.Since(postStarted), err)
 		return fmt.Errorf("send local snapshot: %w", err)
 	}
-	status := resp.StatusCode
+	status = resp.StatusCode
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
@@ -599,32 +499,10 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 	resp.Body.Close()
 	log.Printf("nodeagent: memory sync direction=node->orchestrator event=send_complete node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s",
 		a.cfg.NodeID, addr, status, len(body), time.Since(postStarted))
-
-	fetchStarted := time.Now()
-	log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_start node_id=%s peer=%s body_bytes=unknown",
-		a.cfg.NodeID, addr)
-	resp, err = a.peerClient.Get(strings.TrimRight(addr, "/") + "/api/memory/sync")
-	if err != nil {
-		log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_failed node_id=%s peer=%s body_bytes=0 elapsed=%s stage=request error=%v",
-			a.cfg.NodeID, addr, time.Since(fetchStarted), err)
-		return fmt.Errorf("fetch merged snapshot: %w", err)
+	if remoteSnapshot.SyncVersion == memory.SyncProtocolVersion {
+		if err := a.mem.SetPeerWatermarks(peerID, snapshot.Watermarks); err != nil {
+			return fmt.Errorf("persist orchestrator watermarks: %w", err)
+		}
 	}
-	status = resp.StatusCode
-	merged, bodyBytes, err := decodeMemorySyncResponse(resp)
-	if err != nil {
-		log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_failed node_id=%s peer=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
-			a.cfg.NodeID, addr, status, bodyBytes, time.Since(fetchStarted), err)
-		return fmt.Errorf("read merged snapshot: %w", err)
-	}
-	log.Printf("nodeagent: memory sync direction=orchestrator->node event=receive_complete node_id=%s peer=%s status=%d body_bytes=%d records=%d elapsed=%s",
-		a.cfg.NodeID, addr, status, bodyBytes, memorySyncRecordCount(merged), time.Since(fetchStarted))
-	mergeStarted := time.Now()
-	if err := a.mem.MergeSnapshot(merged); err != nil {
-		log.Printf("nodeagent: memory sync direction=orchestrator->node event=merge_failed node_id=%s peer=%s body_bytes=%d elapsed=%s error=%v",
-			a.cfg.NodeID, addr, bodyBytes, time.Since(mergeStarted), err)
-		return fmt.Errorf("merge orchestrator snapshot: %w", err)
-	}
-	log.Printf("nodeagent: memory sync direction=orchestrator->node event=merge_complete node_id=%s peer=%s body_bytes=%d records=%d elapsed=%s",
-		a.cfg.NodeID, addr, bodyBytes, memorySyncRecordCount(merged), time.Since(mergeStarted))
 	return nil
 }

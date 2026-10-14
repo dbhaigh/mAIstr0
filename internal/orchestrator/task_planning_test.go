@@ -137,7 +137,7 @@ func TestTaskApprovalEndpointResumesSynthesis(t *testing.T) {
 func TestBothAgentBackendsExposeDurableWorkflowTool(t *testing.T) {
 	srv := newTestServer(t)
 	for _, backendName := range []string{"deepseek", "pi"} {
-		backend := srv.agents[backendName]
+		backend := srv.harness.backend(backendName)
 		found := false
 		for _, tool := range backend.ListTools() {
 			if tool.Name == "execute_workflow" {

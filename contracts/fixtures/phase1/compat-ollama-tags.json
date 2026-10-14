@@ -1,0 +1,31 @@
+{
+  "name": "compat-ollama-tags",
+  "request": {
+    "method": "GET",
+    "path": "/api/tags"
+  },
+  "expected_response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "models": [
+        {
+          "details": {
+            "family": "simulated"
+          },
+          "digest": "simulated-general",
+          "model": "simulated-general",
+          "modified_at": "\u003cTIME\u003e",
+          "name": "simulated-general",
+          "size": 0
+        }
+      ]
+    }
+  },
+  "normalization_rules": [
+    "Replace timestamps with \u003cTIME\u003e.",
+    "Replace generated task and checkpoint IDs with \u003cTASK_ID\u003e and \u003cCHECKPOINT_ID\u003e.",
+    "Replace local worker URLs with \u003cWORKER_URL\u003e.",
+    "Normalize volatile scores, task origins, and sequences as documented by the Go contract tests."
+  ]
+}

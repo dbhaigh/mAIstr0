@@ -23,6 +23,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Check contract drift
+        run: |
+          go generate ./contracts ./internal/scheduler
+          git diff --exit-code -- contracts/fixtures
+          go test ./contracts
       - name: Run Go tests
         run: go test ./...
       - name: Run Go vet

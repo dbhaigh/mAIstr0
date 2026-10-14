@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/node-status.schema.json",
+  "title": "NodeStatus",
+  "type": "object",
+  "required": ["id", "version", "address", "hardware", "models", "fast_score", "active_tasks", "last_seen", "healthy", "leader"],
+  "properties": {
+    "id": {"type": "string"},
+    "version": {"type": "string"},
+    "address": {"type": "string"},
+    "hardware": {
+      "type": "object",
+      "required": ["os", "arch", "cpu_cores", "cpu_stats_available", "total_ram_mb", "memory_stats_available", "has_gpu", "gpu_stats_available", "gpu_utilization_percent", "has_npu", "npu_stats_available", "npu_utilization_percent", "score"],
+      "properties": {
+        "os": {"type": "string"},
+        "arch": {"type": "string"},
+        "cpu_cores": {"type": "integer"},
+        "cpu_stats_available": {"type": "boolean"},
+        "cpu_utilization_percent": {"type": "integer"},
+        "total_ram_mb": {"type": "integer", "minimum": 0},
+        "memory_stats_available": {"type": "boolean"},
+        "memory_usage_percent": {"type": "integer"},
+        "has_gpu": {"type": "boolean"},
+        "gpu_vendor": {"type": "string"},
+        "gpu_stats_available": {"type": "boolean"},
+        "gpu_utilization_percent": {"type": "integer"},
+        "gpu_memory_free_mb": {"type": "integer", "minimum": 0},
+        "has_npu": {"type": "boolean"},
+        "npu_vendor": {"type": "string"},
+        "npu_stats_available": {"type": "boolean"},
+        "npu_utilization_percent": {"type": "integer"},
+        "score": {"type": "number"}
+      },
+      "additionalProperties": true
+    },
+    "models": {"type": ["array", "null"], "items": {"type": "object", "required": ["name", "engine", "tags"], "properties": {"name": {"type": "string"}, "engine": {"type": "string"}, "tags": {"type": ["array", "null"], "items": {"type": "string"}}, "size_gb": {"type": "number"}}, "additionalProperties": true}},
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "gpu_history": {"type": "array", "items": {"type": "object", "required": ["timestamp", "available", "utilization_percent"], "properties": {"timestamp": {"type": "string", "format": "date-time"}, "available": {"type": "boolean"}, "utilization_percent": {"type": "integer"}}, "additionalProperties": true}},
+    "npu_history": {"type": "array", "items": {"type": "object", "required": ["timestamp", "available", "utilization_percent"], "properties": {"timestamp": {"type": "string", "format": "date-time"}, "available": {"type": "boolean"}, "utilization_percent": {"type": "integer"}}, "additionalProperties": true}},
+    "system_history": {"type": "array", "items": {"type": "object", "required": ["timestamp", "cpu_available", "cpu_utilization_percent", "memory_available", "memory_usage_percent"], "properties": {"timestamp": {"type": "string", "format": "date-time"}, "cpu_available": {"type": "boolean"}, "cpu_utilization_percent": {"type": "integer"}, "memory_available": {"type": "boolean"}, "memory_usage_percent": {"type": "integer"}}, "additionalProperties": true}},
+    "telemetry_at": {"type": "string", "format": "date-time"},
+    "default_model": {"type": "string"},
+    "fast_score": {"type": "number"},
+    "active_tasks": {"type": "integer"},
+    "max_concurrent_tasks": {"type": "integer"},
+    "available_capacity": {"type": "integer"},
+    "last_seen": {"type": "string", "format": "date-time"},
+    "healthy": {"type": "boolean"},
+    "leader": {"type": "boolean"},
+    "version_error": {"type": "string"}
+  },
+  "additionalProperties": true
+}

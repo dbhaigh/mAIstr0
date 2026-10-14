@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
@@ -26,7 +27,7 @@ func (a *Agent) handleTaskSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid task sync payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := a.tasks.MergeFromReplica(tasks); err != nil {
+	if err := a.tasks.MergeFromReplicaFrom(tasks, "task:"+peerID); err != nil {
 		http.Error(w, "could not merge task history: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -48,7 +49,7 @@ func (a *Agent) handleTaskReplica(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid task replica payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := a.tasks.ReplaceFromSync(tasks); err != nil {
+	if err := a.tasks.ReplaceFromSyncFrom(tasks, "task:"+peerID); err != nil {
 		http.Error(w, "could not apply task replica: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -125,32 +126,64 @@ func (a *Agent) syncPeerTaskHistory() {
 		return
 	}
 	peers := a.Peers()
+	remoteSnapshots := make(map[string]taskSyncSnapshot)
 	for _, peer := range peers {
 		if !peer.Healthy || peer.ID == a.cfg.NodeID || peer.Address == "" {
 			continue
 		}
-		resp, err := a.peerClient.Get(strings.TrimRight(peer.Address, "/") + "/tasks")
+		request, err := http.NewRequest(http.MethodGet, strings.TrimRight(peer.Address, "/")+"/tasks", nil)
+		if err == nil {
+			var watermarks map[string]uint64
+			if a.mem != nil {
+				watermarks = taskmgr.FilterTaskWatermarks(a.mem.PeerWatermarks(peer.ID))
+			}
+			err = memory.SetSyncRequestHeaders(request, watermarks)
+		}
+		if err != nil {
+			log.Printf("nodeagent: task history request for %s failed: %v", peer.ID, err)
+			continue
+		}
+		resp, err := a.peerClient.Do(request)
 		if err != nil {
 			log.Printf("nodeagent: task history fetch from %s failed: %v", peer.ID, err)
 			continue
 		}
-		tasks, err := decodeTaskSnapshot(resp)
+		tasks, version, watermarks, err := decodeTaskSnapshot(resp)
 		if err != nil {
 			log.Printf("nodeagent: task history fetch from %s failed: %v", peer.ID, err)
 			continue
 		}
-		if err := a.tasks.MergeFromReplica(tasks); err != nil {
+		if err := a.tasks.MergeFromReplicaFrom(tasks, "task:"+peer.ID); err != nil {
 			log.Printf("nodeagent: task history import from %s failed: %v", peer.ID, err)
+			continue
+		}
+		remoteSnapshots[peer.ID] = taskSyncSnapshot{version: version, watermarks: watermarks}
+		if a.mem != nil {
+			if err := a.mem.SetPeerWatermarks(peer.ID, watermarks); err != nil {
+				log.Printf("nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
+			}
 		}
 	}
 
-	body, err := json.Marshal(a.tasks.All())
-	if err != nil {
-		log.Printf("nodeagent: task history encode failed: %v", err)
-		return
-	}
 	for _, peer := range peers {
 		if !peer.Healthy || peer.ID == a.cfg.NodeID || peer.Address == "" {
+			continue
+		}
+		remote, fetched := remoteSnapshots[peer.ID]
+		version := 0
+		var watermarks map[string]uint64
+		if fetched {
+			version = remote.version
+			watermarks = remote.watermarks
+		}
+		tasks := a.tasks.SnapshotForPeer(version, watermarks)
+		body, err := json.Marshal(tasks)
+		if err != nil {
+			log.Printf("nodeagent: task history encode for %s failed: %v", peer.ID, err)
+			continue
+		}
+		if int64(len(body)) > maxTaskSyncBodyBytes {
+			log.Printf("nodeagent: task history payload for %s exceeds the %d-byte sync limit", peer.ID, maxTaskSyncBodyBytes)
 			continue
 		}
 		req, err := http.NewRequest(http.MethodPost, strings.TrimRight(peer.Address, "/")+"/tasks/replica", bytes.NewReader(body))
@@ -159,6 +192,10 @@ func (a *Agent) syncPeerTaskHistory() {
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if err := memory.SetSyncRequestHeaders(req, taskmgr.SnapshotWatermarks(a.tasks.All())); err != nil {
+			log.Printf("nodeagent: task history sync headers for %s failed: %v", peer.ID, err)
+			continue
+		}
 		resp, err := a.peerClient.Do(req)
 		if err != nil {
 			log.Printf("nodeagent: task history replication to %s failed: %v", peer.ID, err)
@@ -168,20 +205,41 @@ func (a *Agent) syncPeerTaskHistory() {
 		resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			log.Printf("nodeagent: task history replication to %s rejected: %s", peer.ID, resp.Status)
+			continue
+		}
+		if a.mem != nil && fetched && version == memory.SyncProtocolVersion {
+			if err := a.mem.SetPeerWatermarks(peer.ID, taskmgr.SnapshotWatermarks(tasks)); err != nil {
+				log.Printf("nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
+			}
 		}
 	}
 }
 
-func decodeTaskSnapshot(resp *http.Response) ([]*taskmgr.Task, error) {
+type taskSyncSnapshot struct {
+	version    int
+	watermarks map[string]uint64
+}
+
+func decodeTaskSnapshot(resp *http.Response) ([]*taskmgr.Task, int, map[string]uint64, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		response, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("peer returned %s: %s", resp.Status, strings.TrimSpace(string(response)))
+		return nil, 0, nil, fmt.Errorf("peer returned %s: %s", resp.Status, strings.TrimSpace(string(response)))
+	}
+	version, watermarks, err := memory.ReadSyncResponseHeaders(resp)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("read task sync response headers: %w", err)
 	}
 	var tasks []*taskmgr.Task
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxTaskSyncBodyBytes))
-	if err := decoder.Decode(&tasks); err != nil {
-		return nil, err
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTaskSyncBodyBytes+1))
+	if err != nil {
+		return nil, 0, nil, err
 	}
-	return tasks, nil
+	if int64(len(body)) > maxTaskSyncBodyBytes {
+		return nil, 0, nil, fmt.Errorf("peer task snapshot exceeds the %d-byte sync limit", maxTaskSyncBodyBytes)
+	}
+	if err := json.Unmarshal(body, &tasks); err != nil {
+		return nil, 0, nil, err
+	}
+	return tasks, version, watermarks, nil
 }

@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/memory"
 )
 
@@ -87,20 +89,20 @@ func (s *Server) handleMemoryFactsGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMemoryFactsPost(w http.ResponseWriter, r *http.Request) {
 	if s.mem == nil {
-		http.Error(w, "memory store unavailable", http.StatusServiceUnavailable)
+		writeError(w, apperr.UnavailableError(errors.New("memory store unavailable")))
 		return
 	}
 	var f memory.Fact
 	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, apperr.Invalid(err))
 		return
 	}
 	if f.Source == "" {
-		f.Source = s.selfID
+		f.Source = s.SelfID()
 	}
 	saved, err := s.mem.PutFact(f)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, apperr.Invalid(err))
 		return
 	}
 	s.publishSnapshot()
@@ -109,12 +111,12 @@ func (s *Server) handleMemoryFactsPost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMemoryFactDelete(w http.ResponseWriter, r *http.Request) {
 	if s.mem == nil {
-		http.Error(w, "memory store unavailable", http.StatusServiceUnavailable)
+		writeError(w, apperr.UnavailableError(errors.New("memory store unavailable")))
 		return
 	}
 	scope := r.URL.Query().Get("scope")
 	if err := s.mem.DeleteFact(scope, r.PathValue("key")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, apperr.InternalError(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -130,12 +132,12 @@ func (s *Server) handleMemoryDialogues(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMemoryDialogueGet(w http.ResponseWriter, r *http.Request) {
 	if s.mem == nil {
-		http.Error(w, "memory store unavailable", http.StatusServiceUnavailable)
+		writeError(w, apperr.UnavailableError(errors.New("memory store unavailable")))
 		return
 	}
 	d, err := s.mem.Dialogue(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "dialogue not found", http.StatusNotFound)
+		writeError(w, apperr.NotFoundError(errors.New("dialogue not found")))
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
@@ -171,7 +173,11 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
 			req.NodeID, r.RemoteAddr, status, reader.bytesRead, time.Since(started), err)
-		http.Error(w, err.Error(), status)
+		if status == http.StatusBadRequest {
+			writeError(w, apperr.Invalid(err))
+		} else {
+			http.Error(w, err.Error(), status)
+		}
 		return
 	}
 	decodeElapsed := time.Since(decodeStarted)
@@ -180,10 +186,10 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 		snapshot.Performances = append(snapshot.Performances, req.Performances...)
 	}
 	mergeStarted := time.Now()
-	if err := s.mem.MergeSnapshot(snapshot); err != nil {
+	if err := s.mem.MergeSnapshotFrom(snapshot, req.NodeID); err != nil {
 		log.Printf("orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
-			req.NodeID, r.RemoteAddr, http.StatusInternalServerError, reader.bytesRead, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+			req.NodeID, r.RemoteAddr, apperr.StatusCode(apperr.InternalError(err)), reader.bytesRead, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
+		writeError(w, apperr.InternalError(err))
 		return
 	}
 	mergeElapsed := time.Since(mergeStarted)
@@ -202,9 +208,13 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	log.Printf("orchestrator: memory sync direction=orchestrator->node event=send_start remote=%s body_bytes=unknown", r.RemoteAddr)
 	snapshot := memory.Snapshot{}
-	if s.mem == nil {
-	} else {
-		snapshot = s.mem.Snapshot()
+	if s.mem != nil {
+		peerVersion, watermarks, err := memory.ReadSyncRequestHeaders(r)
+		if err != nil {
+			http.Error(w, "invalid memory sync headers: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		snapshot = memory.SnapshotForPeer(s.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
 	}
 	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
 	writeJSON(response, http.StatusOK, snapshot)
@@ -216,13 +226,13 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMemoryPrune(w http.ResponseWriter, r *http.Request) {
 	if s.mem == nil {
-		http.Error(w, "memory store unavailable", http.StatusServiceUnavailable)
+		writeError(w, apperr.UnavailableError(errors.New("memory store unavailable")))
 		return
 	}
 	days := intQuery(r, "older_than_days", 30)
 	removed, err := s.mem.Prune(time.Duration(days) * 24 * time.Hour)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, apperr.InternalError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"removed": removed})
@@ -233,17 +243,17 @@ func (s *Server) handleMemoryPrune(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodePeerConverse(w http.ResponseWriter, r *http.Request) {
 	n, ok := s.registry.Get(r.PathValue("id"))
 	if !ok || !n.Healthy {
-		http.Error(w, "node not found or offline", http.StatusNotFound)
+		writeError(w, apperr.NotFoundError(errors.New("node not found or offline")))
 		return
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, apperr.Invalid(err))
 		return
 	}
-	resp, err := s.dispatcher.Post(n.Address+"/peer/converse", "application/json", bytes.NewReader(body))
+	resp, err := s.nodeClient.dispatcher.Post(n.Address+"/peer/converse", "application/json", bytes.NewReader(body))
 	if err != nil {
-		http.Error(w, "node unreachable: "+err.Error(), http.StatusBadGateway)
+		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return
 	}
 	defer resp.Body.Close()

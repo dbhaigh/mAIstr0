@@ -59,15 +59,38 @@ func main() {
 	if *role == "auto" && *orchestratorAddr != "" {
 		*role = "node"
 	}
+	var electionOrchCfg config.OrchestratorConfig
+	var electionNodeCfg config.NodeConfig
 	if *role == "auto" || *role == "orchestrator" || *role == "both" {
-		orchCfg := loadOrchestratorConfig(*orchConfigPath, *orchListenAddr, *noDiscovery)
-		if !orchCfg.DiscoveryEnabled {
-			log.Fatal("orchestrator election requires LAN discovery; remove --no-discovery or enable discovery in the orchestrator config")
+		electionOrchCfg = loadOrchestratorConfig(*orchConfigPath, *orchListenAddr, *noDiscovery)
+		if *harness != "" {
+			electionOrchCfg.Harness = *harness
+		}
+		if *memoryPath != "" {
+			electionOrchCfg.MemoryPath = *memoryPath
+		}
+		if *trayMode != "" {
+			electionOrchCfg.TrayMode = *trayMode
+		}
+		electionOrchCfg.Normalize()
+		if err := electionOrchCfg.Validate(); err != nil {
+			exitConfigValidation(err)
+		}
+		electionNodeCfg = loadNodeConfig(*nodeConfigPath, *nodeListenAddr, *orchestratorAddr, *noDiscovery)
+		if *pairingPIN != "" {
+			electionNodeCfg.PairingPIN = *pairingPIN
+		}
+		if *trayMode != "" {
+			electionNodeCfg.TrayMode = *trayMode
+		}
+		electionNodeCfg.Normalize()
+		if err := electionNodeCfg.Validate(); err != nil {
+			exitConfigValidation(err)
 		}
 		ip := discovery.OutboundIP()
 		candidate := discovery.Announcement{
 			Role: "candidate", ID: "orchestrator-" + ip,
-			PeerAddr: "https://" + ip + portSuffix(orchCfg.ListenAddr),
+			PeerAddr: "https://" + ip + portSuffix(electionOrchCfg.ListenAddr),
 			Score:    cluster.SelfScore(hardware.Detect()),
 		}
 		probe := discovery.Listen(candidate.ID)
@@ -110,6 +133,13 @@ func main() {
 		if *memoryPath != "" {
 			cfg.MemoryPath = *memoryPath
 		}
+		if *trayMode != "" {
+			cfg.TrayMode = *trayMode
+		}
+		cfg.Normalize()
+		if err := cfg.Validate(); err != nil {
+			exitConfigValidation(err)
+		}
 		agent, err := nodeagent.NewWithPersistentTasks(cfg)
 		if err != nil {
 			log.Fatalf("failed to open node task history: %v", err)
@@ -127,24 +157,17 @@ func main() {
 		go runNode(agent)
 
 	case "both":
-		orchCfg := loadOrchestratorConfig(*orchConfigPath, *orchListenAddr, *noDiscovery)
-		nodeCfg := loadNodeConfig(*nodeConfigPath, *nodeListenAddr, *orchestratorAddr, *noDiscovery)
-		if *pairingPIN != "" {
-			nodeCfg.PairingPIN = *pairingPIN
-		}
+		orchCfg := electionOrchCfg
+		nodeCfg := electionNodeCfg
 
 		// The local worker must register with this process's orchestrator,
 		// regardless of any saved or command-line node address.
 		nodeCfg.OrchestratorAddr = "https://" + discovery.OutboundIP() + portSuffix(orchCfg.ListenAddr)
-
-		// Both roles share one process but need separate database files.
-		if *memoryPath != "" {
-			orchCfg.MemoryPath = *memoryPath
+		nodeCfg.Normalize()
+		if err := nodeCfg.Validate(); err != nil {
+			exitConfigValidation(err)
 		}
-		if *harness != "" {
-			orchCfg.Harness = *harness
-		}
-		srv, err := orchestrator.NewWithMemoryAndHarness(orchCfg.MemoryPath, orchCfg.Harness)
+		srv, err := orchestrator.NewWithConfig(orchCfg)
 		if err != nil {
 			log.Fatalf("failed to configure orchestrator agent: %v", err)
 		}
@@ -289,10 +312,22 @@ func loadNodeConfig(path, listenOverride, orchestratorOverride string, noDiscove
 	if noDiscovery {
 		cfg.DiscoveryEnabled = false
 	}
-	if cfg.NodeID == "" {
-		cfg.NodeID = nodeagent.DefaultNodeID()
-	}
 	return cfg
+}
+
+func exitConfigValidation(err error) {
+	printConfigValidationErrors(err)
+	os.Exit(2)
+}
+
+func printConfigValidationErrors(err error) {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, violation := range joined.Unwrap() {
+			printConfigValidationErrors(violation)
+		}
+		return
+	}
+	fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
 }
 
 func runOrchestrator(srv *orchestrator.Server, listenAddr string) {
