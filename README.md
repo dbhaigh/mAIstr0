@@ -346,6 +346,8 @@ cluster requests, streaming inference, and session restoration after restart.
 Regenerate characterization contract fixtures with
 `go test ./internal/orchestrator ./internal/scheduler ./internal/taskmgr ./internal/config -args -update`;
 review the resulting golden-file changes before committing.
+Contract fixtures use LF line endings enforced by `.gitattributes` so
+byte-for-byte comparisons remain consistent on Windows and Linux.
 The GitHub Actions workflow runs these checks and builds the application on
 Windows and Linux.
 

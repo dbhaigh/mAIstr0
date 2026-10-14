@@ -7,6 +7,9 @@ There are uncommitted changes in the working tree, including new `dispatch_pool.
 
 ## Recent implementation update — 2026-10-14
 
+- CI actions now use Node.js 24-based releases. Contract fixture checkouts keep
+  LF line endings on Windows and Linux so golden-file assertions do not report
+  false changes caused by Git's automatic CRLF conversion.
 - Automatic task planning now retries using another advertised node/model when
   the selected planning model fails, rather than aborting after the first
   dispatch error. If no candidate succeeds, the planner returns the final

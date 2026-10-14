@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Preserve LF line endings for contract fixtures on all platforms, preventing
+  Windows checkout conversion from causing false golden-file test failures.
+- Update CI checkout, Go setup, and Node setup actions to Node.js 24-based
+  releases, removing deprecated Node.js 20 action-runtime warnings.
 - Retry automatic task planning with another advertised node/model when the
   selected planning model fails, and return an explicit error if no candidate
   succeeds.

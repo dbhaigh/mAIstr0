@@ -1,0 +1,3 @@
+# Contract fixtures are compared byte-for-byte with generated JSON.
+**/testdata/contracts/*.json text eol=lf
+contracts/fixtures/**/*.json text eol=lf
