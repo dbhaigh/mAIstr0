@@ -8,6 +8,7 @@ import (
 )
 
 type nodeDispatchGate struct {
+	// mu protects the advertised capacity and local/external active counts.
 	mu        sync.Mutex
 	refreshMu chan struct{}
 	limit     int

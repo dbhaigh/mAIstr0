@@ -26,21 +26,23 @@ import (
 )
 
 type Server struct {
-	registry            *cluster.Registry
-	tasks               *taskmgr.Manager
-	nodeClient          *nodeClient
-	dispatcher          *dispatcherComponent
-	planner             *taskPlanner
-	election            *electionComponent
-	events              *hub.Hub
-	routerEvents        *routerEventLog
-	harness             *harnessManager
-	mem                 memory.Store
-	identityPath        string
-	identity            *peeridentity.Identity
-	advertiseAddr       string
-	localNodeDashboard  string
-	taskHistorySyncMu   sync.Mutex
+	registry           *cluster.Registry
+	tasks              *taskmgr.Manager
+	nodeClient         *nodeClient
+	dispatcher         *dispatcherComponent
+	planner            *taskPlanner
+	election           *electionComponent
+	events             *hub.Hub
+	routerEvents       *routerEventLog
+	harness            *harnessManager
+	mem                memory.Store
+	identityPath       string
+	identity           *peeridentity.Identity
+	advertiseAddr      string
+	localNodeDashboard string
+	// taskHistorySyncMu serializes bidirectional task-history synchronization.
+	taskHistorySyncMu sync.Mutex
+	// taskHistoryRecovery ensures task-history recovery runs only once.
 	taskHistoryRecovery sync.Once
 }
 
