@@ -19,6 +19,7 @@ import (
 )
 
 type agentState struct {
+	// mu protects cfg, model selection, active task count, and peer membership.
 	mu             sync.Mutex
 	cfg            config.NodeConfig
 	disabledModels map[string]bool
@@ -31,18 +32,22 @@ type engineComponent struct {
 	engines         []engine.Engine
 	detectedEngines []engine.Engine
 	detectedSeenAt  map[string]time.Time
-	enginesMu       sync.RWMutex
-	engineScanMu    sync.Mutex
-	engineDetector  func() []engine.Engine
-	lastEngineScan  time.Time
-	telemetry       interface{ hardwareSnapshot() hardware.Info }
-	state           interface {
+	// enginesMu protects engine snapshots and lastEngineScan.
+	enginesMu sync.RWMutex
+	// engineScanMu serializes calls to the detector and detected-engine updates.
+	engineScanMu   sync.Mutex
+	engineDetector func() []engine.Engine
+	lastEngineScan time.Time
+	telemetry      interface{ hardwareSnapshot() hardware.Info }
+	state          interface {
 		disabledModelSnapshot() map[string]bool
 		defaultModelName() string
 		setModelConfig(map[string]bool, string)
 	}
 
-	refreshMu       sync.Mutex
+	// refreshMu serializes inventory refresh and invalidation.
+	refreshMu sync.Mutex
+	// modelMu protects the reported model and engine inventory snapshots.
 	modelMu         sync.Mutex
 	reportedModels  []ModelState
 	reportedEngines []engine.Status
@@ -50,6 +55,7 @@ type engineComponent struct {
 }
 
 type telemetryComponent struct {
+	// hwMu protects hardware and all published telemetry histories.
 	hwMu          sync.RWMutex
 	hw            hardware.Info
 	gpuHistory    []hardware.GPUUsageSample
@@ -89,15 +95,18 @@ type orchestratorLink struct {
 		replacePeers([]cluster.NodeStatus)
 		configSnapshot() config.NodeConfig
 	}
-	tasks            *taskmgr.Manager
-	events           *hub.Hub
-	statusSnapshot   func() statusResponse
-	currentTasks     func() []*taskmgr.Task
+	tasks          *taskmgr.Manager
+	events         *hub.Hub
+	statusSnapshot func() statusResponse
+	currentTasks   func() []*taskmgr.Task
+	// orchMu protects the current orchestrator address and ID.
 	orchMu           sync.RWMutex
 	orchestratorAddr string
 	orchestratorID   string
-	joinedMu         sync.Mutex
-	joined           bool
+	// joinedMu protects the registration state.
+	joinedMu sync.Mutex
+	joined   bool
+	// pairingInviteMu protects the pending invitation and acceptance state.
 	pairingInviteMu  sync.Mutex
 	pairingInvite    *pairingInvitation
 	pairingAccepting bool
@@ -123,9 +132,11 @@ type peerComponent struct {
 }
 
 type dialogueComponent struct {
-	dialogues         map[string]*Dialogue
-	dialoguesMu       sync.RWMutex
-	dialogueCancels   map[string]context.CancelFunc
+	dialogues map[string]*Dialogue
+	// dialoguesMu protects dialogue sessions.
+	dialoguesMu     sync.RWMutex
+	dialogueCancels map[string]context.CancelFunc
+	// dialogueCancelsMu protects cancellation handles for active turns.
 	dialogueCancelsMu sync.Mutex
 	nodeID            string
 	mem               memory.Store
