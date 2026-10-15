@@ -85,18 +85,13 @@ const sessionListEl = document.getElementById("session-list");
 const newSessionBtn = document.getElementById("new-session-btn");
 const agentHarnessSelect = document.getElementById("agent-harness-select");
 const agentHarnessStatus = document.getElementById("agent-harness-status");
+const agentSidebar = document.querySelector(".agent-sidebar");
 const agentTabs = document.querySelectorAll(".agent-tab");
 const agentModelSelect = document.getElementById("agent-model-select");
 const agentStepsSelect = document.getElementById("agent-steps-select");
 const agentSettingsTitle = document.getElementById("agent-settings-title");
 const agentToolsList = document.getElementById("agent-tools-list");
-const directChatHelp = document.getElementById("direct-chat-help");
 const clearDirectChatBtn = document.getElementById("clear-direct-chat-btn");
-const directClusterContext = document.getElementById("direct-cluster-context");
-const directClusterStatus = document.getElementById("direct-cluster-status");
-const directClusterNodesEl = document.getElementById("direct-cluster-nodes");
-const directClusterRefreshBtn = document.getElementById("direct-cluster-refresh");
-const dispatchDirectTaskBtn = document.getElementById("dispatch-direct-task-btn");
 const interruptMsgBtn = document.getElementById("interrupt-msg-btn");
 const nodeTerminalInterruptBtn = document.getElementById("node-terminal-interrupt");
 const chatMessagesEl = document.getElementById("chat-messages");
@@ -114,7 +109,8 @@ let activeAbortController = null;
 let terminalAbortController = null;
 let streamingAssistantEl = null;
 let currentAgentHarness = "pi";
-let activeChatMode = "pi";
+let agentSupportsCoordinatorModel = true;
+let activeChatMode = "direct";
 let directMessages = [];
 const modelPanelOpen = new Set();
 const pendingModelState = new Map();
@@ -140,6 +136,7 @@ navTabs.forEach((tab) => {
     const target = document.getElementById(tab.dataset.tab);
     if (target) target.classList.add("active");
     if (tab.dataset.tab === "memory-tab") refreshMemory();
+    if (tab.dataset.tab === "cluster-tab") void refresh();
   });
 });
 
@@ -414,25 +411,28 @@ async function activateAgentTab(harness) {
 function setAgentConsoleMode(mode) {
   const direct = mode === "direct";
   const sessionSection = sessionListEl?.closest(".sidebar-section");
+  const settingsSection = agentSettingsTitle?.closest(".sidebar-section");
   const toolsSection = agentToolsList?.closest(".sidebar-section");
   const harnessLabel = agentHarnessSelect?.closest("label");
   const modelLabel = agentModelSelect?.closest("label");
   const stepsLabel = agentStepsSelect?.closest("label");
   const modelLabelText = modelLabel?.querySelector("span");
   const quickPrompts = document.querySelector(".quick-prompts");
+  const promptSuggestions = quickPrompts?.closest(".prompt-suggestions");
 
   if (sessionSection) sessionSection.hidden = direct;
+  if (settingsSection) settingsSection.hidden = direct;
   if (toolsSection) toolsSection.hidden = direct;
-  if (directClusterContext) directClusterContext.hidden = !direct;
+  if (modelLabel) modelLabel.hidden = direct || !agentSupportsCoordinatorModel;
+  if (agentSidebar) agentSidebar.hidden = direct;
   if (harnessLabel) harnessLabel.hidden = direct;
-  if (stepsLabel) stepsLabel.hidden = direct;
-  if (directChatHelp) directChatHelp.hidden = !direct;
+  if (stepsLabel) stepsLabel.hidden = direct || !agentSupportsCoordinatorModel;
   if (quickPrompts) quickPrompts.hidden = direct;
+  if (promptSuggestions) promptSuggestions.hidden = direct;
   if (clearDirectChatBtn) clearDirectChatBtn.hidden = !direct;
-  if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.hidden = !direct;
-  if (sendMsgBtn) sendMsgBtn.textContent = direct ? "Ask Orchestrator" : "Send";
+  if (sendMsgBtn) sendMsgBtn.textContent = direct ? "Ask mAIstr0" : "Send";
   if (agentSettingsTitle) {
-    agentSettingsTitle.textContent = direct ? "Direct Chat Settings" : `${mode === "pi" ? "Pi" : "DeepSeek"} Agent Settings`;
+    agentSettingsTitle.textContent = direct ? "mAIstr0 Settings" : `${mode === "pi" ? "Pi" : "DeepSeek"} Agent Settings`;
   }
   if (modelLabelText) {
     modelLabelText.textContent = direct ? "Cluster Model" : "Coordinator Model";
@@ -449,7 +449,7 @@ function setAgentConsoleMode(mode) {
   }
   if (direct) {
     renderDirectMessages();
-    void refreshDirectClusterContext();
+    void refresh();
   }
 }
 
@@ -471,9 +471,6 @@ agentTabs.forEach((tab) => {
     else activateAgentTab(tab.dataset.agent);
   });
 
-  directClusterRefreshBtn?.addEventListener("click", () => {
-    void refreshDirectClusterContext();
-  });
 });
 
 pairingConnectForm?.addEventListener("submit", async (event) => {
@@ -780,6 +777,7 @@ async function loadAgentBackend() {
 
 function applyAgentBackend(backend) {
   currentAgentHarness = backend.name;
+  agentSupportsCoordinatorModel = Boolean(backend.supports_coordinator_model);
   const mode = activeChatMode === "direct" ? "direct" : backend.name;
   activeChatMode = mode;
   agentTabs.forEach((tab) => {
@@ -831,6 +829,7 @@ async function loadSessions() {
   try {
     currentSessions = await fetchJSON("/api/agent/sessions");
     renderSessionList();
+    if (activeChatMode === "direct") return;
     const sessions = sessionsForHarness(currentAgentHarness);
     const preferredID = activeSessionIds.get(currentAgentHarness);
     const sessionID = sessions.some((session) => session.id === preferredID)
@@ -944,16 +943,11 @@ function renderChatMessages(session) {
   chatMessagesEl.innerHTML = "";
   if (!session || !session.messages || session.messages.length === 0) {
     chatMessagesEl.innerHTML = `
-      <div class="welcome-card">
-        <h2>Welcome to the mAIstr0 Orchestrator</h2>
-        <p>The orchestrator plans and reasons visibly, then spreads LLM workloads across worker nodes while preserving every node response.</p>
-        <ul>
-          <li><strong>Dynamic Workload Balancing:</strong> LLM queries and subtasks are routed to the least-loaded nodes.</li>
-          <li><strong>Parallel Multi-Node Dispatch:</strong> Subtasks can be executed simultaneously across distinct cluster nodes.</li>
-          <li><strong>Interactive ReAct Loop:</strong> Real-time streaming of thoughts, tool calls, and node execution metrics.</li>
-        </ul>
-      </div>
-    `;
+        <div class="welcome-card">
+          <h2>What would you like to orchestrate?</h2>
+          <p>Ask a question or give a task to your local cluster.</p>
+        </div>
+      `;
     return;
   }
 
@@ -963,32 +957,7 @@ function renderChatMessages(session) {
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
-function populateDirectModelOptions(nodes) {
-  if (!agentModelSelect) return;
-  const selectedModel = agentModelSelect.value;
-  const models = new Map();
-  for (const node of nodes.filter((entry) => entry.healthy)) {
-    for (const model of node.models || []) {
-      const key = model.name.toLowerCase();
-      const current = models.get(key) || { name: model.name, engine: model.engine, tags: new Set(), nodes: new Set() };
-      for (const tag of model.tags || []) current.tags.add(tag);
-      current.nodes.add(node.id);
-      models.set(key, current);
-    }
-  }
-
-  agentModelSelect.replaceChildren(new Option("Auto (Orchestrator scheduler)", ""));
-  for (const model of [...models.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-    const option = new Option(
-      `${model.name} · ${[...model.tags].join(", ") || "general"} · ${[...model.nodes].join(", ")}`,
-      model.name,
-    );
-    agentModelSelect.add(option);
-  }
-  if (models.has(selectedModel.toLowerCase())) agentModelSelect.value = selectedModel;
-}
-
-function formatDirectNodeHardware(node) {
+function formatNodeHardware(node) {
   const hardware = node.hardware || {};
   const parts = [];
   if (hardware.os || hardware.arch) parts.push([hardware.os, hardware.arch].filter(Boolean).join("/"));
@@ -1067,79 +1036,27 @@ function engineStatusDetailsMarkup(engines) {
   </section>`;
 }
 
-function renderDirectClusterContext(nodes) {
-  if (!directClusterNodesEl || !directClusterStatus) return;
-  const healthyCount = nodes.filter((node) => node.healthy).length;
-  const availableModels = new Set(
-    nodes.filter((node) => node.healthy).flatMap((node) => (node.models || []).map((model) => model.name)),
-  );
-  directClusterStatus.textContent = `${nodes.length} nodes · ${healthyCount} online · ${availableModels.size} available models. Model tags indicate task capabilities; dispatch uses the native capability-aware scheduler.`;
-  if (!nodes.length) {
-    directClusterNodesEl.innerHTML = '<p class="direct-cluster-empty">No nodes are registered with this orchestrator.</p>';
-    return;
-  }
-  directClusterNodesEl.innerHTML = nodes.map((node) => {
-    const models = (node.models || []).map((model) => `
-      <div class="direct-model-row">
-        <strong>${escapeHtml(model.name)}</strong>
-        <span>${escapeHtml((model.tags || []).join(", ") || "general")}${model.engine ? ` · ${escapeHtml(model.engine)}` : ""}</span>
-      </div>
-    `).join("") || '<div class="direct-model-row"><span>No models reported</span></div>';
-    const score = Number.isFinite(node.hardware?.score) ? ` · capability score ${node.hardware.score.toFixed(1)}` : "";
-    return `
-      <details class="direct-node-card" ${node.healthy ? "open" : ""}>
-        <summary>
-          <span class="direct-node-name">${escapeHtml(node.id)}</span>
-          <span class="badge ${node.healthy ? "healthy" : "offline"}">${node.healthy ? "Online" : "Offline"}</span>
-        </summary>
-        <div class="direct-node-details">
-          <div>${escapeHtml(formatDirectNodeHardware(node))}</div>
-          <div>Active tasks: ${Number(node.active_tasks) || 0}${score}</div>
-          ${engineStatusSummaryMarkup(node.engines)}
-          ${engineStatusDetailsMarkup(node.engines)}
-          <div class="direct-model-list">${models}</div>
-        </div>
-      </details>
-    `;
-  }).join("");
-}
+function nodeContextDetailsMarkup(node, expanded) {
+  const models = (node.models || []).map((model) => {
+    const tags = Array.isArray(model.tags) && model.tags.length ? model.tags.join(", ") : "general";
+    const engine = model.engine ? ` · ${escapeHtml(model.engine)}` : "";
+    return `<div class="overview-node-model">
+      <strong>${escapeHtml(model.name || "Unknown model")}</strong>
+      <span>${escapeHtml(tags)}${engine}</span>
+    </div>`;
+  }).join("") || '<div class="overview-node-model"><span>No models reported</span></div>';
+  const score = Number.isFinite(node.hardware?.score) ? ` · capability score ${node.hardware.score.toFixed(1)}` : "";
 
-async function refreshDirectClusterContext() {
-  if (!directClusterStatus) return null;
-  if (directClusterRefreshBtn) directClusterRefreshBtn.disabled = true;
-  directClusterStatus.textContent = "Refreshing live nodes, models, and capabilities…";
-  try {
-    const nodes = await fetchJSON("/api/nodes/all");
-    if (!Array.isArray(nodes)) throw new Error("orchestrator returned an invalid node inventory");
-    populateDirectModelOptions(nodes);
-    renderDirectClusterContext(nodes);
-    return nodes;
-  } catch (err) {
-    directClusterStatus.textContent = `Cluster inventory unavailable: ${err.message}`;
-    console.error("could not refresh direct chat cluster context", err);
-    return null;
-  } finally {
-    if (directClusterRefreshBtn) directClusterRefreshBtn.disabled = false;
-  }
-}
-
-function directClusterSystemMessage(nodes) {
-  const inventory = nodes.map((node) => ({
-    id: node.id,
-    status: node.healthy ? "online" : "offline",
-    active_tasks: node.active_tasks || 0,
-    hardware: node.hardware || {},
-    models: (node.models || []).map((model) => ({
-      name: model.name,
-      engine: model.engine,
-      task_capability_tags: model.tags || [],
-      size_gb: model.size_gb || 0,
-    })),
-  }));
-  return {
-    role: "system",
-    content: `You are the conversational interface to the mAIstr0 orchestrator. Answer questions about the cluster from this live inventory and distinguish unknown details from facts. Model capability tags are task categories. The native task scheduler chooses healthy node/model pairs using task type compatibility, hardware capability, accelerator utilization, current load, and learned dispatch history. The user can explicitly dispatch work with the Dispatch Task action; do not claim a task was run unless that action was used. For task execution, the native planner and scheduler—not this chat response—create and route subtasks.\nLive cluster inventory: ${JSON.stringify(inventory)}`,
-  };
+  return `<details class="overview-node-context"${expanded ? " open" : ""}>
+    <summary>Hardware, engines &amp; models</summary>
+    <div class="overview-node-context-body">
+      <div>${escapeHtml(formatNodeHardware(node))}</div>
+      <div>Active tasks: ${Number(node.active_tasks) || 0}${score}</div>
+      ${engineStatusSummaryMarkup(node.engines)}
+      ${engineStatusDetailsMarkup(node.engines)}
+      <div class="overview-node-models">${models}</div>
+    </div>
+  </details>`;
 }
 
 function renderDirectMessages() {
@@ -1148,14 +1065,13 @@ function renderDirectMessages() {
   if (!directMessages.length) {
     chatMessagesEl.innerHTML = `
       <div class="welcome-card">
-        <h2>Direct Orchestrator Chat</h2>
-        <p>Ask about the live cluster or use Dispatch Task to have the native planner route work to nodes with suitable models and capabilities. No agent or harness is involved.</p>
+        <h2>The mAIstr0 awaits your command</h2>
       </div>
     `;
     return;
   }
   for (const message of directMessages) {
-    appendMessageToChat({ ...message, coordinator: "Direct Orchestrator" });
+    appendMessageToChat({ ...message, coordinator: "mAIstr0" });
   }
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
@@ -1253,111 +1169,6 @@ function appendMessageToChat(msg) {
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
-async function sendDirectMessage(text) {
-  if (!text || isSending) return;
-  isSending = true;
-  streamingAssistantEl = null;
-  activeAbortController = new AbortController();
-  if (sendMsgBtn) sendMsgBtn.disabled = true;
-  if (interruptMsgBtn) interruptMsgBtn.hidden = false;
-  if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = true;
-  if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
-  agentTabs.forEach((tab) => { tab.disabled = true; });
-  if (chatStatus) chatStatus.textContent = "Sending directly to the orchestrator...";
-
-  directMessages.push({ role: "user", content: text });
-  appendMessageToChat({ role: "user", content: text });
-  chatInput.value = "";
-  let assistantContent = "";
-
-  try {
-    const nodes = await refreshDirectClusterContext();
-    if (!nodes) throw new Error("Could not load the current cluster inventory.");
-    if (!nodes.some((node) => node.healthy)) {
-      throw new Error("No healthy cluster nodes are available to answer this message.");
-    }
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson" },
-      body: JSON.stringify({
-        model: agentModelSelect?.value || "",
-        messages: [directClusterSystemMessage(nodes), ...directMessages],
-        stream: true,
-      }),
-      signal: activeAbortController.signal,
-    });
-    if (!response.ok) {
-      let message = await response.text();
-      try {
-        message = JSON.parse(message).error || message;
-      } catch {
-        // Keep the plain-text server error.
-      }
-      throw new Error(message.trim() || response.statusText);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const consumeLine = (line) => {
-      if (!line.trim()) return;
-      const event = JSON.parse(line);
-      if (event.error) throw new Error(event.error);
-      const delta = event.message?.content || "";
-      if (!delta) return;
-      assistantContent += delta;
-      if (!streamingAssistantEl) {
-        streamingAssistantEl = document.createElement("div");
-        streamingAssistantEl.className = "chat-msg assistant";
-        const meta = document.createElement("div");
-        meta.className = "msg-meta";
-        meta.textContent = `🤖 Direct Orchestrator${agentModelSelect?.value ? ` · ${agentModelSelect.value}` : ""}`;
-        const bubble = document.createElement("div");
-        bubble.className = "msg-bubble";
-        streamingAssistantEl.append(meta, bubble);
-        chatMessagesEl.appendChild(streamingAssistantEl);
-      }
-      const bubble = streamingAssistantEl.querySelector(".msg-bubble");
-      if (bubble) bubble.textContent += delta;
-      chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-    };
-
-    while (true) {
-      const { done, value } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) consumeLine(line);
-      if (done) break;
-    }
-    if (buffer.trim()) consumeLine(buffer);
-    if (!assistantContent) throw new Error("The orchestrator returned an empty response.");
-    directMessages.push({ role: "assistant", content: assistantContent });
-    if (chatStatus) chatStatus.textContent = "";
-  } catch (err) {
-    if (assistantContent) directMessages.push({ role: "assistant", content: assistantContent });
-    if (err.name === "AbortError") {
-      if (chatStatus) chatStatus.textContent = "Interrupted.";
-    } else {
-      if (chatStatus) chatStatus.textContent = `Direct chat failed: ${err.message}`;
-      appendMessageToChat({
-        role: "assistant",
-        coordinator: "Direct Orchestrator",
-        content: `⚠️ Direct chat failed: ${err.message}`,
-      });
-    }
-  } finally {
-    isSending = false;
-    activeAbortController = null;
-    streamingAssistantEl = null;
-    if (interruptMsgBtn) interruptMsgBtn.hidden = true;
-    if (sendMsgBtn) sendMsgBtn.disabled = false;
-    if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = false;
-    if (clearDirectChatBtn) clearDirectChatBtn.disabled = false;
-    agentTabs.forEach((tab) => { tab.disabled = false; });
-  }
-}
-
 function formatDirectTaskDispatch(task) {
   const assignments = (task.subtasks || []).map((item) => {
     const subtask = item.subtask || {};
@@ -1377,7 +1188,6 @@ async function dispatchDirectTask(description) {
   if (!description || isSending) return;
   isSending = true;
   if (sendMsgBtn) sendMsgBtn.disabled = true;
-  if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = true;
   if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
   agentTabs.forEach((tab) => { tab.disabled = true; });
   if (chatStatus) chatStatus.textContent = "Planning against live capabilities and routing to suitable nodes…";
@@ -1386,8 +1196,8 @@ async function dispatchDirectTask(description) {
   appendMessageToChat({ role: "user", content: description });
   chatInput.value = "";
   try {
-    const nodes = await refreshDirectClusterContext();
-    if (!nodes) throw new Error("Could not load the current cluster inventory.");
+    const nodes = await fetchJSON("/api/nodes/all");
+    if (!Array.isArray(nodes)) throw new Error("Could not load the current cluster inventory.");
     if (!nodes.some((node) => node.healthy)) {
       throw new Error("No healthy cluster nodes are available to plan or run this task.");
     }
@@ -1398,26 +1208,24 @@ async function dispatchDirectTask(description) {
     });
     const summary = formatDirectTaskDispatch(task);
     directMessages.push({ role: "assistant", content: summary });
-    appendMessageToChat({ role: "assistant", coordinator: "Direct Orchestrator", content: summary });
+    appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: summary });
     if (chatStatus) chatStatus.textContent = "";
-    void refreshDirectClusterContext();
     void refresh();
   } catch (err) {
     const message = `Task dispatch failed: ${err.message}`;
     directMessages.push({ role: "assistant", content: message });
-    appendMessageToChat({ role: "assistant", coordinator: "Direct Orchestrator", content: message });
+    appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: message });
     if (chatStatus) chatStatus.textContent = message;
   } finally {
     isSending = false;
     if (sendMsgBtn) sendMsgBtn.disabled = false;
-    if (dispatchDirectTaskBtn) dispatchDirectTaskBtn.disabled = false;
     if (clearDirectChatBtn) clearDirectChatBtn.disabled = false;
     agentTabs.forEach((tab) => { tab.disabled = false; });
   }
 }
 
 async function sendInteractiveMessage(text) {
-  if (activeChatMode === "direct") return sendDirectMessage(text);
+  if (activeChatMode === "direct") return dispatchDirectTask(text);
   if (!text || !activeSessionId || isSending) return;
   isSending = true;
   streamingAssistantEl = null;
@@ -1587,10 +1395,6 @@ clearDirectChatBtn?.addEventListener("click", () => {
   directMessages = [];
   if (chatStatus) chatStatus.textContent = "";
   renderDirectMessages();
-});
-
-dispatchDirectTaskBtn?.addEventListener("click", () => {
-  void dispatchDirectTask(chatInput.value.trim());
 });
 
 promptChips.forEach((chip) => {
@@ -1983,30 +1787,23 @@ function renderOverview(nodes, tasks, peers, parts = {}) {
   }
 
   if (parts.activity !== false && overviewActivity) {
-    const renderTask = (task) => {
-      const taskStatus = knownStatus(task.status, TASK_STATES);
-      const subtasks = (task.subtasks || []).map((subtask) => {
-        const status = knownStatus(subtask.status, SUBTASK_STATES);
-        const target = subtask.node_id
-          ? `<button class="activity-assignment" type="button" data-target-node="${escapeHtml(subtask.node_id)}">${escapeHtml(subtask.node_id)}</button>`
-          : '<span class="activity-unassigned">unassigned</span>';
-        return `<div class="activity-subtask"><span>${escapeHtml(subtask.subtask?.id || "subtask")} · ${escapeHtml(subtask.subtask?.task_type || "work")}</span><span class="badge ${status}">${status}</span><span class="activity-target">→ ${target}</span></div>`;
-      }).join("");
-      return `<article class="activity-card ${TASK_ACTIVE_STATES.has(task.status) ? "active" : "history"}" data-task-id="${escapeHtml(task.id)}">
-        <div class="activity-card-heading"><strong>${escapeHtml(task.id)}</strong><span class="badge ${taskStatus}">${taskStatus}</span></div>
-        <p>${escapeHtml(task.description || "No task description")}</p>
-        <small>${TASK_ACTIVE_STATES.has(task.status) ? "Updated" : "Finished"} ${formatRelativeTime(task.updated_at || task.created_at)}</small>
-        <div class="activity-subtasks">${subtasks || '<span class="activity-unassigned">No assigned subtasks</span>'}</div>
-      </article>`;
-    };
-    overviewActivity.innerHTML = activeTasks.length || recentTasks.length
-      ? `${activeTasks.length ? `<h4 class="activity-group-heading">Active · ${activeTasks.length}</h4>${activeTasks.map(renderTask).join("")}` : ""}
-         ${recentTasks.length ? `<h4 class="activity-group-heading">Recent</h4>${recentTasks.map(renderTask).join("")}` : ""}`
-      : '<p class="overview-empty">No task activity yet.</p>';
+    const overviewTasks = [...activeTasks, ...recentTasks].sort((a, b) =>
+      new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+    );
+    if (overviewTasks.length) {
+      renderTaskHistoryTable(overviewActivity, overviewTasks, "overview-task", true);
+    } else {
+      overviewActivity.innerHTML = '<p class="overview-empty">No task activity yet.</p>';
+    }
   }
 
   if (parts.nodes !== false && overviewNodes) {
     const leaderID = nodeList.find((node) => node.leader)?.id;
+    const expandedNodeIDs = new Set(
+      [...overviewNodes.querySelectorAll(".overview-node-context[open]")]
+        .map((details) => details.closest("[data-node-id]")?.dataset.nodeId)
+        .filter(Boolean),
+    );
     overviewNodes.innerHTML = displayNodes.length
       ? displayNodes.map((node) => {
           const nodeTasks = assignments.get(node.id) || [];
@@ -2019,10 +1816,10 @@ function renderOverview(nodes, tasks, peers, parts = {}) {
             <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
             <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
             <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${node.active_tasks || 0} active tasks · ${(node.models || []).length} models`}</div>
-            ${node.discovered ? "" : engineStatusSummaryMarkup(node.engines)}
             <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
             <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
             ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
+            ${node.discovered ? "" : nodeContextDetailsMarkup(node, expandedNodeIDs.has(node.id))}
           </article>`;
         }).join("")
       : '<p class="overview-empty">No known cluster members.</p>';
@@ -2641,47 +2438,22 @@ function renderDiscovery(peers) {
   }
 }
 
-function renderTasks(tasks) {
-  if (!tasksList) return;
+function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
   const expandedTaskIds = new Set(
-    Array.from(tasksList.querySelectorAll?.(".task-details-row:not([hidden])") || [])
+    Array.from(container.querySelectorAll?.(".task-details-row:not([hidden])") || [])
       .map((item) => item.dataset.taskId)
       .filter(Boolean)
   );
-  tasksList.innerHTML = "";
-  if (!tasks || tasks.length === 0) {
-    tasksList.innerHTML = '<p class="task-history-empty">No tasks submitted yet.</p>';
-    if (taskHistoryCount) taskHistoryCount.textContent = "0 tasks";
-    return;
-  }
-  const query = (taskHistorySearch?.value || "").trim().toLowerCase();
-  const statusFilter = taskHistoryStatus?.value || "all";
-  const orderedTasks = [...tasks]
-    .filter((task) => {
-      const status = task.status || "unknown";
-      if (statusFilter !== "all" && status !== statusFilter) return false;
-      if (!query) return true;
-      const searchable = [
-      task.id, task.description, status, task.result, task.error,
-      ...(task.subtasks || []).flatMap((item) => [
-        item.subtask?.id, item.subtask?.description, item.subtask?.role,
-        item.subtask?.task_type, item.node_id, item.model, item.output, item.error,
-      ]),
-      ].filter(Boolean).join(" ").toLowerCase();
-      return searchable.includes(query);
-    })
-    .sort((a, b) =>
-    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
-  );
-  if (taskHistoryCount) {
-    taskHistoryCount.textContent = `Showing ${orderedTasks.length} of ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
-  }
-  if (orderedTasks.length === 0) {
-    tasksList.innerHTML = '<p class="task-history-empty">No tasks match the selected filters.</p>';
-    return;
-  }
-
+  container.innerHTML = "";
   const validStatuses = new Set(["pending", "running", "synthesizing", "awaiting_approval", "completed", "failed", "cancelled"]);
+  const formatTimestamp = (label, value) => {
+    if (!value) return `<span class="task-time-unavailable">${escapeHtml(label)} unavailable</span>`;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return `<span class="task-time-unavailable">${escapeHtml(label)} unavailable</span>`;
+    }
+    return `<time datetime="${escapeHtml(value)}">${escapeHtml(label)} ${escapeHtml(date.toLocaleString())}</time>`;
+  };
   const table = document.createElement("table");
   table.className = "task-history-table";
   table.innerHTML = `
@@ -2695,55 +2467,60 @@ function renderTasks(tasks) {
   `;
   const tbody = document.createElement("tbody");
   table.appendChild(tbody);
-  tasksList.appendChild(table);
-  for (const [index, t] of orderedTasks.entries()) {
+  container.appendChild(table);
+  for (const [index, t] of tasks.entries()) {
     const status = validStatuses.has(t.status) ? t.status : "unknown";
     const isExpanded = expandedTaskIds.has(t.id);
+    const detailsId = `${idPrefix}-details-${index}`;
     const subtasks = t.subtasks || [];
     const completedCount = subtasks.filter((subtask) => subtask.status === "completed").length;
-    const formatDate = (value) => {
-      if (!value) return "Unknown";
-      const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
-    };
-    const subtaskHTML = (t.subtasks || [])
-      .map(
-      (s) => {
-        const subtaskStatus = validStatuses.has(s.status) ? s.status : "unknown";
-        const subtask = s.subtask || {};
-        return `
-      <article class="task-step">
-        <div class="task-step-heading"><strong>${escapeHtml(subtask.id || "Subtask")}</strong><span class="badge ${subtaskStatus}">${escapeHtml(subtaskStatus.replaceAll("_", " "))}</span></div>
-        <div class="task-step-target">${escapeHtml(subtask.role || subtask.task_type || "Task step")} · ${escapeHtml(subtask.task_type || "general")} · ${escapeHtml(s.node_id || "Unassigned")} / ${escapeHtml(s.model || "No model")}</div>
-        ${subtask.description ? `<p>${escapeHtml(subtask.description)}</p>` : ""}
-        ${s.error ? `<p class="task-error-reason"><strong>Failure reason:</strong> ${escapeHtml(s.error)}</p>` : ""}
-        ${s.score_factors ? `<details class="routing-score-details"><summary>Routing score ${Number(s.score || 0).toFixed(1)}</summary><div class="catalog-tags">Model match +${Number(s.score_factors.model_match || 0).toFixed(1)} · capability +${Number(s.score_factors.capability_score || 0).toFixed(1)} · quality +${Number(s.score_factors.model_quality_score || 0).toFixed(1)} · hardware +${Number(s.score_factors.hardware || 0).toFixed(1)} · GPU preference +${Number(s.score_factors.gpu_compatibility_score || 0).toFixed(1)} · load −${Number(s.score_factors.load_penalty || 0).toFixed(1)} (${s.score_factors.active_tasks || 0} active + ${s.score_factors.queued_tasks || 0} queued) · topology −${Number(s.score_factors.topology_score || 0).toFixed(1)} · GPU −${Number(s.score_factors.gpu_utilization_penalty || 0).toFixed(1)} · NPU −${Number(s.score_factors.npu_utilization_penalty || 0).toFixed(1)} · learned ${Number(s.score_factors.learned_bias || 0) >= 0 ? "+" : ""}${Number(s.score_factors.learned_bias || 0).toFixed(1)} · telemetry ${s.score_factors.telemetry_fresh ? `fresh (${s.score_factors.telemetry_age_ms || 0}ms)` : "stale/unavailable, ignored"}</div></details>` : ""}
-        ${s.output ? `<div class="subtask-output-wrap"><button class="copy-output-btn" type="button" data-copy-output="${encodeURIComponent(s.output)}">Copy output</button><pre class="subtask-output">${escapeHtml(s.output)}</pre></div>` : ""}
-      </article>
-      `
-      }
-      )
-      .join("");
+    const subtaskHTML = subtasks.map((s) => {
+      const subtaskStatus = validStatuses.has(s.status) ? s.status : "unknown";
+      const subtask = s.subtask || {};
+      const node = s.node_id
+        ? linkNodes
+          ? `<button class="activity-assignment" type="button" data-target-node="${escapeHtml(s.node_id)}">${escapeHtml(s.node_id)}</button>`
+          : escapeHtml(s.node_id)
+        : "Unassigned";
+      const attempts = Array.isArray(s.attempts) ? s.attempts : [];
+      const attemptTimestamps = attempts.length
+        ? attempts.map((attempt, attemptIndex) => {
+          const attemptNumber = Number(attempt.number) || attemptIndex + 1;
+          return `<div class="task-step-attempt"><strong>Attempt ${attemptNumber}</strong>${formatTimestamp("Started", attempt.started_at)}${attempt.finished_at ? formatTimestamp("Finished", attempt.finished_at) : ""}</div>`;
+        }).join("")
+        : `<div class="task-step-attempt"><span>Not dispatched</span>${formatTimestamp("Task created", t.created_at)}</div>`;
+      return `
+        <article class="task-step">
+          <div class="task-step-heading"><strong>${escapeHtml(subtask.id || "Subtask")}</strong><span class="badge ${subtaskStatus}">${escapeHtml(subtaskStatus.replaceAll("_", " "))}</span></div>
+          <div class="task-step-target">${escapeHtml(subtask.role || subtask.task_type || "Task step")} · ${escapeHtml(subtask.task_type || "general")} · ${node} / ${escapeHtml(s.model || "No model")}</div>
+          <div class="task-step-timestamps">${attemptTimestamps}</div>
+          ${subtask.description ? `<p>${escapeHtml(subtask.description)}</p>` : ""}
+          ${s.error ? `<p class="task-error-reason"><strong>Failure reason:</strong> ${escapeHtml(s.error)}</p>` : ""}
+          ${s.score_factors ? `<details class="routing-score-details"><summary>Routing score ${Number(s.score || 0).toFixed(1)}</summary><div class="catalog-tags">Model match +${Number(s.score_factors.model_match || 0).toFixed(1)} · capability +${Number(s.score_factors.capability_score || 0).toFixed(1)} · quality +${Number(s.score_factors.model_quality_score || 0).toFixed(1)} · hardware +${Number(s.score_factors.hardware || 0).toFixed(1)} · GPU preference +${Number(s.score_factors.gpu_compatibility_score || 0).toFixed(1)} · load −${Number(s.score_factors.load_penalty || 0).toFixed(1)} (${s.score_factors.active_tasks || 0} active + ${s.score_factors.queued_tasks || 0} queued) · topology −${Number(s.score_factors.topology_score || 0).toFixed(1)} · GPU −${Number(s.score_factors.gpu_utilization_penalty || 0).toFixed(1)} · NPU −${Number(s.score_factors.npu_utilization_penalty || 0).toFixed(1)} · learned ${Number(s.score_factors.learned_bias || 0) >= 0 ? "+" : ""}${Number(s.score_factors.learned_bias || 0).toFixed(1)} · telemetry ${s.score_factors.telemetry_fresh ? `fresh (${s.score_factors.telemetry_age_ms || 0}ms)` : "stale/unavailable, ignored"}</div></details>` : ""}
+          ${s.output ? `<div class="subtask-output-wrap"><button class="copy-output-btn" type="button" data-copy-output="${encodeURIComponent(s.output)}">Copy output</button><pre class="subtask-output">${escapeHtml(s.output)}</pre></div>` : ""}
+        </article>
+      `;
+    }).join("");
     const item = document.createElement("tr");
     item.className = `task-history-row task-history-row-${status}`;
     item.dataset.taskId = t.id;
     item.innerHTML = `
-      <td><button class="task-expand-btn" type="button" aria-expanded="${isExpanded}" aria-controls="task-details-${index}" aria-label="Show details for ${escapeHtml(t.description || t.id)}"><span class="task-expand-icon" aria-hidden="true">›</span></button></td>
-      <td><span class="task-history-title" title="${escapeHtml(t.description || t.id)}">${escapeHtml(t.description || t.id)}</span></td>
+      <td><button class="task-expand-btn" type="button" aria-expanded="${isExpanded}" aria-controls="${detailsId}" aria-label="Show details for ${escapeHtml(t.description || t.id)}"><span class="task-expand-icon" aria-hidden="true">›</span></button></td>
+      <td><span class="task-history-title" title="${escapeHtml(t.description || t.id)}">${escapeHtml(t.description || t.id)}</span><span class="task-history-timestamp">${formatTimestamp("Created", t.created_at)}</span></td>
       <td><span class="task-history-id" title="${escapeHtml(t.id)}">${escapeHtml(t.id)}</span></td>
       <td>${subtasks.length ? `${completedCount} / ${subtasks.length}` : "—"}</td>
       <td><span class="badge ${status}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
     `;
     const detailsRow = document.createElement("tr");
-    detailsRow.id = `task-details-${index}`;
+    detailsRow.id = detailsId;
     detailsRow.className = "task-details-row";
     detailsRow.dataset.taskId = t.id;
     detailsRow.hidden = !isExpanded;
     detailsRow.innerHTML = `
       <td colspan="5"><div class="task-details-content">
       <div class="task-menu-meta">
-        <span>Created ${escapeHtml(formatDate(t.created_at))}</span>
-        ${t.updated_at ? `<span>Updated ${escapeHtml(formatDate(t.updated_at))}</span>` : ""}
+        ${formatTimestamp("Created", t.created_at)}
+        ${t.updated_at ? formatTimestamp("Updated", t.updated_at) : ""}
       </div>
       <div class="task-actions">
         ${status === "running" || status === "awaiting_approval" ? `<button class="cancel-task-btn" type="button" data-task-id="${escapeHtml(t.id)}">Cancel</button>` : ""}
@@ -2797,6 +2574,42 @@ function renderTasks(tasks) {
       button.addEventListener("click", () => copyText(decodeURIComponent(button.dataset.copyOutput), button));
     });
   }
+}
+
+function renderTasks(tasks) {
+  if (!tasksList) return;
+  if (!tasks || tasks.length === 0) {
+    tasksList.innerHTML = '<p class="task-history-empty">No tasks submitted yet.</p>';
+    if (taskHistoryCount) taskHistoryCount.textContent = "0 tasks";
+    return;
+  }
+  const query = (taskHistorySearch?.value || "").trim().toLowerCase();
+  const statusFilter = taskHistoryStatus?.value || "all";
+  const orderedTasks = [...tasks]
+    .filter((task) => {
+      const status = task.status || "unknown";
+      if (statusFilter !== "all" && status !== statusFilter) return false;
+      if (!query) return true;
+      const searchable = [
+        task.id, task.description, status, task.result, task.error,
+        ...(task.subtasks || []).flatMap((item) => [
+          item.subtask?.id, item.subtask?.description, item.subtask?.role,
+          item.subtask?.task_type, item.node_id, item.model, item.output, item.error,
+        ]),
+      ].filter(Boolean).join(" ").toLowerCase();
+      return searchable.includes(query);
+    })
+    .sort((a, b) =>
+      new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+    );
+  if (taskHistoryCount) {
+    taskHistoryCount.textContent = `Showing ${orderedTasks.length} of ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
+  }
+  if (orderedTasks.length === 0) {
+    tasksList.innerHTML = '<p class="task-history-empty">No tasks match the selected filters.</p>';
+    return;
+  }
+  renderTaskHistoryTable(tasksList, orderedTasks, "task-history");
 }
 
 taskHistorySearch?.addEventListener("input", () => renderTasks(window.latestTasks || []));
@@ -2916,6 +2729,31 @@ function applySnapshot(snap) {
     cpu_utilization_percent: node.hardware?.cpu_utilization_percent,
     memory_stats_available: node.hardware?.memory_stats_available,
     memory_usage_percent: node.hardware?.memory_usage_percent,
+    hardware_context: {
+      os: node.hardware?.os,
+      arch: node.hardware?.arch,
+      cpu_cores: node.hardware?.cpu_cores,
+      total_ram_mb: node.hardware?.total_ram_mb,
+      score: node.hardware?.score,
+      has_gpu: node.hardware?.has_gpu,
+      gpu_vendor: node.hardware?.gpu_vendor,
+      has_npu: node.hardware?.has_npu,
+      npu_vendor: node.hardware?.npu_vendor,
+    },
+    engine_context: (node.engines || []).map((engine) => ({
+      name: engine.name,
+      ready: engine.ready,
+      inventory_state: engine.inventory_state,
+      model_count: engine.model_count,
+      last_checked_at: engine.last_checked_at,
+      last_successful_at: engine.last_successful_at,
+      last_error: engine.last_error,
+    })),
+    model_context: (node.models || []).map((model) => ({
+      name: model.name,
+      tags: model.tags,
+      engine: model.engine,
+    })),
   }));
   const taskState = window.latestTasks.map((task) => ({
     id: task.id, description: task.description, status: task.status, updated_at: task.updated_at,
@@ -3027,7 +2865,9 @@ refreshPersistenceStatus();
 setInterval(loadPairingStatus, 5000);
 setInterval(refreshPersistenceStatus, 30000);
 setInterval(() => {
-  if (activeChatMode === "direct") void refreshDirectClusterContext();
+  if (document.getElementById("cluster-tab")?.classList.contains("active")) {
+    void refresh();
+  }
 }, 15000);
 loadClusterModels();
 refresh();

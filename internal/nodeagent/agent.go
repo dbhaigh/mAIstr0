@@ -210,6 +210,7 @@ func (a *Agent) InitializeIdentity() error {
 		return err
 	}
 	a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	a.memorySyncClient = &http.Client{Timeout: memorySyncTimeout, Transport: transport}
 	a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: transport}
 	a.streamClient = &http.Client{Transport: transport}
 	return nil

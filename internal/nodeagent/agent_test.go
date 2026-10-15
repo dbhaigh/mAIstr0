@@ -224,19 +224,33 @@ func TestHandlePropertiesLoadsAndSavesCompleteProperties(t *testing.T) {
 	}
 }
 
-func TestPrioritizeAcceleratedEnginesPrefersLMStudioOnGPU(t *testing.T) {
+func TestPrioritizeAcceleratedEnginesPrefersNPUCompatibleServer(t *testing.T) {
 	engines := []engine.Engine{
 		&pullTestEngine{name: "ollama"},
 		&pullTestEngine{name: "fastflowlm"},
 		&pullTestEngine{name: "lmstudio"},
 	}
-	ordered := prioritizeAcceleratedEngines(engines, hardware.Info{HasGPU: true, HasNPU: true})
-	var names []string
-	for _, e := range ordered {
-		names = append(names, e.Name())
+	tests := []struct {
+		name string
+		hw   hardware.Info
+		want string
+	}{
+		{name: "NPU takes precedence over GPU", hw: hardware.Info{HasGPU: true, HasNPU: true}, want: "fastflowlm,lmstudio,ollama"},
+		{name: "NPU without GPU", hw: hardware.Info{HasNPU: true}, want: "fastflowlm,ollama,lmstudio"},
+		{name: "GPU without NPU", hw: hardware.Info{HasGPU: true}, want: "lmstudio,ollama,fastflowlm"},
+		{name: "no accelerator", want: "ollama,fastflowlm,lmstudio"},
 	}
-	if got, want := strings.Join(names, ","), "lmstudio,fastflowlm,ollama"; got != want {
-		t.Fatalf("accelerated engine order = %q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ordered := prioritizeAcceleratedEngines(engines, tt.hw)
+			var names []string
+			for _, e := range ordered {
+				names = append(names, e.Name())
+			}
+			if got := strings.Join(names, ","); got != tt.want {
+				t.Fatalf("accelerated engine order = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

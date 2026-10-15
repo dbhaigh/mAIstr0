@@ -7,18 +7,11 @@ type LMStudio struct {
 }
 
 func NewLMStudio(baseURL string) *LMStudio {
-	return &LMStudio{VLLM: NewVLLM(baseURL)}
+	return &LMStudio{VLLM: newOpenAICompatibleEngine(baseURL, "lmstudio")}
 }
 
 func (l *LMStudio) Name() string { return "lmstudio" }
 
 func (l *LMStudio) ListModels() ([]Model, error) {
-	models, err := l.VLLM.ListModels()
-	if err != nil {
-		return nil, err
-	}
-	for i := range models {
-		models[i].Engine = l.Name()
-	}
-	return models, nil
+	return l.VLLM.ListModels()
 }

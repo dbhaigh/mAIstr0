@@ -11,7 +11,7 @@
     <div class="header-top">
       <div>
         <h1>mAIstr0</h1>
-        <p class="subtitle">Multi-node local LLM cluster orchestrator</p>
+        <p class="subtitle">Local AI, working together</p>
       </div>
       <div class="header-stats">
         <span class="stat-pill" id="stat-nodes">Nodes: 0</span>
@@ -22,9 +22,9 @@
       </div>
     </div>
     <nav class="nav-tabs">
-      <button class="nav-tab active" data-tab="agent-tab">🤖 Interactive Orchestrator</button>
-      <button class="nav-tab" data-tab="cluster-tab">📊 Cluster &amp; Workload</button>
-      <button class="nav-tab" data-tab="memory-tab">🧠 Memory &amp; Learning</button>
+      <button class="nav-tab active" data-tab="agent-tab">Orchestrator</button>
+      <button class="nav-tab" data-tab="cluster-tab">Cluster &amp; Workload</button>
+      <button class="nav-tab" data-tab="memory-tab">Memory &amp; Learning</button>
     </nav>
   </header>
   <div id="persistence-warning" class="persistence-warning" role="status" hidden></div>
@@ -33,8 +33,8 @@
   <section id="agent-tab" class="tab-content active">
     <div class="agent-layout">
       <!-- Sidebar / Session List & Tools -->
-      <aside class="agent-sidebar">
-        <div class="sidebar-section">
+      <aside class="agent-sidebar" hidden>
+        <div class="sidebar-section" hidden>
           <div class="sidebar-header">
             <h3>Conversations</h3>
             <button id="new-session-btn" class="icon-button" title="New Session">+ New</button>
@@ -42,91 +42,82 @@
           <div id="session-list" class="session-list"></div>
         </div>
 
-        <div class="sidebar-section">
-          <h3 id="agent-settings-title">Coordinator &amp; Settings</h3>
-          <label class="setting-label">
-            <span>Default harness for new conversations</span>
-            <select id="agent-harness-select">
-              <option value="pi">Pi (Go)</option>
-              <option value="deepseek">DeepSeek</option>
-            </select>
-            <small id="agent-harness-status" class="setting-help">Existing conversations stay on their current harness.</small>
-          </label>
-          <label class="setting-label">
-            <span>Coordinator Model</span>
-            <select id="agent-model-select">
-              <option value="">Auto (Fastest / Cluster Leader)</option>
-            </select>
-            <small id="direct-chat-help" class="setting-help" hidden>Direct chat uses live cluster context and the orchestrator scheduler, without an agent or harness.</small>
-          </label>
-          <label class="setting-label">
-            <span>Max Reasoning Steps</span>
-            <select id="agent-steps-select">
-              <option value="6">6 steps</option>
-              <option value="8">8 steps</option>
-              <option value="12">12 steps</option>
-              <option value="24" selected>24 steps</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="sidebar-section">
-          <h3>Orchestrator Cluster Tools</h3>
-          <div id="agent-tools-list" class="tools-pills"></div>
-        </div>
-
-        <div id="direct-cluster-context" class="sidebar-section direct-cluster-context" hidden>
-          <div class="direct-cluster-heading">
-            <h3>Live Cluster Context</h3>
-            <button id="direct-cluster-refresh" class="icon-button" type="button">Refresh</button>
+        <details class="sidebar-section sidebar-disclosure" hidden>
+          <summary id="agent-settings-title">mAIstr0 Settings</summary>
+          <div class="sidebar-disclosure-content">
+            <label class="setting-label" hidden>
+              <span>Default harness for new conversations</span>
+              <select id="agent-harness-select">
+                <option value="pi">Pi (Go)</option>
+                <option value="deepseek">DeepSeek</option>
+              </select>
+              <small id="agent-harness-status" class="setting-help">Existing conversations stay on their current harness.</small>
+            </label>
+            <label class="setting-label">
+              <span>Coordinator Model</span>
+              <select id="agent-model-select">
+                <option value="">Auto (Fastest / Cluster Leader)</option>
+              </select>
+            </label>
+            <label class="setting-label" hidden>
+              <span>Max Reasoning Steps</span>
+              <select id="agent-steps-select">
+                <option value="6">6 steps</option>
+                <option value="8">8 steps</option>
+                <option value="12">12 steps</option>
+                <option value="24" selected>24 steps</option>
+              </select>
+            </label>
           </div>
-          <p id="direct-cluster-status" class="setting-help">Loading node and model capabilities…</p>
-          <div id="direct-cluster-nodes" class="direct-cluster-nodes"></div>
-        </div>
+        </details>
+
+        <details class="sidebar-section sidebar-disclosure" hidden>
+          <summary>Orchestrator Cluster Tools</summary>
+          <div id="agent-tools-list" class="tools-pills"></div>
+        </details>
+
       </aside>
 
       <!-- Main Interactive Chat Area -->
       <div class="agent-chat-container">
         <div class="agent-tabbar">
-          <nav class="agent-tabs" role="tablist" aria-label="Interactive agents">
-            <button class="agent-tab active" type="button" role="tab" aria-selected="true" data-agent="pi">Pi Agent</button>
+          <nav class="agent-tabs" role="tablist" aria-label="Chat modes">
+            <button class="agent-tab active" type="button" role="tab" aria-selected="true" data-agent="direct">mAIstr0</button>
+            <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="pi">Pi Agent</button>
             <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="deepseek">DeepSeek Agent</button>
-            <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="direct">Direct Orchestrator</button>
           </nav>
-          <button id="clear-direct-chat-btn" class="icon-button direct-chat-clear" type="button" hidden>Clear chat</button>
-        </div>
-
-        <!-- Quick prompt chips -->
-        <div class="quick-prompts">
-          <button class="prompt-chip" data-prompt="Converse with a worker node model using node_converse to design a distributed cache architecture and ask for implementation details.">💬 Converse with Node LLM</button>
-          <button class="prompt-chip" data-prompt="Use node_to_node_conversation to have two different worker node LLMs debate the best concurrency model for this cluster, then summarise what they agreed on.">🔗 Node LLMs Debate</button>
-          <button class="prompt-chip" data-prompt="Call memory_insights and tell me what the cluster has learned so far about which nodes and models perform best.">🧠 What Have We Learned?</button>
-          <button class="prompt-chip" data-prompt="Collaborate with a worker node model using node_collaborate to write and iteratively refine a high-performance Go worker pool.">🤝 Multi-Turn Node Collaboration</button>
-          <button class="prompt-chip" data-prompt="Inspect the cluster status, summarize all healthy nodes, available GPUs, and compute capacity.">🔍 Cluster Status &amp; GPUs</button>
-          <button class="prompt-chip" data-prompt="Fan out a parallel benchmark across all nodes in the cluster using cluster_parallel_dispatch and compare outputs.">⚡ Parallel Dispatch</button>
+          <button id="clear-direct-chat-btn" class="icon-button direct-chat-clear" type="button">Clear chat</button>
         </div>
 
         <!-- Chat messages container -->
-        <div id="chat-messages" class="chat-messages">
-          <div class="welcome-card">
-            <h2>Welcome to the mAIstr0 Orchestrator</h2>
-            <p>The orchestrator plans and reasons visibly, then spreads LLM workloads across worker nodes while preserving every node response.</p>
-            <ul>
-              <li><strong>Dynamic Workload Balancing:</strong> LLM queries and subtasks are routed to the least-loaded nodes.</li>
-              <li><strong>Parallel Multi-Node Dispatch:</strong> Subtasks can be executed simultaneously across distinct cluster nodes.</li>
-              <li><strong>Interactive ReAct Loop:</strong> Real-time streaming of thoughts, tool calls, and node execution metrics.</li>
-            </ul>
+        <div class="agent-chat-content">
+          <div id="chat-messages" class="chat-messages">
+            <div class="welcome-card">
+              <h2>What would you like to orchestrate?</h2>
+              <p>Ask a question or give a task to your local cluster.</p>
+            </div>
           </div>
-        </div>
 
-        <!-- Interactive Message Input -->
-        <div class="chat-input-container">
-          <textarea id="chat-input" placeholder="Message the orchestrator... (Enter to send, Shift+Enter for new line)" rows="2"></textarea>
-          <div class="chat-input-actions">
-            <span id="chat-status" class="chat-status"></span>
-            <button id="interrupt-msg-btn" class="secondary-button interrupt-button" type="button" hidden>Interrupt</button>
-            <button id="dispatch-direct-task-btn" class="secondary-button direct-task-button" type="button" hidden>Dispatch Task</button>
-            <button id="send-msg-btn" class="primary-btn">Send</button>
+          <details class="prompt-suggestions" hidden>
+            <summary>Try an example</summary>
+            <div class="quick-prompts">
+              <button class="prompt-chip" data-prompt="Converse with a worker node model using node_converse to design a distributed cache architecture and ask for implementation details.">Converse with a node</button>
+              <button class="prompt-chip" data-prompt="Use node_to_node_conversation to have two different worker node LLMs debate the best concurrency model for this cluster, then summarise what they agreed on.">Compare node perspectives</button>
+              <button class="prompt-chip" data-prompt="Call memory_insights and tell me what the cluster has learned so far about which nodes and models perform best.">Explore cluster learnings</button>
+              <button class="prompt-chip" data-prompt="Collaborate with a worker node model using node_collaborate to write and iteratively refine a high-performance Go worker pool.">Build with a node</button>
+              <button class="prompt-chip" data-prompt="Inspect the cluster status, summarize all healthy nodes, available GPUs, and compute capacity.">Check cluster capacity</button>
+              <button class="prompt-chip" data-prompt="Fan out a parallel benchmark across all nodes in the cluster using cluster_parallel_dispatch and compare outputs.">Run a parallel benchmark</button>
+            </div>
+          </details>
+
+          <!-- Interactive Message Input -->
+          <div class="chat-input-container">
+            <textarea id="chat-input" placeholder="Ask a question or tell mAIstr0 what to do..." rows="2"></textarea>
+            <div class="chat-input-actions">
+              <span id="chat-status" class="chat-status"></span>
+              <button id="interrupt-msg-btn" class="secondary-button interrupt-button" type="button" hidden>Interrupt</button>
+              <button id="send-msg-btn" class="primary-btn">Ask mAIstr0</button>
+            </div>
           </div>
         </div>
       </div>
@@ -218,10 +209,10 @@
     </section>
 
     <section id="cluster-overview-panel" class="cluster-window active" role="tabpanel" aria-labelledby="cluster-overview-tab">
-      <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Available nodes and their current status. Right-click a node to configure or pair it.</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
+      <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Available nodes and their current status. Expand a node for hardware, engine inventory, and model capabilities. Right-click a node to configure or pair it.</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
       <nav class="overview-tabs" role="tablist" aria-label="Cluster overview">
         <button class="overview-tab active" type="button" role="tab" id="overview-members-tab" aria-controls="overview-members-panel" aria-selected="true">Available nodes</button>
-        <button class="overview-tab" type="button" role="tab" id="overview-activity-tab" aria-controls="overview-activity-panel" aria-selected="false" tabindex="-1">Current activity</button>
+        <button class="overview-tab" type="button" role="tab" id="overview-activity-tab" aria-controls="overview-activity-panel" aria-selected="false" tabindex="-1">Recent activity</button>
       </nav>
       <section id="overview-members-panel" class="overview-column overview-members" role="tabpanel" aria-labelledby="overview-members-tab" tabindex="0">
         <h3 id="overview-nodes-heading">Available nodes</h3>
@@ -229,7 +220,7 @@
         <div id="cluster-peers" class="cluster-peers"></div>
       </section>
       <section id="overview-activity-panel" class="overview-column overview-activity-column" role="tabpanel" aria-labelledby="overview-activity-tab" tabindex="0" hidden>
-        <h3 id="overview-activity-heading">Current activity</h3>
+        <h3 id="overview-activity-heading">Recent activity</h3>
         <div id="overview-activity" class="overview-activity"></div>
       </section>
     </section>
@@ -364,7 +355,7 @@
           <h3>Model service</h3>
           <div class="node-properties-grid">
             <label>Default model<input name="default_model" placeholder="Automatic best match" /></label>
-            <label>Engine<select name="engine_name"><option value="ollama">Ollama</option><option value="lmstudio">LM Studio</option><option value="vllm">vLLM</option><option value="fastflowlm">FastFlowLM</option></select></label>
+            <label>Engine<select name="engine_name"><option value="ollama">Ollama</option><option value="lmstudio">LM Studio</option><option value="llamacpp">llama.cpp</option><option value="vllm">vLLM</option><option value="fastflowlm">FastFlowLM</option></select></label>
             <label class="wide-field">Engine URL<input name="engine_url" placeholder="http://127.0.0.1:11434" /></label>
             <label class="wide-field">Disabled models<textarea name="disabled_models" rows="2" placeholder="One model per line"></textarea></label>
           </div>

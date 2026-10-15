@@ -68,7 +68,7 @@ func TestNodeConfigNormalizeAndValidate(t *testing.T) {
 	validURLs.OrchestratorAddr = "https://orchestrator.example:7450"
 	validURLs.AdvertiseAddr = "HTTPS://node.example:7451"
 	validURLs.PairingPIN = "012345"
-	for index, name := range []string{"ollama", "vllm", "lmstudio", "fastflowlm"} {
+	for index, name := range []string{"ollama", "vllm", "lmstudio", "llamacpp", "fastflowlm"} {
 		scheme := "http"
 		if index%2 == 1 {
 			scheme = "https"

@@ -129,7 +129,7 @@ The dashboard provides three views:
   triggered by an agent are cancelled if the parent session is interrupted.
 - **Cluster & Workload** for node health, discovered LAN peers, model lists,
   active tasks, and routing. Its Overview has **Available nodes** and
-  **Current activity** tabs for node status and current/recent task activity.
+  **Recent activity** tabs for node status and current/recent task activity.
   Selecting a subtask assignment switches to Available nodes and highlights
   its target node; known members remain visible when offline. Its Setup page
   is organized into **Pairing access**, **Available nodes**, **Inference readiness**,
@@ -166,7 +166,9 @@ peers receive full snapshots. Task records also carry optional origin and
 sequence metadata, and legacy task databases are backfilled automatically.
 Memory and task-history requests remain limited to 64 MiB each; larger
 histories transfer in multiple bounded pages. A single record larger than the
-limit is rejected explicitly. The scheduler uses successful and failed
+limit is rejected explicitly. Sync transfers use a dedicated 10-minute HTTP
+timeout, and sync diagnostics are retained in the rolling log without being
+printed to the console. The scheduler uses successful and failed
 node/model/task outcomes to improve future assignments.
 
 The Cluster & Workload **Setup** tab checks each node's engine and model
@@ -175,10 +177,12 @@ engine configuration and default-model selection.
 On worker-only nodes, local model inspection and updates run directly without
 an HTTPS request back to the worker itself. Remote node requests still require
 paired certificate pins.
-Its model catalog is a curated, bundled list of pull-ready Ollama names; it
-does not fetch catalog metadata or send prompts to a remote catalog service.
-Choose an online target node and its download-capable engine before installing.
-Installed models are shown as either usable or disabled for scheduling.
+Its model catalog is a curated, bundled list of pull-ready Ollama names with
+descriptions and searchable task/capability tags for chat, coding, reasoning,
+vision, and other common workloads; it does not fetch catalog metadata or send
+prompts to a remote catalog service. Choose an online target node and its
+download-capable engine before installing. Installed models are shown as
+either usable or disabled for scheduling.
 Task details show the scheduler's score components and whether accelerator
 telemetry was fresh enough to influence the assignment; telemetry older than
 30 seconds is ignored for routing. Scheduler load includes active node work and
@@ -202,9 +206,11 @@ path. Node identity and listen address are shown as read-only settings.
 
 ## Model engines
 
-Nodes detect local Ollama, LM Studio, and FastFlowLM services by default. LM
-Studio is discovered at `http://127.0.0.1:1234` and can also be configured at
-another OpenAI-compatible server URL. Configure
+Nodes detect local Ollama, LM Studio, llama.cpp, and FastFlowLM services by
+default. LM Studio is discovered at `http://127.0.0.1:1234`; llama.cpp is
+discovered at `http://127.0.0.1:8080` or PAIR's managed-server port
+`http://127.0.0.1:8081`. Both can also be configured at another
+OpenAI-compatible server URL. Configure
 additional or remote engines in a node configuration file:
 
 ```json
@@ -216,6 +222,7 @@ additional or remote engines in a node configuration file:
   "engines": [
     { "name": "ollama", "url": "http://127.0.0.1:11434" },
     { "name": "lmstudio", "url": "http://127.0.0.1:1234" },
+    { "name": "llamacpp", "url": "http://127.0.0.1:8080" },
     { "name": "vllm", "url": "http://127.0.0.1:8000" }
   ]
 }
@@ -239,10 +246,10 @@ keep LAN discovery enabled.
 
 Listen addresses must use `host:port` or `:port` syntax. A node's
 `orchestrator_addr` and `advertise_addr` must be empty or HTTPS URLs. Configured
-engine names must be `ollama`, `vllm`, `lmstudio`, or `fastflowlm`, and their
-`url` values must be HTTP or HTTPS URLs. A configured `pairing_pin` must contain
-exactly six digits. When `memory_path` is set, its parent directory must be
-creatable; missing parent directories are created as needed.
+engine names must be `ollama`, `vllm`, `lmstudio`, `llamacpp`, or `fastflowlm`,
+and their `url` values must be HTTP or HTTPS URLs. A configured `pairing_pin`
+must contain exactly six digits. When `memory_path` is set, its parent
+directory must be creatable; missing parent directories are created as needed.
 
 Invalid settings are reported individually and prevent startup with exit code
 `2`.
@@ -254,15 +261,24 @@ orchestrator cap to use more cluster-wide parallelism; increase a node's cap
 only when its local engine and hardware can safely serve more concurrent
 requests.
 
-LM Studio, vLLM, and FastFlowLM use the OpenAI-compatible chat-completions API.
-The scheduler adds a GPU preference to models advertised by GPU-equipped
+LM Studio, vLLM, llama.cpp, and FastFlowLM use the OpenAI-compatible
+chat-completions API. mAIstr0 connects to an already-running `llama-server`;
+installing the server and downloading/managing its model files remain the
+responsibility of llama.cpp or another model manager. The scheduler adds a GPU preference to models advertised by GPU-equipped
 nodes; this is a routing preference and does not guarantee that the engine
-will use the GPU. Ollama and OpenAI-compatible engines support token streaming. Other
-engines can still serve requests, but their streamed responses may arrive as
-a single completed chunk. Temperature and maximum-token settings are passed
-to engines that support those options.
+will use the GPU. On nodes with a detected NPU, FastFlowLM is preferred when
+the same model is available from multiple local engines. Ollama and
+OpenAI-compatible engines support token streaming. Other engines can still
+serve requests, but their streamed responses may arrive as a single completed
+chunk. Temperature and maximum-token settings are passed to engines that
+support those options.
 
 ## API
+
+The orchestrator API remains available while the mAIstr0 process is running,
+including when its console is hidden. Local third-party programs can use
+`http://127.0.0.1:7450` by default. Remote clients must use HTTPS and a paired
+cluster identity (mutual TLS); plain HTTP is restricted to loopback.
 
 Submit work through `POST /api/tasks` with a JSON body such as
 `{"description":"Summarize this report"}`. By default, mAIstr0 preserves its

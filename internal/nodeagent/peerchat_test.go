@@ -6,11 +6,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
@@ -170,6 +172,7 @@ func TestStandaloneLeaderReplicatesMemoryAndLearnsPeerExperience(t *testing.T) {
 
 	peerMux := http.NewServeMux()
 	peerMux.HandleFunc("GET /memory/sync", func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(30 * time.Millisecond)
 		writeJSON(w, http.StatusOK, peer.mem.Snapshot())
 	})
 	peerMux.HandleFunc("POST /memory/sync", func(w http.ResponseWriter, r *http.Request) {
@@ -193,6 +196,7 @@ func TestStandaloneLeaderReplicatesMemoryAndLearnsPeerExperience(t *testing.T) {
 		{ID: "node-b", Address: peerServer.URL, Healthy: true},
 	}
 	leader.mu.Unlock()
+	leader.peerClient.Timeout = 10 * time.Millisecond
 
 	leader.syncPeerMemory()
 	leader.syncPeerMemory()
@@ -211,6 +215,38 @@ func TestStandaloneLeaderReplicatesMemoryAndLearnsPeerExperience(t *testing.T) {
 	}
 	if got := len(peer.mem.Experiences(10)); got != 3 {
 		t.Fatalf("repeated sync duplicated experiences on peer: got %d, want 3", got)
+	}
+}
+
+func TestSyncOrchestratorMemoryUsesLongTimeoutClient(t *testing.T) {
+	a := newTestAgent(t, "node-a")
+	a.peerClient.Timeout = 10 * time.Millisecond
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/memory/sync", func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(30 * time.Millisecond)
+		watermarks := map[string]uint64{}
+		if err := memory.SetSyncResponseHeaders(w, watermarks); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, memory.Snapshot{
+			SyncVersion: memory.SyncProtocolVersion,
+			Watermarks:  watermarks,
+		})
+	})
+	mux.HandleFunc("POST /api/memory/sync", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	if err := a.syncOrchestratorMemory(server.URL); err != nil {
+		t.Fatalf("memory sync failed with a delayed response: %v", err)
 	}
 }
 

@@ -17,19 +17,25 @@ import (
 // than being treated as an Ollama pull operation.
 type VLLM struct {
 	baseURL     string
+	engineName  string
 	client      *http.Client
 	probeClient *http.Client
 }
 
 func NewVLLM(baseURL string) *VLLM {
+	return newOpenAICompatibleEngine(baseURL, "vllm")
+}
+
+func newOpenAICompatibleEngine(baseURL, engineName string) *VLLM {
 	return &VLLM{
 		baseURL:     strings.TrimRight(baseURL, "/"),
+		engineName:  engineName,
 		client:      &http.Client{Timeout: 10 * time.Minute},
 		probeClient: &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
-func (v *VLLM) Name() string { return "vllm" }
+func (v *VLLM) Name() string { return v.engineName }
 func (v *VLLM) URL() string  { return v.baseURL }
 
 func (v *VLLM) Available() bool {
@@ -49,7 +55,7 @@ func (v *VLLM) ListModels() ([]Model, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("vllm list models failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%s list models failed: %s: %s", v.Name(), resp.Status, strings.TrimSpace(string(body)))
 	}
 	var result struct {
 		Data []struct {
@@ -97,7 +103,7 @@ func (v *VLLM) GenerateWithOptions(ctx context.Context, model, prompt string, op
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("vllm chat failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return "", fmt.Errorf("%s chat failed: %s: %s", v.Name(), resp.Status, strings.TrimSpace(string(data)))
 	}
 	var result struct {
 		Choices []struct {
@@ -134,7 +140,7 @@ func (v *VLLM) ChatWithContext(ctx context.Context, model string, messages []Cha
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("vllm chat failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return "", fmt.Errorf("%s chat failed: %s: %s", v.Name(), resp.Status, strings.TrimSpace(string(data)))
 	}
 	var result struct {
 		Choices []struct {
@@ -179,7 +185,7 @@ func (v *VLLM) GenerateStream(ctx context.Context, model, prompt string, options
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("vllm chat stream failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return fmt.Errorf("%s chat stream failed: %s: %s", v.Name(), resp.Status, strings.TrimSpace(string(data)))
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)

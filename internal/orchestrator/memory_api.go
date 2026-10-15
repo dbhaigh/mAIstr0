@@ -155,11 +155,11 @@ type memorySyncRequest struct {
 func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	reader := &memorySyncCountingReader{ReadCloser: r.Body}
-	log.Printf("orchestrator: memory sync direction=node->orchestrator event=receive_start remote=%s body_bytes_declared=%d",
+	log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_start remote=%s body_bytes_declared=%d",
 		r.RemoteAddr, r.ContentLength)
 	if s.mem == nil {
 		w.WriteHeader(http.StatusNoContent)
-		log.Printf("orchestrator: memory sync direction=node->orchestrator event=receive_complete remote=%s status=%d body_bytes=%d elapsed=%s",
+		log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_complete remote=%s status=%d body_bytes=%d elapsed=%s",
 			r.RemoteAddr, http.StatusNoContent, reader.bytesRead, time.Since(started))
 		return
 	}
@@ -171,7 +171,7 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &maxBytesError) {
 			status = http.StatusRequestEntityTooLarge
 		}
-		log.Printf("orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
+		log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
 			req.NodeID, r.RemoteAddr, status, reader.bytesRead, time.Since(started), err)
 		if status == http.StatusBadRequest {
 			writeError(w, apperr.Invalid(err))
@@ -187,7 +187,7 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 	}
 	mergeStarted := time.Now()
 	if err := s.mem.MergeSnapshotFrom(snapshot, req.NodeID); err != nil {
-		log.Printf("orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
+		log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
 			req.NodeID, r.RemoteAddr, apperr.StatusCode(apperr.InternalError(err)), reader.bytesRead, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
 		writeError(w, apperr.InternalError(err))
 		return
@@ -198,7 +198,7 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 		"merged":  len(snapshot.Experiences) + len(snapshot.Facts) + len(snapshot.Dialogues) + len(snapshot.Performances),
 		"node_id": req.NodeID,
 	})
-	log.Printf("orchestrator: memory sync direction=node->orchestrator event=receive_complete node_id=%s remote=%s status=%d body_bytes=%d records=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s response_body_bytes=%d response_error=%v",
+	log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_complete node_id=%s remote=%s status=%d body_bytes=%d records=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s response_body_bytes=%d response_error=%v",
 		req.NodeID, r.RemoteAddr, http.StatusOK, reader.bytesRead,
 		len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Dialogues)+len(snapshot.Performances),
 		decodeElapsed, mergeElapsed, time.Since(started), response.bytesWritten, response.writeErr)
@@ -206,7 +206,7 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	log.Printf("orchestrator: memory sync direction=orchestrator->node event=send_start remote=%s body_bytes=unknown", r.RemoteAddr)
+	log.Printf("FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_start remote=%s body_bytes=unknown", r.RemoteAddr)
 	snapshot := memory.Snapshot{}
 	var responseWatermarks map[string]uint64
 	if s.mem != nil {
@@ -252,7 +252,7 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 	}
 	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
 	writeJSON(response, http.StatusOK, snapshot)
-	log.Printf("orchestrator: memory sync direction=orchestrator->node event=send_complete remote=%s status=%d body_bytes=%d records=%d elapsed=%s error=%v",
+	log.Printf("FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_complete remote=%s status=%d body_bytes=%d records=%d elapsed=%s error=%v",
 		r.RemoteAddr, http.StatusOK, response.bytesWritten,
 		len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Performances)+len(snapshot.Dialogues),
 		time.Since(started), response.writeErr)

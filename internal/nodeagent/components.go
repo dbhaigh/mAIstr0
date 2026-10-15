@@ -70,6 +70,7 @@ type identityComponent struct {
 type orchestratorLink struct {
 	discoveryListener *discovery.Listener
 	peerClient        *http.Client
+	memorySyncClient  *http.Client
 	streamClient      *http.Client
 	configState       interface {
 		configSnapshot() config.NodeConfig
@@ -243,6 +244,7 @@ func newOrchestratorLink(
 	cfg := state.configSnapshot()
 	return &orchestratorLink{
 		peerClient:       &http.Client{Timeout: 5 * time.Second},
+		memorySyncClient: &http.Client{Timeout: memorySyncTimeout},
 		streamClient:     &http.Client{},
 		orchestratorAddr: cfg.OrchestratorAddr,
 		configState:      state,

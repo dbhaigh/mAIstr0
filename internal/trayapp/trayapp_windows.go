@@ -40,7 +40,7 @@ func setConsoleVisible(visible bool) {
 }
 
 func openBrowser(url string) {
-	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start(); err != nil {
+	if err := exec.Command("explorer.exe", url).Start(); err != nil {
 		log.Printf("trayapp: failed to open browser: %v", err)
 	}
 }
@@ -100,7 +100,7 @@ func openLogFile(path string) {
 		log.Printf("trayapp: cannot open application log: log file path is unavailable")
 		return
 	}
-	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", path).Start(); err != nil {
+	if err := exec.Command("explorer.exe", path).Start(); err != nil {
 		log.Printf("trayapp: failed to open application log %q: %v", path, err)
 	}
 }

@@ -14,6 +14,8 @@ func TestNPUVendor(t *testing.T) {
 		{name: "intel", text: "Intel(R) AI Boost", want: "intel-npu"},
 		{name: "qualcomm", text: "Qualcomm Hexagon NPU", want: "qualcomm-npu"},
 		{name: "hailo", text: "Hailo-8 AI Processor", want: "hailo-npu"},
+		{name: "generic NPU token", text: "Unknown NPU device", want: "npu"},
+		{name: "input device is not an NPU", text: "HID-compliant input device", want: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

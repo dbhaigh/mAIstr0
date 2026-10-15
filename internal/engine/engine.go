@@ -44,7 +44,7 @@ func ProtocolsForEngine(name string) []string {
 	switch name {
 	case "ollama":
 		return []string{"ollama", "openai"}
-	case "lmstudio", "vllm", "fastflowlm":
+	case "lmstudio", "llamacpp", "vllm", "fastflowlm":
 		return []string{"openai"}
 	default:
 		return nil
@@ -115,6 +115,7 @@ func DetectAll() []Engine {
 	candidates := []Engine{
 		NewOllama("http://127.0.0.1:11434"),
 		detectLMStudio(),
+		detectLlamaCPP(),
 		NewFastFlowLM("http://127.0.0.1:8000"),
 	}
 	var found []Engine
@@ -145,10 +146,28 @@ func firstAvailableLMStudio(candidates ...*LMStudio) Engine {
 	return nil
 }
 
+func detectLlamaCPP() Engine {
+	return firstAvailableLlamaCPP(
+		NewLlamaCPP("http://127.0.0.1:8080"),
+		NewLlamaCPP("http://127.0.0.1:8081"),
+	)
+}
+
+func firstAvailableLlamaCPP(candidates ...*LlamaCPP) Engine {
+	for _, candidate := range candidates {
+		if candidate.Available() {
+			return candidate
+		}
+	}
+	return nil
+}
+
 func NewConfigured(name, baseURL string) Engine {
 	switch name {
 	case "ollama":
 		return NewOllama(baseURL)
+	case "llamacpp":
+		return NewLlamaCPP(baseURL)
 	case "vllm":
 		return NewVLLM(baseURL)
 	case "lmstudio":

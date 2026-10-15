@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // GPUUsageSample is one five-second GPU telemetry snapshot. Utilization is
@@ -219,10 +220,16 @@ func npuVendor(text string) string {
 		{"hexagon", "qualcomm-npu"},
 		{"hiai", "huawei-npu"},
 		{"hailo", "hailo-npu"},
-		{"npu", "npu"},
 	} {
 		if strings.Contains(value, match.needle) {
 			return strings.TrimSpace(match.vendor)
+		}
+	}
+	for _, token := range strings.FieldsFunc(value, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if token == "npu" {
+			return "npu"
 		}
 	}
 	return ""

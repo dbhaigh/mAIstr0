@@ -7,18 +7,11 @@ type FastFlowLM struct {
 }
 
 func NewFastFlowLM(baseURL string) *FastFlowLM {
-	return &FastFlowLM{VLLM: NewVLLM(baseURL)}
+	return &FastFlowLM{VLLM: newOpenAICompatibleEngine(baseURL, "fastflowlm")}
 }
 
 func (f *FastFlowLM) Name() string { return "fastflowlm" }
 
 func (f *FastFlowLM) ListModels() ([]Model, error) {
-	models, err := f.VLLM.ListModels()
-	if err != nil {
-		return nil, err
-	}
-	for i := range models {
-		models[i].Engine = f.Name()
-	}
-	return models, nil
+	return f.VLLM.ListModels()
 }

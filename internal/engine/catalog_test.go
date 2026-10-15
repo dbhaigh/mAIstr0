@@ -1,6 +1,9 @@
 package engine
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestModelCatalogFiltersByEngineAndQuery(t *testing.T) {
 	models := ModelCatalog(" OLLAMA ", "code")
@@ -25,5 +28,32 @@ func TestModelCatalogReturnsIndependentEntries(t *testing.T) {
 	models[0].Tags[0] = "mutated"
 	if ModelCatalog("ollama", "")[0].Tags[0] == "mutated" {
 		t.Fatal("catalog caller mutated shared tags")
+	}
+}
+
+func TestModelCatalogHasActionableMetadataAndRepresentativeChoices(t *testing.T) {
+	models := ModelCatalog("ollama", "")
+	byName := make(map[string]CatalogModel, len(models))
+	for _, model := range models {
+		if strings.TrimSpace(model.Description) == "" || len(model.Tags) == 0 {
+			t.Errorf("catalog entry %q is missing its description or capability tags", model.Name)
+		}
+		byName[model.Name] = model
+	}
+
+	for _, name := range []string{
+		"gemma3:12b",
+		"llama3.2-vision:11b",
+		"qwen2.5-coder:7b",
+		"qwen3:8b",
+	} {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("catalog is missing representative model %q", name)
+		}
+	}
+
+	visionModels := ModelCatalog("ollama", "vision")
+	if len(visionModels) == 0 {
+		t.Fatal("expected vision-capable models to be searchable")
 	}
 }

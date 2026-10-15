@@ -6,9 +6,81 @@ const vm = require("node:vm");
 
 const source = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8");
 const discoverySource = source.slice(source.indexOf("function visibleNetworkPeers("), source.indexOf("function renderTasks("));
-const taskSource = source.slice(source.indexOf("function renderTasks("), source.indexOf("async function copyText("));
+const taskSource = source.slice(source.indexOf("function renderTaskHistoryTable("), source.indexOf("async function copyText("));
 const resourceHistorySource = source.slice(source.indexOf("function gpuGaugeMarkup("), source.indexOf("const TASK_ACTIVE_STATES"));
-const engineStatusSource = source.slice(source.indexOf("function engineInventoryState("), source.indexOf("function renderDirectClusterContext("));
+const engineStatusSource = source.slice(source.indexOf("function formatNodeHardware("), source.indexOf("function renderDirectMessages("));
+const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
+const sendInteractiveStart = source.indexOf("async function sendInteractiveMessage(text) {");
+const sendInteractiveEnd = source.indexOf("\nfunction handleStreamEvent(", sendInteractiveStart);
+const sendInteractiveSource = source.slice(sendInteractiveStart, sendInteractiveEnd);
+
+test("Node properties allow configuring llama.cpp", () => {
+  const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
+  assert.match(index, /<option value="llamacpp">llama\.cpp<\/option>/);
+});
+
+test("Live node context is expandable from cluster overview node cards", () => {
+  const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
+  const overviewStart = index.indexOf('<section id="cluster-overview-panel"');
+  const nodesPanelPosition = index.indexOf('<section id="nodes-panel"');
+  const sidebarStart = index.indexOf('<aside class="agent-sidebar"');
+  const sidebarEnd = index.indexOf("</aside>", sidebarStart);
+  const sidebarMarkup = index.slice(sidebarStart, sidebarEnd);
+
+  assert.ok(overviewStart >= 0 && nodesPanelPosition > overviewStart);
+  assert.doesNotMatch(index, /direct-cluster-context|Live Cluster Context/);
+  assert.doesNotMatch(sidebarMarkup, /id="direct-cluster-context"/);
+  assert.ok(sidebarEnd > sidebarStart);
+  assert.match(source, /<details class="overview-node-context"/);
+  assert.match(source, /nodeContextDetailsMarkup\(node, expandedNodeIDs\.has\(node\.id\)\)/);
+  assert.doesNotMatch(source, /refreshDirectClusterContext/);
+  assert.match(source, /if \(agentSidebar\) agentSidebar\.hidden = direct;/);
+});
+
+test("mAIstr0 is the default chat mode and does not create an agent session on startup", async () => {
+  const defaultMode = source.match(/let activeChatMode = "([^"]+)";/);
+  const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
+  assert.equal(defaultMode?.[1], "direct");
+  assert.match(index, /class="agent-tab active"[^>]*data-agent="direct">mAIstr0<\/button>/);
+
+  let selected = 0;
+  let created = 0;
+  const context = vm.createContext({
+    activeChatMode: "direct",
+    currentSessions: [],
+    fetchJSON: async (url) => {
+      assert.equal(url, "/api/agent/sessions");
+      return [{ id: "existing-pi-session", harness: "pi" }];
+    },
+    renderSessionList: () => {},
+    sessionsForHarness: () => assert.fail("direct mode should not select an agent session"),
+    activeSessionIds: new Map(),
+    selectSession: async () => { selected++; },
+    createNewSession: async () => { created++; },
+    console: { error: () => {} },
+  });
+  vm.runInContext(sessionSource, context);
+  await context.loadSessions();
+
+  assert.equal(context.currentSessions.length, 1);
+  assert.equal(selected, 0);
+  assert.equal(created, 0);
+});
+
+test("mAIstr0 sends questions and work through one task submission action", async () => {
+  const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
+  assert.doesNotMatch(index, /dispatch-direct-task-btn/);
+  assert.match(index, /id="send-msg-btn"[^>]*>Ask mAIstr0<\/button>/);
+
+  const submitted = [];
+  const context = vm.createContext({
+    activeChatMode: "direct",
+    dispatchDirectTask: async (description) => { submitted.push(description); },
+  });
+  vm.runInContext(sendInteractiveSource, context);
+  await context.sendInteractiveMessage("Which node has the most available memory?");
+  assert.deepEqual(submitted, ["Which node has the most available memory?"]);
+});
 
 test("Nodes page combines GPU, NPU, CPU, and RAM histories in one graph", () => {
   const context = vm.createContext({
@@ -107,6 +179,32 @@ test("Node engine inventory indicators distinguish available, empty, failed, and
   assert.match(details, /Last successful inventory:/);
   assert.match(details, /Inventory check failed: &lt;timeout&gt;/);
   assert.doesNotMatch(details, /<timeout>/);
+});
+
+test("Expandable node context includes hardware, engine status, and model capabilities", () => {
+  const context = vm.createContext({
+    escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+  });
+  vm.runInContext(engineStatusSource, context);
+
+  const html = context.nodeContextDetailsMarkup({
+    active_tasks: 2,
+    hardware: {
+      os: "windows", arch: "amd64", cpu_cores: 8, total_ram_mb: 16384,
+      has_gpu: true, gpu_vendor: "NVIDIA", gpu_stats_available: true, gpu_utilization_percent: 42,
+      score: 87,
+    },
+    engines: [{ name: "ollama", ready: true, inventory_state: "available", model_count: 1 }],
+    models: [{ name: "qwen", tags: ["chat", "<reasoning>"], engine: "ollama" }],
+  }, false);
+
+  assert.match(html, /<details class="overview-node-context">/);
+  assert.match(html, /windows\/amd64 · 8 CPU cores · 16\.0 GB RAM · NVIDIA · 42% busy/);
+  assert.match(html, /Active tasks: 2 · capability score 87\.0/);
+  assert.match(html, /Inventory available/);
+  assert.match(html, /qwen<\/strong>/);
+  assert.match(html, /chat, &lt;reasoning&gt; · ollama/);
+  assert.doesNotMatch(html, /<reasoning>/);
 });
 
 function discoveryContext(nodes = [], pairing = null) {
@@ -260,6 +358,11 @@ test("Tasks are searchable and filterable in an expandable table", () => {
         status: "completed",
         node_id: "node-a",
         model: "model-a",
+        attempts: [{
+          number: 1,
+          started_at: "2026-10-13T10:01:00Z",
+          finished_at: "2026-10-13T10:04:00Z",
+        }],
         output: "review complete",
       }],
       result: "All good",
@@ -284,7 +387,13 @@ test("Tasks are searchable and filterable in an expandable table", () => {
   assert.match(rows[0].innerHTML, /aria-expanded="false"/);
   assert.match(rows[0].innerHTML, /1 \/ 1/);
   assert.match(rows[0].innerHTML, /<span class="badge completed">completed<\/span>/);
+  assert.match(rows[0].innerHTML, /datetime="2026-10-13T10:00:00Z"/);
+  assert.match(rows[0].innerHTML, /Created/);
   assert.match(rows[1].innerHTML, /Created/);
+  assert.match(rows[1].innerHTML, /datetime="2026-10-13T10:01:00Z"/);
+  assert.match(rows[1].innerHTML, /datetime="2026-10-13T10:04:00Z"/);
+  assert.match(rows[1].innerHTML, /Started/);
+  assert.match(rows[1].innerHTML, /Finished/);
   assert.match(rows[1].innerHTML, /review complete/);
   assert.equal(taskHistoryCount.textContent, "Showing 1 of 2 tasks");
 
@@ -310,6 +419,8 @@ test("Tasks are searchable and filterable in an expandable table", () => {
   ]);
   assert.equal(rows.length, 2);
   assert.equal(rows[1].hidden, false);
+  assert.match(rows[1].innerHTML, /Not dispatched/);
+  assert.match(rows[1].innerHTML, /datetime="2026-10-13T10:00:00Z"/);
 
   taskHistorySearch.value = "task-1";
   taskHistoryStatus.value = "all";
@@ -334,6 +445,11 @@ test("Tasks are searchable and filterable in an expandable table", () => {
   assert.equal(rows.length, 2);
   assert.match(rows[1].innerHTML, /<strong>Failure reason:<\/strong> result is not valid JSON/);
   assert.match(rows[0].innerHTML, /<span class="badge failed">failed<\/span>/);
+});
+
+test("Overview recent activity uses the shared expandable task history table", () => {
+  assert.match(source, /renderTaskHistoryTable\(overviewActivity, overviewTasks, "overview-task", true\)/);
+  assert.doesNotMatch(source, /activity-card/);
 });
 
 test("An unknown association is not guessed from the first discovered orchestrator", () => {

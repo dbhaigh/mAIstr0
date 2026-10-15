@@ -17,11 +17,11 @@ const (
 func prioritizeAcceleratedEngines(engines []engine.Engine, hw hardware.Info) []engine.Engine {
 	ordered := make([]engine.Engine, 0, len(engines))
 	priorities := make([]string, 0, 2)
-	if hw.HasGPU {
-		priorities = append(priorities, "lmstudio")
-	}
 	if hw.HasNPU {
 		priorities = append(priorities, "fastflowlm")
+	}
+	if hw.HasGPU {
+		priorities = append(priorities, "lmstudio")
 	}
 	preferred := make(map[string]bool, len(priorities))
 	for _, name := range priorities {

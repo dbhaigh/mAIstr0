@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.0.7 - 2026-10-15
+
+### Added
+
+- Detect and configure llama.cpp OpenAI-compatible servers, including the
+  managed-server port, and filter the bundled model catalog by engine.
+- Add live hardware, engine inventory, and model details to expandable node
+  cards; prefer FastFlowLM on NPU-capable nodes when a model exists on multiple
+  local engines.
+
+### Changed
+
+- Keep memory-sync diagnostics in the rolling log file without echoing them to
+  the console, and reduce routine console output.
+- Document local and paired-client access to the orchestrator API.
+
+### Fixed
+
+- Give memory synchronization a dedicated 10-minute HTTP client instead of
+  the peer-control client's 5-second timeout, preventing slow transfers from
+  being cut off and reported as unexpected EOF by the other node.
+- Avoid detecting ordinary Windows input devices as NPUs.
+- Preserve FastFlowLM identity and model names while sharing the OpenAI-
+  compatible vLLM implementation.
+- Use Explorer rather than `rundll32` when opening links and log files on
+  Windows.
+
+### Validation
+
+- `go test ./... -count=1 -timeout 5m`
+- `go vet ./...`
+- `node --test web/app_test.js`
+- `.\build\build.ps1` (Windows, Linux, and Ubuntu Linux release binaries)
+
 ## 0.0.6 - 2026-10-14
 
 ### Fixed

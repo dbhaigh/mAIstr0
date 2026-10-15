@@ -278,7 +278,7 @@ func configureLogging() (*logging.DailyFile, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("open rolling log %s: %w", path, err)
 	}
-	log.SetOutput(io.MultiWriter(os.Stderr, file))
+	log.SetOutput(io.MultiWriter(logging.NewConsoleWriter(os.Stderr), file))
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("maistr0: logging to %s", path)
 	return file, path, nil
@@ -362,7 +362,7 @@ func openBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		cmd = exec.Command("explorer.exe", url)
 	case "darwin":
 		cmd = exec.Command("open", url)
 	default:
