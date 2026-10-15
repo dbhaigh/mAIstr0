@@ -1,0 +1,77 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "created_at": "\u003cTIME\u003e",
+    "description": "Fail this workflow",
+    "error": "one or more subtasks failed",
+    "graph": {
+      "edges": [],
+      "nodes": {
+        "work": {
+          "description": "Fail during execution",
+          "id": "work",
+          "output_format": "text",
+          "role": "general",
+          "tags": [
+            "general"
+          ],
+          "task_type": "general"
+        }
+      }
+    },
+    "id": "\u003cTASK_ID\u003e",
+    "last_checkpoint": "\u003cCHECKPOINT_ID\u003e",
+    "origin": "\u003cTASK_ORIGIN\u003e",
+    "resumable": true,
+    "sequence": 0,
+    "status": "failed",
+    "subtasks": [
+      {
+        "address": "\u003cWORKER_URL\u003e",
+        "attempts": [
+          {
+            "duration_ms": 0,
+            "error": "node returned 500 Internal Server Error",
+            "failure_class": "upstream_5xx",
+            "finished_at": "\u003cTIME\u003e",
+            "http_status": 500,
+            "id": "\u003cTASK_ID\u003e",
+            "model": "general-model",
+            "node_id": "failed-worker",
+            "number": 1,
+            "started_at": "\u003cTIME\u003e",
+            "status": "failed"
+          }
+        ],
+        "error": "node returned 500 Internal Server Error",
+        "model": "general-model",
+        "node_id": "failed-worker",
+        "score": 0,
+        "score_factors": {
+          "active_tasks": 0,
+          "gpu_utilization_penalty": 0,
+          "hardware": 0,
+          "learned_bias": 0,
+          "load_penalty": 0,
+          "model_match": 20,
+          "npu_utilization_penalty": 0,
+          "queued_tasks": 0,
+          "telemetry_fresh": false
+        },
+        "status": "failed",
+        "subtask": {
+          "description": "Fail during execution",
+          "id": "work",
+          "output_format": "text",
+          "role": "general",
+          "tags": [
+            "general"
+          ],
+          "task_type": "general"
+        }
+      }
+    ],
+    "updated_at": "\u003cTIME\u003e"
+  }
+}

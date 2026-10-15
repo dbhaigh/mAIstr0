@@ -160,6 +160,10 @@ func phase1Requests() map[string]request {
 			Method: "GET", Path: "/api/tasks/{id}",
 			Setup: "Create a task with prepare followed by follow-up and wait for completion.",
 		},
+		"task-failed": {
+			Method: "GET", Path: "/api/tasks/{id}",
+			Setup: "Create a task with a worker returning an execution error, then wait for the task to fail.",
+		},
 		"task-get-explicit-graph": {
 			Method: "GET", Path: "/api/tasks/{id}",
 			Setup: "POST the explicit graph workflow and wait for completion.",

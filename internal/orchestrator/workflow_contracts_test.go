@@ -398,6 +398,48 @@ func TestTaskHTTPErrorAndCancelContracts(t *testing.T) {
 	assertOrchestratorGolden(t, "task-cancelled.json", cancelled, false)
 }
 
+func TestTaskExecutionFailureHTTPContract(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/execute" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "simulated execution failure", http.StatusInternalServerError)
+	}))
+	t.Cleanup(worker.Close)
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "failed-worker", Address: worker.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general-model", Tags: []string{"general"}}},
+	})
+	mux := srv.Mux()
+	created := serveContractRequest(mux, http.MethodPost, "/api/tasks",
+		`{"description":"Fail this workflow","subtasks":[{"id":"work","description":"Fail during execution","task_type":"general"}]}`)
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("create task returned %d: %s", created.Code, created.Body.String())
+	}
+	var task taskmgr.Task
+	if err := json.Unmarshal(created.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+
+	failed, err := waitForTaskState(t, srv, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != taskmgr.StatusFailed || !failed.Resumable ||
+		len(failed.Subtasks) != 1 || failed.Subtasks[0].Status != taskmgr.StatusFailed {
+		t.Fatalf("execution failure did not produce a resumable failed task: %+v", failed)
+	}
+
+	response := serveContractRequest(mux, http.MethodGet, "/api/tasks/"+task.ID, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET failed task returned %d: %s", response.Code, response.Body.String())
+	}
+	assertOrchestratorGolden(t, "task-failed.json", response, false)
+}
+
 func TestCompatibilityAPIContracts(t *testing.T) {
 	srv := newTestServer(t)
 	newSimulatedContractWorker(t, srv, nil)
