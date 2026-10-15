@@ -9,11 +9,13 @@
     "node_id": {"type": "string"},
     "address": {"type": "string"},
     "model": {"type": "string"},
+    "engine": {"type": "string"},
     "score": {"type": "number"},
     "score_factors": {"$ref": "score-factors.schema.json"},
     "status": {"type": "string"},
     "output": {"type": "string"},
-    "error": {"type": "string"}
+    "error": {"type": "string"},
+    "attempts": {"type": "array", "items": {"$ref": "dispatch-attempt.schema.json"}}
   },
   "additionalProperties": true
 }

@@ -40,6 +40,7 @@
     "subtasks": [
       {
         "address": "\u003cWORKER_URL\u003e",
+        "engine": "simulated",
         "model": "simulated-general",
         "node_id": "simulated-worker",
         "score": 0,
@@ -68,6 +69,7 @@
       },
       {
         "address": "\u003cWORKER_URL\u003e",
+        "engine": "simulated",
         "model": "simulated-general",
         "node_id": "simulated-worker",
         "score": 0,

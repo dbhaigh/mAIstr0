@@ -34,9 +34,33 @@ const coordinatorChangedTaskError = "coordinator changed before the task complet
 // SubtaskResult tracks one assignment's execution outcome.
 type SubtaskResult struct {
 	scheduler.Assignment
-	Status Status `json:"status"`
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Status   Status            `json:"status"`
+	Output   string            `json:"output,omitempty"`
+	Error    string            `json:"error,omitempty"`
+	Attempts []DispatchAttempt `json:"attempts,omitempty"`
+}
+
+type DispatchAttemptStatus string
+
+const (
+	DispatchAttemptRunning   DispatchAttemptStatus = "running"
+	DispatchAttemptSucceeded DispatchAttemptStatus = "succeeded"
+	DispatchAttemptFailed    DispatchAttemptStatus = "failed"
+)
+
+type DispatchAttempt struct {
+	ID           string                `json:"id"`
+	Number       int                   `json:"number"`
+	NodeID       string                `json:"node_id"`
+	Model        string                `json:"model"`
+	Engine       string                `json:"engine,omitempty"`
+	Status       DispatchAttemptStatus `json:"status"`
+	FailureClass string                `json:"failure_class,omitempty"`
+	HTTPStatus   int                   `json:"http_status,omitempty"`
+	Error        string                `json:"error,omitempty"`
+	StartedAt    time.Time             `json:"started_at"`
+	FinishedAt   *time.Time            `json:"finished_at,omitempty"`
+	DurationMs   int64                 `json:"duration_ms"`
 }
 
 // Task is a submitted job and everything derived from it.
@@ -120,6 +144,13 @@ func cloneTask(t *Task) *Task {
 	cloned.Subtasks = append([]SubtaskResult(nil), t.Subtasks...)
 	for i := range cloned.Subtasks {
 		cloned.Subtasks[i].Subtask = cloneSubtask(t.Subtasks[i].Subtask)
+		cloned.Subtasks[i].Attempts = append([]DispatchAttempt(nil), t.Subtasks[i].Attempts...)
+		for j := range cloned.Subtasks[i].Attempts {
+			if finishedAt := t.Subtasks[i].Attempts[j].FinishedAt; finishedAt != nil {
+				clonedFinishedAt := *finishedAt
+				cloned.Subtasks[i].Attempts[j].FinishedAt = &clonedFinishedAt
+			}
+		}
 	}
 	if t.Graph != nil {
 		cloned.Graph = t.Graph.Clone()

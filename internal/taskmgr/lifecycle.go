@@ -163,7 +163,7 @@ func (m *Manager) StartSubtaskChecked(taskID, subtaskID string) error {
 	return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
 }
 
-// ReassignSubtaskChecked records a retry on a different node and model.
+// ReassignSubtaskChecked records a new assignment for pending or running work.
 func (m *Manager) ReassignSubtaskChecked(taskID, subtaskID string, assignment scheduler.Assignment) error {
 	t, ok := m.lockTaskForUpdate(taskID)
 	if !ok {
@@ -174,14 +174,85 @@ func (m *Manager) ReassignSubtaskChecked(taskID, subtaskID string, assignment sc
 		if t.Subtasks[i].Subtask.ID != subtaskID {
 			continue
 		}
-		if t.Subtasks[i].Status != StatusRunning {
-			return fmt.Errorf("taskmgr: subtask %s in task %s is not running", subtaskID, taskID)
+		if t.Subtasks[i].Status != StatusRunning && t.Subtasks[i].Status != StatusPending {
+			return fmt.Errorf("taskmgr: subtask %s in task %s is not pending or running", subtaskID, taskID)
 		}
 		assignment.Subtask = cloneSubtask(assignment.Subtask)
 		t.Subtasks[i].Assignment = assignment
 		t.UpdatedAt = time.Now()
 		signalChanged(t)
 		return m.persistLocked(t)
+	}
+	return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
+}
+
+func (m *Manager) BeginDispatchAttemptChecked(taskID, subtaskID string, assignment scheduler.Assignment) (int, error) {
+	t, ok := m.lockTaskForUpdate(taskID)
+	if !ok {
+		return 0, fmt.Errorf("taskmgr: task %s not found", taskID)
+	}
+	defer m.unlockTaskForUpdate(t)
+	for i := range t.Subtasks {
+		result := &t.Subtasks[i]
+		if result.Subtask.ID != subtaskID {
+			continue
+		}
+		if result.Status != StatusRunning {
+			return 0, fmt.Errorf("taskmgr: subtask %s in task %s is not running", subtaskID, taskID)
+		}
+		number := len(result.Attempts) + 1
+		now := time.Now()
+		result.Attempts = append(result.Attempts, DispatchAttempt{
+			ID:     fmt.Sprintf("%s:%s:%d", taskID, subtaskID, number),
+			Number: number, NodeID: assignment.NodeID, Model: assignment.Model,
+			Engine: assignment.Engine, Status: DispatchAttemptRunning, StartedAt: now,
+		})
+		t.UpdatedAt = now
+		signalChanged(t)
+		if err := m.persistLocked(t); err != nil {
+			return 0, err
+		}
+		return number, nil
+	}
+	return 0, fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
+}
+
+func (m *Manager) FinishDispatchAttemptChecked(taskID, subtaskID string, number int, status DispatchAttemptStatus, failureClass string, httpStatus int, attemptErr error, duration time.Duration) error {
+	if status != DispatchAttemptSucceeded && status != DispatchAttemptFailed {
+		return fmt.Errorf("taskmgr: invalid dispatch attempt status %q", status)
+	}
+	t, ok := m.lockTaskForUpdate(taskID)
+	if !ok {
+		return fmt.Errorf("taskmgr: task %s not found", taskID)
+	}
+	defer m.unlockTaskForUpdate(t)
+	for i := range t.Subtasks {
+		result := &t.Subtasks[i]
+		if result.Subtask.ID != subtaskID {
+			continue
+		}
+		for j := range result.Attempts {
+			attempt := &result.Attempts[j]
+			if attempt.Number != number {
+				continue
+			}
+			if attempt.Status != DispatchAttemptRunning {
+				return fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s is already finished", number, subtaskID)
+			}
+			attempt.Status = status
+			attempt.FailureClass = failureClass
+			attempt.HTTPStatus = httpStatus
+			if attemptErr != nil {
+				attempt.Error = attemptErr.Error()
+			}
+			finishedAt := time.Now()
+			attempt.FinishedAt = &finishedAt
+			attempt.DurationMs = duration.Milliseconds()
+			t.UpdatedAt = finishedAt
+			signalChanged(t)
+			return m.persistLocked(t)
+		}
+		return fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s not found", number, subtaskID)
 	}
 	return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
 }

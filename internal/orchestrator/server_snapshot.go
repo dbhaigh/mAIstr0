@@ -39,6 +39,7 @@ type clusterSnapshot struct {
 	AgentStats   *agent.AgentStats    `json:"agent_stats,omitempty"`
 	Memory       *memory.Insights     `json:"memory,omitempty"`
 	Dispatch     *dispatchSnapshot    `json:"dispatch"`
+	RouterEvents []routerRequestEvent `json:"router_events,omitempty"`
 }
 
 func (s *Server) snapshot() clusterSnapshot {
@@ -65,6 +66,7 @@ func (s *Server) snapshot() clusterSnapshot {
 		MemberCount:  activeNodes,
 		AgentStats:   &stats,
 		Dispatch:     s.dispatcher.snapshot(),
+		RouterEvents: s.routerEvents.snapshot(),
 	}
 	if s.mem != nil {
 		insights := s.mem.Insights()

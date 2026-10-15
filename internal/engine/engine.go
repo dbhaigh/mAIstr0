@@ -15,10 +15,39 @@ import (
 // Model describes an LLM available on a node, tagged with the task
 // categories it is well suited for so the scheduler can match work to it.
 type Model struct {
-	Name   string   `json:"name"`
-	Engine string   `json:"engine"`
-	Tags   []string `json:"tags"`
-	SizeGB float64  `json:"size_gb,omitempty"`
+	Name      string   `json:"name"`
+	Engine    string   `json:"engine"`
+	Tags      []string `json:"tags"`
+	Protocols []string `json:"protocols,omitempty"`
+	SizeGB    float64  `json:"size_gb,omitempty"`
+}
+
+type Status struct {
+	Name          string    `json:"name"`
+	Ready         bool      `json:"ready"`
+	Protocols     []string  `json:"protocols,omitempty"`
+	ModelCount    int       `json:"model_count"`
+	LastCheckedAt time.Time `json:"last_checked_at,omitempty"`
+}
+
+func ProtocolsForEngine(name string) []string {
+	switch name {
+	case "ollama":
+		return []string{"ollama", "openai"}
+	case "lmstudio", "vllm", "fastflowlm":
+		return []string{"openai"}
+	default:
+		return nil
+	}
+}
+
+func SupportsProtocol(name, protocol string) bool {
+	for _, supported := range ProtocolsForEngine(name) {
+		if supported == protocol {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatMessage represents a single message in a multi-turn conversation.

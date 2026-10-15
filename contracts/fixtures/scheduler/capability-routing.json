@@ -122,6 +122,7 @@
         "node_id": "vision-worker",
         "address": "https://vision-worker",
         "model": "vision-model",
+        "engine": "simulated",
         "score": 41,
         "score_factors": {
           "model_match": 20,

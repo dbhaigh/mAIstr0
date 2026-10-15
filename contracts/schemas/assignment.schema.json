@@ -9,6 +9,7 @@
     "node_id": {"type": "string"},
     "address": {"type": "string"},
     "model": {"type": "string"},
+    "engine": {"type": "string"},
     "score": {"type": "number"},
     "score_factors": {"$ref": "score-factors.schema.json"}
   },

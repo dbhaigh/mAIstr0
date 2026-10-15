@@ -1390,6 +1390,12 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secondCalls.Add(1)
+		var request struct {
+			Engine string `json:"engine"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Engine != "ollama" {
+			t.Errorf("dispatch engine = %q, error=%v", request.Engine, err)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"output": "retry succeeded"})
 	}))
 	defer second.Close()
@@ -1397,15 +1403,15 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	srv := newTestServer(t)
 	srv.registry.Upsert(cluster.NodeStatus{
 		ID: "node-a", Address: first.URL, Healthy: true,
-		Models: []engine.Model{{Name: "general", Tags: []string{"general"}}},
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
 	})
 	srv.registry.Upsert(cluster.NodeStatus{
 		ID: "node-b", Address: second.URL, Healthy: true,
-		Models: []engine.Model{{Name: "general", Tags: []string{"general"}}},
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
 	})
 	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
 		Subtask: scheduler.Subtask{ID: "sub-a", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
-		NodeID:  "node-a", Address: first.URL, Model: "general",
+		NodeID:  "node-a", Address: first.URL, Model: "general", Engine: "ollama",
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -1419,8 +1425,84 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	if completed.Subtasks[0].NodeID != "node-b" || completed.Subtasks[0].Output != "retry succeeded" {
 		t.Fatalf("retry placement/output not recorded: %+v", completed.Subtasks[0])
 	}
+	if attempts := completed.Subtasks[0].Attempts; len(attempts) != 2 ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
+		attempts[0].FailureClass != "upstream_5xx" ||
+		attempts[1].Status != taskmgr.DispatchAttemptSucceeded {
+		t.Fatalf("dispatch attempt history = %+v", attempts)
+	}
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
 		t.Fatalf("dispatch attempts = (%d, %d), want (1, 1)", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+func TestDispatchRetryClassificationExcludesClientErrors(t *testing.T) {
+	for _, test := range []struct {
+		status    int
+		body      string
+		retryable bool
+		class     string
+	}{
+		{http.StatusRequestTimeout, "", true, "timeout"},
+		{http.StatusTooManyRequests, "", true, "rate_limit"},
+		{http.StatusServiceUnavailable, "", true, "upstream_5xx"},
+		{http.StatusNotImplemented, "", false, "client_error"},
+		{http.StatusBadRequest, "", false, "client_error"},
+		{http.StatusUnauthorized, "", false, "client_error"},
+		{http.StatusNotFound, "model not found", true, "stale_model"},
+	} {
+		class, retryable := classifyDispatchStatus(test.status, []byte(test.body))
+		if retryable != test.retryable || class != test.class {
+			t.Errorf("classifyDispatchStatus(%d, %q) = (%q, %t), want (%q, %t)",
+				test.status, test.body, class, retryable, test.class, test.retryable)
+		}
+	}
+}
+
+func TestDispatchRetriesAcrossMoreThanTwoNodes(t *testing.T) {
+	var calls [3]atomic.Int32
+	nodes := make([]*httptest.Server, 3)
+	for index := range nodes {
+		nodeIndex := index
+		nodes[index] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls[nodeIndex].Add(1)
+			if nodeIndex < 2 {
+				http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"output": "third node succeeded"})
+		}))
+		defer nodes[index].Close()
+	}
+
+	srv := newTestServer(t)
+	for i, node := range nodes {
+		srv.registry.Upsert(cluster.NodeStatus{
+			ID: fmt.Sprintf("node-%d", i), Address: node.URL, Healthy: true,
+			Hardware: hardware.Info{Score: float64(100 - i*40)},
+			Models:   []engine.Model{{Name: "general", Tags: []string{"general"}}},
+		})
+	}
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "sub-a", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-0", Address: nodes[0].URL, Model: "general",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusCompleted {
+		t.Fatalf("dispatch did not complete on third node: %+v", completed)
+	}
+	if completed.Subtasks[0].NodeID != "node-2" || len(completed.Subtasks[0].Attempts) != 3 {
+		t.Fatalf("retry assignment/attempt history = %+v", completed.Subtasks[0])
+	}
+	for i := range calls {
+		if calls[i].Load() != 1 {
+			t.Fatalf("node-%d calls = %d, want 1", i, calls[i].Load())
+		}
 	}
 }
 

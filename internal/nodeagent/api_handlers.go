@@ -37,7 +37,7 @@ func (a *Agent) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eng := a.engineFor(req.Model)
+	eng := a.engineForModel(req.Model, req.Engine)
 	if eng == nil {
 		err := apperr.NotFoundError(fmt.Errorf("model not found on this node: %s", req.Model))
 		writeJSONError(w, err, executeResponse{Error: err.Error()})
@@ -515,12 +515,21 @@ func engineURL(e engine.Engine) string {
 }
 
 func (a *Agent) handleEngineInfo(w http.ResponseWriter, r *http.Request) {
+	statusByName := make(map[string]engine.Status)
+	for _, status := range a.reportedEngineList() {
+		statusByName[status.Name] = status
+	}
 	engines := a.engineSnapshot()
 	result := make([]engineInfo, 0, len(engines))
 	for _, e := range engines {
 		url := engineURL(e)
 		_, canPull := e.(engine.ModelManager)
-		result = append(result, engineInfo{Name: e.Name(), URL: url, CanPull: canPull})
+		status := statusByName[e.Name()]
+		result = append(result, engineInfo{
+			Name: e.Name(), URL: url, CanPull: canPull,
+			Ready: status.Ready, Protocols: status.Protocols,
+			ModelCount: status.ModelCount, LastCheckedAt: status.LastCheckedAt,
+		})
 	}
 	writeJSON(w, http.StatusOK, result)
 }

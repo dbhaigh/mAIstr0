@@ -54,6 +54,50 @@ func TestTaskSnapshotsAndAggregateResult(t *testing.T) {
 	}
 }
 
+func TestDispatchAttemptsPersistAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dispatch-attempts.db")
+	manager, err := OpenManager(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := manager.CreateChecked("run inference", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work", TaskType: "general"},
+		NodeID:  "node-a", Model: "model-a", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+		t.Fatal(err)
+	}
+	number, err := manager.BeginDispatchAttemptChecked(task.ID, "work", task.Subtasks[0].Assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.FinishDispatchAttemptChecked(task.ID, "work", number, DispatchAttemptFailed, "upstream_5xx", 503, nil, 25*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenManager(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	persisted, ok := reopened.Get(task.ID)
+	if !ok || len(persisted.Subtasks[0].Attempts) != 1 {
+		t.Fatalf("persisted task attempts = %#v", persisted)
+	}
+	attempt := persisted.Subtasks[0].Attempts[0]
+	if attempt.ID == "" || attempt.NodeID != "node-a" || attempt.Model != "model-a" ||
+		attempt.Engine != "ollama" || attempt.Status != DispatchAttemptFailed ||
+		attempt.FailureClass != "upstream_5xx" || attempt.HTTPStatus != 503 || attempt.DurationMs != 25 {
+		t.Fatalf("persisted attempt metadata = %+v", attempt)
+	}
+}
+
 func TestRecentReturnsNewestBoundedSnapshot(t *testing.T) {
 	manager := NewManager()
 	first := manager.Create("first", []scheduler.Assignment{{Subtask: scheduler.Subtask{ID: "a"}}})

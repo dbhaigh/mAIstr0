@@ -46,23 +46,38 @@ type ModelState struct {
 }
 
 func (c *engineComponent) enabledModels() []engine.Model {
-	c.refreshDetectedEngines()
+	models, _ := c.inspectInventory()
+	return models
+}
+
+func (c *engineComponent) inspectInventory() ([]engine.Model, []engine.Status) {
 	engines := c.engineSnapshot()
 	disabled := c.state.disabledModelSnapshot()
-	var out []engine.Model
+	models := make([]engine.Model, 0)
+	statuses := make([]engine.Status, 0, len(engines))
 	for _, eng := range engines {
-		models, err := eng.ListModels()
+		protocols := engine.ProtocolsForEngine(eng.Name())
+		status := engine.Status{
+			Name: eng.Name(), Protocols: protocols, LastCheckedAt: time.Now(),
+		}
+		listed, err := eng.ListModels()
 		if err != nil {
 			log.Printf("nodeagent: list models for engine %s failed: %v", eng.Name(), err)
+			statuses = append(statuses, status)
 			continue
 		}
-		for _, model := range models {
+		status.Ready = true
+		status.ModelCount = len(listed)
+		for _, model := range listed {
+			model.Engine = eng.Name()
+			model.Protocols = append([]string(nil), protocols...)
 			if !disabled[model.Name] {
-				out = append(out, model)
+				models = append(models, model)
 			}
 		}
+		statuses = append(statuses, status)
 	}
-	return out
+	return models, statuses
 }
 
 // refreshDetectedEngines periodically detects engines started after the node
@@ -123,12 +138,15 @@ func (c *engineComponent) allModelsWithState() []ModelState {
 	disabled := c.state.disabledModelSnapshot()
 	var out []ModelState
 	for _, eng := range c.engineSnapshot() {
+		protocols := engine.ProtocolsForEngine(eng.Name())
 		models, err := eng.ListModels()
 		if err != nil {
 			log.Printf("nodeagent: list models for engine %s failed: %v", eng.Name(), err)
 			continue
 		}
 		for _, model := range models {
+			model.Engine = eng.Name()
+			model.Protocols = append([]string(nil), protocols...)
 			out = append(out, ModelState{
 				Model: model, Enabled: !disabled[model.Name],
 				Default: model.Name == c.state.defaultModelName(),
@@ -141,17 +159,32 @@ func (c *engineComponent) allModelsWithState() []ModelState {
 func (c *engineComponent) reportedModelList() []engine.Model {
 	c.modelMu.Lock()
 	models := append([]engine.Model(nil), c.reportedModels...)
+	for i := range models {
+		models[i].Tags = append([]string(nil), models[i].Tags...)
+		models[i].Protocols = append([]string(nil), models[i].Protocols...)
+	}
 	c.modelMu.Unlock()
 	return models
+}
+
+func (c *engineComponent) reportedEngineList() []engine.Status {
+	c.modelMu.Lock()
+	engines := append([]engine.Status(nil), c.reportedEngines...)
+	for i := range engines {
+		engines[i].Protocols = append([]string(nil), engines[i].Protocols...)
+	}
+	c.modelMu.Unlock()
+	return engines
 }
 
 // refreshReportedModels updates the status cache without holding modelMu while
 // contacting an LLM server. Status and registration must stay responsive even
 // when a local model is loading or the engine is unavailable.
 func (c *engineComponent) refreshReportedModels() {
-	models := c.enabledModels()
+	models, engines := c.inspectInventory()
 	c.modelMu.Lock()
 	c.reportedModels = models
+	c.reportedEngines = engines
 	c.reportedAt = time.Now()
 	c.modelMu.Unlock()
 }
@@ -166,8 +199,15 @@ func (c *engineComponent) modelRefreshLoop() {
 }
 
 func (c *engineComponent) engineFor(model string) engine.Engine {
+	return c.engineForModel(model, "")
+}
+
+func (c *engineComponent) engineForModel(model, engineName string) engine.Engine {
 	c.refreshDetectedEngines()
 	for _, eng := range c.engineSnapshot() {
+		if engineName != "" && !strings.EqualFold(eng.Name(), engineName) {
+			continue
+		}
 		models, err := eng.ListModels()
 		if err != nil {
 			continue
@@ -216,6 +256,9 @@ func (a *Agent) allModelsWithState() []ModelState {
 func (a *Agent) reportedModelList() []engine.Model {
 	return a.engineComponent.reportedModelList()
 }
+func (a *Agent) reportedEngineList() []engine.Status {
+	return a.engineComponent.reportedEngineList()
+}
 func (a *Agent) refreshReportedModels() { a.engineComponent.refreshReportedModels() }
 func (a *Agent) modelRefreshLoop()      { a.engineComponent.modelRefreshLoop() }
 func (a *Agent) defaultModelName() string {
@@ -223,4 +266,7 @@ func (a *Agent) defaultModelName() string {
 }
 func (a *Agent) engineFor(model string) engine.Engine {
 	return a.engineComponent.engineFor(model)
+}
+func (a *Agent) engineForModel(model, engineName string) engine.Engine {
+	return a.engineComponent.engineForModel(model, engineName)
 }

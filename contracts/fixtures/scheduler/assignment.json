@@ -84,6 +84,7 @@
         "node_id": "worker-a",
         "address": "https://worker-a",
         "model": "general-model",
+        "engine": "simulated",
         "score": 46,
         "score_factors": {
           "model_match": 30,
@@ -115,6 +116,7 @@
         "node_id": "worker-a",
         "address": "https://worker-a",
         "model": "general-model",
+        "engine": "simulated",
         "score": 35,
         "score_factors": {
           "model_match": 30,

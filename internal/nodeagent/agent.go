@@ -304,6 +304,7 @@ func (a *Agent) ID() string { return a.cfg.NodeID }
 type executeRequest struct {
 	SubtaskID string `json:"subtask_id"`
 	Model     string `json:"model"`
+	Engine    string `json:"engine,omitempty"`
 	Prompt    string `json:"prompt"`
 	TaskType  string `json:"task_type,omitempty"`
 }
@@ -323,6 +324,7 @@ type statusResponse struct {
 	NPUHistory         []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
 	SystemHistory      []hardware.SystemUsageSample `json:"system_history,omitempty"`
 	Models             []engine.Model               `json:"models"`
+	Engines            []engine.Status              `json:"engines,omitempty"`
 	Capabilities       []string                     `json:"capabilities,omitempty"`
 	DefaultModel       string                       `json:"default_model,omitempty"`
 	FastScore          float64                      `json:"fast_score"`
@@ -346,6 +348,7 @@ func (a *Agent) status() statusResponse {
 		NPUHistory:         a.npuHistorySnapshot(),
 		SystemHistory:      a.systemHistorySnapshot(),
 		Models:             models,
+		Engines:            a.reportedEngineList(),
 		Capabilities:       cluster.NodeStatus{Hardware: hw, Models: models}.EffectiveCapabilities(),
 		DefaultModel:       a.defaultModelName(),
 		FastScore:          fastScore(hw),
@@ -492,9 +495,13 @@ type nodeProperties struct {
 }
 
 type engineInfo struct {
-	Name    string `json:"name"`
-	URL     string `json:"url"`
-	CanPull bool   `json:"can_pull"`
+	Name          string    `json:"name"`
+	URL           string    `json:"url"`
+	CanPull       bool      `json:"can_pull"`
+	Ready         bool      `json:"ready"`
+	Protocols     []string  `json:"protocols,omitempty"`
+	ModelCount    int       `json:"model_count"`
+	LastCheckedAt time.Time `json:"last_checked_at,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

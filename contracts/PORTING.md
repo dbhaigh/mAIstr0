@@ -10,8 +10,9 @@ in another language.
   orchestrator and node agent. `x-maistr0-registered-routes` preserves the
   exact Go mux patterns, including methodless and subtree registrations.
 - [`schemas/`](./schemas/) contains JSON Schema 2020-12 definitions for
-  configuration, tasks, assignments, node status, discovery announcements,
-  and memory records.
+  configuration, tasks and durable dispatch attempts, assignments, node and
+  engine readiness, router request events, discovery announcements, and
+  memory records.
 - [`fixtures/phase1/`](./fixtures/phase1/) contains exported HTTP golden cases.
   Each file has a `request`, `expected_response`, and `normalization_rules`.
   Response envelopes retain the HTTP status and content type; their `body` is
@@ -33,6 +34,13 @@ in another language.
 - Assignment scores are explained by `score_factors`; optional factors may be
   absent when they do not apply. Do not rely on one particular score as a
   stable API guarantee.
+- `/router/{path...}` is a separate transparent inference surface; it accepts
+  only the provider paths listed in the OpenAPI document and does not invoke
+  workflow planning. Router events contain request/attempt metadata only, not
+  prompts or response bodies. Retries stop once response content is committed.
+- Nodes that omit engine status remain compatible with older clients. Once a
+  node reports engines, scheduling should use each engine's readiness and
+  advertised protocol capabilities.
 - Discovery announcements require `role`, `id`, `http_addr`, and `peer_addr`.
   The optional `orchestrator_id` identifies the associated coordinator; it
   must not be inferred merely from another visible announcement.

@@ -21,6 +21,7 @@ type NodeStatus struct {
 	Address            string                       `json:"address"` // base URL the orchestrator can reach the node at
 	Hardware           hardware.Info                `json:"hardware"`
 	Models             []engine.Model               `json:"models"`
+	Engines            []engine.Status              `json:"engines,omitempty"`
 	Capabilities       []string                     `json:"capabilities,omitempty"`
 	GPUHistory         []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
 	NPUHistory         []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
@@ -36,6 +37,18 @@ type NodeStatus struct {
 	Healthy            bool                         `json:"healthy"`
 	Leader             bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
 	VersionError       string                       `json:"version_error,omitempty"`
+}
+
+func (n NodeStatus) EngineReady(name string) bool {
+	if len(n.Engines) == 0 {
+		return true
+	}
+	for _, status := range n.Engines {
+		if strings.EqualFold(status.Name, name) {
+			return status.Ready
+		}
+	}
+	return false
 }
 
 // EffectiveCapabilities returns the node's advertised capabilities, deriving them

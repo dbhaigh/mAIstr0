@@ -33,7 +33,8 @@
       },
       "additionalProperties": true
     },
-    "models": {"type": ["array", "null"], "items": {"type": "object", "required": ["name", "engine", "tags"], "properties": {"name": {"type": "string"}, "engine": {"type": "string"}, "tags": {"type": ["array", "null"], "items": {"type": "string"}}, "size_gb": {"type": "number"}}, "additionalProperties": true}},
+    "models": {"type": ["array", "null"], "items": {"type": "object", "required": ["name", "engine", "tags"], "properties": {"name": {"type": "string"}, "engine": {"type": "string"}, "tags": {"type": ["array", "null"], "items": {"type": "string"}}, "protocols": {"type": "array", "items": {"type": "string"}}, "size_gb": {"type": "number"}}, "additionalProperties": true}},
+    "engines": {"type": "array", "items": {"$ref": "engine-status.schema.json"}},
     "capabilities": {"type": "array", "items": {"type": "string"}},
     "gpu_history": {"type": "array", "items": {"type": "object", "required": ["timestamp", "available", "utilization_percent"], "properties": {"timestamp": {"type": "string", "format": "date-time"}, "available": {"type": "boolean"}, "utilization_percent": {"type": "integer"}}, "additionalProperties": true}},
     "npu_history": {"type": "array", "items": {"type": "object", "required": ["timestamp", "available", "utilization_percent"], "properties": {"timestamp": {"type": "string", "format": "date-time"}, "available": {"type": "boolean"}, "utilization_percent": {"type": "integer"}}, "additionalProperties": true}},

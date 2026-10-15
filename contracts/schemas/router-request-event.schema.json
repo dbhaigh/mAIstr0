@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/router-request-event.schema.json",
+  "title": "RouterRequestEvent",
+  "type": "object",
+  "required": ["request_id", "phase", "timestamp"],
+  "properties": {
+    "request_id": {"type": "string"},
+    "attempt_id": {"type": "string"},
+    "phase": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "node_id": {"type": "string"},
+    "model": {"type": "string"},
+    "engine": {"type": "string"},
+    "queue_ms": {"type": "integer", "minimum": 0},
+    "time_to_first_byte_ms": {"type": "integer", "minimum": 0},
+    "status": {"type": "integer", "minimum": 100, "maximum": 599},
+    "failure_class": {"type": "string"}
+  },
+  "additionalProperties": true
+}

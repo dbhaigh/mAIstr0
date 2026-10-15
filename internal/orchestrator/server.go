@@ -33,6 +33,7 @@ type Server struct {
 	planner             *taskPlanner
 	election            *electionComponent
 	events              *hub.Hub
+	routerEvents        *routerEventLog
 	harness             *harnessManager
 	mem                 memory.Store
 	identityPath        string
@@ -118,6 +119,7 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		planner:      planner,
 		election:     election,
 		events:       events,
+		routerEvents: newRouterEventLog(200),
 		harness:      newHarnessManager(backends, harnessName, store),
 		tasks:        tasks,
 		mem:          store,
@@ -191,6 +193,8 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/discovery", s.handleDiscovery)
 	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", s.handlePairingInvite)
 	mux.HandleFunc("GET /api/events", s.events.ServeHTTP)
+	mux.HandleFunc("GET /api/router/requests", s.handleRouterEvents)
+	mux.HandleFunc("POST /router/{path...}", s.handleRouterRequest)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /api/tasks/resumable", s.handleListResumableTasks)

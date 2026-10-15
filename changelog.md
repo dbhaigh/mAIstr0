@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.6 - 2026-10-14
 
 ### Fixed
 
@@ -18,9 +18,30 @@
 
 ### Added
 
+- Add a separate transparent inference router for OpenAI, Ollama, and
+  Anthropic-compatible paths, with model-aware engine selection and provider
+  request/stream forwarding that does not invoke DAG planning.
+- Retry task dispatch across up to five distinct node/model pairs with
+  transient-failure classification, bounded deadlines/backoff, and durable
+  per-attempt status in task history.
+- Add stable request/attempt IDs and prompt-free router events reporting node,
+  model, engine, reservation time, time to first byte, status, and failure
+  class through the API and SSE snapshots.
+- Report engine readiness and protocol capabilities per node and exclude
+  explicitly unready engines from scheduling.
+- Add integration and contract coverage for retry boundaries, cancellation,
+  streaming failover safety, request forwarding, attempt persistence, and
+  engine readiness.
 - Regression coverage for planner model failover after a model-load failure.
 - Regression coverage for multi-page transfer, watermark handling, and task
   and memory snapshots larger than 64 MiB.
+
+### Validation
+
+- `go test ./... -count=1 -timeout 5m`
+- `go vet ./...`
+- `node --test web/app_test.js`
+- `.\build\build.ps1` (Windows, Linux, and Ubuntu Linux release binaries)
 
 ## 0.0.5 - 2026-10-14
 

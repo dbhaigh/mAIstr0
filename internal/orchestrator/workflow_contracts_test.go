@@ -596,11 +596,11 @@ func normalizeOrchestratorContractValue(value any, key string) any {
 	case map[string]any:
 		for field, nested := range typed {
 			switch field {
-			case "created_at", "updated_at", "modified_at", "timestamp":
+			case "created_at", "updated_at", "modified_at", "timestamp", "started_at", "finished_at":
 				typed[field] = "<TIME>"
 			case "created":
 				typed[field] = json.Number("0")
-			case "total_duration", "duration":
+			case "total_duration", "duration", "duration_ms":
 				typed[field] = json.Number("0")
 			case "score":
 				typed[field] = json.Number("0")

@@ -17,6 +17,7 @@ type Assignment struct {
 	NodeID  string       `json:"node_id"`
 	Address string       `json:"address"`
 	Model   string       `json:"model"`
+	Engine  string       `json:"engine,omitempty"`
 	Score   float64      `json:"score"`
 	Factors ScoreFactors `json:"score_factors"`
 }
@@ -172,7 +173,7 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 			outDegree = graph.OutDegree(st.ID)
 		}
 
-		bestNode, bestModel, bestScore, factors := pickBest(st, outDegree, healthy, simulatedLoad, pendingDependents, exp, cfg, now)
+		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, simulatedLoad, pendingDependents, exp, cfg, now)
 		if bestNode == nil {
 			unassignable = append(unassignable, st.ID)
 			continue
@@ -183,8 +184,8 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 			pendingDependents[bestNode.ID] += outDegree
 		}
 
-		log.Printf("scheduler: subtask %s (%s) assigned to node %s (model %s, score %.2f) [match=%.1f cap=%.1f qual=%.1f hw=%.1f load=-%.1f tele_fresh=%v]",
-			st.ID, st.Role, bestNode.ID, bestModel, bestScore,
+		log.Printf("scheduler: subtask %s (%s) assigned to node %s (model %s, engine %s, score %.2f) [match=%.1f cap=%.1f qual=%.1f hw=%.1f load=-%.1f tele_fresh=%v]",
+			st.ID, st.Role, bestNode.ID, bestModel, bestEngine, bestScore,
 			factors.ModelMatch, factors.CapabilityScore, factors.ModelQualityScore,
 			factors.Hardware, factors.LoadPenalty, factors.TelemetryFresh)
 
@@ -193,6 +194,7 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 			NodeID:  bestNode.ID,
 			Address: bestNode.Address,
 			Model:   bestModel,
+			Engine:  bestEngine,
 			Score:   bestScore,
 			Factors: factors,
 		})
@@ -204,15 +206,16 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	return assignments, nil
 }
 
-func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, load map[string]int, pendingDependents map[string]int, exp Experience, cfg *ScoringConfig, now time.Time) (*cluster.NodeStatus, string, float64, ScoreFactors) {
+func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, load map[string]int, pendingDependents map[string]int, exp Experience, cfg *ScoringConfig, now time.Time) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
 	var best *cluster.NodeStatus
 	bestModel := ""
+	bestEngine := ""
 	bestScore := math.Inf(-1)
 	var bestFactors ScoreFactors
 
 	for i := range nodes {
 		n := &nodes[i]
-		model, matchScore, modelQuality, matchedCaps := bestModelForNode(st, n, n.Models, n.DefaultModel, cfg)
+		model, engineName, matchScore, modelQuality, matchedCaps := bestModelForNode(st, n, n.Models, n.DefaultModel, cfg)
 		if model == "" {
 			continue
 		}
@@ -298,14 +301,15 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, load map[st
 			bestScore = score
 			best = n
 			bestModel = model
+			bestEngine = engineName
 			bestFactors = factors
 		}
 	}
-	return best, bestModel, bestScore, bestFactors
+	return best, bestModel, bestEngine, bestScore, bestFactors
 }
 
 // bestModelForNode finds the best model on a node, validating required capabilities and scoring preferences.
-func bestModelForNode(st Subtask, n *cluster.NodeStatus, models []engine.Model, defaultModel string, cfg *ScoringConfig) (string, float64, float64, []string) {
+func bestModelForNode(st Subtask, n *cluster.NodeStatus, models []engine.Model, defaultModel string, cfg *ScoringConfig) (string, string, float64, float64, []string) {
 	nodeCaps := n.EffectiveCapabilities()
 
 	// Check required capabilities on the node/model level
@@ -313,17 +317,21 @@ func bestModelForNode(st Subtask, n *cluster.NodeStatus, models []engine.Model, 
 		for _, reqCap := range st.RequiredCapabilities {
 			reqCapLower := strings.ToLower(strings.TrimSpace(reqCap))
 			if !hasCapability(nodeCaps, reqCapLower) {
-				return "", 0, 0, nil
+				return "", "", 0, 0, nil
 			}
 		}
 	}
 
 	bestName := ""
+	bestEngine := ""
 	bestScore := -1.0
 	bestQuality := 0.0
 	var bestMatchedCaps []string
 
 	for _, m := range models {
+		if !n.EngineReady(m.Engine) {
+			continue
+		}
 		if st.TaskType != "general" && hasSpecialtyTag(m.Tags) &&
 			!containsTag(m.Tags, st.TaskType) && !containsTag(m.Tags, "general") {
 			continue
@@ -379,15 +387,16 @@ func bestModelForNode(st Subtask, n *cluster.NodeStatus, models []engine.Model, 
 		if score > bestScore {
 			bestScore = score
 			bestName = m.Name
+			bestEngine = m.Engine
 			bestQuality = quality
 			bestMatchedCaps = matchedCaps
 		}
 	}
 
 	if bestName == "" {
-		return "", 0, 0, nil
+		return "", "", 0, 0, nil
 	}
-	return bestName, bestScore, bestQuality, bestMatchedCaps
+	return bestName, bestEngine, bestScore, bestQuality, bestMatchedCaps
 }
 
 func hasCapability(caps []string, target string) bool {
@@ -403,7 +412,7 @@ func hasCapability(caps []string, target string) bool {
 func bestModelFor(st Subtask, models []engine.Model, defaultModel string) (string, float64) {
 	cfg := DefaultScoringConfig()
 	n := cluster.NodeStatus{Models: models, DefaultModel: defaultModel}
-	name, score, _, _ := bestModelForNode(st, &n, models, defaultModel, &cfg)
+	name, _, score, _, _ := bestModelForNode(st, &n, models, defaultModel, &cfg)
 	return name, score
 }
 

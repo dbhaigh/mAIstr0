@@ -273,10 +273,11 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 func TestSchemaSetIsComplete(t *testing.T) {
 	expected := []string{
 		"announcement.schema.json", "assignment.schema.json", "dialogue-record.schema.json",
-		"experience.schema.json", "fact.schema.json", "node-config.schema.json",
+		"dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
+		"fact.schema.json", "node-config.schema.json",
 		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json",
-		"score-factors.schema.json", "snapshot.schema.json", "subtask-result.schema.json",
-		"subtask.schema.json", "task-graph.schema.json", "task.schema.json",
+		"router-request-event.schema.json", "score-factors.schema.json", "snapshot.schema.json",
+		"subtask-result.schema.json", "subtask.schema.json", "task-graph.schema.json", "task.schema.json",
 	}
 	actual, err := filepath.Glob(filepath.Join("schemas", "*.schema.json"))
 	if err != nil {

@@ -27,6 +27,14 @@ paths:
   /chat:
     post:
       responses: {"200": {description: Chat on the node}}
+  /proxy/{path...}:
+    post:
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+      responses: {"200": {description: Proxy an allowlisted provider request to the selected local engine}}
   /dialogues:
     get:
       responses: {"200": {description: List dialogues}}
@@ -265,6 +273,9 @@ paths:
   /api/events:
     get:
       responses: {"200": {description: Subscribe to server events}}
+  /api/router/requests:
+    get:
+      responses: {"200": {description: List recent prompt-free inference routing events}}
   /api/tasks:
     get:
       responses: {"200": {description: List tasks}}
@@ -460,6 +471,29 @@ paths:
   /v1/messages:
     post:
       responses: {"200": {description: Anthropic-compatible message}}
+  /router/{path...}:
+    post:
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+      responses: {"200": {description: Transparent model-aware routing for an allowlisted provider request}}
+  /router/v1/chat/completions:
+    post:
+      responses: {"200": {description: Route an OpenAI-compatible chat completion request}}
+  /router/v1/completions:
+    post:
+      responses: {"200": {description: Route an OpenAI-compatible completion request}}
+  /router/v1/messages:
+    post:
+      responses: {"200": {description: Route an Anthropic-compatible messages request}}
+  /router/api/chat:
+    post:
+      responses: {"200": {description: Route an Ollama-compatible chat request}}
+  /router/api/generate:
+    post:
+      responses: {"200": {description: Route an Ollama-compatible generate request}}
 components:
   parameters:
     ID:
@@ -508,6 +542,12 @@ components:
       $ref: "./schemas/dialogue-record.schema.json"
     Snapshot:
       $ref: "./schemas/snapshot.schema.json"
+    DispatchAttempt:
+      $ref: "./schemas/dispatch-attempt.schema.json"
+    EngineStatus:
+      $ref: "./schemas/engine-status.schema.json"
+    RouterRequestEvent:
+      $ref: "./schemas/router-request-event.schema.json"
 x-maistr0-registered-routes:
   - "orchestrator|POST /api/pairing/join"
   - "orchestrator|GET /api/pairing/status"
@@ -532,6 +572,8 @@ x-maistr0-registered-routes:
   - "orchestrator|GET /api/discovery"
   - "orchestrator|POST /api/discovery/{id}/pairing/invite"
   - "orchestrator|GET /api/events"
+  - "orchestrator|GET /api/router/requests"
+  - "orchestrator|POST /router/{path...}"
   - "orchestrator|POST /api/tasks"
   - "orchestrator|GET /api/tasks"
   - "orchestrator|GET /api/tasks/resumable"
@@ -593,6 +635,7 @@ x-maistr0-registered-routes:
   - "node|/execute"
   - "node|POST /generate"
   - "node|POST /chat"
+  - "node|POST /proxy/{path...}"
   - "node|POST /dialogues"
   - "node|GET /dialogues"
   - "node|GET /dialogues/{id}"

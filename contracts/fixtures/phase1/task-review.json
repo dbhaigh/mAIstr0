@@ -59,6 +59,21 @@
       "subtasks": [
         {
           "address": "\u003cWORKER_URL\u003e",
+          "attempts": [
+            {
+              "duration_ms": 0,
+              "engine": "simulated",
+              "finished_at": "\u003cTIME\u003e",
+              "http_status": 200,
+              "id": "\u003cTASK_ID\u003e",
+              "model": "simulated-general",
+              "node_id": "simulated-worker",
+              "number": 1,
+              "started_at": "\u003cTIME\u003e",
+              "status": "succeeded"
+            }
+          ],
+          "engine": "simulated",
           "model": "simulated-general",
           "node_id": "simulated-worker",
           "output": "[simulated response from simulated-general] processed prompt of 173 chars",
@@ -88,6 +103,21 @@
         },
         {
           "address": "\u003cWORKER_URL\u003e",
+          "attempts": [
+            {
+              "duration_ms": 0,
+              "engine": "simulated",
+              "finished_at": "\u003cTIME\u003e",
+              "http_status": 200,
+              "id": "\u003cTASK_ID\u003e",
+              "model": "simulated-general",
+              "node_id": "simulated-worker",
+              "number": 1,
+              "started_at": "\u003cTIME\u003e",
+              "status": "succeeded"
+            }
+          ],
+          "engine": "simulated",
           "model": "simulated-general",
           "node_id": "simulated-worker",
           "output": "{\"approved\":true,\"issues\":[]}",

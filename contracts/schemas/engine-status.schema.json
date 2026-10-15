@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/engine-status.schema.json",
+  "title": "EngineStatus",
+  "type": "object",
+  "required": ["name", "ready", "model_count"],
+  "properties": {
+    "name": {"type": "string"},
+    "ready": {"type": "boolean"},
+    "protocols": {"type": "array", "items": {"type": "string"}},
+    "model_count": {"type": "integer", "minimum": 0},
+    "last_checked_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

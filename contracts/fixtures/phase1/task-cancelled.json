@@ -36,6 +36,17 @@
       "subtasks": [
         {
           "address": "\u003cWORKER_URL\u003e",
+          "attempts": [
+            {
+              "duration_ms": 0,
+              "id": "\u003cTASK_ID\u003e",
+              "model": "general-model",
+              "node_id": "cancel-worker",
+              "number": 1,
+              "started_at": "\u003cTIME\u003e",
+              "status": "running"
+            }
+          ],
           "error": "task cancelled",
           "model": "general-model",
           "node_id": "cancel-worker",

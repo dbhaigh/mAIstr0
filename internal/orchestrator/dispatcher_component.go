@@ -8,17 +8,27 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/workpool"
+)
+
+const (
+	maxDispatchAttempts = 5
+	dispatchDeadline    = 3 * time.Minute
+	dispatchBackoff     = 100 * time.Millisecond
+	maxDispatchBackoff  = 800 * time.Millisecond
 )
 
 type dispatchJob struct {
@@ -130,21 +140,58 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 		log.Printf("orchestrator: dependency wait task=%s subtask=%s duration_ms=%d", taskID, assignment.Subtask.ID, dependencyElapsed.Milliseconds())
 	}
 
+	boundedCtx, cancelDeadline := context.WithTimeout(dispatchCtx, dispatchDeadline)
+	defer cancelDeadline()
+	dispatchCtx = boundedCtx
 	current := assignment
-	alreadyTried := map[string]bool{assignment.NodeID: true}
-	for attempt := 0; attempt < 2; attempt++ {
+	alreadyTried := make(map[string]bool)
+	attemptCount := 0
+	if task, ok := d.tasks.Get(taskID); ok {
+		for _, result := range task.Subtasks {
+			if result.Subtask.ID != assignment.Subtask.ID {
+				continue
+			}
+			attemptCount = len(result.Attempts)
+			for _, prior := range result.Attempts {
+				alreadyTried[routerPairKey(prior.NodeID, prior.Model)] = true
+			}
+			break
+		}
+	}
+	if attemptCount >= maxDispatchAttempts {
+		d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("subtask dispatch attempt limit reached"))
+		return
+	}
+	if alreadyTried[routerPairKey(current.NodeID, current.Model)] {
+		retry, err := d.retryAssignment(dispatchCtx, current.Subtask, alreadyTried)
+		if err != nil {
+			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("no untried node/model pair is available"))
+			return
+		}
+		if err := d.tasks.ReassignSubtaskChecked(taskID, assignment.Subtask.ID, retry); err != nil {
+			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
+			return
+		}
+		current = retry
+	}
+	for attempt := attemptCount; attempt < maxDispatchAttempts; attempt++ {
 		if dispatchCtx.Err() != nil {
+			if errors.Is(dispatchCtx.Err(), context.DeadlineExceeded) {
+				d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("subtask dispatch deadline exceeded"))
+			}
 			return
 		}
 		node, healthy := d.registry.Get(current.NodeID)
 		if !healthy || !node.Healthy || node.Address != current.Address {
-			if attempt == 0 {
-				alreadyTried[current.NodeID] = true
-				retry, err := d.retryAssignment(dispatchCtx, current.Subtask, alreadyTried)
-				if err == nil && dispatchCtx.Err() == nil {
-					current = retry
-					continue
+			alreadyTried[routerPairKey(current.NodeID, current.Model)] = true
+			retry, err := d.retryAssignment(dispatchCtx, current.Subtask, alreadyTried)
+			if err == nil && dispatchCtx.Err() == nil {
+				if persistErr := d.tasks.ReassignSubtaskChecked(taskID, assignment.Subtask.ID, retry); persistErr != nil {
+					d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", persistErr)
+					return
 				}
+				current = retry
+				continue
 			}
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("node was ejected before dispatch"))
 			return
@@ -161,13 +208,15 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 			if dispatchCtx.Err() != nil {
 				return
 			}
-			if attempt == 0 {
-				alreadyTried[current.NodeID] = true
-				retry, retryErr := d.retryAssignment(dispatchCtx, current.Subtask, alreadyTried)
-				if retryErr == nil {
-					current = retry
-					continue
+			alreadyTried[routerPairKey(current.NodeID, current.Model)] = true
+			retry, retryErr := d.retryAssignment(dispatchCtx, current.Subtask, alreadyTried)
+			if retryErr == nil {
+				if persistErr := d.tasks.ReassignSubtaskChecked(taskID, assignment.Subtask.ID, retry); persistErr != nil {
+					d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", persistErr)
+					return
 				}
+				current = retry
+				continue
 			}
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
 			return
@@ -205,13 +254,33 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 		retryable := true
 		for validationAttempt := 0; ; validationAttempt++ {
 			started := time.Now()
-			output, attemptErr, retryable = d.executeSubtask(dispatchCtx, current, attemptPrompt)
+			attemptNumber, beginErr := d.tasks.BeginDispatchAttemptChecked(taskID, assignment.Subtask.ID, current)
+			if beginErr != nil {
+				attemptErr = beginErr
+				retryable = false
+				break
+			}
+			outcome := d.executeSubtaskDetailed(dispatchCtx, current, attemptPrompt)
+			output, attemptErr, retryable = outcome.output, outcome.err, outcome.retryable
+			failureClass, httpStatus := outcome.failureClass, outcome.httpStatus
 			if attemptErr == nil {
 				output = normalizeTaskOutput(current.Subtask, output)
 				attemptErr = validateTaskOutput(current.Subtask, output)
 				if attemptErr != nil {
 					retryable = false
+					failureClass = "validation"
 				}
+			}
+			attemptStatus := taskmgr.DispatchAttemptSucceeded
+			if attemptErr != nil {
+				attemptStatus = taskmgr.DispatchAttemptFailed
+			}
+			if persistErr := d.tasks.FinishDispatchAttemptChecked(
+				taskID, assignment.Subtask.ID, attemptNumber, attemptStatus,
+				failureClass, httpStatus, attemptErr, time.Since(started),
+			); persistErr != nil {
+				attemptErr = fmt.Errorf("persist dispatch attempt: %w", persistErr)
+				retryable = false
 			}
 			d.recordDispatch(current, output, attemptErr, time.Since(started))
 			if attemptErr == nil || retryable || validationAttempt >= current.Subtask.MaxRetries || dispatchCtx.Err() != nil {
@@ -229,12 +298,19 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, output, nil)
 			return
 		}
-		if !retryable || attempt == 1 || dispatchCtx.Err() != nil {
+		if !retryable || attempt+1 >= maxDispatchAttempts || dispatchCtx.Err() != nil {
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", attemptErr)
 			return
 		}
 
-		alreadyTried[current.NodeID] = true
+		alreadyTried[routerPairKey(current.NodeID, current.Model)] = true
+		delay := min(dispatchBackoff*time.Duration(1<<min(attempt, 3)), maxDispatchBackoff)
+		if !sleepWithContext(dispatchCtx, delay) {
+			if errors.Is(dispatchCtx.Err(), context.DeadlineExceeded) {
+				d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("subtask dispatch deadline exceeded"))
+			}
+			return
+		}
 		retry, err := d.retryAssignment(dispatchCtx, assignment.Subtask, alreadyTried)
 		if err != nil {
 			log.Printf("orchestrator: subtask %s retry unavailable after %v: %v", assignment.Subtask.ID, attemptErr, err)
@@ -243,6 +319,11 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 		}
 		log.Printf("orchestrator: retrying subtask %s on node %s after node %s failed: %v",
 			assignment.Subtask.ID, retry.NodeID, current.NodeID, attemptErr)
+		if err := d.tasks.ReassignSubtaskChecked(taskID, assignment.Subtask.ID, retry); err != nil {
+			log.Printf("orchestrator: could not persist retry assignment for subtask %s: %v", assignment.Subtask.ID, err)
+			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
+			return
+		}
 		if err := d.tasks.ReassignSubtaskChecked(taskID, assignment.Subtask.ID, retry); err != nil {
 			log.Printf("orchestrator: could not persist retry assignment for subtask %s: %v", assignment.Subtask.ID, err)
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
@@ -353,43 +434,87 @@ func validationRetryPrompt(prompt string, validationErr error, output string) st
 }
 
 func (d *dispatcherComponent) executeSubtask(ctx context.Context, assignment scheduler.Assignment, prompt string) (string, error, bool) {
+	outcome := d.executeSubtaskDetailed(ctx, assignment, prompt)
+	return outcome.output, outcome.err, outcome.retryable
+}
+
+type dispatchOutcome struct {
+	output       string
+	err          error
+	retryable    bool
+	failureClass string
+	httpStatus   int
+}
+
+func (d *dispatcherComponent) executeSubtaskDetailed(ctx context.Context, assignment scheduler.Assignment, prompt string) dispatchOutcome {
 	body, err := json.Marshal(map[string]string{
 		"subtask_id": assignment.Subtask.ID,
 		"model":      assignment.Model,
+		"engine":     assignment.Engine,
 		"prompt":     prompt,
 		"task_type":  assignment.Subtask.TaskType,
 	})
 	if err != nil {
-		return "", err, false
+		return dispatchOutcome{err: err, failureClass: "request_encoding"}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, assignment.Address+"/execute", bytes.NewReader(body))
 	if err != nil {
-		return "", err, false
+		return dispatchOutcome{err: err, failureClass: "request_creation"}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := d.executeClient.Do(req)
 	if err != nil {
-		return "", err, true
+		if errors.Is(err, context.Canceled) {
+			return dispatchOutcome{err: err, failureClass: "cancelled"}
+		}
+		var networkErr net.Error
+		if errors.As(err, &networkErr) && networkErr.Timeout() {
+			return dispatchOutcome{err: errors.New("node request timed out"), retryable: true, failureClass: "timeout"}
+		}
+		return dispatchOutcome{err: errors.New("node request failed"), retryable: true, failureClass: "transport"}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		failureClass, retryable := classifyDispatchStatus(resp.StatusCode, errBody)
 		if readErr != nil {
-			return "", fmt.Errorf("read node error response: %w", readErr), true
+			if retryable {
+				failureClass = "upstream_read"
+			}
+			return dispatchOutcome{err: errors.New("read node error response failed"), retryable: retryable, failureClass: failureClass, httpStatus: resp.StatusCode}
 		}
-		return "", errors.New("node returned " + resp.Status + ": " + string(errBody)), resp.StatusCode >= 500
+		return dispatchOutcome{
+			err: errors.New("node returned " + resp.Status), retryable: retryable,
+			failureClass: failureClass, httpStatus: resp.StatusCode,
+		}
 	}
 	var out struct {
 		Output string `json:"output"`
 		Error  string `json:"error,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err, true
+		return dispatchOutcome{err: errors.New("invalid response from node"), retryable: true, failureClass: "invalid_response", httpStatus: resp.StatusCode}
 	}
 	if out.Error != "" {
-		return "", errors.New(out.Error), true
+		return dispatchOutcome{err: errors.New("node reported execution failure"), failureClass: "execution_failure", httpStatus: resp.StatusCode}
 	}
-	return out.Output, nil, false
+	return dispatchOutcome{output: out.Output, httpStatus: resp.StatusCode}
+}
+
+func classifyDispatchStatus(status int, body []byte) (string, bool) {
+	switch {
+	case status == http.StatusRequestTimeout:
+		return "timeout", true
+	case status == http.StatusTooManyRequests:
+		return "rate_limit", true
+	case status == http.StatusInternalServerError || status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout:
+		return "upstream_5xx", true
+	case status == http.StatusNotFound && strings.Contains(strings.ToLower(string(body)), "model"):
+		return "stale_model", true
+	default:
+		return "client_error", false
+	}
 }
 
 func (d *dispatcherComponent) retryAssignment(ctx context.Context, subtask scheduler.Subtask, excluded map[string]bool) (scheduler.Assignment, error) {
@@ -399,7 +524,14 @@ func (d *dispatcherComponent) retryAssignment(ctx context.Context, subtask sched
 	nodes := d.schedulerNodes()
 	eligible := make([]cluster.NodeStatus, 0, len(nodes))
 	for _, node := range nodes {
-		if !excluded[node.ID] {
+		models := make([]engine.Model, 0, len(node.Models))
+		for _, model := range node.Models {
+			if !excluded[routerPairKey(node.ID, model.Name)] {
+				models = append(models, model)
+			}
+		}
+		if len(models) > 0 {
+			node.Models = models
 			eligible = append(eligible, node)
 		}
 	}

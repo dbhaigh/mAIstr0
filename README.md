@@ -315,6 +315,25 @@ reported as running.
 responses using `"stream": true`. The orchestrator preserves system, user,
 assistant, and tool message roles in its model prompt.
 
+For provider-compatible inference without task planning or payload translation,
+use the separate transparent router paths:
+`POST /router/v1/chat/completions`, `/router/v1/completions`,
+`/router/v1/messages`, `/router/api/chat`, and `/router/api/generate`.
+The router selects a healthy node/model whose ready engine advertises the
+request protocol, preserves provider fields and headers, and supplies a model
+when the request omits one. It retries only bounded transient failures, and
+streaming failover is allowed only before the first response byte is sent.
+Responses include an `X-Request-ID`; recent prompt-free request/attempt events
+are available through `GET /api/router/requests` and the SSE cluster snapshots.
+The Anthropic-compatible route is accepted only when a ready node engine
+advertises Anthropic protocol support; the current built-in engines advertise
+OpenAI and/or Ollama protocols.
+
+Task dispatch also retries transient failures across up to five distinct
+node/model pairs within a bounded deadline. Each execution attempt, including
+its selected node/model/engine, status, and failure class, is persisted with
+the task and returned by the task APIs.
+
 The Ollama-compatible surface includes `GET /api/tags`, `POST /api/chat`, and
 `POST /api/generate` (use the Ollama request fields such as `stream` and
 `options`). Anthropic Messages clients can use `POST /v1/messages` with

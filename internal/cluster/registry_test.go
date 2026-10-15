@@ -3,6 +3,7 @@ package cluster
 import (
 	"testing"
 
+	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
 )
 
@@ -98,6 +99,25 @@ func TestRemoveEjectsNodeFromCluster(t *testing.T) {
 	}
 	if _, ok := r.Leader(); ok {
 		t.Fatal("expected no leader after removal leaves one member")
+	}
+}
+
+func TestEngineReadinessUsesReportedStatusAndKeepsLegacyRecordsCompatible(t *testing.T) {
+	if !node("legacy", 1, 1).EngineReady("ollama") {
+		t.Fatal("legacy node without engine status should remain compatible")
+	}
+	status := NodeStatus{Engines: []engine.Status{
+		{Name: "ollama", Ready: false},
+		{Name: "vllm", Ready: true},
+	}}
+	if status.EngineReady("OLLAMA") {
+		t.Fatal("unready engine was reported ready")
+	}
+	if !status.EngineReady("vllm") {
+		t.Fatal("ready engine was reported unready")
+	}
+	if status.EngineReady("missing") {
+		t.Fatal("engine absent from a populated status list should be unavailable")
 	}
 }
 

@@ -41,9 +41,10 @@ type engineComponent struct {
 		setModelConfig(map[string]bool, string)
 	}
 
-	modelMu        sync.Mutex
-	reportedModels []engine.Model
-	reportedAt     time.Time
+	modelMu         sync.Mutex
+	reportedModels  []engine.Model
+	reportedEngines []engine.Status
+	reportedAt      time.Time
 }
 
 type telemetryComponent struct {

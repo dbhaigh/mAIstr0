@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/dispatch-attempt.schema.json",
+  "title": "DispatchAttempt",
+  "type": "object",
+  "required": ["id", "number", "node_id", "model", "status", "started_at", "duration_ms"],
+  "properties": {
+    "id": {"type": "string"},
+    "number": {"type": "integer", "minimum": 1},
+    "node_id": {"type": "string"},
+    "model": {"type": "string"},
+    "engine": {"type": "string"},
+    "status": {"type": "string", "enum": ["running", "succeeded", "failed"]},
+    "failure_class": {"type": "string"},
+    "http_status": {"type": "integer", "minimum": 100, "maximum": 599},
+    "error": {"type": "string"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "duration_ms": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": true
+}

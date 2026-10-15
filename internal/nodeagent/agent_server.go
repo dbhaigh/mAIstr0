@@ -35,6 +35,7 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("/execute", a.handleExecute)
 	mux.HandleFunc("POST /generate", a.handleGenerate)
 	mux.HandleFunc("POST /chat", a.handleChat)
+	mux.HandleFunc("POST /proxy/{path...}", a.handleTransparentProxy)
 	mux.HandleFunc("POST /dialogues", a.handleDialogueCreate)
 	mux.HandleFunc("GET /dialogues", a.handleDialogueList)
 	mux.HandleFunc("GET /dialogues/{id}", a.handleDialogueGet)
