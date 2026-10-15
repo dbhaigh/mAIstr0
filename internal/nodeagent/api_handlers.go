@@ -517,18 +517,23 @@ func engineURL(e engine.Engine) string {
 func (a *Agent) handleEngineInfo(w http.ResponseWriter, r *http.Request) {
 	statusByName := make(map[string]engine.Status)
 	for _, status := range a.reportedEngineList() {
-		statusByName[status.Name] = status
+		statusByName[strings.ToLower(status.Name)] = status
 	}
 	engines := a.engineSnapshot()
 	result := make([]engineInfo, 0, len(engines))
 	for _, e := range engines {
 		url := engineURL(e)
 		_, canPull := e.(engine.ModelManager)
-		status := statusByName[e.Name()]
+		status, ok := statusByName[strings.ToLower(e.Name())]
+		if !ok || status.InventoryState == "" {
+			status.InventoryState = engine.ModelInventoryUnknown
+		}
 		result = append(result, engineInfo{
 			Name: e.Name(), URL: url, CanPull: canPull,
 			Ready: status.Ready, Protocols: status.Protocols,
-			ModelCount: status.ModelCount, LastCheckedAt: status.LastCheckedAt,
+			InventoryState: status.InventoryState, ModelCount: status.ModelCount,
+			LastCheckedAt: status.LastCheckedAt, LastSuccessfulAt: status.LastSuccessfulAt,
+			LastError: status.LastError,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -561,7 +566,7 @@ func (a *Agent) handleModelPull(w http.ResponseWriter, r *http.Request) {
 				writeJSONError(w, apperr.UpstreamError(err), map[string]any{"error": err.Error()})
 				return
 			}
-			a.engineComponent.invalidateReportedModels()
+			a.engineComponent.refreshReportedModels()
 			writeJSON(w, http.StatusOK, map[string]any{"model": req.Model, "engine": e.Name()})
 			return
 		}
@@ -589,7 +594,6 @@ func (a *Agent) handleModelsAllGet(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {
 	a.rescanDetectedEngines()
-	a.engineComponent.invalidateReportedModels()
 	writeJSON(w, http.StatusOK, a.allModelsWithState())
 }
 

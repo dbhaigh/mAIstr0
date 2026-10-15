@@ -9,7 +9,10 @@ import (
 	"github.com/maistr0/maistr0/internal/hardware"
 )
 
-const engineDetectionInterval = 10 * time.Second
+const (
+	engineDetectionInterval    = 10 * time.Second
+	engineDetectionGracePeriod = 3 * engineDetectionInterval
+)
 
 func prioritizeAcceleratedEngines(engines []engine.Engine, hw hardware.Info) []engine.Engine {
 	ordered := make([]engine.Engine, 0, len(engines))
@@ -46,34 +49,45 @@ type ModelState struct {
 }
 
 func (c *engineComponent) enabledModels() []engine.Model {
-	models, _ := c.inspectInventory()
-	return models
+	c.refreshReportedModels()
+	return c.reportedModelList()
 }
 
-func (c *engineComponent) inspectInventory() ([]engine.Model, []engine.Status) {
+func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 	engines := c.engineSnapshot()
 	disabled := c.state.disabledModelSnapshot()
-	models := make([]engine.Model, 0)
+	defaultModel := c.state.defaultModelName()
+	models := make([]ModelState, 0)
 	statuses := make([]engine.Status, 0, len(engines))
 	for _, eng := range engines {
 		protocols := engine.ProtocolsForEngine(eng.Name())
 		status := engine.Status{
-			Name: eng.Name(), Protocols: protocols, LastCheckedAt: time.Now(),
+			Name: eng.Name(), Protocols: protocols, InventoryState: engine.ModelInventoryUnknown,
 		}
 		listed, err := eng.ListModels()
+		status.LastCheckedAt = time.Now()
 		if err != nil {
 			log.Printf("nodeagent: list models for engine %s failed: %v", eng.Name(), err)
+			status.InventoryState = engine.ModelInventoryError
+			status.LastError = err.Error()
 			statuses = append(statuses, status)
 			continue
 		}
 		status.Ready = true
 		status.ModelCount = len(listed)
+		status.LastSuccessfulAt = status.LastCheckedAt
+		if len(listed) == 0 {
+			status.InventoryState = engine.ModelInventoryEmpty
+		} else {
+			status.InventoryState = engine.ModelInventoryAvailable
+		}
 		for _, model := range listed {
 			model.Engine = eng.Name()
 			model.Protocols = append([]string(nil), protocols...)
-			if !disabled[model.Name] {
-				models = append(models, model)
-			}
+			models = append(models, ModelState{
+				Model: model, Enabled: !disabled[model.Name],
+				Default: model.Name == defaultModel,
+			})
 		}
 		statuses = append(statuses, status)
 	}
@@ -90,27 +104,73 @@ func (c *engineComponent) refreshDetectedEngines() {
 	needsDetection := time.Since(c.lastEngineScan) >= engineDetectionInterval
 	c.enginesMu.RUnlock()
 	if needsDetection {
-		c.scanDetectedEnginesLocked()
+		c.scanDetectedEnginesLocked(true)
 	}
 }
 
 func (c *engineComponent) rescanDetectedEngines() {
 	c.engineScanMu.Lock()
 	defer c.engineScanMu.Unlock()
-	c.scanDetectedEnginesLocked()
+	c.scanDetectedEnginesLocked(false)
 }
 
-func (c *engineComponent) scanDetectedEnginesLocked() {
+func (c *engineComponent) scanDetectedEnginesLocked(retainMissing bool) {
 	detector := c.engineDetector
 	if detector == nil {
 		detector = engine.DetectAll
 	}
 	engines := detector()
 	engines = prioritizeAcceleratedEngines(engines, c.telemetry.hardwareSnapshot())
+	now := time.Now()
 	c.enginesMu.Lock()
-	c.detectedEngines = engines
-	c.lastEngineScan = time.Now()
+	detected := make([]engine.Engine, 0, len(engines)+len(c.detectedEngines))
+	seen := make(map[string]struct{}, len(engines)+len(c.detectedEngines))
+	lastSeen := make(map[string]time.Time, len(c.detectedSeenAt)+len(engines))
+	for key, seenAt := range c.detectedSeenAt {
+		lastSeen[key] = seenAt
+	}
+	for _, eng := range engines {
+		key := engineIdentity(eng)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		lastSeen[key] = now
+		detected = append(detected, eng)
+	}
+	if retainMissing {
+		for _, eng := range c.detectedEngines {
+			key := engineIdentity(eng)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seenAt, ok := lastSeen[key]
+			if !ok {
+				seenAt = now
+				lastSeen[key] = seenAt
+			}
+			if now.Sub(seenAt) > engineDetectionGracePeriod {
+				delete(lastSeen, key)
+				continue
+			}
+			seen[key] = struct{}{}
+			detected = append(detected, eng)
+		}
+	} else {
+		for key := range lastSeen {
+			if _, ok := seen[key]; !ok {
+				delete(lastSeen, key)
+			}
+		}
+	}
+	c.detectedEngines = detected
+	c.detectedSeenAt = lastSeen
+	c.lastEngineScan = now
 	c.enginesMu.Unlock()
+}
+
+func engineIdentity(eng engine.Engine) string {
+	return strings.ToLower(eng.Name()) + "\x00" + engineURL(eng)
 }
 
 func (c *engineComponent) engineSnapshot() []engine.Engine {
@@ -122,7 +182,7 @@ func (c *engineComponent) engineSnapshot() []engine.Engine {
 	seen := make(map[string]struct{}, len(configured)+len(detected))
 	for _, group := range [][]engine.Engine{configured, detected} {
 		for _, eng := range group {
-			key := strings.ToLower(eng.Name()) + "\x00" + engineURL(eng)
+			key := engineIdentity(eng)
 			if _, ok := seen[key]; ok {
 				continue
 			}
@@ -135,36 +195,30 @@ func (c *engineComponent) engineSnapshot() []engine.Engine {
 
 func (c *engineComponent) allModelsWithState() []ModelState {
 	c.refreshDetectedEngines()
-	disabled := c.state.disabledModelSnapshot()
-	var out []ModelState
-	for _, eng := range c.engineSnapshot() {
-		protocols := engine.ProtocolsForEngine(eng.Name())
-		models, err := eng.ListModels()
-		if err != nil {
-			log.Printf("nodeagent: list models for engine %s failed: %v", eng.Name(), err)
-			continue
-		}
-		for _, model := range models {
-			model.Engine = eng.Name()
-			model.Protocols = append([]string(nil), protocols...)
-			out = append(out, ModelState{
-				Model: model, Enabled: !disabled[model.Name],
-				Default: model.Name == c.state.defaultModelName(),
-			})
-		}
-	}
-	return out
+	c.refreshReportedModels()
+	return c.reportedAllModelList()
 }
 
 func (c *engineComponent) reportedModelList() []engine.Model {
+	all := c.reportedAllModelList()
+	models := make([]engine.Model, 0, len(all))
+	for _, model := range all {
+		if model.Enabled {
+			models = append(models, model.Model)
+		}
+	}
+	return models
+}
+
+func (c *engineComponent) reportedAllModelList() []ModelState {
 	c.modelMu.Lock()
-	models := append([]engine.Model(nil), c.reportedModels...)
-	for i := range models {
-		models[i].Tags = append([]string(nil), models[i].Tags...)
-		models[i].Protocols = append([]string(nil), models[i].Protocols...)
+	states := append([]ModelState(nil), c.reportedModels...)
+	for i := range states {
+		states[i].Tags = append([]string(nil), states[i].Tags...)
+		states[i].Protocols = append([]string(nil), states[i].Protocols...)
 	}
 	c.modelMu.Unlock()
-	return models
+	return states
 }
 
 func (c *engineComponent) reportedEngineList() []engine.Status {
@@ -181,8 +235,38 @@ func (c *engineComponent) reportedEngineList() []engine.Status {
 // contacting an LLM server. Status and registration must stay responsive even
 // when a local model is loading or the engine is unavailable.
 func (c *engineComponent) refreshReportedModels() {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
 	models, engines := c.inspectInventory()
 	c.modelMu.Lock()
+	disabled := c.state.disabledModelSnapshot()
+	defaultModel := c.state.defaultModelName()
+	previousModels := append([]ModelState(nil), c.reportedModels...)
+	previousEngines := make(map[string]engine.Status, len(c.reportedEngines))
+	for _, status := range c.reportedEngines {
+		previousEngines[strings.ToLower(status.Name)] = status
+	}
+	for i := range engines {
+		status := &engines[i]
+		if status.InventoryState != engine.ModelInventoryError {
+			continue
+		}
+		previous, ok := previousEngines[strings.ToLower(status.Name)]
+		if !ok {
+			continue
+		}
+		status.ModelCount = previous.ModelCount
+		status.LastSuccessfulAt = previous.LastSuccessfulAt
+		for _, model := range previousModels {
+			if !strings.EqualFold(model.Engine, status.Name) {
+				continue
+			}
+			model.Enabled = !disabled[model.Name]
+			model.Default = model.Name == defaultModel
+			models = append(models, model)
+		}
+	}
 	c.reportedModels = models
 	c.reportedEngines = engines
 	c.reportedAt = time.Now()
@@ -227,7 +311,13 @@ func (c *engineComponent) defaultModelName() string {
 
 func (c *engineComponent) configureModels(disabled map[string]bool, defaultModel string) {
 	c.state.setModelConfig(disabled, defaultModel)
-	c.invalidateReportedModels()
+	defaultModel = c.state.defaultModelName()
+	c.modelMu.Lock()
+	for i := range c.reportedModels {
+		c.reportedModels[i].Enabled = !disabled[c.reportedModels[i].Name]
+		c.reportedModels[i].Default = c.reportedModels[i].Name == defaultModel
+	}
+	c.modelMu.Unlock()
 }
 
 func (c *engineComponent) replaceConfiguredEngine(eng engine.Engine) {
@@ -238,8 +328,11 @@ func (c *engineComponent) replaceConfiguredEngine(eng engine.Engine) {
 }
 
 func (c *engineComponent) invalidateReportedModels() {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
 	c.modelMu.Lock()
 	c.reportedModels = nil
+	c.reportedEngines = nil
 	c.reportedAt = time.Time{}
 	c.modelMu.Unlock()
 }
@@ -255,6 +348,9 @@ func (a *Agent) allModelsWithState() []ModelState {
 }
 func (a *Agent) reportedModelList() []engine.Model {
 	return a.engineComponent.reportedModelList()
+}
+func (a *Agent) reportedAllModelList() []ModelState {
+	return a.engineComponent.reportedAllModelList()
 }
 func (a *Agent) reportedEngineList() []engine.Status {
 	return a.engineComponent.reportedEngineList()

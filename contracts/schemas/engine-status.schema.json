@@ -8,8 +8,11 @@
     "name": {"type": "string"},
     "ready": {"type": "boolean"},
     "protocols": {"type": "array", "items": {"type": "string"}},
+    "inventory_state": {"type": "string", "enum": ["unknown", "available", "empty", "error"]},
     "model_count": {"type": "integer", "minimum": 0},
-    "last_checked_at": {"type": "string", "format": "date-time"}
+    "last_checked_at": {"type": "string", "format": "date-time"},
+    "last_successful_at": {"type": "string", "format": "date-time"},
+    "last_error": {"type": "string"}
   },
   "additionalProperties": true
 }

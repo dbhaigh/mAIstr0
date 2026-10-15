@@ -8,6 +8,7 @@ const source = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8")
 const discoverySource = source.slice(source.indexOf("function visibleNetworkPeers("), source.indexOf("function renderTasks("));
 const taskSource = source.slice(source.indexOf("function renderTasks("), source.indexOf("async function copyText("));
 const resourceHistorySource = source.slice(source.indexOf("function gpuGaugeMarkup("), source.indexOf("const TASK_ACTIVE_STATES"));
+const engineStatusSource = source.slice(source.indexOf("function engineInventoryState("), source.indexOf("function renderDirectClusterContext("));
 
 test("Nodes page combines GPU, NPU, CPU, and RAM histories in one graph", () => {
   const context = vm.createContext({
@@ -71,6 +72,41 @@ test("Nodes page omits GPU and NPU details when the hardware is absent", () => {
   assert.match(history, /resource-history-swatch resource-history-cpu/);
   assert.match(history, /resource-history-swatch resource-history-ram/);
   assert.doesNotMatch(history, /resource-history-(gpu|npu)/);
+});
+
+test("Node engine inventory indicators distinguish available, empty, failed, and unchecked states", () => {
+  const context = vm.createContext({
+    escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+  });
+  vm.runInContext(engineStatusSource, context);
+
+  const html = context.engineStatusSummaryMarkup([
+    { name: "ollama", ready: true, inventory_state: "available", model_count: 2 },
+    { name: "vllm", ready: true, inventory_state: "empty", model_count: 0 },
+    { name: "lmstudio", ready: false, inventory_state: "error", model_count: 1, last_error: "<timeout>" },
+    { name: "fastflowlm", ready: false, inventory_state: "unknown", model_count: 0 },
+  ]);
+  assert.match(html, /engine-status-chip available/);
+  assert.match(html, /ollama<\/strong>\s*<span>Inventory available · 2 models/);
+  assert.match(html, /engine-status-chip empty/);
+  assert.match(html, /Reachable · no models · 0 models/);
+  assert.match(html, /engine-status-chip error/);
+  assert.match(html, /lmstudio: &lt;timeout&gt;/);
+  assert.match(html, /1 known/);
+  assert.match(html, /engine-status-chip unknown/);
+  assert.match(html, /Not checked · 0 models/);
+
+  const details = context.engineStatusDetailsMarkup([
+    {
+      name: "lmstudio", ready: false, inventory_state: "error", model_count: 1,
+      last_checked_at: "2026-10-14T12:00:00Z", last_successful_at: "2026-10-14T11:00:00Z",
+      last_error: "<timeout>",
+    },
+  ]);
+  assert.match(details, /Last checked:/);
+  assert.match(details, /Last successful inventory:/);
+  assert.match(details, /Inventory check failed: &lt;timeout&gt;/);
+  assert.doesNotMatch(details, /<timeout>/);
 });
 
 function discoveryContext(nodes = [], pairing = null) {

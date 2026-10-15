@@ -30,6 +30,7 @@ type agentState struct {
 type engineComponent struct {
 	engines         []engine.Engine
 	detectedEngines []engine.Engine
+	detectedSeenAt  map[string]time.Time
 	enginesMu       sync.RWMutex
 	engineScanMu    sync.Mutex
 	engineDetector  func() []engine.Engine
@@ -41,8 +42,9 @@ type engineComponent struct {
 		setModelConfig(map[string]bool, string)
 	}
 
+	refreshMu       sync.Mutex
 	modelMu         sync.Mutex
-	reportedModels  []engine.Model
+	reportedModels  []ModelState
 	reportedEngines []engine.Status
 	reportedAt      time.Time
 }

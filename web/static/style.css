@@ -507,6 +507,26 @@ main {
 .node-accelerator-gauges { display: flex; align-items: center; gap: 0.45rem; }
 .node-card-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .node-card-heading h3 { min-width: 0; overflow-wrap: anywhere; }
+.engine-status-summary { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0.35rem 0; }
+.engine-status-chip { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.4rem; padding: 0.2rem 0.4rem; border: 1px solid #34405e; border-radius: 5px; background: #0c101b; font-size: 0.68rem; }
+.engine-status-chip.available { border-color: #276749; color: var(--ok); }
+.engine-status-chip.empty { border-color: #806324; color: var(--warn); }
+.engine-status-chip.error { border-color: #7f3038; color: var(--bad); }
+.engine-status-chip.unknown, .engine-status-empty { color: var(--muted); font-size: 0.7rem; }
+.engine-status-chip strong { color: var(--text); }
+.engine-inventory-details { display: grid; gap: 0.4rem; margin: 0.5rem 0; }
+.engine-inventory-details h4, .model-config-engine-group h5 { margin: 0; font-size: 0.78rem; }
+.engine-inventory-row { display: grid; gap: 0.2rem; padding: 0.4rem 0.5rem; border: 1px solid #2a3350; border-radius: 5px; background: #0c101b; font-size: 0.7rem; }
+.engine-inventory-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.6rem; }
+.engine-inventory-heading > span:last-child, .engine-inventory-row small, .engine-inventory-empty { color: var(--muted); }
+.engine-inventory-state { font-weight: 600; }
+.engine-inventory-row.available .engine-inventory-state { color: var(--ok); }
+.engine-inventory-row.empty .engine-inventory-state, .engine-inventory-row.unknown .engine-inventory-state { color: var(--warn); }
+.engine-inventory-row.error .engine-inventory-state, .engine-inventory-error { color: var(--bad); }
+.engine-inventory-error { margin: 0; overflow-wrap: anywhere; }
+.engine-inventory-empty { margin: 0.3rem 0; }
+.model-config-engine-groups { display: grid; gap: 0.45rem; }
+.model-config-engine-group { display: grid; gap: 0.25rem; padding-top: 0.35rem; border-top: 1px solid #232b40; }
 .resource-history { margin: 0.75rem 0; padding: 0.5rem 0.65rem; border: 1px solid #2a3350; border-radius: 6px; background: #0c101b66; }
 .resource-history-heading, .resource-history-legend { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem 0.65rem; color: var(--muted); font-size: 0.7rem; }
 .resource-history-heading strong { color: var(--text); }

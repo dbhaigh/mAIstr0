@@ -18,6 +18,8 @@
 
 ### Added
 
+- Report per-engine model inventory status, check timestamps, and errors, while
+  retaining the last successful inventory during transient probe failures.
 - Add a separate transparent inference router for OpenAI, Ollama, and
   Anthropic-compatible paths, with model-aware engine selection and provider
   request/stream forwarding that does not invoke DAG planning.

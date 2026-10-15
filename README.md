@@ -189,6 +189,12 @@ Nodes scan for local LLM servers at startup and refresh their model lists
 automatically. Use **Rescan engines & models** on an online node card to detect
 servers started or installed later, or **Rescan all nodes** to scan every online
 node. Configured engines are retained alongside locally discovered engines.
+Node cards report engine inventory status and model counts. Open **Configure
+models** for per-engine model lists, the latest check and last successful check,
+and any probe error. A successful empty inventory is distinct from an untested
+or failed check; a failed check retains the last successful model list and marks
+it as stale. Inventory checks query the engine's model list and do not guarantee
+that a model can load or generate.
 To edit a node's properties, right-click its card in the Nodes section. The properties dialog
 can change its model engine and URL, default and disabled models, advertised
 and orchestrator addresses, discovery, tray and browser behavior, and memory

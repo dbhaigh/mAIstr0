@@ -495,13 +495,16 @@ type nodeProperties struct {
 }
 
 type engineInfo struct {
-	Name          string    `json:"name"`
-	URL           string    `json:"url"`
-	CanPull       bool      `json:"can_pull"`
-	Ready         bool      `json:"ready"`
-	Protocols     []string  `json:"protocols,omitempty"`
-	ModelCount    int       `json:"model_count"`
-	LastCheckedAt time.Time `json:"last_checked_at,omitempty"`
+	Name             string    `json:"name"`
+	URL              string    `json:"url"`
+	CanPull          bool      `json:"can_pull"`
+	Ready            bool      `json:"ready"`
+	Protocols        []string  `json:"protocols,omitempty"`
+	InventoryState   string    `json:"inventory_state,omitempty"`
+	ModelCount       int       `json:"model_count"`
+	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
+	LastSuccessfulAt time.Time `json:"last_successful_at,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -1003,6 +1003,70 @@ function formatDirectNodeHardware(node) {
   return parts.length ? parts.join(" · ") : "Hardware details unavailable";
 }
 
+function engineInventoryState(engine) {
+  const knownStates = ["unknown", "available", "empty", "error"];
+  if (knownStates.includes(engine?.inventory_state)) return engine.inventory_state;
+  if (!engine?.last_checked_at) return "unknown";
+  if (!engine.ready) return "error";
+  return Number(engine.model_count) > 0 ? "available" : "empty";
+}
+
+function engineInventoryLabel(state) {
+  switch (state) {
+    case "available": return "Inventory available";
+    case "empty": return "Reachable · no models";
+    case "error": return "Check failed";
+    default: return "Not checked";
+  }
+}
+
+function engineStatusSummaryMarkup(engines) {
+  if (!Array.isArray(engines) || !engines.length) {
+    return '<span class="engine-status-empty">No engines reported</span>';
+  }
+  return `<div class="engine-status-summary" aria-label="Inference engine status">${engines.map((engine) => {
+    const state = engineInventoryState(engine);
+    const count = Math.max(0, Number(engine.model_count) || 0);
+    const countLabel = state === "error" ? `${count} known` : `${count} model${count === 1 ? "" : "s"}`;
+    const title = engine.last_error
+      ? `${engine.name}: ${engine.last_error}`
+      : `${engine.name}: ${engineInventoryLabel(state)}`;
+    return `<span class="engine-status-chip ${state}" title="${escapeHtml(title)}">
+      <strong>${escapeHtml(engine.name || "Unknown engine")}</strong>
+      <span>${escapeHtml(engineInventoryLabel(state))} · ${countLabel}</span>
+    </span>`;
+  }).join("")}</div>`;
+}
+
+function engineStatusDetailsMarkup(engines) {
+  if (!Array.isArray(engines) || !engines.length) {
+    return '<p class="engine-inventory-empty">No engine inventory status has been reported.</p>';
+  }
+  return `<section class="engine-inventory-details" aria-label="Inference engine inventory">
+    <h4>Inference engine inventory</h4>
+    ${engines.map((engine) => {
+      const state = engineInventoryState(engine);
+      const checkedAt = engine.last_checked_at ? new Date(engine.last_checked_at) : null;
+      const successfulAt = engine.last_successful_at ? new Date(engine.last_successful_at) : null;
+      const checkedLabel = checkedAt && Number.isFinite(checkedAt.getTime()) ? checkedAt.toLocaleString() : "Not checked";
+      const successfulLabel = successfulAt && Number.isFinite(successfulAt.getTime()) ? successfulAt.toLocaleString() : "No successful inventory check";
+      const count = Math.max(0, Number(engine.model_count) || 0);
+      const error = state === "error"
+        ? `<p class="engine-inventory-error">Inventory check failed: ${escapeHtml(engine.last_error || "No error details were reported.")}</p>`
+        : "";
+      return `<article class="engine-inventory-row ${state}">
+        <div class="engine-inventory-heading">
+          <strong>${escapeHtml(engine.name || "Unknown engine")}</strong>
+          <span class="engine-inventory-state">${escapeHtml(engineInventoryLabel(state))}</span>
+          <span>${count} known model${count === 1 ? "" : "s"}</span>
+        </div>
+        <small>Last checked: ${escapeHtml(checkedLabel)} · Last successful inventory: ${escapeHtml(successfulLabel)}</small>
+        ${error}
+      </article>`;
+    }).join("")}
+  </section>`;
+}
+
 function renderDirectClusterContext(nodes) {
   if (!directClusterNodesEl || !directClusterStatus) return;
   const healthyCount = nodes.filter((node) => node.healthy).length;
@@ -1031,6 +1095,8 @@ function renderDirectClusterContext(nodes) {
         <div class="direct-node-details">
           <div>${escapeHtml(formatDirectNodeHardware(node))}</div>
           <div>Active tasks: ${Number(node.active_tasks) || 0}${score}</div>
+          ${engineStatusSummaryMarkup(node.engines)}
+          ${engineStatusDetailsMarkup(node.engines)}
           <div class="direct-model-list">${models}</div>
         </div>
       </details>
@@ -1953,6 +2019,7 @@ function renderOverview(nodes, tasks, peers, parts = {}) {
             <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
             <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
             <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${node.active_tasks || 0} active tasks · ${(node.models || []).length} models`}</div>
+            ${node.discovered ? "" : engineStatusSummaryMarkup(node.engines)}
             <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
             <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
             ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
@@ -2017,6 +2084,7 @@ function renderNodes(nodes) {
       <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
       ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
       <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ''}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ''}</div>
+      ${engineStatusSummaryMarkup(n.engines)}
       <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
       <div class="row"><span>OS / Arch</span><span>${escapeHtml(n.hardware.os)}/${escapeHtml(n.hardware.arch)}</span></div>
       <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
@@ -2058,7 +2126,7 @@ function renderNodes(nodes) {
     });
     if (modelPanelOpen.has(n.id)) {
       if (lastFetchedModels.has(n.id)) {
-        renderModelPanel(n.id, lastFetchedModels.get(n.id));
+        renderModelPanel(n.id, lastFetchedModels.get(n.id), n.engines);
       } else {
         loadModelPanel(n.id);
       }
@@ -2105,6 +2173,7 @@ function renderSetupNodes(nodes) {
         <span>${node.active_tasks || 0} active tasks</span>
         ${online ? "" : `<span>Last seen ${escapeHtml(node.last_seen ? formatRelativeTime(node.last_seen) : "unknown")}</span>`}
       </div>`;
+    card.insertAdjacentHTML("beforeend", engineStatusSummaryMarkup(node.engines));
     attachNodeContextMenu(card, node);
     setupNodeList.appendChild(card);
   }
@@ -2368,33 +2437,46 @@ async function loadModelPanel(nodeId) {
     pendingModelState.set(nodeId, state);
     pendingDefaultModel.set(nodeId, (models.find((m) => m.default) || {}).name || "");
     lastFetchedModels.set(nodeId, models);
-    renderModelPanel(nodeId, models);
+    const node = currentNodes.find((item) => item.id === nodeId);
+    renderModelPanel(nodeId, models, node?.engines || []);
   } catch (err) {
     panel.innerHTML = `<p style="color:var(--bad)">Failed to load models: ${escapeHtml(err.message)}</p>`;
   }
 }
 
-function renderModelPanel(nodeId, models) {
+function renderModelPanel(nodeId, models, engines = []) {
   const panel = document.getElementById(`model-config-${cssId(nodeId)}`);
   if (!panel) return;
+  const engineDetails = engineStatusDetailsMarkup(engines);
   if (!models || models.length === 0) {
-    panel.innerHTML = '<p style="color:var(--muted)">No models discovered on this node.</p>';
+    panel.innerHTML = `${engineDetails}<p style="color:var(--muted)">No models discovered on this node.</p>`;
     return;
   }
   const state = pendingModelState.get(nodeId);
   const defaultModel = pendingDefaultModel.get(nodeId) || "";
-  const rows = models
-    .map((m) => {
+  const modelsByEngine = new Map();
+  for (const model of models) {
+    const engineName = model.engine || "Unknown engine";
+    if (!modelsByEngine.has(engineName)) modelsByEngine.set(engineName, []);
+    modelsByEngine.get(engineName).push(model);
+  }
+  const rows = [...modelsByEngine.entries()].map(([engineName, engineModels]) => `
+      <section class="model-config-engine-group">
+        <h5>${escapeHtml(engineName)} · ${engineModels.length} model${engineModels.length === 1 ? "" : "s"}</h5>
+        ${engineModels.map((m) => {
       const checked = state.get(m.name) ? "checked" : "";
       return `
         <label class="model-config-row">
           <input type="checkbox" data-model="${escapeHtml(m.name)}" ${checked} />
           <span class="model-config-name">${escapeHtml(m.name)}</span>
-          <span class="model-config-meta">${(m.tags || []).join(", ")} · ${m.engine}${m.size_gb ? ` · ${m.size_gb.toFixed(1)} GB` : ""}</span>
+          <span class="model-config-meta">${escapeHtml((m.tags || []).join(", "))} · ${escapeHtml(m.engine || "Unknown engine")}${m.size_gb ? ` · ${Number(m.size_gb).toFixed(1)} GB` : ""}</span>
         </label>`;
-    })
-    .join("");
+    }).join("")}
+      </section>
+    `).join("");
   panel.innerHTML = `
+    ${engineDetails}
+    <h4>Installed models</h4>
     <label class="model-default-row">
       <span>Default model</span>
       <select class="model-default-select">
@@ -2402,7 +2484,7 @@ function renderModelPanel(nodeId, models) {
         ${models.map((m) => `<option value="${escapeHtml(m.name)}" ${m.name === defaultModel ? "selected" : ""} ${state.get(m.name) ? "" : "disabled"}>${escapeHtml(m.name)}</option>`).join("")}
       </select>
     </label>
-    ${rows}
+    <div class="model-config-engine-groups">${rows}</div>
     <button class="model-config-save" data-node="${escapeHtml(nodeId)}">Save</button>
     <span class="model-config-status" id="model-config-status-${cssId(nodeId)}"></span>
   `;

@@ -23,12 +23,22 @@ type Model struct {
 }
 
 type Status struct {
-	Name          string    `json:"name"`
-	Ready         bool      `json:"ready"`
-	Protocols     []string  `json:"protocols,omitempty"`
-	ModelCount    int       `json:"model_count"`
-	LastCheckedAt time.Time `json:"last_checked_at,omitempty"`
+	Name             string    `json:"name"`
+	Ready            bool      `json:"ready"` // The engine responded to its model inventory request.
+	Protocols        []string  `json:"protocols,omitempty"`
+	InventoryState   string    `json:"inventory_state,omitempty"`
+	ModelCount       int       `json:"model_count"`
+	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
+	LastSuccessfulAt time.Time `json:"last_successful_at,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
 }
+
+const (
+	ModelInventoryUnknown   = "unknown"
+	ModelInventoryAvailable = "available"
+	ModelInventoryEmpty     = "empty"
+	ModelInventoryError     = "error"
+)
 
 func ProtocolsForEngine(name string) []string {
 	switch name {
