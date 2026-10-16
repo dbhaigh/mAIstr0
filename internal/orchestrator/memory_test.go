@@ -161,6 +161,9 @@ func TestMemorySyncGetReturnsIncrementalSnapshotForCurrentPeer(t *testing.T) {
 	if incremental.SyncVersion != memory.SyncProtocolVersion || len(incremental.Experiences) != 1 {
 		t.Fatalf("incremental snapshot = version %d, experiences %d", incremental.SyncVersion, len(incremental.Experiences))
 	}
+	if got := srv.metrics.snapshot().syncPages; got != 1 {
+		t.Fatalf("served sync pages = %d, want 1", got)
+	}
 
 	legacyResponse := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(legacyResponse, httptest.NewRequest(http.MethodGet, "/api/memory/sync", nil))
@@ -170,6 +173,9 @@ func TestMemorySyncGetReturnsIncrementalSnapshotForCurrentPeer(t *testing.T) {
 	}
 	if len(legacy.Experiences) != 3 {
 		t.Fatalf("legacy peer received %d experiences, want full snapshot", len(legacy.Experiences))
+	}
+	if got := srv.metrics.snapshot().syncPages; got != 1 {
+		t.Fatalf("legacy request changed served sync page count to %d", got)
 	}
 }
 

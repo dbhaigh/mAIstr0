@@ -331,7 +331,7 @@ func TestPeerMemorySyncGetNegotiatesIncrementalSnapshot(t *testing.T) {
 
 func TestTaskListReturnsIncrementalSnapshot(t *testing.T) {
 	a := newTestAgent(t, "node-a")
-	task := a.tasks.Create("task history", nil)
+	task := a.orchestratorLink.tasks.Create("task history", nil)
 	request := httptest.NewRequest(http.MethodGet, "/tasks", nil)
 	if err := memory.SetSyncRequestHeaders(request, map[string]uint64{"task:node-a": task.Sequence - 1}); err != nil {
 		t.Fatal(err)

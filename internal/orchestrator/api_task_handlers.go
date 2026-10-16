@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/memory"
@@ -104,6 +105,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	tasks, currentWatermarks := s.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
 	if memory.SupportsSyncPages(version) {
+		pageStarted := time.Now()
 		if cursor == nil {
 			cursor = make(map[string]uint64)
 			upper = currentWatermarks
@@ -121,6 +123,9 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		s.metrics.recordSyncPage()
+		log.Printf("orchestrator: task history sync event=page_served %s records=%d more=%t",
+			syncLogFields(syncLogRequestID(r), syncLogNodeID(r), time.Since(pageStarted), "none"), len(tasks), more)
 	}
 	if err := memory.SetSyncResponseHeaders(w, currentWatermarks); err != nil {
 		http.Error(w, "could not encode task sync watermarks: "+err.Error(), http.StatusInternalServerError)

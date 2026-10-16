@@ -48,19 +48,19 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := a.tasks.CreateChecked(req.Description, assignments)
+	task, err := a.orchestratorLink.tasks.CreateChecked(req.Description, assignments)
 	if err != nil {
 		writeError(w, apperr.InternalError(fmt.Errorf("could not persist task: %w", err)))
 		return
 	}
-	taskCtx, ok := a.tasks.Context(task.ID)
+	taskCtx, ok := a.orchestratorLink.tasks.Context(task.ID)
 	if !ok {
 		writeError(w, apperr.InternalError(errors.New("created task is no longer available")))
 		return
 	}
 	for _, asg := range assignments {
 		if err := a.peerComponent.dispatchPool.Submit(taskCtx, peerDispatchJob{taskID: task.ID, assignment: asg}); err != nil {
-			a.tasks.CompleteSubtask(task.ID, asg.Subtask.ID, "", err)
+			a.orchestratorLink.tasks.CompleteSubtask(task.ID, asg.Subtask.ID, "", err)
 		}
 	}
 	writeJSON(w, http.StatusAccepted, task)
@@ -81,7 +81,7 @@ func (a *Agent) handleTasksList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task sync pagination requires protocol version 2", http.StatusBadRequest)
 		return
 	}
-	tasks, currentWatermarks := a.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
+	tasks, currentWatermarks := a.orchestratorLink.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
 	if memory.SupportsSyncPages(version) {
 		if cursor == nil {
 			cursor = make(map[string]uint64)
@@ -109,7 +109,7 @@ func (a *Agent) handleTasksList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleTaskGet(w http.ResponseWriter, r *http.Request) {
-	t, ok := a.tasks.Get(r.PathValue("id"))
+	t, ok := a.orchestratorLink.tasks.Get(r.PathValue("id"))
 	if !ok {
 		writeError(w, apperr.NotFoundError(errors.New("task not found")))
 		return

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/piagent"
 	"github.com/maistr0/maistr0/internal/scheduler"
@@ -111,6 +113,7 @@ func TestMinimalModeOmitsOptionalRoutesAndKeepsClusterRouting(t *testing.T) {
 		method, path, wantPattern string
 	}{
 		{http.MethodGet, "/api/status", "GET /api/status"},
+		{http.MethodGet, "/api/metrics", "GET /api/metrics"},
 		{http.MethodGet, "/api/cluster/health", "GET /api/cluster/health"},
 		{http.MethodPost, "/router/v1/chat/completions", "POST /router/{path...}"},
 		{http.MethodGet, "/v1/models", "GET /v1/models"},
@@ -1451,19 +1454,32 @@ func TestCreateTaskRejectsPartiallyAssignableWork(t *testing.T) {
 func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	// These counters are updated by concurrent test-server handlers.
 	var firstCalls, secondCalls atomic.Int32
+	type dispatchIDs struct{ request, attempt string }
+	attemptIDs := make(chan dispatchIDs, 2)
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstCalls.Add(1)
+		if r.Header.Get(inferroute.HeaderRequestID) == "" || r.Header.Get(inferroute.HeaderAttemptID) == "" {
+			t.Errorf("dispatch request IDs missing: request=%q attempt=%q",
+				r.Header.Get(inferroute.HeaderRequestID), r.Header.Get(inferroute.HeaderAttemptID))
+		}
+		attemptIDs <- dispatchIDs{request: r.Header.Get(inferroute.HeaderRequestID), attempt: r.Header.Get(inferroute.HeaderAttemptID)}
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 	}))
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secondCalls.Add(1)
 		var request struct {
+			Model  string `json:"model"`
 			Engine string `json:"engine"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Engine != "ollama" {
-			t.Errorf("dispatch engine = %q, error=%v", request.Engine, err)
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Engine != "ollama" || request.Model != "other-model" {
+			t.Errorf("dispatch model/engine = %q/%q, error=%v", request.Model, request.Engine, err)
 		}
+		if r.Header.Get(inferroute.HeaderRequestID) == "" || r.Header.Get(inferroute.HeaderAttemptID) == "" {
+			t.Errorf("retry request IDs missing: request=%q attempt=%q",
+				r.Header.Get(inferroute.HeaderRequestID), r.Header.Get(inferroute.HeaderAttemptID))
+		}
+		attemptIDs <- dispatchIDs{request: r.Header.Get(inferroute.HeaderRequestID), attempt: r.Header.Get(inferroute.HeaderAttemptID)}
 		_ = json.NewEncoder(w).Encode(map[string]string{"output": "retry succeeded"})
 	}))
 	defer second.Close()
@@ -1475,7 +1491,7 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	})
 	srv.registry.Upsert(cluster.NodeStatus{
 		ID: "node-b", Address: second.URL, Healthy: true,
-		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+		Models: []engine.Model{{Name: "other-model", Engine: "ollama", Tags: []string{"general"}}},
 	})
 	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
 		Subtask: scheduler.Subtask{ID: "sub-a", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
@@ -1496,11 +1512,209 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	if attempts := completed.Subtasks[0].Attempts; len(attempts) != 2 ||
 		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
 		attempts[0].FailureClass != "upstream_5xx" ||
-		attempts[1].Status != taskmgr.DispatchAttemptSucceeded {
+		attempts[1].Status != taskmgr.DispatchAttemptSucceeded ||
+		attempts[0].NodeID == attempts[1].NodeID ||
+		attempts[0].Model == attempts[1].Model ||
+		attempts[0].ID != taskmgr.DispatchAttemptID(task.ID, "sub-a", 1) ||
+		attempts[1].ID != taskmgr.DispatchAttemptID(task.ID, "sub-a", 2) {
 		t.Fatalf("dispatch attempt history = %+v", attempts)
 	}
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
 		t.Fatalf("dispatch attempts = (%d, %d), want (1, 1)", firstCalls.Load(), secondCalls.Load())
+	}
+	for _, expected := range []dispatchIDs{
+		{request: task.ID + ":sub-a", attempt: taskmgr.DispatchAttemptID(task.ID, "sub-a", 1)},
+		{request: task.ID + ":sub-a", attempt: taskmgr.DispatchAttemptID(task.ID, "sub-a", 2)},
+	} {
+		if got := <-attemptIDs; got != expected {
+			t.Errorf("worker dispatch IDs = %+v, want %+v", got, expected)
+		}
+	}
+	metrics := srv.metrics.snapshot()
+	if metrics.dispatches != 2 || metrics.retries != 1 || metrics.capacityReservations != 2 {
+		t.Fatalf("dispatch metrics = %+v, want two attempts, one retry, and two reservations", metrics)
+	}
+}
+
+func TestDispatchPermanentFailureDoesNotRetry(t *testing.T) {
+	var retryCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		retryCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "should not run"})
+	}))
+	defer second.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-a", Address: first.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-b", Address: second.URL, Healthy: true,
+		Models: []engine.Model{{Name: "other", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "permanent", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: first.URL, Model: "general", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("permanent failure task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if len(attempts) != 1 || attempts[0].FailureClass != "client_error" ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed {
+		t.Fatalf("permanent failure attempts = %+v, want one client_error failure", attempts)
+	}
+	if retryCalls.Load() != 0 {
+		t.Fatalf("permanent failure triggered %d retries", retryCalls.Load())
+	}
+}
+
+func TestDispatchCancellationDuringExecutionFailsWithoutRetry(t *testing.T) {
+	entered := make(chan struct{})
+	releaseWorker := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseWorker) }) }
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-releaseWorker
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "late response"})
+	}))
+	defer first.Close()
+	defer release()
+	var retryCalls atomic.Int32
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		retryCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "should not run"})
+	}))
+	defer second.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-a", Address: first.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-b", Address: second.URL, Healthy: true,
+		Models: []engine.Model{{Name: "other", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "cancelled", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: first.URL, Model: "general", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		srv.dispatcher.dispatchWithContext(parent, task.ID, task.Subtasks[0].Assignment)
+		close(done)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("dispatch did not reach the worker")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch did not stop after cancellation")
+	}
+	release()
+
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("cancelled dispatch task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if len(attempts) != 1 || attempts[0].FailureClass != "cancelled" ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed {
+		t.Fatalf("cancelled dispatch attempts = %+v", attempts)
+	}
+	if retryCalls.Load() != 0 {
+		t.Fatalf("cancelled dispatch triggered %d retries", retryCalls.Load())
+	}
+}
+
+type loseFirstDispatchResponse struct {
+	base      dispatchHTTPClient
+	completed <-chan struct{}
+	drop      atomic.Bool
+}
+
+func (c *loseFirstDispatchResponse) Do(request *http.Request) (*http.Response, error) {
+	response, err := c.base.Do(request)
+	if err != nil {
+		return response, err
+	}
+	if c.drop.CompareAndSwap(false, true) {
+		<-c.completed
+		_ = response.Body.Close()
+		return nil, errors.New("simulated lost response after worker completion")
+	}
+	return response, nil
+}
+
+func TestDispatchRetriesWhenCompletedResponseIsLost(t *testing.T) {
+	var firstCompleted, secondCalls atomic.Int32
+	workerCompleted := make(chan struct{})
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCompleted.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "completed but response lost"})
+		close(workerCompleted)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "retry completed"})
+	}))
+	defer second.Close()
+
+	srv := newTestServer(t)
+	srv.dispatcher.executeClient = &loseFirstDispatchResponse{
+		base: http.DefaultClient, completed: workerCompleted,
+	}
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-a", Address: first.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-b", Address: second.URL, Healthy: true,
+		Models: []engine.Model{{Name: "other", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "lost-response", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: first.URL, Model: "general", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusCompleted {
+		t.Fatalf("lost-response retry task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if firstCompleted.Load() != 1 || secondCalls.Load() != 1 || len(attempts) != 2 ||
+		attempts[0].FailureClass != "transport" ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
+		attempts[1].Status != taskmgr.DispatchAttemptSucceeded {
+		t.Fatalf("lost-response execution = first %d, retry %d, attempts %+v",
+			firstCompleted.Load(), secondCalls.Load(), attempts)
 	}
 }
 

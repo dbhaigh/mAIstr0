@@ -111,6 +111,7 @@ type orchestratorLink struct {
 	}
 	tasks          *taskmgr.Manager
 	events         *hub.Hub
+	syncer         *syncerComponent
 	statusSnapshot func() statusResponse
 	currentTasks   func() []*taskmgr.Task
 	// orchMu protects the current and co-located orchestrator identities and address; it is not nested with joinedMu or pairingInviteMu.

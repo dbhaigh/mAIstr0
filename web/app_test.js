@@ -4,16 +4,57 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-const source = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8");
+const indexSource = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
+const appScriptPaths = [...indexSource.matchAll(/<script\s+src="([^"]+)"\s*><\/script>/g)].map((match) => match[1]);
+const appSources = new Map(appScriptPaths.map((scriptPath) => [
+  path.basename(scriptPath),
+  fs.readFileSync(path.join(__dirname, "static", path.basename(scriptPath)), "utf8"),
+]));
+const source = [...appSources.values()].join("\n");
+const sharedSource = appSources.get("app-shared.js");
+const clusterSource = appSources.get("app-cluster.js");
 const discoverySource = source.slice(source.indexOf("function visibleNetworkPeers("), source.indexOf("function renderTasks("));
 const taskSource = source.slice(source.indexOf("function renderTaskHistoryTable("), source.indexOf("async function copyText("));
 const resourceHistorySource = source.slice(source.indexOf("function gpuGaugeMarkup("), source.indexOf("const TASK_ACTIVE_STATES"));
-const engineStatusSource = source.slice(source.indexOf("function formatNodeHardware("), source.indexOf("function renderDirectMessages("));
+const engineStatusSource = clusterSource.slice(clusterSource.indexOf("function formatNodeHardware("), clusterSource.indexOf("function gpuGaugeMarkup("));
 const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
 const optionalFeaturesSource = source.slice(source.indexOf("let optionalFeaturesInitialized = false;"), source.indexOf("async function refreshPersistenceStatus()"));
 const sendInteractiveStart = source.indexOf("async function sendInteractiveMessage(text) {");
 const sendInteractiveEnd = source.indexOf("\nfunction handleStreamEvent(", sendInteractiveStart);
 const sendInteractiveSource = source.slice(sendInteractiveStart, sendInteractiveEnd);
+
+test("Dashboard loads shared utilities and each view without a build step", () => {
+  assert.deepEqual(appScriptPaths, [
+    "/app-shared.js",
+    "/app-cluster.js",
+    "/app-memory.js",
+    "/app-orchestrator.js",
+    "/app.js",
+  ]);
+  for (const scriptPath of appScriptPaths) {
+    assert.ok(fs.existsSync(path.join(__dirname, "static", path.basename(scriptPath))), `${scriptPath} is missing`);
+  }
+});
+
+test("Dashboard view scripts execute in HTML load order", () => {
+  const element = {
+    addEventListener() {},
+    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    dataset: {},
+    style: {},
+  };
+  const context = vm.createContext({
+    document: {
+      getElementById: () => element,
+      querySelector: () => element,
+      querySelectorAll: () => [],
+      addEventListener() {},
+    },
+  });
+  for (const scriptPath of appScriptPaths.slice(0, -1)) {
+    vm.runInContext(appSources.get(path.basename(scriptPath)), context, { filename: scriptPath });
+  }
+});
 
 test("Node properties allow configuring llama.cpp", () => {
   const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
@@ -573,7 +614,7 @@ test("An unknown association is not guessed from the first discovered orchestrat
 });
 
 test("Persistence warning is displayed only when the API reports degraded storage", async () => {
-  const sourceBlock = source.slice(source.indexOf("async function refreshPersistenceStatus("), source.indexOf("function updateClusterTitle("));
+  const sourceBlock = sharedSource.slice(sharedSource.indexOf("async function refreshPersistenceStatus("));
   const persistenceWarning = { hidden: true, textContent: "" };
   let persistence = { available: true };
   let mode = "full";

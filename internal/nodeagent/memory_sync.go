@@ -69,7 +69,9 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	started := time.Now()
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_start node_id=%s peer_id=%s body_bytes=unknown", a.cfg.NodeID, peerID)
+	requestID := syncLogRequestID(r)
+	log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_start %s peer_id=%s body_bytes=unknown",
+		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "none"), peerID)
 	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
 	snapshot := memory.SnapshotForPeer(a.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
 	responseWatermarks := snapshot.Watermarks
@@ -80,6 +82,8 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 		}
 		page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, maxMemorySyncBodyBytes, 0)
 		if err != nil {
+			log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s status=%d stage=page error=%v",
+				syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "page"), peerID, http.StatusRequestEntityTooLarge, err)
 			http.Error(w, "could not page memory snapshot: "+err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -87,6 +91,8 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 		responseWatermarks = upper
 		if more {
 			if err := memory.SetSyncPageResponseHeader(w, nextCursor); err != nil {
+				log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s status=%d stage=page_cursor error=%v",
+					syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "page_cursor"), peerID, http.StatusInternalServerError, err)
 				http.Error(w, "could not encode memory sync page cursor: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -97,8 +103,12 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(response, http.StatusOK, snapshot)
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_complete node_id=%s peer_id=%s status=%d body_bytes=%d elapsed=%s error=%v",
-		a.cfg.NodeID, peerID, http.StatusOK, response.bytesWritten, time.Since(started), response.writeErr)
+	failureClass := "none"
+	if response.writeErr != nil {
+		failureClass = "response_write"
+	}
+	log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_complete %s peer_id=%s status=%d body_bytes=%d elapsed=%s error=%v",
+		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), failureClass), peerID, http.StatusOK, response.bytesWritten, time.Since(started), response.writeErr)
 }
 
 func (a *Agent) handlePeerMemorySyncPost(w http.ResponseWriter, r *http.Request) {
@@ -116,27 +126,28 @@ func (a *Agent) handlePeerMemorySyncPost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	started := time.Now()
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_start node_id=%s peer_id=%s body_bytes_declared=%d",
-		a.cfg.NodeID, peerID, r.ContentLength)
+	requestID := syncLogRequestID(r)
+	log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_start %s peer_id=%s body_bytes_declared=%d",
+		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "none"), peerID, r.ContentLength)
 	decodeStarted := time.Now()
 	snapshot, bodyBytes, err := decodeMemorySyncRequest(w, r)
 	if err != nil {
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s body_bytes=%d status=%d elapsed=%s stage=decode error=%v",
-			a.cfg.NodeID, peerID, bodyBytes, http.StatusBadRequest, time.Since(started), err)
+		log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_failed %s peer_id=%s body_bytes=%d status=%d elapsed=%s stage=decode error=%v",
+			syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "decode"), peerID, bodyBytes, http.StatusBadRequest, time.Since(started), err)
 		http.Error(w, "invalid memory sync payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	decodeElapsed := time.Since(decodeStarted)
 	mergeStarted := time.Now()
 	if err := a.mem.MergeSnapshotFrom(snapshot, peerID); err != nil {
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s body_bytes=%d status=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
-			a.cfg.NodeID, peerID, bodyBytes, http.StatusInternalServerError, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
+		log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_failed %s peer_id=%s body_bytes=%d status=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
+			syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "merge"), peerID, bodyBytes, http.StatusInternalServerError, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
 		http.Error(w, "could not merge cluster memory: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_complete node_id=%s peer_id=%s body_bytes=%d status=%d records=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s",
-		a.cfg.NodeID, peerID, bodyBytes, http.StatusNoContent, memorySyncRecordCount(snapshot), decodeElapsed, time.Since(mergeStarted), time.Since(started))
+	log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_complete %s peer_id=%s body_bytes=%d status=%d records=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s",
+		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "none"), peerID, bodyBytes, http.StatusNoContent, memorySyncRecordCount(snapshot), decodeElapsed, time.Since(mergeStarted), time.Since(started))
 }
 
 func decodeMemorySyncRequest(w http.ResponseWriter, r *http.Request) (memory.Snapshot, int64, error) {
@@ -348,11 +359,11 @@ func memorySyncWatermarks(store memory.Store) map[string]uint64 {
 }
 
 func (a *Agent) syncPeerMemoryLoop() {
-	a.syncer.syncPeerMemoryLoop()
+	a.orchestratorLink.syncer.syncPeerMemoryLoop()
 }
 
 // syncPeerMemory makes the elected node a relay for memory in standalone
 // peer clusters. Joined nodes use the orchestrator as their memory relay.
 func (a *Agent) syncPeerMemory() {
-	a.syncer.syncPeerMemory()
+	a.orchestratorLink.syncer.syncPeerMemory()
 }

@@ -73,6 +73,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	tried := make(map[string]bool)
 	backoff := 100 * time.Millisecond
+	dispatchedAttempts := 0
 	for attemptNumber := 1; attemptNumber <= routerMaxAttempts; attemptNumber++ {
 		if err := ctx.Err(); err != nil {
 			failureClass := "timeout"
@@ -104,6 +105,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: time.Since(startedAt).Milliseconds(),
+				DurationMs:   time.Since(startedAt).Milliseconds(),
 				FailureClass: "node_unavailable",
 			})
 			continue
@@ -120,11 +122,13 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: time.Since(startedAt).Milliseconds(),
+				DurationMs:   time.Since(startedAt).Milliseconds(),
 				FailureClass: "reservation",
 			})
 			continue
 		}
 		reservedNodeID := reservation.Target().NodeID
+		s.metrics.recordCapacityReservation()
 		queueMs := time.Since(startedAt).Milliseconds()
 		s.registry.IncrementLoad(reservedNodeID, 1)
 		s.recordRouterEvent(routerRequestEvent{
@@ -159,6 +163,11 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Set(inferroute.HeaderRequestID, requestID)
 		upstreamReq.Header.Set(inferroute.HeaderAttemptID, attemptID)
 		attemptStarted := time.Now()
+		if dispatchedAttempts > 0 {
+			s.metrics.recordRetry()
+		}
+		dispatchedAttempts++
+		s.metrics.recordDispatch()
 		resp, requestErr := s.nodeClientPort().DoDispatch(upstreamReq)
 
 		if requestErr != nil {
@@ -172,7 +181,8 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			s.recordRouterEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
-				Engine: assignment.Engine, QueueMs: queueMs, FailureClass: failureClass,
+				Engine: assignment.Engine, QueueMs: queueMs, DurationMs: time.Since(attemptStarted).Milliseconds(),
+				FailureClass: failureClass,
 			})
 			if ctx.Err() != nil {
 				writeRouterContextError(w, r, ctx)
@@ -195,6 +205,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 					RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 					Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 					Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
+					DurationMs:   time.Since(attemptStarted).Milliseconds(),
 					FailureClass: "timeout",
 				})
 				writeRouterContextError(w, r, ctx)
@@ -212,6 +223,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
+				DurationMs:   time.Since(attemptStarted).Milliseconds(),
 				FailureClass: failureClass,
 			})
 			if retryable && attemptNumber < routerMaxAttempts && ctx.Err() == nil {
@@ -242,7 +254,8 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
-				TimeToFirstByteMs: firstByteMs, FailureClass: "upstream_read",
+				TimeToFirstByteMs: firstByteMs, DurationMs: time.Since(attemptStarted).Milliseconds(),
+				FailureClass: "upstream_read",
 			})
 			if ctx.Err() != nil {
 				writeRouterContextError(w, r, ctx)
@@ -285,7 +298,8 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			RequestID: requestID, AttemptID: attemptID, Phase: "attempt_succeeded",
 			Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 			Engine: assignment.Engine, QueueMs: queueMs, TimeToFirstByteMs: firstByteMs,
-			Status: resp.StatusCode,
+			DurationMs: time.Since(attemptStarted).Milliseconds(),
+			Status:     resp.StatusCode,
 		}
 		if streamErr != nil {
 			event.Phase = "attempt_failed"
@@ -357,6 +371,15 @@ func (s *Server) releaseRouterReservation(nodeID string, reservation workpool.Ca
 func (s *Server) recordRouterEvent(event routerRequestEvent) {
 	event.Timestamp = event.Timestamp.UTC()
 	s.routerEvents.append(event)
+	if event.Phase == "attempt_failed" || event.Phase == "attempt_succeeded" {
+		failureClass := event.FailureClass
+		if failureClass == "" {
+			failureClass = "none"
+		}
+		log.Printf("orchestrator: router dispatch request_id=%s attempt_id=%s node_id=%s model=%s engine=%s duration_ms=%d status=%d failure_class=%s success=%t",
+			event.RequestID, event.AttemptID, event.NodeID, event.Model, event.Engine,
+			event.DurationMs, event.Status, failureClass, event.Phase == "attempt_succeeded")
+	}
 }
 
 func routerPairKey(nodeID, model string) string { return nodeID + "\x00" + model }

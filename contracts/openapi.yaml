@@ -144,6 +144,9 @@ paths:
   /api/status:
     get:
       responses: {"200": {description: Get node or cluster status}}
+  /api/metrics:
+    get:
+      responses: {"200": {description: Prometheus-format operational counters}}
   /api/cluster/health:
     get:
       responses:
@@ -714,6 +717,7 @@ x-maistr0-registered-routes:
   - "orchestrator|POST /api/pairing/join"
   - "orchestrator|GET /api/pairing/status"
   - "orchestrator|GET /api/status"
+  - "orchestrator|GET /api/metrics"
   - "orchestrator|GET /api/cluster/health"
   - "orchestrator|POST /api/pairing/pin"
   - "orchestrator|POST /api/pairing/connect"

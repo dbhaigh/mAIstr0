@@ -545,7 +545,7 @@ func TestPersistentTaskHistorySurvivesAgentRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := agent.tasks.CreateChecked("Persist this task", nil)
+	created, err := agent.orchestratorLink.tasks.CreateChecked("Persist this task", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestPersistentTaskHistorySurvivesAgentRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	restored, ok := restarted.tasks.Get(created.ID)
+	restored, ok := restarted.orchestratorLink.tasks.Get(created.ID)
 	if !ok || restored.Description != "Persist this task" {
 		t.Fatalf("task history was not restored: %#v", restored)
 	}
@@ -598,7 +598,7 @@ func TestTaskReplicaRequiresCurrentOrchestrator(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("replica from current coordinator returned %d: %s", response.Code, response.Body.String())
 	}
-	replica, ok := agent.tasks.Get(task.ID)
+	replica, ok := agent.orchestratorLink.tasks.Get(task.ID)
 	if !ok || replica.Description != task.Description {
 		t.Fatalf("coordinator task was not replicated: %#v", replica)
 	}

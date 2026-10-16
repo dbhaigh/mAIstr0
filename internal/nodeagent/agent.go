@@ -26,7 +26,8 @@ import (
 )
 
 // Agent is the public facade and composition root for node-local components.
-// Component pointers are wired before Run and keep their own synchronized state.
+// Component pointers are wired before Run and own their synchronized state;
+// lock ownership and ordering are documented with each component.
 type Agent struct {
 	*engineComponent
 	*telemetryComponent
@@ -37,11 +38,7 @@ type Agent struct {
 	*peerComponent
 	*dialogueComponent
 
-	events *hub.Hub
-
-	tasks  *taskmgr.Manager
-	mem    memory.Store
-	syncer syncerAPI
+	mem memory.Store
 }
 
 type peerDispatchJob struct {
@@ -148,8 +145,6 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		config.DefaultDispatchConcurrency,
 	)
 	a := &Agent{
-		tasks:              tasks,
-		events:             events,
 		engineComponent:    engines,
 		telemetryComponent: telemetry,
 		agentState:         state,
@@ -167,7 +162,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		log.Printf("nodeagent: memory store at %s", store.Path())
 	}
 	a.dialogueComponent = newDialogueComponent(a.cfg.NodeID, a.mem, a.engineComponent, a.executorComponent, a.remember)
-	a.syncer = newSyncerComponent(
+	link.syncer = newSyncerComponent(
 		cfg.NodeID, tasks, a.mem,
 		func() *http.Client { return link.peerClient },
 		func() *http.Client { return link.memorySyncClient },
@@ -185,10 +180,10 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 // Close flushes and releases the persistent task and memory stores.
 func (a *Agent) Close() error {
 	var closeErr error
-	if a.tasks != nil {
-		for _, task := range a.tasks.All() {
+	if a.orchestratorLink.tasks != nil {
+		for _, task := range a.orchestratorLink.tasks.All() {
 			if task.Status == taskmgr.StatusPending || task.Status == taskmgr.StatusRunning || task.Status == taskmgr.StatusSynthesis {
-				if _, err := a.tasks.CancelChecked(task.ID); err != nil {
+				if _, err := a.orchestratorLink.tasks.CancelChecked(task.ID); err != nil {
 					closeErr = errors.Join(closeErr, err)
 				}
 			}
@@ -197,8 +192,8 @@ func (a *Agent) Close() error {
 	if a.peerComponent != nil && a.peerComponent.dispatchPool != nil {
 		a.peerComponent.dispatchPool.Close()
 	}
-	if a.tasks != nil {
-		closeErr = errors.Join(closeErr, a.tasks.Close())
+	if a.orchestratorLink.tasks != nil {
+		closeErr = errors.Join(closeErr, a.orchestratorLink.tasks.Close())
 	}
 	if a.mem != nil {
 		closeErr = errors.Join(closeErr, a.mem.Close())

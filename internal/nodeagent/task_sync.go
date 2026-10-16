@@ -25,7 +25,7 @@ func (a *Agent) handleTaskSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid task sync payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := a.tasks.MergeFromReplicaFrom(tasks, "task:"+peerID); err != nil {
+	if err := a.orchestratorLink.tasks.MergeFromReplicaFrom(tasks, "task:"+peerID); err != nil {
 		http.Error(w, "could not merge task history: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -47,7 +47,7 @@ func (a *Agent) handleTaskReplica(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid task replica payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := a.tasks.ReplaceFromSyncFrom(tasks, "task:"+peerID); err != nil {
+	if err := a.orchestratorLink.tasks.ReplaceFromSyncFrom(tasks, "task:"+peerID); err != nil {
 		http.Error(w, "could not apply task replica: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -56,11 +56,11 @@ func (a *Agent) handleTaskReplica(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := a.tasks.Get(id); !ok {
+	if _, ok := a.orchestratorLink.tasks.Get(id); !ok {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
-	cancelled, err := a.tasks.CancelChecked(id)
+	cancelled, err := a.orchestratorLink.tasks.CancelChecked(id)
 	if err != nil {
 		http.Error(w, "could not persist cancellation: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -69,7 +69,7 @@ func (a *Agent) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task is already complete", http.StatusConflict)
 		return
 	}
-	task, _ := a.tasks.Get(id)
+	task, _ := a.orchestratorLink.tasks.Get(id)
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -105,11 +105,11 @@ func decodeTaskSync(w http.ResponseWriter, r *http.Request) ([]*taskmgr.Task, er
 }
 
 func (a *Agent) taskHistorySyncLoop() {
-	a.syncer.taskHistorySyncLoop()
+	a.orchestratorLink.syncer.taskHistorySyncLoop()
 }
 
 func (a *Agent) syncPeerTaskHistory() {
-	a.syncer.syncPeerTaskHistory()
+	a.orchestratorLink.syncer.syncPeerTaskHistory()
 }
 
 type taskSyncSnapshot struct {

@@ -93,7 +93,7 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/discovery", a.handleAPIDiscovery)
 	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", a.handleAPIDiscoveryPairingInvite)
-	mux.HandleFunc("GET /api/events", a.events.ServeHTTP)
+	mux.HandleFunc("GET /api/events", a.orchestratorLink.events.ServeHTTP)
 	mux.HandleFunc("POST /api/tasks", a.handleAPITasksPost)
 	mux.HandleFunc("GET /api/tasks", a.handleAPITasksList)
 	mux.HandleFunc("GET /api/tasks/{id}", a.handleAPITaskGet)

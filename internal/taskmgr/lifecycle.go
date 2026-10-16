@@ -187,6 +187,11 @@ func (m *Manager) ReassignSubtaskChecked(taskID, subtaskID string, assignment sc
 	return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
 }
 
+// DispatchAttemptID returns the stable identifier stored for a dispatch attempt.
+func DispatchAttemptID(taskID, subtaskID string, number int) string {
+	return fmt.Sprintf("%s:%s:%d", taskID, subtaskID, number)
+}
+
 func (m *Manager) BeginDispatchAttemptChecked(taskID, subtaskID string, assignment scheduler.Assignment) (int, error) {
 	t, ok := m.lockTaskForUpdate(taskID)
 	if !ok {
@@ -204,7 +209,7 @@ func (m *Manager) BeginDispatchAttemptChecked(taskID, subtaskID string, assignme
 		number := len(result.Attempts) + 1
 		now := time.Now()
 		result.Attempts = append(result.Attempts, DispatchAttempt{
-			ID:     fmt.Sprintf("%s:%s:%d", taskID, subtaskID, number),
+			ID:     DispatchAttemptID(taskID, subtaskID, number),
 			Number: number, NodeID: assignment.NodeID, Model: assignment.Model,
 			Engine: assignment.Engine, Status: DispatchAttemptRunning, StartedAt: now,
 		})

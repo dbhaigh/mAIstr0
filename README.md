@@ -13,6 +13,15 @@ ties. The winner starts both the orchestrator and a local worker node; all
 other instances join as nodes. This lets the orchestrator host contribute its
 own compute resources to cluster work.
 
+LAN election is based only on announcements currently visible to each instance.
+During a network partition, each side may therefore elect and serve its own
+local winner; there is no quorum or automatic transfer of trust between winners.
+A node joining a different winner must be authorized separately: remote pairing
+requires that leader's PIN, while the existing same-subnet auto-pairing and
+invitation flows remain unchanged. See
+[LAN election and partitions](docs/lan-election.md) for the visibility and
+request-fencing behavior.
+
 `--role orchestrator` and `--role both` use the same election. LAN discovery
 must be available to start an orchestrator; coordinator startup fails closed
 when discovery is disabled. `--role node` always starts a worker. To pair a
@@ -194,8 +203,17 @@ Memory and task-history requests remain limited to 64 MiB each; larger
 histories transfer in multiple bounded pages. A single record larger than the
 limit is rejected explicitly. Sync transfers use a dedicated 10-minute HTTP
 timeout, and sync diagnostics are retained in the rolling log without being
-printed to the console. The scheduler uses successful and failed
-node/model/task outcomes to improve future assignments.
+printed to the console. Dispatch and sync log records include request/attempt
+IDs, node/model/engine, elapsed time, and a failure class where applicable.
+The scheduler uses successful and failed node/model/task outcomes to improve
+future assignments.
+
+`GET /api/metrics` exposes dependency-free Prometheus text counters for worker
+dispatch attempts, retries, task-history and memory-sync pages served, and
+successful capacity reservations. The endpoint uses the existing HTTP mux, so
+it follows the same loopback-only plaintext and trusted-peer mTLS rules as the
+rest of the API. Metrics have no per-node labels, keeping their cardinality
+bounded.
 
 The Cluster & Workload **Setup** tab checks each node's engine and model
 readiness, refreshes an empty model registry, and links to node settings for

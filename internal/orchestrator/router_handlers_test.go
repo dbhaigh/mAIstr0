@@ -93,6 +93,10 @@ func TestRouterRetriesTransientFailureBeforeForwardingContent(t *testing.T) {
 	if !sawRetry || !sawSuccess {
 		t.Fatalf("request-level attempt events missing retry/success: %+v", events)
 	}
+	metrics := srv.metrics.snapshot()
+	if metrics.dispatches != 2 || metrics.retries != 1 || metrics.capacityReservations != 2 {
+		t.Fatalf("router metrics = %+v, want two attempts, one retry, and two reservations", metrics)
+	}
 }
 
 func TestRouterDoesNotRetryClientErrors(t *testing.T) {

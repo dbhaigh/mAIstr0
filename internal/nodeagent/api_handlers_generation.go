@@ -5,24 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/apperr"
-	"github.com/maistr0/maistr0/internal/engine"
-	"github.com/maistr0/maistr0/internal/memory"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/memory"
 )
-
-func (a *Agent) handleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.status())
-}
-
-func (a *Agent) handleSystemStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"role":        "node",
-		"persistence": memory.AvailabilityFor(a.mem != nil),
-	})
-}
 
 func (a *Agent) handleExecute(w http.ResponseWriter, r *http.Request) {
 	var req executeRequest

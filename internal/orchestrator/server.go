@@ -8,9 +8,11 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
@@ -34,9 +36,11 @@ type Server struct {
 	routerEvents       *routerEventLog
 	harness            *harnessManager
 	syncer             syncerAPI
+	metrics            *operationalMetrics
 	mem                memory.Store
 	identityPath       string
 	identity           *peeridentity.Identity
+	orchestratorEpoch  string
 	advertiseAddr      string
 	localNodeDashboard string
 	mode               string
@@ -89,6 +93,7 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 	disp := &http.Client{Timeout: 10 * time.Minute}
 	selfID := "orchestrator-" + discovery.OutboundIP()
 	events := hub.New()
+	metrics := &operationalMetrics{}
 	var store memory.Store
 	if mode != config.OrchestratorModeMinimal {
 		openedStore, err := memory.Open(memoryPath, selfID)
@@ -111,22 +116,25 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 	}
 	nodeClient := newNodeClient(&http.Client{Timeout: 10 * time.Second}, disp, &http.Client{Timeout: discoveryRequestTimeout})
 	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit)
+	dispatcher.metrics = metrics
 	planner := newTaskPlanner(schedulerAdapter{}, tasks, dispatcher, nodeClient, dispatcher.schedulerNodes, dispatcher.experience())
 	election := newElectionComponent(reg, nodeClient, selfID, cluster.SelfScore(hardware.Detect()), true)
 	syncer := newSyncerComponent(reg, tasks, nodeClient, store, election.isElectedOrchestrator)
 	srv := &Server{
-		registry:     reg,
-		nodeClient:   nodeClient,
-		dispatcher:   dispatcher,
-		planner:      planner,
-		election:     election,
-		events:       events,
-		routerEvents: newRouterEventLog(200),
-		syncer:       syncer,
-		tasks:        tasks,
-		mem:          store,
-		identityPath: peeridentity.DefaultPath(selfID),
-		mode:         mode,
+		registry:          reg,
+		nodeClient:        nodeClient,
+		dispatcher:        dispatcher,
+		planner:           planner,
+		election:          election,
+		events:            events,
+		routerEvents:      newRouterEventLog(200),
+		syncer:            syncer,
+		metrics:           metrics,
+		tasks:             tasks,
+		mem:               store,
+		identityPath:      peeridentity.DefaultPath(selfID),
+		orchestratorEpoch: strconv.FormatInt(time.Now().UnixNano(), 10),
+		mode:              mode,
 	}
 	if mode != config.OrchestratorModeMinimal {
 		deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
@@ -186,6 +194,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /api/pairing/join", s.handlePairingJoin)
 	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
 	mux.HandleFunc("GET /api/status", s.handleSystemStatus)
+	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/cluster/health", s.handleClusterHealth)
 	mux.Handle("POST /api/pairing/pin", peeridentity.LoopbackOnly(http.HandlerFunc(s.handlePairingPINRegenerate)))
 	mux.HandleFunc("POST /api/pairing/connect", s.handlePairingConnect)
@@ -271,6 +280,7 @@ func (s *Server) Mux() *http.ServeMux {
 	if err != nil {
 		log.Fatalf("orchestrator: embedded web assets missing: %v", err)
 	}
+
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
 	return mux
 }
@@ -293,10 +303,10 @@ func (s *Server) Run(listenAddr string) error {
 	}
 	go s.electionPort().discoverySyncLoop(s.publishSnapshot)
 	log.Printf("orchestrator listening on %s", listenAddr)
-	mux := s.Mux()
+	mux := s.fenceStateChangingRequests(s.Mux())
 	secure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.isElectedOrchestrator() {
-			http.Error(w, "this instance yielded orchestrator leadership to a higher-ranked cluster member", http.StatusServiceUnavailable)
+			writeError(w, apperr.UnavailableError(fmt.Errorf("this instance yielded orchestrator leadership to a higher-ranked cluster member")))
 			return
 		}
 		if r.URL.Path == "/api/pairing/join" {

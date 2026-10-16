@@ -61,23 +61,30 @@ func (s *syncerComponent) syncTaskHistory() {
 		if s.memory != nil {
 			watermarks = taskmgr.FilterTaskWatermarks(s.memory.PeerWatermarks(node.ID))
 		}
+		requestID := syncLogRequestID(nil)
+		started := time.Now()
 		tasks, version, watermarks, err := fetchReplicatedTaskHistory(
 			s.client,
 			strings.TrimRight(node.Address, "/")+"/tasks",
 			watermarks,
 		)
 		if err != nil {
-			log.Printf("orchestrator: task history fetch from %s failed: %v", node.ID, err)
+			log.Printf("orchestrator: task history sync event=fetch_failed %s error=%v",
+				syncLogFields(requestID, node.ID, time.Since(started), "fetch"), err)
 			continue
 		}
 		if err := s.tasks.MergeFromReplicaFrom(tasks, "task:"+node.ID); err != nil {
-			log.Printf("orchestrator: task history import from %s failed: %v", node.ID, err)
+			log.Printf("orchestrator: task history sync event=import_failed %s error=%v",
+				syncLogFields(requestID, node.ID, time.Since(started), "import"), err)
 			continue
 		}
+		log.Printf("orchestrator: task history sync event=fetch_complete %s records=%d version=%d",
+			syncLogFields(requestID, node.ID, time.Since(started), "none"), len(tasks), version)
 		remoteSnapshots[node.ID] = taskSyncSnapshot{version: version, watermarks: watermarks}
 		if s.memory != nil {
 			if err := s.memory.SetPeerWatermarks(node.ID, watermarks); err != nil {
-				log.Printf("orchestrator: task history watermark persistence for %s failed: %v", node.ID, err)
+				log.Printf("orchestrator: task history sync event=watermark_persist_failed %s error=%v",
+					syncLogFields(requestID, node.ID, time.Since(started), "persistence"), err)
 			}
 		}
 	}
@@ -97,6 +104,8 @@ func (s *syncerComponent) syncTaskHistory() {
 			watermarks = remote.watermarks
 		}
 		tasks := s.tasks.SnapshotForPeer(version, watermarks)
+		requestID := syncLogRequestID(nil)
+		started := time.Now()
 		err := postTaskHistoryPages(
 			s.client,
 			strings.TrimRight(node.Address, "/")+"/tasks/replica",
@@ -105,12 +114,16 @@ func (s *syncerComponent) syncTaskHistory() {
 			maxReplicatedTaskHistoryBytes,
 		)
 		if err != nil {
-			log.Printf("orchestrator: task history replication to %s failed: %v", node.ID, err)
+			log.Printf("orchestrator: task history sync event=replicate_failed %s error=%v",
+				syncLogFields(requestID, node.ID, time.Since(started), "replication"), err)
 			continue
 		}
+		log.Printf("orchestrator: task history sync event=replicate_complete %s records=%d",
+			syncLogFields(requestID, node.ID, time.Since(started), "none"), len(tasks))
 		if s.memory != nil && fetched && memory.SupportsIncrementalSync(version) {
 			if err := s.memory.SetPeerWatermarks(node.ID, taskmgr.SnapshotWatermarks(tasks)); err != nil {
-				log.Printf("orchestrator: task history watermark persistence for %s failed: %v", node.ID, err)
+				log.Printf("orchestrator: task history sync event=watermark_persist_failed %s error=%v",
+					syncLogFields(requestID, node.ID, time.Since(started), "persistence"), err)
 			}
 		}
 	}
