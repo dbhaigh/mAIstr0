@@ -417,7 +417,10 @@ review the resulting golden-file changes before committing.
 Contract fixtures use LF line endings enforced by `.gitattributes` so
 byte-for-byte comparisons remain consistent on Windows and Linux.
 The GitHub Actions workflow runs these checks and builds the application on
-Windows and Linux.
+Windows and Linux. It also runs `go test -race ./...` on Ubuntu. On the current
+Windows development host, the race run is blocked because ThreadSanitizer
+cannot allocate its shadow memory (error code 87); this is a local runtime
+limitation, not a passing race result.
 
 On Windows, cross-compile the release binaries for Windows and Linux with:
 

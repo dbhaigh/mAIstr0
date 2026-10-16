@@ -30,6 +30,9 @@ jobs:
           go test ./contracts
       - name: Run Go tests
         run: go test ./...
+      - name: Run Go tests with race detector
+        if: runner.os == 'Linux'
+        run: go test -race ./...
       - name: Run Go vet
         run: go vet ./...
       - name: Build application

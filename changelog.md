@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Correct coordinator candidate selection after switching orchestrators, and
+  stop probing stale node announcements that now belong to another coordinator.
+
+### Development
+
+- Run `go test -race ./...` on the Ubuntu CI runner. Windows local race runs
+  remain blocked on this host by ThreadSanitizer shadow-memory allocation
+  failure (error code 87).
+
 ## 0.0.8 - 2026-10-15
 
 ### Changed
