@@ -436,6 +436,11 @@ func TestFormerOrchestratorWorkerJoinsNewLeader(t *testing.T) {
 	if err := agent.PairLocalOrchestrator(oldLeader.ID(), oldLeader.CertificatePEM(), "https://127.0.0.1:7450"); err != nil {
 		t.Fatal(err)
 	}
+	localCandidates := agent.orchestratorCandidates()
+	if len(localCandidates) != 1 || localCandidates[0].id != oldLeader.ID() ||
+		localCandidates[0].score != cluster.SelfScore(agent.hardwareSnapshot()) {
+		t.Fatalf("co-located coordinator candidate was not ranked by its capability: %#v", localCandidates)
+	}
 	agent.markJoined()
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/pairing/join", func(w http.ResponseWriter, r *http.Request) {
@@ -508,6 +513,26 @@ func TestFormerOrchestratorWorkerJoinsNewLeader(t *testing.T) {
 	}
 	if agent.getOrchestratorID() != newLeader.ID() || agent.getOrchestratorAddr() != server.URL {
 		t.Fatal("worker retained its surrendered local orchestrator")
+	}
+	if agent.localOrchestratorIDValue() != oldLeader.ID() {
+		t.Fatalf("local coordinator identity changed after joining a new leader: %q", agent.localOrchestratorIDValue())
+	}
+}
+
+func TestOrchestratorCandidatesUseCapabilityElectionOrder(t *testing.T) {
+	candidates := []orchestratorCandidate{
+		{id: "cluster-leader-with-more-members", address: "https://192.168.1.65:7450", score: 80},
+		{id: "local-higher-capability", address: "https://192.168.1.189:7450", score: 100},
+		{id: "tie-break-a", address: "https://192.168.1.10:7450", score: 80},
+	}
+
+	sortOrchestratorCandidates(candidates)
+	if candidates[0].id != "local-higher-capability" {
+		t.Fatalf("top candidate = %q, want highest-capability coordinator", candidates[0].id)
+	}
+	if candidates[1].id != "cluster-leader-with-more-members" ||
+		candidates[2].id != "tie-break-a" {
+		t.Fatalf("equal-score candidates are not ordered by stable ID: %#v", candidates)
 	}
 }
 

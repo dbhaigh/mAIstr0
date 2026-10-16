@@ -113,7 +113,7 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit)
 	planner := newTaskPlanner(schedulerAdapter{}, tasks, dispatcher, nodeClient, dispatcher.schedulerNodes, dispatcher.experience())
 	election := newElectionComponent(reg, nodeClient, selfID, cluster.SelfScore(hardware.Detect()), true)
-	syncer := newSyncerComponent(reg, tasks, nodeClient, store)
+	syncer := newSyncerComponent(reg, tasks, nodeClient, store, election.isElectedOrchestrator)
 	srv := &Server{
 		registry:     reg,
 		nodeClient:   nodeClient,

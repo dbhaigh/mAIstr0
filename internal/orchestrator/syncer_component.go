@@ -26,6 +26,7 @@ type syncerComponent struct {
 	tasks    *taskmgr.Manager
 	client   taskHistoryClient
 	memory   memory.Store
+	isLeader func() bool
 
 	// syncMu serializes history passes and is outermost relative to registry/task/store operations; those operations never call back into the syncer.
 	syncMu sync.Mutex
@@ -33,8 +34,12 @@ type syncerComponent struct {
 	recoveryOnce sync.Once
 }
 
-func newSyncerComponent(registry *cluster.Registry, tasks *taskmgr.Manager, client taskHistoryClient, store memory.Store) *syncerComponent {
-	return &syncerComponent{registry: registry, tasks: tasks, client: client, memory: store}
+func newSyncerComponent(registry *cluster.Registry, tasks *taskmgr.Manager, client taskHistoryClient, store memory.Store, isLeader func() bool) *syncerComponent {
+	return &syncerComponent{registry: registry, tasks: tasks, client: client, memory: store, isLeader: isLeader}
+}
+
+func (s *syncerComponent) shouldSync() bool {
+	return s.isLeader == nil || s.isLeader()
 }
 
 func (s *syncerComponent) mergeMemorySnapshot(snapshot memory.Snapshot, source string) error {

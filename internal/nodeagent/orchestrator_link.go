@@ -20,8 +20,6 @@ type orchestratorCandidate struct {
 	id      string
 	address string
 	score   float64
-	members int
-	elected bool
 }
 
 var (
@@ -49,6 +47,18 @@ func (a *Agent) setOrchestratorID(id string) {
 func (c *orchestratorLink) setOrchestratorID(id string) {
 	c.orchMu.Lock()
 	c.orchestratorID = id
+	c.orchMu.Unlock()
+}
+
+func (c *orchestratorLink) localOrchestratorIDValue() string {
+	c.orchMu.RLock()
+	defer c.orchMu.RUnlock()
+	return c.localOrchestratorID
+}
+
+func (c *orchestratorLink) setLocalOrchestratorID(id string) {
+	c.orchMu.Lock()
+	c.localOrchestratorID = id
 	c.orchMu.Unlock()
 }
 
@@ -168,7 +178,11 @@ func (c *orchestratorLink) orchestratorCandidates() []orchestratorCandidate {
 		if id == "" {
 			id = "orchestrator-" + host
 		}
-		byAddress[current] = orchestratorCandidate{id: id, address: current, score: -1}
+		score := -1.0
+		if id == c.localOrchestratorIDValue() {
+			score = cluster.SelfScore(c.telemetry.hardwareSnapshot())
+		}
+		byAddress[current] = orchestratorCandidate{id: id, address: current, score: score}
 	}
 	if c.discoveryListener != nil {
 		for _, peer := range c.discoveryListener.Snapshot() {
@@ -177,7 +191,6 @@ func (c *orchestratorLink) orchestratorCandidates() []orchestratorCandidate {
 			}
 			candidate := orchestratorCandidate{
 				id: peer.ID, address: peer.PeerAddr, score: peer.Score,
-				members: peer.Members, elected: peer.Elected,
 			}
 			if existing, ok := byAddress[peer.PeerAddr]; !ok ||
 				candidate.score > existing.score ||
@@ -190,19 +203,17 @@ func (c *orchestratorLink) orchestratorCandidates() []orchestratorCandidate {
 	for _, candidate := range byAddress {
 		candidates = append(candidates, candidate)
 	}
+	sortOrchestratorCandidates(candidates)
+	return candidates
+}
+
+func sortOrchestratorCandidates(candidates []orchestratorCandidate) {
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].elected != candidates[j].elected {
-			return candidates[i].elected
-		}
-		if candidates[i].members != candidates[j].members {
-			return candidates[i].members > candidates[j].members
-		}
 		if candidates[i].score != candidates[j].score {
 			return candidates[i].score > candidates[j].score
 		}
 		return candidates[i].id < candidates[j].id
 	})
-	return candidates
 }
 
 func (c *orchestratorLink) peerPollLoop() {

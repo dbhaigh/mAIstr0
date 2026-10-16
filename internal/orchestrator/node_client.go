@@ -78,6 +78,12 @@ func (c *nodeClient) discoveredNodeStatusContext(ctx context.Context, addr strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusForbidden {
+			return cluster.NodeStatus{}, fmt.Errorf(
+				"node status returned %s: peer rejected authorization; verify mutual pairing and the advertised HTTPS address",
+				resp.Status,
+			)
+		}
 		return cluster.NodeStatus{}, errors.New("node status returned " + resp.Status)
 	}
 	var status cluster.NodeStatus

@@ -26,5 +26,9 @@ func (s *Server) syncerComponent() syncerAPI {
 	if s.syncer != nil {
 		return s.syncer
 	}
-	return newSyncerComponent(s.registry, s.tasks, s.nodeClient, s.mem)
+	var isLeader func() bool
+	if s.election != nil {
+		isLeader = s.isElectedOrchestrator
+	}
+	return newSyncerComponent(s.registry, s.tasks, s.nodeClient, s.mem, isLeader)
 }

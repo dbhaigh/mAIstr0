@@ -121,6 +121,10 @@ func (e *electionComponent) discoverySyncLoop(publish func()) {
 	}
 }
 
+func shouldProbeDiscoveredNode(peer discovery.Peer, orchestratorID string) bool {
+	return peer.Role == "node" && (peer.OrchestratorID == "" || peer.OrchestratorID == orchestratorID)
+}
+
 func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 	if !e.isElectedOrchestrator() {
 		return
@@ -139,10 +143,18 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 		}
 	}
 	for _, peer := range peers {
+		if peer.Role == "node" && peer.OrchestratorID != "" && peer.OrchestratorID != e.selfID {
+			if status, ok := e.registry.Get(peer.ID); ok && status.Healthy {
+				e.registry.MarkUnhealthy(peer.ID)
+				log.Printf("orchestrator: node %s now announces orchestrator %s; skipping status probe", peer.ID, peer.OrchestratorID)
+			}
+			delete(e.discoveredNodes, peer.ID)
+			continue
+		}
 		if peer.PeerAddr == "" || e.identity == nil || !e.identity.IsTrustedID(peer.ID) {
 			continue
 		}
-		if peer.Role != "node" {
+		if !shouldProbeDiscoveredNode(peer, e.selfID) {
 			continue
 		}
 		probes.Add(1)

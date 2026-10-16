@@ -17,6 +17,9 @@ func (s *Server) healthSweepLoop() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
+		if !s.isElectedOrchestrator() {
+			continue
+		}
 		for _, node := range s.registry.All() {
 			if node.Healthy && time.Since(node.LastSeen) > 30*time.Second {
 				s.registry.MarkUnhealthy(node.ID)

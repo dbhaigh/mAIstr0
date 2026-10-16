@@ -10,7 +10,9 @@ func (s *Server) SetDiscovery(listener *discovery.Listener) { s.electionPort().s
 
 func (s *Server) SelfID() string { return s.electionPort().selfIDValue() }
 
-func (s *Server) isElectedOrchestrator() bool { return s.electionPort().isElectedOrchestrator() }
+func (s *Server) isElectedOrchestrator() bool {
+	return s.election == nil || s.electionPort().isElectedOrchestrator()
+}
 
 func (s *Server) discoverySyncLoop() {
 	s.electionPort().discoverySyncLoop(s.publishSnapshot)

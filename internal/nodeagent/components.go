@@ -113,10 +113,11 @@ type orchestratorLink struct {
 	events         *hub.Hub
 	statusSnapshot func() statusResponse
 	currentTasks   func() []*taskmgr.Task
-	// orchMu protects the current orchestrator address and ID; it is not nested with joinedMu or pairingInviteMu.
-	orchMu           sync.RWMutex
-	orchestratorAddr string
-	orchestratorID   string
+	// orchMu protects the current and co-located orchestrator identities and address; it is not nested with joinedMu or pairingInviteMu.
+	orchMu              sync.RWMutex
+	orchestratorAddr    string
+	orchestratorID      string
+	localOrchestratorID string
 	// joinedMu protects registration state and is not held across registration or network calls.
 	joinedMu sync.Mutex
 	joined   bool

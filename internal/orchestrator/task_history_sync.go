@@ -24,6 +24,11 @@ func (s *syncerComponent) taskHistorySyncLoop() {
 	}
 	for {
 		changes := s.tasks.Changes()
+		if !s.shouldSync() {
+			backoff.Reset()
+			syncinterval.Wait(5*time.Second, changes)
+			continue
+		}
 		before := s.tasks.Watermarks()
 		s.syncTaskHistory()
 		backoff.Observe(syncinterval.WatermarksAdvanced(before, s.tasks.Watermarks()))
@@ -34,12 +39,21 @@ func (s *syncerComponent) taskHistorySyncLoop() {
 }
 
 func (s *syncerComponent) syncTaskHistory() {
+	if !s.shouldSync() {
+		return
+	}
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
+	if !s.shouldSync() {
+		return
+	}
 
 	nodes := s.registry.Active()
 	remoteSnapshots := make(map[string]taskSyncSnapshot)
 	for _, node := range nodes {
+		if !s.shouldSync() {
+			return
+		}
 		if !node.Healthy || node.Address == "" {
 			continue
 		}
@@ -69,6 +83,9 @@ func (s *syncerComponent) syncTaskHistory() {
 	}
 
 	for _, node := range nodes {
+		if !s.shouldSync() {
+			return
+		}
 		if !node.Healthy || node.Address == "" {
 			continue
 		}
@@ -100,7 +117,7 @@ func (s *syncerComponent) syncTaskHistory() {
 }
 
 func (s *syncerComponent) recoverTaskHistory() {
-	if len(s.registry.Active()) == 0 {
+	if !s.shouldSync() || len(s.registry.Active()) == 0 {
 		return
 	}
 	s.recoveryOnce.Do(func() {

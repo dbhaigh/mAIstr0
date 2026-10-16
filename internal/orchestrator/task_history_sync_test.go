@@ -56,6 +56,27 @@ func TestSyncTaskHistoryImportsAndReplicatesCompleteHistory(t *testing.T) {
 	}
 }
 
+func TestSyncTaskHistorySkipsPeersWhenNotElected(t *testing.T) {
+	requests := 0
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+	}))
+	defer peer.Close()
+
+	syncer := newSyncerComponent(
+		cluster.NewRegistry(),
+		taskmgr.NewManager(),
+		&nodeClient{client: peer.Client()},
+		nil,
+		func() bool { return false },
+	)
+	syncer.registry.Upsert(cluster.NodeStatus{ID: "worker", Address: peer.URL, Healthy: true})
+	syncer.syncTaskHistory()
+	if requests != 0 {
+		t.Fatalf("yielded orchestrator made %d peer requests, want none", requests)
+	}
+}
+
 func TestTaskListDoesNotWaitForPeerHistoryRecovery(t *testing.T) {
 	requestStarted := make(chan struct{}, 1)
 	releasePeer := make(chan struct{})

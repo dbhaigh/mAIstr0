@@ -19,6 +19,7 @@ func (c *orchestratorLink) pairLocal(orchestratorID, certificatePEM, address str
 	if err := c.trust.TrustPeerDetails(orchestratorID, certificatePEM, "orchestrator", address); err != nil {
 		return err
 	}
+	c.setLocalOrchestratorID(orchestratorID)
 	c.setOrchestratorAddr(address)
 	c.setOrchestratorID(orchestratorID)
 	return nil
