@@ -103,13 +103,20 @@ func (m *Manager) Cancel(id string) bool {
 
 // CancelChecked cancels a task and reports persistence errors.
 func (m *Manager) CancelChecked(id string) (bool, error) {
+	_, cancelled, err := m.CancelAndSnapshotChecked(id)
+	return cancelled, err
+}
+
+// CancelAndSnapshotChecked cancels a task and returns the state at the point of
+// cancellation, before concurrent dispatch completion can update its attempts.
+func (m *Manager) CancelAndSnapshotChecked(id string) (*Task, bool, error) {
 	t, ok := m.lockTaskForUpdate(id)
 	if !ok {
-		return false, nil
+		return nil, false, nil
 	}
 	defer m.unlockTaskForUpdate(t)
 	if t.Status == StatusCompleted || t.Status == StatusFailed || t.Status == StatusCancelled {
-		return false, nil
+		return nil, false, nil
 	}
 	t.cancel()
 	t.Status = StatusCancelled
@@ -130,7 +137,8 @@ func (m *Manager) CancelChecked(id string) (bool, error) {
 	if _, err := m.saveCheckpointLocked(t); err != nil {
 		checkpointErr = fmt.Errorf("taskmgr: checkpoint cancelled task %s: %w", t.ID, err)
 	}
-	return true, errors.Join(checkpointErr, m.persistLocked(t))
+	persistErr := errors.Join(checkpointErr, m.persistLocked(t))
+	return cloneTask(t), true, persistErr
 }
 
 // StartSubtask marks a dispatched assignment as actively running.

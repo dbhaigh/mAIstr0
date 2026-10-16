@@ -98,6 +98,42 @@ func TestDispatchAttemptsPersistAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestCancelAndSnapshotCheckedReturnsAtomicTaskSnapshot(t *testing.T) {
+	manager := NewManager()
+	task := manager.Create("cancel a running attempt", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work"},
+		NodeID:  "node-a", Model: "model-a",
+	}})
+	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+		t.Fatal(err)
+	}
+	number, err := manager.BeginDispatchAttemptChecked(task.ID, "work", task.Subtasks[0].Assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, cancelled, err := manager.CancelAndSnapshotChecked(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cancelled || snapshot == nil || snapshot.Status != StatusCancelled ||
+		len(snapshot.Subtasks[0].Attempts) != 1 ||
+		snapshot.Subtasks[0].Attempts[0].Status != DispatchAttemptRunning {
+		t.Fatalf("cancellation snapshot = %#v, cancelled %v", snapshot, cancelled)
+	}
+	if err := manager.FinishDispatchAttemptChecked(task.ID, "work", number, DispatchAttemptFailed,
+		"cancelled", 0, context.Canceled, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Subtasks[0].Attempts[0].Status != DispatchAttemptRunning {
+		t.Fatalf("cancellation snapshot changed after dispatch completion: %+v", snapshot.Subtasks[0].Attempts[0])
+	}
+	current, ok := manager.Get(task.ID)
+	if !ok || current.Subtasks[0].Attempts[0].Status != DispatchAttemptFailed {
+		t.Fatalf("persisted task did not record dispatch completion: %#v", current)
+	}
+}
+
 func TestRecentReturnsNewestBoundedSnapshot(t *testing.T) {
 	manager := NewManager()
 	first := manager.Create("first", []scheduler.Assignment{{Subtask: scheduler.Subtask{ID: "a"}}})

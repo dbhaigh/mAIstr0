@@ -190,7 +190,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("task not found")))
 		return
 	}
-	cancelledOK, err := s.tasks.CancelChecked(id)
+	cancelled, cancelledOK, err := s.tasks.CancelAndSnapshotChecked(id)
 	if err != nil {
 		writeError(w, apperr.InternalError(fmt.Errorf("could not persist cancellation: %w", err)))
 		return
@@ -199,7 +199,6 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.ConflictError(errors.New("task is already complete")))
 		return
 	}
-	cancelled, _ := s.tasks.Get(id)
 	writeJSON(w, http.StatusOK, cancelled)
 }
 
