@@ -394,4 +394,8 @@ func TestCycleDetectionInCreateTask(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 Bad Request for cycle, got %d: %s", rec.Code, rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), "dependency cycle") {
+		t.Fatalf("cycle rejection did not identify the invalid dependency: %s", rec.Body.String())
+	}
+	assertOrchestratorGolden(t, "task-invalid-cycle.json", rec, false)
 }

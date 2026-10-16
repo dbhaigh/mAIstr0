@@ -1,0 +1,53 @@
+{
+  "name": "task-invalid-cycle",
+  "request": {
+    "method": "POST",
+    "path": "/api/tasks",
+    "body": {
+      "description": "Cyclic task",
+      "graph": {
+        "nodes": {
+          "a": {
+            "id": "a",
+            "description": "A",
+            "task_type": "",
+            "tags": null,
+            "depends_on": [
+              "b"
+            ]
+          },
+          "b": {
+            "id": "b",
+            "description": "B",
+            "task_type": "",
+            "tags": null,
+            "depends_on": [
+              "a"
+            ]
+          }
+        },
+        "edges": [
+          {
+            "from": "b",
+            "to": "a"
+          },
+          {
+            "from": "a",
+            "to": "b"
+          }
+        ]
+      }
+    }
+  },
+  "expected_response": {
+    "status": 400,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "invalid task graph: scheduler: plan contains a dependency cycle at \u003cSUBTASK_ID\u003e\n"
+  },
+  "normalization_rules": [
+    "Replace timestamps with \u003cTIME\u003e.",
+    "Replace generated task and checkpoint IDs with \u003cTASK_ID\u003e and \u003cCHECKPOINT_ID\u003e.",
+    "Replace local worker URLs with \u003cWORKER_URL\u003e.",
+    "Normalize volatile scores, task origins, and sequences as documented by the Go contract tests."
+  ]
+}

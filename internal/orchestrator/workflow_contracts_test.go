@@ -30,6 +30,7 @@ var (
 	contractTimestamp    = regexp.MustCompile(`"created_at":"[^"]+"`)
 	contractCreated      = regexp.MustCompile(`"created":\d+`)
 	contractDuration     = regexp.MustCompile(`("(?:total_duration|duration)":)\d+`)
+	contractCycleNode    = regexp.MustCompile(`(dependency cycle at )[^\n]+`)
 )
 
 type contractExecuteRequest struct {
@@ -598,7 +599,7 @@ func assertOrchestratorGolden(t *testing.T, name string, response *httptest.Resp
 		decoder := json.NewDecoder(bytes.NewReader(response.Body.Bytes()))
 		decoder.UseNumber()
 		if err := decoder.Decode(&body); err != nil {
-			body = response.Body.String()
+			body = normalizeOrchestratorContractValue(response.Body.String(), "body")
 		} else {
 			body = normalizeOrchestratorContractValue(body, "")
 		}
@@ -667,6 +668,7 @@ func normalizeOrchestratorContractValue(value any, key string) any {
 		if (key == "id" || key == "task_id") && strings.HasPrefix(typed, "task-") {
 			return "<TASK_ID>"
 		}
+		typed = contractCycleNode.ReplaceAllString(typed, `${1}<SUBTASK_ID>`)
 		if key == "id" && strings.HasPrefix(typed, "cp-task-") {
 			return "<CHECKPOINT_ID>"
 		}
