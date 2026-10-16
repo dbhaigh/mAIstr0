@@ -12,11 +12,14 @@ func TestOrchestratorHarnessConfig(t *testing.T) {
 	if defaults.Harness != "pi" {
 		t.Fatalf("default harness = %q, want pi", defaults.Harness)
 	}
+	if defaults.Mode != OrchestratorModeFull {
+		t.Fatalf("default mode = %q, want %q", defaults.Mode, OrchestratorModeFull)
+	}
 	if defaults.MaxConcurrentDispatches != DefaultDispatchConcurrency {
 		t.Fatalf("default dispatch concurrency = %d, want %d", defaults.MaxConcurrentDispatches, DefaultDispatchConcurrency)
 	}
 	path := filepath.Join(t.TempDir(), "orchestrator.json")
-	if err := os.WriteFile(path, []byte(`{"harness":"deepseek","max_concurrent_dispatches":7,"pi_base_url":"https://ignored.example/v1","pi_api_key_env":"UNUSED_KEY"}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"mode":"minimal","harness":"deepseek","max_concurrent_dispatches":7,"pi_base_url":"https://ignored.example/v1","pi_api_key_env":"UNUSED_KEY"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadOrchestratorConfig(path)
@@ -25,6 +28,9 @@ func TestOrchestratorHarnessConfig(t *testing.T) {
 	}
 	if cfg.Harness != "deepseek" {
 		t.Fatalf("configured backend = %#v", cfg)
+	}
+	if cfg.Mode != OrchestratorModeMinimal {
+		t.Fatalf("configured mode = %q, want %q", cfg.Mode, OrchestratorModeMinimal)
 	}
 	if cfg.MaxConcurrentDispatches != 7 {
 		t.Fatalf("dispatch concurrency = %d, want 7", cfg.MaxConcurrentDispatches)
@@ -131,7 +137,8 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 	defaulted := OrchestratorConfig{DiscoveryEnabled: true}
 	defaulted.Normalize()
 	if defaulted.ListenAddr != DefaultOrchestratorConfig().ListenAddr || defaulted.Harness != "pi" ||
-		defaulted.MaxConcurrentDispatches != DefaultDispatchConcurrency || defaulted.TrayMode != "taskbar" {
+		defaulted.Mode != OrchestratorModeFull || defaulted.MaxConcurrentDispatches != DefaultDispatchConcurrency ||
+		defaulted.TrayMode != "taskbar" {
 		t.Fatalf("normalized orchestrator defaults = %+v", defaulted)
 	}
 	if err := defaulted.Validate(); err != nil {
@@ -140,11 +147,15 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 
 	cfg := OrchestratorConfig{
 		ListenAddr:       ":7450",
+		Mode:             " MINIMAL ",
 		Harness:          "  DEEPSEEK ",
 		DiscoveryEnabled: true,
 		TrayMode:         "hidden",
 	}
 	cfg.Normalize()
+	if cfg.Mode != OrchestratorModeMinimal {
+		t.Fatalf("normalized mode = %q, want %q", cfg.Mode, OrchestratorModeMinimal)
+	}
 	if cfg.Harness != "deepseek" {
 		t.Fatalf("normalized harness = %q, want deepseek", cfg.Harness)
 	}
@@ -161,6 +172,7 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 		want   string
 	}{
 		{"listen address", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.ListenAddr = "localhost" }, "listen_addr"},
+		{"mode", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Mode = "lite" }, "mode"},
 		{"harness", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Harness = "unknown" }, "harness"},
 		{"concurrency", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.MaxConcurrentDispatches = -1 }, "max_concurrent_dispatches"},
 		{"tray mode", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.TrayMode = "minimized" }, "tray_mode"},

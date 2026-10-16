@@ -8,6 +8,7 @@ import (
 )
 
 type memoryStore struct {
+	// mu protects task and checkpoint maps; this store takes no nested locks.
 	mu          sync.RWMutex
 	tasks       map[string]*Task
 	checkpoints map[string]*Checkpoint

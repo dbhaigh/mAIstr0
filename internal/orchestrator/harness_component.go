@@ -11,13 +11,33 @@ import (
 )
 
 type harnessManager struct {
+	// mu protects backend/session ownership maps. Keep it independent from cancelsMu; do not call backends while holding it.
 	mu               sync.RWMutex
 	agents           map[string]agent.Backend
 	activeHarness    string
 	sessionHarnesses map[string]string
 	sessionStore     SessionStore
 	sessionCancels   map[string]context.CancelFunc
-	cancelsMu        sync.Mutex
+	// cancelsMu protects active-turn cancellation handles; copy handles before invoking them.
+	cancelsMu sync.Mutex
+}
+
+type harnessAPI interface {
+	harnessName() string
+	currentAgent() (string, agent.Backend)
+	agentForSession(string) (string, agent.Backend, bool)
+	selectHarness(string) bool
+	setSessionHarness(string, string)
+	removeSessionHarness(string, string)
+	listAgentSessions() []*agent.Session
+	restoreAgentSessions() error
+	persistAgentSession(*agent.Session) error
+	agentStats() agent.AgentStats
+	setTurnCancel(string, func())
+	clearTurnCancel(string)
+	interruptSession(string) bool
+	deletePersistedSession(string, string) error
+	close() error
 }
 
 func newHarnessManager(agents map[string]agent.Backend, activeHarness string, sessionStore SessionStore) *harnessManager {
@@ -140,10 +160,14 @@ func (h *harnessManager) restoreAgentSessions() error {
 		}
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.mu.RLock()
+	backends := make(map[string]agent.Backend, len(h.agents))
+	for name, backend := range h.agents {
+		backends[name] = backend
+	}
+	h.mu.RUnlock()
 	for _, session := range sessions {
-		backend, exists := h.agents[session.Harness]
+		backend, exists := backends[session.Harness]
 		if !exists {
 			return fmt.Errorf("persisted session %q has unsupported harness %q", session.ID, session.Harness)
 		}
@@ -154,7 +178,9 @@ func (h *harnessManager) restoreAgentSessions() error {
 		if err := restorer.RestoreSession(session); err != nil {
 			return fmt.Errorf("restore session %q for %s: %w", session.ID, session.Harness, err)
 		}
+		h.mu.Lock()
 		h.sessionHarnesses[session.ID] = session.Harness
+		h.mu.Unlock()
 	}
 	return nil
 }

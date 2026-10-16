@@ -155,6 +155,15 @@ func (a *Agent) handleAPITaskGet(w http.ResponseWriter, r *http.Request) {
 	a.proxy(w, r, a.mostCapableNode().Address, "/tasks/"+r.PathValue("id"))
 }
 
+func (a *Agent) handleAPITaskAssignmentExplanation(w http.ResponseWriter, r *http.Request) {
+	if addr := a.getOrchestratorAddr(); addr != "" {
+		path := "/api/tasks/" + url.PathEscape(r.PathValue("id")) + "/assignment-explanation"
+		a.proxy(w, r, addr, path)
+		return
+	}
+	writeError(w, apperr.UnavailableError(errors.New("assignment explanations are unavailable without an orchestrator")))
+}
+
 func (a *Agent) handleAPITaskCancel(w http.ResponseWriter, r *http.Request) {
 	taskPath := "/api/tasks/" + url.PathEscape(r.PathValue("id")) + "/cancel"
 	if addr := a.getOrchestratorAddr(); addr != "" {

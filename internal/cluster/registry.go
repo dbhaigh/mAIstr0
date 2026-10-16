@@ -121,8 +121,13 @@ func (n NodeStatus) EffectiveCapabilities() []string {
 
 // Registry is a thread-safe store of known nodes.
 type Registry struct {
-	mu    sync.RWMutex
-	nodes map[string]*NodeStatus
+	// mu protects nodes and the snapshot cache; every mutation invalidates the
+	// cache before unlocking. It is a leaf lock: callers use copied snapshots
+	// before invoking other components or doing I/O.
+	mu            sync.RWMutex
+	nodes         map[string]*NodeStatus
+	allCache      []NodeStatus
+	allCacheValid bool
 }
 
 func NewRegistry() *Registry {
@@ -133,6 +138,7 @@ func NewRegistry() *Registry {
 func (r *Registry) Upsert(status NodeStatus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	status = cloneNodeStatus(status)
 	status.LastSeen = time.Now()
 	status.Healthy = true
 	status.QueuedTasks = 0
@@ -150,6 +156,7 @@ func (r *Registry) Upsert(status NodeStatus) {
 		}
 	}
 	r.nodes[status.ID] = &status
+	r.invalidateSnapshotLocked()
 }
 
 // MarkUnhealthy flags a node as unreachable without removing it, so it's
@@ -159,6 +166,7 @@ func (r *Registry) MarkUnhealthy(id string) {
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[id]; ok {
 		n.Healthy = false
+		r.invalidateSnapshotLocked()
 	}
 }
 
@@ -166,7 +174,10 @@ func (r *Registry) MarkUnhealthy(id string) {
 func (r *Registry) Remove(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.nodes, id)
+	if _, ok := r.nodes[id]; ok {
+		delete(r.nodes, id)
+		r.invalidateSnapshotLocked()
+	}
 }
 
 // Get returns a copy of a single node's status.
@@ -177,18 +188,42 @@ func (r *Registry) Get(id string) (NodeStatus, bool) {
 	if !ok {
 		return NodeStatus{}, false
 	}
-	return *n, true
+	return cloneNodeStatus(*n), true
 }
 
 // All returns a snapshot of every known node. Leadership is assigned only
 // after at least two healthy members have joined the same registry.
 func (r *Registry) All() []NodeStatus {
 	r.mu.RLock()
-	out := make([]NodeStatus, 0, len(r.nodes))
-	for _, n := range r.nodes {
-		out = append(out, *n)
+	if r.allCacheValid {
+		out := cloneNodeStatuses(r.allCache)
+		r.mu.RUnlock()
+		return out
 	}
 	r.mu.RUnlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.allCacheValid {
+		r.allCache = r.buildSnapshotLocked()
+		r.allCacheValid = true
+	}
+	return cloneNodeStatuses(r.allCache)
+}
+
+func cloneNodeStatuses(statuses []NodeStatus) []NodeStatus {
+	out := make([]NodeStatus, len(statuses))
+	for i := range statuses {
+		out[i] = cloneNodeStatus(statuses[i])
+	}
+	return out
+}
+
+func (r *Registry) buildSnapshotLocked() []NodeStatus {
+	out := make([]NodeStatus, 0, len(r.nodes))
+	for _, n := range r.nodes {
+		out = append(out, cloneNodeStatus(*n))
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 
 	healthy := 0
@@ -216,6 +251,37 @@ func (r *Registry) All() []NodeStatus {
 		out[leader].Leader = true
 	}
 	return out
+}
+
+func (r *Registry) invalidateSnapshotLocked() {
+	r.allCacheValid = false
+	r.allCache = nil
+}
+
+func cloneNodeStatus(status NodeStatus) NodeStatus {
+	status.Models = cloneSlice(status.Models)
+	for i := range status.Models {
+		status.Models[i].Tags = cloneSlice(status.Models[i].Tags)
+		status.Models[i].Protocols = cloneSlice(status.Models[i].Protocols)
+	}
+	status.Engines = cloneSlice(status.Engines)
+	for i := range status.Engines {
+		status.Engines[i].Protocols = cloneSlice(status.Engines[i].Protocols)
+	}
+	status.Capabilities = cloneSlice(status.Capabilities)
+	status.GPUHistory = cloneSlice(status.GPUHistory)
+	status.NPUHistory = cloneSlice(status.NPUHistory)
+	status.SystemHistory = cloneSlice(status.SystemHistory)
+	return status
+}
+
+func cloneSlice[T any](items []T) []T {
+	if items == nil {
+		return nil
+	}
+	cloned := make([]T, len(items))
+	copy(cloned, items)
+	return cloned
 }
 
 // Active returns only currently healthy cluster members.
@@ -301,6 +367,9 @@ func (r *Registry) IncrementLoad(id string, delta int) {
 		n.ActiveTasks += delta
 		if n.ActiveTasks < 0 {
 			n.ActiveTasks = 0
+		}
+		if delta != 0 {
+			r.invalidateSnapshotLocked()
 		}
 	}
 }

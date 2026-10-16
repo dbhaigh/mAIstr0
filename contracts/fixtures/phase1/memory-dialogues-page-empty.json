@@ -1,0 +1,18 @@
+{
+  "name": "memory-dialogues-page-empty",
+  "request": {
+    "method": "GET",
+    "path": "/api/memory/dialogues?page_size=50"
+  },
+  "expected_response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "items": [],
+      "has_more": false
+    }
+  },
+  "normalization_rules": [
+    "No generated values are present in the empty page response."
+  ]
+}

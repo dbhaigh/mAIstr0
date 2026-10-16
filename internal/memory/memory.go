@@ -111,6 +111,12 @@ type Store interface {
 	ContextBrief(query, taskType string, limit int) string
 }
 
+// ChangeSource is optionally implemented by stores that can wake sync loops
+// when locally visible memory changes warrant an immediate sync pass.
+type ChangeSource interface {
+	Changes() <-chan struct{}
+}
+
 type Snapshot struct {
 	Experiences  []Experience      `json:"experiences"`
 	Facts        []Fact            `json:"facts"`

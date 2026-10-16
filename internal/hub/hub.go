@@ -12,6 +12,8 @@ import (
 // Hub fans a stream of JSON snapshots out to any number of subscribed HTTP
 // clients (typically browser EventSource connections).
 type Hub struct {
+	// mu protects subscriptions; Broadcast makes only nonblocking sends while
+	// holding it, and there is no nested hub lock or I/O.
 	mu      sync.Mutex
 	clients map[chan []byte]bool
 }

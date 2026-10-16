@@ -70,6 +70,73 @@ func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 	}
 }
 
+func TestMinimalModeOmitsOptionalRoutesAndKeepsClusterRouting(t *testing.T) {
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.Mode = config.OrchestratorModeMinimal
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "minimal.db")
+	srv, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close minimal-mode server: %v", err)
+		}
+	})
+	if srv.harness != nil {
+		t.Fatal("minimal mode initialized an agent harness")
+	}
+	if srv.Memory() != nil {
+		t.Fatal("minimal mode opened the learning memory store")
+	}
+
+	mux := srv.Mux()
+	for _, path := range []string{
+		"/api/agent/sessions",
+		"/api/agent/backend",
+		"/api/memory/experiences",
+		"/api/memory/sync",
+	} {
+		_, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, path, nil))
+		if pattern != "/" {
+			t.Errorf("optional route %s is still registered as %q", path, pattern)
+		}
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Errorf("optional route %s returned %d, want 404", path, response.Code)
+		}
+	}
+	for _, route := range []struct {
+		method, path, wantPattern string
+	}{
+		{http.MethodGet, "/api/status", "GET /api/status"},
+		{http.MethodGet, "/api/cluster/health", "GET /api/cluster/health"},
+		{http.MethodPost, "/router/v1/chat/completions", "POST /router/{path...}"},
+		{http.MethodGet, "/v1/models", "GET /v1/models"},
+	} {
+		_, pattern := mux.Handler(httptest.NewRequest(route.method, route.path, nil))
+		if pattern != route.wantPattern {
+			t.Errorf("%s %s matched %q, want %q", route.method, route.path, pattern, route.wantPattern)
+		}
+	}
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	var status struct {
+		Persistence struct {
+			Available bool   `json:"available"`
+			Warning   string `json:"warning"`
+		} `json:"persistence"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Persistence.Available || status.Persistence.Warning != "" {
+		t.Fatalf("minimal-mode persistence status = %+v, want disabled without an unavailable warning", status.Persistence)
+	}
+}
+
 func TestYieldedDashboardPreservesLocalPairingAccess(t *testing.T) {
 	srv := newTestServer(t)
 	if err := srv.SetLocalNodeDashboard("http://localhost:7451"); err != nil {
@@ -1382,6 +1449,7 @@ func TestCreateTaskRejectsPartiallyAssignableWork(t *testing.T) {
 }
 
 func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
+	// These counters are updated by concurrent test-server handlers.
 	var firstCalls, secondCalls atomic.Int32
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstCalls.Add(1)
@@ -1460,6 +1528,7 @@ func TestDispatchRetryClassificationExcludesClientErrors(t *testing.T) {
 }
 
 func TestDispatchRetriesAcrossMoreThanTwoNodes(t *testing.T) {
+	// Per-node atomics safely count calls from parallel dispatch handlers.
 	var calls [3]atomic.Int32
 	nodes := make([]*httptest.Server, 3)
 	for index := range nodes {

@@ -39,8 +39,9 @@ type Agent struct {
 
 	events *hub.Hub
 
-	tasks *taskmgr.Manager
-	mem   memory.Store
+	tasks  *taskmgr.Manager
+	mem    memory.Store
+	syncer syncerAPI
 }
 
 type peerDispatchJob struct {
@@ -166,6 +167,18 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		log.Printf("nodeagent: memory store at %s", store.Path())
 	}
 	a.dialogueComponent = newDialogueComponent(a.cfg.NodeID, a.mem, a.engineComponent, a.executorComponent, a.remember)
+	a.syncer = newSyncerComponent(
+		cfg.NodeID, tasks, a.mem,
+		func() *http.Client { return link.peerClient },
+		func() *http.Client { return link.memorySyncClient },
+		a.Peers,
+		func() bool {
+			if a.getOrchestratorAddr() != "" && a.getOrchestratorID() != "" {
+				return false
+			}
+			return a.mostCapableNode().ID == cfg.NodeID
+		},
+	)
 	return a
 }
 

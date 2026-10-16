@@ -30,9 +30,12 @@ type Harness struct {
 	registry   *cluster.Registry
 	dispatcher *http.Client
 	tools      map[string]Tool
-	toolsMu    sync.RWMutex
+	// toolsMu protects the tool registry; it is released before invoking tools.
+	toolsMu sync.RWMutex
 
-	sessions   map[string]*Session
+	sessions map[string]*Session
+	// sessionsMu protects the session map. Stats may nest session.mu beneath
+	// this lock; session code must not acquire sessionsMu while holding session.mu.
 	sessionsMu sync.RWMutex
 
 	events           *hub.Hub
@@ -41,7 +44,9 @@ type Harness struct {
 	workflowExecutor func(context.Context, string, []scheduler.Subtask, bool) (string, error)
 
 	activeCancels map[string]context.CancelFunc
-	cancelsMu     sync.Mutex
+	// cancelsMu protects cancellation handles only; callbacks run after unlock
+	// and this lock is not nested with sessionsMu or session.mu.
+	cancelsMu sync.Mutex
 }
 
 // SetWorkflowExecutor installs the shared durable workflow execution path.

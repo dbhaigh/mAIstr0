@@ -11,27 +11,31 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/syncinterval"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
 const maxReplicatedTaskHistoryBytes int64 = 64 << 20
 
-func (s *Server) taskHistorySyncLoop() {
-	timer := time.NewTimer(3 * time.Second)
-	defer timer.Stop()
-	<-timer.C
-	s.syncTaskHistory()
-
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
+func (s *syncerComponent) taskHistorySyncLoop() {
+	var backoff syncinterval.Backoff
+	if syncinterval.Wait(3*time.Second, s.tasks.Changes()) {
+		backoff.Reset()
+	}
+	for {
+		changes := s.tasks.Changes()
+		before := s.tasks.Watermarks()
 		s.syncTaskHistory()
+		backoff.Observe(syncinterval.WatermarksAdvanced(before, s.tasks.Watermarks()))
+		if syncinterval.Wait(backoff.Current(), changes) {
+			backoff.Reset()
+		}
 	}
 }
 
-func (s *Server) syncTaskHistory() {
-	s.taskHistorySyncMu.Lock()
-	defer s.taskHistorySyncMu.Unlock()
+func (s *syncerComponent) syncTaskHistory() {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
 
 	nodes := s.registry.Active()
 	remoteSnapshots := make(map[string]taskSyncSnapshot)
@@ -40,11 +44,11 @@ func (s *Server) syncTaskHistory() {
 			continue
 		}
 		var watermarks map[string]uint64
-		if s.mem != nil {
-			watermarks = taskmgr.FilterTaskWatermarks(s.mem.PeerWatermarks(node.ID))
+		if s.memory != nil {
+			watermarks = taskmgr.FilterTaskWatermarks(s.memory.PeerWatermarks(node.ID))
 		}
 		tasks, version, watermarks, err := fetchReplicatedTaskHistory(
-			s.nodeClient.client,
+			s.client,
 			strings.TrimRight(node.Address, "/")+"/tasks",
 			watermarks,
 		)
@@ -57,8 +61,8 @@ func (s *Server) syncTaskHistory() {
 			continue
 		}
 		remoteSnapshots[node.ID] = taskSyncSnapshot{version: version, watermarks: watermarks}
-		if s.mem != nil {
-			if err := s.mem.SetPeerWatermarks(node.ID, watermarks); err != nil {
+		if s.memory != nil {
+			if err := s.memory.SetPeerWatermarks(node.ID, watermarks); err != nil {
 				log.Printf("orchestrator: task history watermark persistence for %s failed: %v", node.ID, err)
 			}
 		}
@@ -77,7 +81,7 @@ func (s *Server) syncTaskHistory() {
 		}
 		tasks := s.tasks.SnapshotForPeer(version, watermarks)
 		err := postTaskHistoryPages(
-			s.nodeClient.client,
+			s.client,
 			strings.TrimRight(node.Address, "/")+"/tasks/replica",
 			tasks,
 			taskmgr.SnapshotWatermarks(s.tasks.All()),
@@ -87,19 +91,19 @@ func (s *Server) syncTaskHistory() {
 			log.Printf("orchestrator: task history replication to %s failed: %v", node.ID, err)
 			continue
 		}
-		if s.mem != nil && fetched && memory.SupportsIncrementalSync(version) {
-			if err := s.mem.SetPeerWatermarks(node.ID, taskmgr.SnapshotWatermarks(tasks)); err != nil {
+		if s.memory != nil && fetched && memory.SupportsIncrementalSync(version) {
+			if err := s.memory.SetPeerWatermarks(node.ID, taskmgr.SnapshotWatermarks(tasks)); err != nil {
 				log.Printf("orchestrator: task history watermark persistence for %s failed: %v", node.ID, err)
 			}
 		}
 	}
 }
 
-func (s *Server) recoverTaskHistory() {
+func (s *syncerComponent) recoverTaskHistory() {
 	if len(s.registry.Active()) == 0 {
 		return
 	}
-	s.taskHistoryRecovery.Do(func() {
+	s.recoveryOnce.Do(func() {
 		go s.syncTaskHistory()
 	})
 }

@@ -44,8 +44,54 @@ func (w *memorySyncCountingResponseWriter) Write(p []byte) (int, error) {
 }
 
 func (s *Server) handleMemoryExperiences(w http.ResponseWriter, r *http.Request) {
+	pageRequest, err := parseHistoryPageRequest(r, "experiences", "q", "task_type", "node_id", "model", "tool", "success_only")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if s.mem == nil {
+		if pageRequest.Active {
+			writeHistoryPage(w, pageRequest, []memory.Experience{}, memory.HistoryCursor{}, false)
+			return
+		}
 		writeJSON(w, http.StatusOK, []memory.Experience{})
+		return
+	}
+	if pageRequest.Active {
+		successOnly := r.URL.Query().Get("success_only")
+		if successOnly != "" && successOnly != "true" && successOnly != "false" {
+			http.Error(w, "success_only must be true or false", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Query().Has("cursor") && pageRequest.Cursor.ID == 0 {
+			http.Error(w, "cursor is missing its experience position", http.StatusBadRequest)
+			return
+		}
+		pager, ok := s.mem.(memory.HistoryPager)
+		if !ok {
+			http.Error(w, "cursor paging is not supported by the memory store", http.StatusNotImplemented)
+			return
+		}
+		page, err := pager.ExperiencesPage(memory.SearchFilter{
+			Query:       r.URL.Query().Get("q"),
+			TaskType:    r.URL.Query().Get("task_type"),
+			NodeID:      r.URL.Query().Get("node_id"),
+			Model:       r.URL.Query().Get("model"),
+			Tool:        r.URL.Query().Get("tool"),
+			SuccessOnly: successOnly == "true",
+		}, memory.PageOptions{
+			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
+			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+		})
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, memory.ErrPageRecordTooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			http.Error(w, "could not read experience page: "+err.Error(), status)
+			return
+		}
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
 		return
 	}
 	limit := intQuery(r, "limit", 50)
@@ -80,8 +126,42 @@ func (s *Server) handleMemoryRecommendations(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleMemoryFactsGet(w http.ResponseWriter, r *http.Request) {
+	pageRequest, err := parseHistoryPageRequest(r, "facts", "scope")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if s.mem == nil {
+		if pageRequest.Active {
+			writeHistoryPage(w, pageRequest, []memory.Fact{}, memory.HistoryCursor{}, false)
+			return
+		}
 		writeJSON(w, http.StatusOK, []memory.Fact{})
+		return
+	}
+	if pageRequest.Active {
+		if r.URL.Query().Has("cursor") && pageRequest.Cursor.Key == "" {
+			http.Error(w, "cursor is missing its fact position", http.StatusBadRequest)
+			return
+		}
+		pager, ok := s.mem.(memory.HistoryPager)
+		if !ok {
+			http.Error(w, "cursor paging is not supported by the memory store", http.StatusNotImplemented)
+			return
+		}
+		page, err := pager.FactsPage(r.URL.Query().Get("scope"), memory.PageOptions{
+			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
+			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+		})
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, memory.ErrPageRecordTooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			http.Error(w, "could not read fact page: "+err.Error(), status)
+			return
+		}
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.mem.Facts(r.URL.Query().Get("scope")))
@@ -123,8 +203,42 @@ func (s *Server) handleMemoryFactDelete(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleMemoryDialogues(w http.ResponseWriter, r *http.Request) {
+	pageRequest, err := parseHistoryPageRequest(r, "dialogues")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if s.mem == nil {
+		if pageRequest.Active {
+			writeHistoryPage(w, pageRequest, []memory.DialogueRecord{}, memory.HistoryCursor{}, false)
+			return
+		}
 		writeJSON(w, http.StatusOK, []memory.DialogueRecord{})
+		return
+	}
+	if pageRequest.Active {
+		if r.URL.Query().Has("cursor") && pageRequest.Cursor.Key == "" {
+			http.Error(w, "cursor is missing its dialogue position", http.StatusBadRequest)
+			return
+		}
+		pager, ok := s.mem.(memory.HistoryPager)
+		if !ok {
+			http.Error(w, "cursor paging is not supported by the memory store", http.StatusNotImplemented)
+			return
+		}
+		page, err := pager.DialoguesPage(memory.PageOptions{
+			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
+			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+		})
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, memory.ErrPageRecordTooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			http.Error(w, "could not read dialogue page: "+err.Error(), status)
+			return
+		}
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.mem.Dialogues(intQuery(r, "limit", 30)))
@@ -186,7 +300,7 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 		snapshot.Performances = append(snapshot.Performances, req.Performances...)
 	}
 	mergeStarted := time.Now()
-	if err := s.mem.MergeSnapshotFrom(snapshot, req.NodeID); err != nil {
+	if err := s.mergeMemorySnapshot(snapshot, req.NodeID); err != nil {
 		log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
 			req.NodeID, r.RemoteAddr, apperr.StatusCode(apperr.InternalError(err)), reader.bytesRead, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
 		writeError(w, apperr.InternalError(err))
@@ -224,7 +338,7 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "memory sync pagination requires protocol version 2", http.StatusBadRequest)
 			return
 		}
-		snapshot = memory.SnapshotForPeer(s.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
+		snapshot = s.memorySnapshotForPeer(peerVersion, memory.FilterMemoryWatermarks(watermarks))
 		responseWatermarks = snapshot.Watermarks
 		if memory.SupportsSyncPages(peerVersion) {
 			if cursor == nil {
@@ -285,7 +399,7 @@ func (s *Server) handleNodePeerConverse(w http.ResponseWriter, r *http.Request) 
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	resp, err := s.nodeClient.dispatcher.Post(n.Address+"/peer/converse", "application/json", bytes.NewReader(body))
+	resp, err := s.nodeClientPort().PostDispatch(n.Address+"/peer/converse", "application/json", bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return

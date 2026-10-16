@@ -123,6 +123,7 @@ func (m *Manager) syncTasks(tasks []*Task, replace, mergeReplicas bool, sourceOr
 			current.cancel()
 		}
 		m.tasks[task.ID] = task
+		m.invalidateRecentTasksLocked()
 		if sequence := taskSequence(task.ID); sequence > m.seq {
 			m.seq = sequence
 		}

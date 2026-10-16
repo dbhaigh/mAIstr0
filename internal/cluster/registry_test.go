@@ -142,3 +142,34 @@ func TestOlderNodeGetsVersionError(t *testing.T) {
 		t.Fatalf("unexpected version error: %q", got.VersionError)
 	}
 }
+
+func TestAllUsesCachedSnapshotAndInvalidatesOnWrites(t *testing.T) {
+	r := NewRegistry()
+	status := node("cached", 10, 10)
+	status.Models = []engine.Model{{Name: "model", Tags: []string{"original"}}}
+	r.Upsert(status)
+
+	first := r.All()
+	if len(first) != 1 || !r.allCacheValid {
+		t.Fatalf("first snapshot = %#v, cache valid = %v", first, r.allCacheValid)
+	}
+	first[0].Models[0].Tags[0] = "caller-mutation"
+	if got := r.All()[0].Models[0].Tags[0]; got != "original" {
+		t.Fatalf("mutating a returned snapshot changed cached data: %q", got)
+	}
+
+	r.IncrementLoad("cached", 1)
+	if r.allCacheValid {
+		t.Fatal("load update did not invalidate the snapshot")
+	}
+	if got := r.All()[0].ActiveTasks; got != 1 {
+		t.Fatalf("active tasks after invalidation = %d, want 1", got)
+	}
+	r.MarkUnhealthy("cached")
+	if r.allCacheValid {
+		t.Fatal("health update did not invalidate the snapshot")
+	}
+	if got := r.All()[0].Healthy; got {
+		t.Fatal("cached snapshot retained stale health")
+	}
+}

@@ -89,6 +89,15 @@ func updateRecordWatermark(tx *bolt.Tx, origin string, sequence uint64) error {
 }
 
 func (s *boltStore) Watermarks() map[string]uint64 {
+	s.mu.RLock()
+	if s.watermarksCacheValid {
+		cached := cloneWatermarks(s.watermarksCache)
+		s.mu.RUnlock()
+		return cached
+	}
+	generation := s.watermarksCacheGeneration
+	s.mu.RUnlock()
+
 	watermarks := make(map[string]uint64)
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketMeta).ForEach(func(key, value []byte) error {
@@ -105,7 +114,14 @@ func (s *boltStore) Watermarks() map[string]uint64 {
 	})
 	if err != nil {
 		log.Printf("memory: read watermarks: %v", err)
+		return watermarks
 	}
+	s.mu.Lock()
+	if generation == s.watermarksCacheGeneration {
+		s.watermarksCache = cloneWatermarks(watermarks)
+		s.watermarksCacheValid = true
+	}
+	s.mu.Unlock()
 	return watermarks
 }
 
@@ -113,6 +129,15 @@ func (s *boltStore) PeerWatermarks(peer string) map[string]uint64 {
 	if peer == "" {
 		return map[string]uint64{}
 	}
+	s.mu.RLock()
+	if s.peerWatermarksLoaded[peer] {
+		cached := cloneWatermarks(s.peerWatermarksCache[peer])
+		s.mu.RUnlock()
+		return cached
+	}
+	generation := s.peerWatermarksGeneration[peer]
+	s.mu.RUnlock()
+
 	watermarks := make(map[string]uint64)
 	err := s.db.View(func(tx *bolt.Tx) error {
 		value := tx.Bucket(bucketMeta).Get(peerWatermarkKey(peer))
@@ -128,6 +153,12 @@ func (s *boltStore) PeerWatermarks(peer string) map[string]uint64 {
 		log.Printf("memory: read watermarks for peer %s: %v", peer, err)
 		return map[string]uint64{}
 	}
+	s.mu.Lock()
+	if generation == s.peerWatermarksGeneration[peer] {
+		s.peerWatermarksCache[peer] = cloneWatermarks(watermarks)
+		s.peerWatermarksLoaded[peer] = true
+	}
+	s.mu.Unlock()
 	return watermarks
 }
 
@@ -135,9 +166,10 @@ func (s *boltStore) SetPeerWatermarks(peer string, watermarks map[string]uint64)
 	if strings.TrimSpace(peer) == "" {
 		return errors.New("memory: peer id is required for watermarks")
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
+	var merged map[string]uint64
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(bucketMeta)
-		merged := make(map[string]uint64)
+		merged = make(map[string]uint64)
 		if value := meta.Get(peerWatermarkKey(peer)); value != nil {
 			if err := json.Unmarshal(value, &merged); err != nil {
 				return fmt.Errorf("memory: decode watermarks for peer %s: %w", peer, err)
@@ -150,6 +182,15 @@ func (s *boltStore) SetPeerWatermarks(peer string, watermarks map[string]uint64)
 		}
 		return meta.Put(peerWatermarkKey(peer), encoded)
 	})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.peerWatermarksCache[peer] = cloneWatermarks(merged)
+	s.peerWatermarksLoaded[peer] = true
+	s.peerWatermarksGeneration[peer]++
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *boltStore) backfillRecordMetadata() error {

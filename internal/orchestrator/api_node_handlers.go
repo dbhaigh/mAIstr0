@@ -76,7 +76,7 @@ func (s *Server) handleRefreshAllNodeModels(w http.ResponseWriter, r *http.Reque
 			results[node.ID] = err.Error()
 			continue
 		}
-		response, err := s.nodeClient.dispatcher.Do(request)
+		response, err := s.nodeClientPort().DoDispatch(request)
 		if err != nil {
 			results[node.ID] = "unreachable: " + err.Error()
 			continue
@@ -100,7 +100,7 @@ func (s *Server) handleNodeModelsGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("node not found")))
 		return
 	}
-	resp, err := s.nodeClient.client.Get(n.Address + "/models/all")
+	resp, err := s.nodeClientPort().Get(n.Address + "/models/all")
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return
@@ -133,7 +133,7 @@ func (s *Server) handleNodeModelsPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.nodeClient.client.Do(req)
+	resp, err := s.nodeClientPort().Do(req)
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return
@@ -178,7 +178,7 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 			req.Header.Add(k, value)
 		}
 	}
-	resp, err := s.nodeClient.dispatcher.Do(req)
+	resp, err := s.nodeClientPort().DoDispatch(req)
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node communication error: %w", err)))
 		return
@@ -212,7 +212,7 @@ func (s *Server) handleNodeChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.nodeClient.dispatcher.Do(req)
+	resp, err := s.nodeClientPort().DoDispatch(req)
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node execution failed: %w", err)))
 		return
@@ -257,7 +257,7 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 			req.Header.Add(k, val)
 		}
 	}
-	resp, err := s.nodeClient.dispatcher.Do(req)
+	resp, err := s.nodeClientPort().DoDispatch(req)
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node communication error: %w", err)))
 		return

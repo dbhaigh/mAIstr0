@@ -9,8 +9,26 @@ import (
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
+
+type assignmentExplanationResponse struct {
+	TaskID      string                        `json:"task_id"`
+	Assignments []assignmentExplanationDetail `json:"assignments"`
+}
+
+type assignmentExplanationDetail struct {
+	SubtaskID    string                 `json:"subtask_id"`
+	Description  string                 `json:"description"`
+	NodeID       string                 `json:"node_id"`
+	Model        string                 `json:"model"`
+	Engine       string                 `json:"engine,omitempty"`
+	Score        float64                `json:"score"`
+	ScoreFactors scheduler.ScoreFactors `json:"score_factors"`
+	LearnedBias  float64                `json:"learned_bias"`
+	Summary      string                 `json:"summary"`
+}
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	var req createTaskRequest
@@ -42,6 +60,47 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	if cursor != nil && !memory.SupportsSyncPages(version) {
 		http.Error(w, "task sync pagination requires protocol version 2", http.StatusBadRequest)
 		return
+	}
+	if !isTaskSyncRequest(r) {
+		pageRequest, err := parseHistoryPageRequest(r, "tasks", "q", "status")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if pageRequest.Active {
+			var pageCursor *taskmgr.PageCursor
+			if r.URL.Query().Has("cursor") {
+				if pageRequest.Cursor.Key == "" {
+					http.Error(w, "cursor is missing its task position", http.StatusBadRequest)
+					return
+				}
+				pageCursor = &taskmgr.PageCursor{
+					UpdatedAt: pageRequest.Cursor.UpdatedAt,
+					ID:        pageRequest.Cursor.Key,
+				}
+			}
+			status := r.URL.Query().Get("status")
+			if status == "all" {
+				status = ""
+			}
+			page, err := s.tasks.PageRecent(
+				pageCursor, r.URL.Query().Get("q"), taskmgr.Status(status),
+				pageRequest.Limit, maxHistoryPageBytes-historyPageEnvelopeRoom,
+			)
+			if err != nil {
+				if errors.Is(err, taskmgr.ErrPageRecordTooLarge) {
+					http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+					return
+				}
+				http.Error(w, "could not read task history page: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeHistoryPage(w, pageRequest, page.Items, memory.HistoryCursor{
+				UpdatedAt: page.NextCursor.UpdatedAt,
+				Key:       page.NextCursor.ID,
+			}, page.HasMore)
+			return
+		}
 	}
 	tasks, currentWatermarks := s.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
 	if memory.SupportsSyncPages(version) {
@@ -78,6 +137,45 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) handleTaskAssignmentExplanation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task, ok := s.tasks.Get(id)
+	if !ok {
+		writeError(w, apperr.NotFoundError(errors.New("task not found")))
+		return
+	}
+	response := assignmentExplanationResponse{
+		TaskID:      task.ID,
+		Assignments: make([]assignmentExplanationDetail, 0, len(task.Subtasks)),
+	}
+	for _, result := range task.Subtasks {
+		assignment := result.Assignment
+		factors := assignment.Factors
+		telemetrySummary := "stale or unavailable telemetry was ignored"
+		if factors.TelemetryFresh {
+			telemetrySummary = fmt.Sprintf("telemetry was fresh (%d ms old)", factors.TelemetryAgeMs)
+		}
+		summary := fmt.Sprintf(
+			"Score %.1f assigned to %s using %s: model match %+.1f, hardware %+.1f, capabilities %+.1f, load and capacity %+.1f, learned bias %+.1f; %s.",
+			assignment.Score, assignment.NodeID, assignment.Model,
+			factors.ModelMatch, factors.Hardware, factors.CapabilityScore,
+			-(factors.LoadPenalty + factors.CapacityPenalty), factors.LearnedBias, telemetrySummary,
+		)
+		response.Assignments = append(response.Assignments, assignmentExplanationDetail{
+			SubtaskID:    assignment.Subtask.ID,
+			Description:  assignment.Subtask.Description,
+			NodeID:       assignment.NodeID,
+			Model:        assignment.Model,
+			Engine:       assignment.Engine,
+			Score:        assignment.Score,
+			ScoreFactors: factors,
+			LearnedBias:  factors.LearnedBias,
+			Summary:      summary,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {

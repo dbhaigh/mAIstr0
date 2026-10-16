@@ -203,6 +203,57 @@ func TestEngineInventoryRefreshTracksChangesAndRetainsLastGoodModelsOnError(t *t
 	}
 }
 
+func TestModelInventoryTTLAndHardwareGenerationCaches(t *testing.T) {
+	eng := &inventoryTestEngine{models: []engine.Model{{Name: "alpha"}}}
+	telemetry := &telemetryComponent{}
+	component := newEngineComponent(
+		[]engine.Engine{eng}, func() []engine.Engine { return nil }, telemetry, newAgentState(config.NodeConfig{}),
+	)
+
+	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "alpha" {
+		t.Fatalf("initial inventory = %#v, want alpha", got)
+	}
+	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "alpha" {
+		t.Fatalf("cached inventory = %#v, want alpha", got)
+	}
+	if calls := eng.listModelCalls(); calls != 1 {
+		t.Fatalf("ListModels calls before cache expiry = %d, want 1", calls)
+	}
+
+	eng.setInventory([]engine.Model{{Name: "beta"}}, nil)
+	component.modelMu.Lock()
+	component.reportedAt = time.Now().Add(-modelInventoryCacheTTL - time.Millisecond)
+	component.modelMu.Unlock()
+	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "beta" {
+		t.Fatalf("inventory after TTL expiry = %#v, want beta", got)
+	}
+	if calls := eng.listModelCalls(); calls != 2 {
+		t.Fatalf("ListModels calls after cache expiry = %d, want 2", calls)
+	}
+
+	eng.setInventory([]engine.Model{{Name: "gamma"}}, nil)
+	component.invalidateReportedModels()
+	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "gamma" {
+		t.Fatalf("inventory after invalidation = %#v, want gamma", got)
+	}
+	if calls := eng.listModelCalls(); calls != 3 {
+		t.Fatalf("ListModels calls after invalidation = %d, want 3", calls)
+	}
+
+	component.engineSnapshot()
+	telemetry.hwMu.Lock()
+	telemetry.hw.HasGPU = true
+	telemetry.hwGeneration++
+	telemetry.hwMu.Unlock()
+	component.engineSnapshot()
+	component.enginesMu.RLock()
+	gotGeneration := component.engineSnapshotHardwareGen
+	component.enginesMu.RUnlock()
+	if gotGeneration != 1 {
+		t.Fatalf("engine snapshot hardware generation = %d, want 1", gotGeneration)
+	}
+}
+
 func TestPeriodicEngineScanRetainsUnavailableEngineDuringGracePeriod(t *testing.T) {
 	eng := &inventoryTestEngine{models: []engine.Model{{Name: "cached-model"}}}
 	detected := []engine.Engine{eng}
@@ -257,9 +308,11 @@ func (componentTestEngine) Chat(string, []engine.ChatMessage) (string, error) {
 }
 
 type inventoryTestEngine struct {
-	mu     sync.Mutex
-	models []engine.Model
-	err    error
+	// mu protects the fake's probe result and count across test goroutines.
+	mu             sync.Mutex
+	models         []engine.Model
+	err            error
+	listModelCount int
 }
 
 func (e *inventoryTestEngine) Name() string    { return "test" }
@@ -267,6 +320,7 @@ func (e *inventoryTestEngine) Available() bool { return true }
 func (e *inventoryTestEngine) ListModels() ([]engine.Model, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.listModelCount++
 	return append([]engine.Model(nil), e.models...), e.err
 }
 func (e *inventoryTestEngine) Generate(string, string) (string, error) { return "", nil }
@@ -278,4 +332,9 @@ func (e *inventoryTestEngine) setInventory(models []engine.Model, err error) {
 	e.models = append([]engine.Model(nil), models...)
 	e.err = err
 	e.mu.Unlock()
+}
+func (e *inventoryTestEngine) listModelCalls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.listModelCount
 }

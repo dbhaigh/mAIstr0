@@ -89,6 +89,7 @@ func (m *Manager) CreateWithGraphAndOptionsChecked(description string, graph *sc
 		return nil, err
 	}
 	m.tasks[id] = t
+	m.invalidateRecentTasksLocked()
 	return cloneTask(t), nil
 }
 
@@ -415,6 +416,7 @@ func (m *Manager) finishSynthesis(taskID string, taskCtx context.Context, snapsh
 func (m *Manager) persistLocked(task *Task) error {
 	task.Origin = m.syncOrigin
 	task.Sequence = m.nextSyncSequenceLocked(task.Origin)
+	m.invalidateRecentTasksLocked()
 	if m.store == nil {
 		return nil
 	}

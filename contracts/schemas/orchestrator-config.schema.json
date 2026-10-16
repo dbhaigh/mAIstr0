@@ -6,6 +6,7 @@
   "required": ["listen_addr", "harness", "max_concurrent_dispatches", "discovery_enabled", "auto_open_browser", "tray_mode", "memory_path"],
   "properties": {
     "listen_addr": {"type": "string"},
+    "mode": {"type": "string", "enum": ["full", "minimal"]},
     "harness": {"type": "string", "enum": ["deepseek", "pi"]},
     "max_concurrent_dispatches": {"type": "integer"},
     "discovery_enabled": {"type": "boolean"},

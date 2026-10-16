@@ -10,9 +10,46 @@ import (
 // ErrClosed is returned when a submission observes that the pool has closed.
 var ErrClosed = errors.New("workpool: pool is closed")
 
-// Options configures whether accepted jobs inherit the submitter's context.
+// CapacityTarget identifies a node that may accept a unit of work. Pass one
+// target to pin a reservation to a node, or multiple eligible targets for
+// automatic routing.
+type CapacityTarget struct {
+	NodeID  string
+	Address string
+}
+
+// CapacityReservation holds both the selected node's capacity and one global
+// dispatch slot. Its owner releases it when the work completes or its work
+// context is cancelled.
+type CapacityReservation interface {
+	Target() CapacityTarget
+	// Release returns the reserved capacity. Implementations must make repeated
+	// calls safe so completion and cancellation cleanup may race.
+	Release()
+}
+
+// CapacityGate coordinates per-node and global dispatch limits across work
+// submitted to a Pool and work handled directly by an HTTP router. The Pool's
+// Options configure job contexts only; they do not reserve dispatch capacity.
+// Reserve waits until one candidate can be reserved or ctx is cancelled. A
+// single candidate pins the reservation; multiple candidates allow automatic
+// routing in the supplied order. The context bounds only the wait for a
+// reservation: callers must release the returned reservation on completion or
+// cancellation. Active reports currently held global slots, not queued jobs.
+type CapacityGate interface {
+	Reserve(ctx context.Context, candidates []CapacityTarget) (CapacityReservation, error)
+	Active() int
+}
+
+// Options configures job context propagation, not capacity reservation.
+// Submit always observes the submitter context while waiting to enqueue.
+// Pool cancellation cancels running work; PropagateSubmitterContext also links
+// accepted jobs to the submitter context, including jobs still queued. The
+// zero value does not propagate cancellation after acceptance; New opts in.
 type Options struct {
-	// PropagateSubmitterContext cancels a running job when its Submit context is canceled.
+	// PropagateSubmitterContext links the submitter context to the job context
+	// after Submit accepts the job. When false, the pool context still controls
+	// the job, but later submitter cancellation does not.
 	PropagateSubmitterContext bool
 }
 
@@ -27,9 +64,12 @@ type Pool[J any] struct {
 	jobs                      chan job[J]
 	handle                    func(context.Context, J)
 	propagateSubmitterContext bool
-	closeOnce                 sync.Once
-	workers                   sync.WaitGroup
-	active                    atomic.Int64
+	// closeOnce serializes pool shutdown; it is not held while workers finish.
+	closeOnce sync.Once
+	workers   sync.WaitGroup
+	// active is a lock-free count of handlers currently executing; it is
+	// independent of queue depth and does not participate in a lock hierarchy.
+	active atomic.Int64
 }
 
 // New starts workers that run accepted jobs with both submitter and pool cancellation.

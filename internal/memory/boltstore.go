@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/syncinterval"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -41,12 +42,42 @@ type boltStore struct {
 	path  string
 	owner string
 
-	mu        sync.RWMutex
-	perfCache map[string]*Performance
+	// mu protects persisted-record caches: Record/Merge/Prune update recent
+	// entries, sequence writes invalidate snapshot/watermark caches, and
+	// performance writes clear learned-bias results. Some merge paths hold it
+	// across bbolt updates (mu -> transaction); transaction callbacks must not
+	// acquire another store mutex.
+	mu                        sync.RWMutex
+	perfCache                 map[string]*Performance
+	learnedBiasCache          map[string]float64
+	performanceGeneration     uint64
+	recentExperiences         []Experience
+	recentExperiencesLoaded   bool
+	watermarksCache           map[string]uint64
+	watermarksCacheValid      bool
+	watermarksCacheGeneration uint64
+	peerWatermarksCache       map[string]map[string]uint64
+	peerWatermarksLoaded      map[string]bool
+	peerWatermarksGeneration  map[string]uint64
+	snapshotCache             Snapshot
+	snapshotCacheGeneration   uint64
+	snapshotCacheValid        bool
+	changes                   syncinterval.Signal
 }
+
+func (s *boltStore) Changes() <-chan struct{} { return s.changes.Changes() }
 
 // Snapshot returns all durable knowledge in a transport-friendly form.
 func (s *boltStore) Snapshot() Snapshot {
+	s.mu.RLock()
+	generation := s.snapshotCacheGeneration
+	if s.snapshotCacheValid {
+		cached := cloneSnapshot(s.snapshotCache)
+		s.mu.RUnlock()
+		return cached
+	}
+	s.mu.RUnlock()
+
 	snapshot := Snapshot{SyncVersion: SyncProtocolVersion}
 	err := s.db.View(func(tx *bolt.Tx) error {
 		experiences := tx.Bucket(bucketExperiences)
@@ -119,6 +150,14 @@ func (s *boltStore) Snapshot() Snapshot {
 	sort.Slice(snapshot.Dialogues, func(i, j int) bool {
 		return snapshot.Dialogues[i].UpdatedAt.After(snapshot.Dialogues[j].UpdatedAt)
 	})
+	if snapshotCacheable(snapshot) {
+		s.mu.Lock()
+		if generation == s.snapshotCacheGeneration {
+			s.snapshotCache = cloneSnapshot(snapshot)
+			s.snapshotCacheValid = true
+		}
+		s.mu.Unlock()
+	}
 	return snapshot
 }
 
@@ -136,6 +175,7 @@ func (s *boltStore) MergeSnapshotFrom(snapshot Snapshot, sourceOrigin string) er
 	if sourceOrigin == "" {
 		sourceOrigin = legacyOrigin
 	}
+	previousWatermarks := s.Watermarks()
 	for _, e := range snapshot.Experiences {
 		if err := s.mergeExperienceFrom(e, sourceOrigin); err != nil {
 			return err
@@ -159,7 +199,14 @@ func (s *boltStore) MergeSnapshotFrom(snapshot Snapshot, sourceOrigin string) er
 	}); err != nil {
 		return err
 	}
-	return s.SetPeerWatermarks(sourceOrigin, snapshot.Watermarks)
+	s.invalidateWatermarksCache()
+	if err := s.SetPeerWatermarks(sourceOrigin, snapshot.Watermarks); err != nil {
+		return err
+	}
+	if syncinterval.WatermarksAdvanced(previousWatermarks, s.Watermarks()) {
+		s.changes.Notify()
+	}
+	return nil
 }
 
 func (s *boltStore) mergeFactFrom(incoming Fact, sourceOrigin string) error {
@@ -179,7 +226,7 @@ func (s *boltStore) mergeFactFrom(incoming Fact, sourceOrigin string) error {
 		incoming.CreatedAt = incoming.UpdatedAt
 	}
 
-	return s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketFacts)
 		key := []byte(incoming.Scope + "|" + incoming.Key)
 		if incoming.Origin != "" && incoming.Sequence > 0 {
@@ -218,6 +265,10 @@ func (s *boltStore) mergeFactFrom(incoming Fact, sourceOrigin string) error {
 		}
 		return b.Put(key, buf)
 	})
+	if err == nil {
+		s.invalidateWatermarksCache()
+	}
+	return err
 }
 
 func factWinsTie(incoming, current Fact) bool {
@@ -264,7 +315,8 @@ func (s *boltStore) ensureExperienceFingerprintIndex() error {
 
 func (s *boltStore) mergeExperienceFrom(e Experience, sourceOrigin string) error {
 	key := experienceFingerprintKey(e)
-	return s.db.Update(func(tx *bolt.Tx) error {
+	inserted := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(bucketMeta)
 		if e.Origin != "" && e.Sequence > 0 {
 			if err := updateRecordWatermark(tx, e.Origin, e.Sequence); err != nil {
@@ -297,15 +349,27 @@ func (s *boltStore) mergeExperienceFrom(e Experience, sourceOrigin string) error
 		if err := b.Put(itob(id), buf); err != nil {
 			return err
 		}
-		return meta.Put(key, []byte{1})
+		if err := meta.Put(key, []byte{1}); err != nil {
+			return err
+		}
+		inserted = true
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	s.invalidateWatermarksCache()
+	if inserted {
+		s.cacheRecentExperience(e)
+	}
+	return nil
 }
 
 func (s *boltStore) mergeDialogueFrom(incoming DialogueRecord, sourceOrigin string) error {
 	if incoming.ID == "" {
 		return nil
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketDialogues)
 		if incoming.Origin != "" && incoming.Sequence > 0 {
 			if err := updateRecordWatermark(tx, incoming.Origin, incoming.Sequence); err != nil {
@@ -368,6 +432,10 @@ func (s *boltStore) mergeDialogueFrom(incoming DialogueRecord, sourceOrigin stri
 		}
 		return b.Put([]byte(current.ID), buf)
 	})
+	if err == nil {
+		s.invalidateWatermarksCache()
+	}
+	return err
 }
 
 // Open creates or opens the memory database at path. The parent directory
@@ -405,7 +473,13 @@ func Open(path, owner string) (Store, error) {
 		return nil, fmt.Errorf("memory: init buckets: %w", err)
 	}
 
-	s := &boltStore{db: db, path: path, owner: owner, perfCache: make(map[string]*Performance)}
+	s := &boltStore{
+		db: db, path: path, owner: owner, perfCache: make(map[string]*Performance),
+		learnedBiasCache:         make(map[string]float64),
+		peerWatermarksCache:      make(map[string]map[string]uint64),
+		peerWatermarksLoaded:     make(map[string]bool),
+		peerWatermarksGeneration: make(map[string]uint64),
+	}
 	if err := s.backfillRecordMetadata(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("memory: backfill record metadata: %w", err)
@@ -415,6 +489,10 @@ func Open(path, owner string) (Store, error) {
 		return nil, fmt.Errorf("memory: index experiences: %w", err)
 	}
 	s.loadPerfCache()
+	if err := s.loadRecentExperiences(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("memory: cache recent experiences: %w", err)
+	}
 	return s, nil
 }
 
@@ -500,7 +578,10 @@ func (s *boltStore) Record(e Experience) (Experience, error) {
 		return Experience{}, err
 	}
 
+	s.cacheRecentExperience(e)
+	s.invalidateWatermarksCache()
 	s.updatePerformance(e)
+	s.changes.Notify()
 	return e, nil
 }
 
@@ -515,6 +596,9 @@ func truncate(s string, max int) string {
 func (s *boltStore) Experiences(limit int) []Experience {
 	if limit <= 0 {
 		limit = 50
+	}
+	if cached, ok := s.cachedExperiences(limit); ok {
+		return cached
 	}
 	var out []Experience
 	_ = s.db.View(func(tx *bolt.Tx) error {
@@ -662,6 +746,10 @@ func (s *boltStore) PutFact(f Fact) (Fact, error) {
 		}
 		return b.Put(key, buf)
 	})
+	if err == nil {
+		s.invalidateWatermarksCache()
+		s.changes.Notify()
+	}
 	return f, err
 }
 
@@ -693,6 +781,10 @@ func (s *boltStore) GetFact(scope, key string) (Fact, error) {
 		}
 		return b.Put(k, buf)
 	})
+	if err == nil {
+		s.invalidateWatermarksCache()
+		s.changes.Notify()
+	}
 	return f, err
 }
 
@@ -721,9 +813,14 @@ func (s *boltStore) DeleteFact(scope, key string) error {
 	if scope == "" {
 		scope = "cluster"
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketFacts).Delete([]byte(scope + "|" + key))
 	})
+	if err == nil {
+		s.invalidateSnapshotCache()
+		s.changes.Notify()
+	}
+	return err
 }
 
 // SaveAgentSession stores an opaque serialized agent session by backend and ID.
@@ -776,7 +873,7 @@ func (s *boltStore) SaveDialogue(d DialogueRecord) error {
 		d.CreatedAt = now
 	}
 	d.UpdatedAt = now
-	return s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		sequence, err := nextOriginSequence(tx, s.owner)
 		if err != nil {
 			return err
@@ -788,6 +885,11 @@ func (s *boltStore) SaveDialogue(d DialogueRecord) error {
 		}
 		return tx.Bucket(bucketDialogues).Put([]byte(d.ID), buf)
 	})
+	if err == nil {
+		s.invalidateWatermarksCache()
+		s.changes.Notify()
+	}
+	return err
 }
 
 // AppendDialogueTurn adds one utterance to a dialogue, creating it if new.
@@ -798,7 +900,7 @@ func (s *boltStore) AppendDialogueTurn(id string, participants []string, topic s
 	if t.At.IsZero() {
 		t.At = time.Now()
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketDialogues)
 		var d DialogueRecord
 		if raw := b.Get([]byte(id)); raw != nil {
@@ -828,6 +930,11 @@ func (s *boltStore) AppendDialogueTurn(id string, participants []string, topic s
 		}
 		return b.Put([]byte(id), buf)
 	})
+	if err == nil {
+		s.invalidateWatermarksCache()
+		s.changes.Notify()
+	}
+	return err
 }
 
 func contains(list []string, v string) bool {

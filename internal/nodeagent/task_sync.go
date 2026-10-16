@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/taskmgr"
@@ -106,85 +104,12 @@ func decodeTaskSync(w http.ResponseWriter, r *http.Request) ([]*taskmgr.Task, er
 	return tasks, nil
 }
 
-// taskHistorySyncLoop replicates task snapshots when this node is coordinating
-// a standalone peer cluster. Joined clusters are synchronized by their
-// orchestrator, which also owns task creation and execution.
 func (a *Agent) taskHistorySyncLoop() {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		a.syncPeerTaskHistory()
-	}
+	a.syncer.taskHistorySyncLoop()
 }
 
 func (a *Agent) syncPeerTaskHistory() {
-	if a.getOrchestratorAddr() != "" && a.getOrchestratorID() != "" {
-		return
-	}
-	leader := a.mostCapableNode()
-	if leader.ID != a.cfg.NodeID {
-		return
-	}
-	peers := a.Peers()
-	remoteSnapshots := make(map[string]taskSyncSnapshot)
-	for _, peer := range peers {
-		if !peer.Healthy || peer.ID == a.cfg.NodeID || peer.Address == "" {
-			continue
-		}
-		var watermarks map[string]uint64
-		if a.mem != nil {
-			watermarks = taskmgr.FilterTaskWatermarks(a.mem.PeerWatermarks(peer.ID))
-		}
-		tasks, version, watermarks, err := fetchTaskSnapshot(
-			a.peerClient,
-			strings.TrimRight(peer.Address, "/")+"/tasks",
-			watermarks,
-		)
-		if err != nil {
-			log.Printf("nodeagent: task history fetch from %s failed: %v", peer.ID, err)
-			continue
-		}
-		if err := a.tasks.MergeFromReplicaFrom(tasks, "task:"+peer.ID); err != nil {
-			log.Printf("nodeagent: task history import from %s failed: %v", peer.ID, err)
-			continue
-		}
-		remoteSnapshots[peer.ID] = taskSyncSnapshot{version: version, watermarks: watermarks}
-		if a.mem != nil {
-			if err := a.mem.SetPeerWatermarks(peer.ID, watermarks); err != nil {
-				log.Printf("nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
-			}
-		}
-	}
-
-	for _, peer := range peers {
-		if !peer.Healthy || peer.ID == a.cfg.NodeID || peer.Address == "" {
-			continue
-		}
-		remote, fetched := remoteSnapshots[peer.ID]
-		version := 0
-		var watermarks map[string]uint64
-		if fetched {
-			version = remote.version
-			watermarks = remote.watermarks
-		}
-		tasks := a.tasks.SnapshotForPeer(version, watermarks)
-		err := postTaskSnapshotPages(
-			a.peerClient,
-			strings.TrimRight(peer.Address, "/")+"/tasks/replica",
-			tasks,
-			taskmgr.SnapshotWatermarks(a.tasks.All()),
-			maxTaskSyncBodyBytes,
-		)
-		if err != nil {
-			log.Printf("nodeagent: task history replication to %s failed: %v", peer.ID, err)
-			continue
-		}
-		if a.mem != nil && fetched && memory.SupportsIncrementalSync(version) {
-			if err := a.mem.SetPeerWatermarks(peer.ID, taskmgr.SnapshotWatermarks(tasks)); err != nil {
-				log.Printf("nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
-			}
-		}
-	}
+	a.syncer.syncPeerTaskHistory()
 }
 
 type taskSyncSnapshot struct {

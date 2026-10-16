@@ -17,11 +17,26 @@ type electionComponent struct {
 	identity         interface{ IsTrustedID(string) bool }
 	discovery        *discovery.Listener
 	selfID           string
-	discoveryEnabled bool
 	selfScore        float64
-	leaderMu         sync.Mutex
-	lastLeaderID     string
-	discoveredNodes  map[string]bool
+	discoveryEnabled bool
+	// leaderMu protects leader-change logging state; it is not nested with registry or discovery access.
+	leaderMu        sync.Mutex
+	lastLeaderID    string
+	discoveredNodes map[string]bool
+}
+
+type electionAPI interface {
+	setIdentity(interface{ IsTrustedID(string) bool })
+	setDiscoveryEnabled(bool)
+	setDiscovery(*discovery.Listener)
+	discoverySnapshot() []discovery.Peer
+	hasDiscovery() bool
+	startBeacon(string) error
+	isElectedOrchestrator() bool
+	discoverySyncLoop(func())
+	syncDiscoveredPeers(func())
+	recordLeader(string)
+	selfIDValue() string
 }
 
 func newElectionComponent(

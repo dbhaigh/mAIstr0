@@ -4,12 +4,10 @@
 package orchestrator
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
@@ -35,15 +33,13 @@ type Server struct {
 	events             *hub.Hub
 	routerEvents       *routerEventLog
 	harness            *harnessManager
+	syncer             syncerAPI
 	mem                memory.Store
 	identityPath       string
 	identity           *peeridentity.Identity
 	advertiseAddr      string
 	localNodeDashboard string
-	// taskHistorySyncMu serializes bidirectional task-history synchronization.
-	taskHistorySyncMu sync.Mutex
-	// taskHistoryRecovery ensures task-history recovery runs only once.
-	taskHistoryRecovery sync.Once
+	mode               string
 }
 
 type SessionStore interface {
@@ -73,7 +69,7 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches)
+	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches, cfg.Mode)
 }
 
 // NewWithConfig creates an orchestrator from its JSON configuration.
@@ -82,10 +78,10 @@ func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches)
+	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches, cfg.Mode)
 }
 
-func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatchLimit int) (*Server, error) {
+func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatchLimit int, mode string) (*Server, error) {
 	if harnessName != "deepseek" && harnessName != "pi" {
 		return nil, fmt.Errorf("unknown agent backend %q (want deepseek or pi)", harnessName)
 	}
@@ -93,9 +89,14 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 	disp := &http.Client{Timeout: 10 * time.Minute}
 	selfID := "orchestrator-" + discovery.OutboundIP()
 	events := hub.New()
-	store, err := memory.Open(memoryPath, selfID)
-	if err != nil {
-		log.Printf("orchestrator: memory unavailable, running stateless: %v", err)
+	var store memory.Store
+	if mode != config.OrchestratorModeMinimal {
+		openedStore, err := memory.Open(memoryPath, selfID)
+		if err != nil {
+			log.Printf("orchestrator: memory unavailable, running stateless: %v", err)
+		} else {
+			store = openedStore
+		}
 	}
 	taskPath := taskmgr.DefaultPath(selfID)
 	if memoryPath != "" {
@@ -108,12 +109,11 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		}
 		return nil, fmt.Errorf("orchestrator: open task history: %w", err)
 	}
-	deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
-	backends := map[string]agent.Backend{"deepseek": deepseekBackend}
 	nodeClient := newNodeClient(&http.Client{Timeout: 10 * time.Second}, disp, &http.Client{Timeout: discoveryRequestTimeout})
 	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit)
 	planner := newTaskPlanner(schedulerAdapter{}, tasks, dispatcher, nodeClient, dispatcher.schedulerNodes, dispatcher.experience())
 	election := newElectionComponent(reg, nodeClient, selfID, cluster.SelfScore(hardware.Detect()), true)
+	syncer := newSyncerComponent(reg, tasks, nodeClient, store)
 	srv := &Server{
 		registry:     reg,
 		nodeClient:   nodeClient,
@@ -122,22 +122,30 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		election:     election,
 		events:       events,
 		routerEvents: newRouterEventLog(200),
-		harness:      newHarnessManager(backends, harnessName, store),
+		syncer:       syncer,
 		tasks:        tasks,
 		mem:          store,
 		identityPath: peeridentity.DefaultPath(selfID),
+		mode:         mode,
 	}
-	srv.harness.registerBackend("pi", piagent.New(&localPiProvider{generate: srv}, deepseekBackend))
-	deepseekBackend.SetWorkflowExecutor(srv.executeWorkflow)
+	if mode != config.OrchestratorModeMinimal {
+		deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
+		harness := newHarnessManager(map[string]agent.Backend{"deepseek": deepseekBackend}, harnessName, store)
+		srv.harness = harness
+		harness.registerBackend("pi", piagent.New(&localPiProvider{generate: srv}, deepseekBackend))
+		deepseekBackend.SetWorkflowExecutor(srv.executeWorkflow)
+	}
 	if memoryPath != "" {
 		srv.identityPath = memoryPath + ".identity"
 	}
 	srv.tasks.SetFinalizer(srv.synthesizeTask)
-	if err := srv.harness.restoreAgentSessions(); err != nil {
-		if closeErr := srv.Close(); closeErr != nil {
-			log.Printf("orchestrator: cleanup after session restore failure: %v", closeErr)
+	if srv.harness != nil {
+		if err := srv.harness.restoreAgentSessions(); err != nil {
+			if closeErr := srv.Close(); closeErr != nil {
+				log.Printf("orchestrator: cleanup after session restore failure: %v", closeErr)
+			}
+			return nil, fmt.Errorf("orchestrator: restore agent sessions: %w", err)
 		}
-		return nil, fmt.Errorf("orchestrator: restore agent sessions: %w", err)
 	}
 	if store != nil {
 		log.Printf("orchestrator: memory store at %s", store.Path())
@@ -153,8 +161,11 @@ func (s *Server) Close() error {
 			}
 		}
 	}
-	s.dispatcher.close()
-	agentErr := s.harness.close()
+	s.dispatcherPort().close()
+	var agentErr error
+	if s.harness != nil {
+		agentErr = s.harnessPort().close()
+	}
 	if s.mem != nil {
 		if err := s.mem.Close(); agentErr == nil {
 			agentErr = err
@@ -167,7 +178,7 @@ func (s *Server) Close() error {
 }
 
 // Memory exposes the orchestrator's persistent knowledge store (nil when
-// the database could not be opened).
+// unavailable or disabled by minimal mode).
 func (s *Server) Memory() memory.Store { return s.mem }
 
 func (s *Server) Mux() *http.ServeMux {
@@ -175,6 +186,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /api/pairing/join", s.handlePairingJoin)
 	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
 	mux.HandleFunc("GET /api/status", s.handleSystemStatus)
+	mux.HandleFunc("GET /api/cluster/health", s.handleClusterHealth)
 	mux.Handle("POST /api/pairing/pin", peeridentity.LoopbackOnly(http.HandlerFunc(s.handlePairingPINRegenerate)))
 	mux.HandleFunc("POST /api/pairing/connect", s.handlePairingConnect)
 	mux.HandleFunc("GET /api/pairing/roster", s.handlePairingRoster)
@@ -201,25 +213,26 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /api/tasks/resumable", s.handleListResumableTasks)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("GET /api/tasks/{id}/assignment-explanation", s.handleTaskAssignmentExplanation)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
 	mux.HandleFunc("POST /api/tasks/{id}/approve", s.handleApproveTask)
 	mux.HandleFunc("POST /api/tasks/{id}/resume", s.handleResumeTask)
 	mux.HandleFunc("GET /api/tasks/{id}/checkpoints", s.handleTaskCheckpoints)
 
-	// Interactive agent backend endpoints
-	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessionsList)
-	mux.HandleFunc("POST /api/agent/sessions", s.handleAgentSessionsCreate)
-	mux.HandleFunc("GET /api/agent/sessions/{id}", s.handleAgentSessionGet)
-	mux.HandleFunc("DELETE /api/agent/sessions/{id}", s.handleAgentSessionDelete)
-	mux.HandleFunc("POST /api/agent/sessions/{id}/messages", s.handleAgentMessagePost)
-	mux.HandleFunc("POST /api/agent/sessions/{id}/interrupt", s.handleAgentSessionInterrupt)
-	mux.HandleFunc("POST /api/agent/sessions/{id}/cancel", s.handleAgentSessionInterrupt)
-	mux.HandleFunc("GET /api/agent/tools", s.handleAgentToolsList)
-	mux.HandleFunc("GET /api/agent/models", s.handleAgentModelsList)
-	mux.HandleFunc("GET /api/agent/stats", s.handleAgentStatsGet)
-	mux.HandleFunc("GET /api/agent/backend", s.handleAgentBackendGet)
-	mux.HandleFunc("PATCH /api/agent/backend", s.handleAgentBackendPatch)
-	// Direct cluster & node LLM model invocation endpoints
+	if s.mode != config.OrchestratorModeMinimal {
+		mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessionsList)
+		mux.HandleFunc("POST /api/agent/sessions", s.handleAgentSessionsCreate)
+		mux.HandleFunc("GET /api/agent/sessions/{id}", s.handleAgentSessionGet)
+		mux.HandleFunc("DELETE /api/agent/sessions/{id}", s.handleAgentSessionDelete)
+		mux.HandleFunc("POST /api/agent/sessions/{id}/messages", s.handleAgentMessagePost)
+		mux.HandleFunc("POST /api/agent/sessions/{id}/interrupt", s.handleAgentSessionInterrupt)
+		mux.HandleFunc("POST /api/agent/sessions/{id}/cancel", s.handleAgentSessionInterrupt)
+		mux.HandleFunc("GET /api/agent/tools", s.handleAgentToolsList)
+		mux.HandleFunc("GET /api/agent/models", s.handleAgentModelsList)
+		mux.HandleFunc("GET /api/agent/stats", s.handleAgentStatsGet)
+		mux.HandleFunc("GET /api/agent/backend", s.handleAgentBackendGet)
+		mux.HandleFunc("PATCH /api/agent/backend", s.handleAgentBackendPatch)
+	}
 	mux.HandleFunc("GET /api/models", s.handleListAllModels)
 	mux.HandleFunc("POST /api/generate", s.handleOllamaGenerate)
 	mux.HandleFunc("GET /api/tags", s.handleOllamaTags)
@@ -232,27 +245,26 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /api/nodes/{id}/models/{model}/generate", s.handleNodeModelGenerate)
 	mux.HandleFunc("POST /api/nodes/{id}/models/{model}/test", s.handleNodeModelTest)
 
-	// OpenAI-compatible LLM Gateway endpoints
 	mux.HandleFunc("GET /v1/models", s.handleOpenAIModels)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleOpenAIChatCompletions)
 	mux.HandleFunc("POST /v1/completions", s.handleOpenAICompletions)
 	mux.HandleFunc("POST /v1/messages", s.handleAnthropicMessages)
 	mux.HandleFunc("GET /api/models/catalog", s.handleModelCatalog)
 
-	// Cluster memory / learning endpoints
-	mux.HandleFunc("GET /api/memory/experiences", s.handleMemoryExperiences)
-	mux.HandleFunc("GET /api/memory/insights", s.handleMemoryInsights)
-	mux.HandleFunc("GET /api/memory/recommendations", s.handleMemoryRecommendations)
-	mux.HandleFunc("GET /api/memory/facts", s.handleMemoryFactsGet)
-	mux.HandleFunc("POST /api/memory/facts", s.handleMemoryFactsPost)
-	mux.HandleFunc("DELETE /api/memory/facts/{key}", s.handleMemoryFactDelete)
-	mux.HandleFunc("GET /api/memory/dialogues", s.handleMemoryDialogues)
-	mux.HandleFunc("GET /api/memory/dialogues/{id}", s.handleMemoryDialogueGet)
-	mux.HandleFunc("POST /api/memory/sync", s.handleMemorySync)
-	mux.HandleFunc("GET /api/memory/sync", s.handleMemorySyncGet)
-	mux.HandleFunc("POST /api/memory/prune", s.handleMemoryPrune)
+	if s.mode != config.OrchestratorModeMinimal {
+		mux.HandleFunc("GET /api/memory/experiences", s.handleMemoryExperiences)
+		mux.HandleFunc("GET /api/memory/insights", s.handleMemoryInsights)
+		mux.HandleFunc("GET /api/memory/recommendations", s.handleMemoryRecommendations)
+		mux.HandleFunc("GET /api/memory/facts", s.handleMemoryFactsGet)
+		mux.HandleFunc("POST /api/memory/facts", s.handleMemoryFactsPost)
+		mux.HandleFunc("DELETE /api/memory/facts/{key}", s.handleMemoryFactDelete)
+		mux.HandleFunc("GET /api/memory/dialogues", s.handleMemoryDialogues)
+		mux.HandleFunc("GET /api/memory/dialogues/{id}", s.handleMemoryDialogueGet)
+		mux.HandleFunc("POST /api/memory/sync", s.handleMemorySync)
+		mux.HandleFunc("GET /api/memory/sync", s.handleMemorySyncGet)
+		mux.HandleFunc("POST /api/memory/prune", s.handleMemoryPrune)
+	}
 
-	// Node-to-node LLM conversation, brokered by the orchestrator
 	mux.HandleFunc("POST /api/nodes/{id}/peer-converse", s.handleNodePeerConverse)
 
 	staticFS, err := fs.Sub(web.StaticFiles, "static")
@@ -275,11 +287,11 @@ func (s *Server) Run(listenAddr string) error {
 	}
 	go s.healthSweepLoop()
 	go s.broadcastLoop()
-	go s.taskHistorySyncLoop()
-	if err := s.election.startBeacon(listenAddr); err != nil {
+	go s.syncer.taskHistorySyncLoop()
+	if err := s.electionPort().startBeacon(listenAddr); err != nil {
 		return fmt.Errorf("orchestrator: start cluster discovery: %w", err)
 	}
-	go s.election.discoverySyncLoop(s.publishSnapshot)
+	go s.electionPort().discoverySyncLoop(s.publishSnapshot)
 	log.Printf("orchestrator listening on %s", listenAddr)
 	mux := s.Mux()
 	secure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -308,22 +320,6 @@ func (s *Server) Run(listenAddr string) error {
 	)
 }
 
-type pairingJoinRequest struct {
-	ID             string            `json:"id"`
-	Role           string            `json:"role"`
-	PeerAddr       string            `json:"peer_addr,omitempty"`
-	PIN            string            `json:"pin"`
-	CertificatePEM string            `json:"certificate_pem"`
-	Peers          map[string]string `json:"peers,omitempty"`
-}
-
-type pairingJoinResponse struct {
-	ID             string            `json:"id"`
-	Role           string            `json:"role"`
-	CertificatePEM string            `json:"certificate_pem"`
-	Peers          map[string]string `json:"peers"`
-}
-
 // portSuffix extracts ":port" from a listen address like ":7450".
 func portSuffix(listenAddr string) string {
 	for i := len(listenAddr) - 1; i >= 0; i-- {
@@ -332,40 +328,4 @@ func portSuffix(listenAddr string) string {
 		}
 	}
 	return listenAddr
-}
-
-// --- Interactive Agent Backend HTTP Handlers ---
-
-type createSessionRequest struct {
-	Title            string  `json:"title"`
-	CoordinatorModel string  `json:"coordinator_model"`
-	MaxSteps         int     `json:"max_steps"`
-	Temperature      float64 `json:"temperature"`
-	SystemPrompt     string  `json:"system_prompt"`
-}
-
-type agentMessageRequest struct {
-	Content string `json:"content"`
-	Message string `json:"message"`
-}
-
-func writeAgentStreamError(w http.ResponseWriter, flusher http.Flusher, sessionID string, err error) {
-	event := agent.StreamEvent{Type: agent.EventError, SessionID: sessionID, Error: "could not persist agent session: " + err.Error()}
-	data, marshalErr := json.Marshal(event)
-	if marshalErr != nil {
-		log.Printf("orchestrator: encode agent stream error: %v", marshalErr)
-		return
-	}
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-	flusher.Flush()
-}
-
-// --- Direct Node & Cluster LLM Model Invocation Handlers ---
-
-// --- OpenAI-Compatible Gateway Handlers ---
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
 }

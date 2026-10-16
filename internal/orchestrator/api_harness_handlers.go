@@ -14,6 +14,30 @@ import (
 	"github.com/maistr0/maistr0/internal/apperr"
 )
 
+type createSessionRequest struct {
+	Title            string  `json:"title"`
+	CoordinatorModel string  `json:"coordinator_model"`
+	MaxSteps         int     `json:"max_steps"`
+	Temperature      float64 `json:"temperature"`
+	SystemPrompt     string  `json:"system_prompt"`
+}
+
+type agentMessageRequest struct {
+	Content string `json:"content"`
+	Message string `json:"message"`
+}
+
+func writeAgentStreamError(w http.ResponseWriter, flusher http.Flusher, sessionID string, err error) {
+	event := agent.StreamEvent{Type: agent.EventError, SessionID: sessionID, Error: "could not persist agent session: " + err.Error()}
+	data, marshalErr := json.Marshal(event)
+	if marshalErr != nil {
+		log.Printf("orchestrator: encode agent stream error: %v", marshalErr)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+	flusher.Flush()
+}
+
 func (s *Server) handleAgentSessionsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.listAgentSessions())
 }
@@ -43,7 +67,7 @@ func (s *Server) handleAgentSessionsCreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, apperr.InternalError(fmt.Errorf("could not persist agent session: %w", err)))
 		return
 	}
-	s.harness.setSessionHarness(session.ID, harness)
+	s.harnessPort().setSessionHarness(session.ID, harness)
 	s.publishSnapshot()
 	writeJSON(w, http.StatusCreated, session)
 }
@@ -71,7 +95,7 @@ func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
 		return
 	}
-	if err := s.harness.deletePersistedSession(harness, id); err != nil {
+	if err := s.harnessPort().deletePersistedSession(harness, id); err != nil {
 		writeError(w, apperr.InternalError(fmt.Errorf("could not delete persisted agent session: %w", err)))
 		return
 	}
@@ -79,7 +103,7 @@ func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
 		return
 	}
-	s.harness.removeSessionHarness(id, harness)
+	s.harnessPort().removeSessionHarness(id, harness)
 	s.publishSnapshot()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -106,9 +130,9 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 	}
 
 	turnCtx, turnCancel := context.WithCancel(r.Context())
-	s.harness.setTurnCancel(id, turnCancel)
+	s.harnessPort().setTurnCancel(id, turnCancel)
 	defer func() {
-		s.harness.clearTurnCancel(id)
+		s.harnessPort().clearTurnCancel(id)
 		turnCancel()
 	}()
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/syncinterval"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -81,6 +82,9 @@ func (s *boltStore) updatePerformance(e Experience) {
 		return
 	}
 	s.perfCache[key] = &snapshot
+	clear(s.learnedBiasCache)
+	s.performanceGeneration++
+	s.invalidateWatermarksCacheLocked()
 }
 
 // Performances returns every learned node+model+taskType aggregate,
@@ -105,8 +109,13 @@ func (s *boltStore) Performances() []Performance {
 // node pushing its local learning up to the orchestrator) into this one,
 // keeping whichever record has seen more evidence.
 func (s *boltStore) MergePerformances(incoming []Performance) {
+	previousWatermarks := s.Watermarks()
 	if err := s.mergePerformancesFrom(incoming, legacyOrigin); err != nil {
 		log.Printf("memory: merge performances: %v", err)
+		return
+	}
+	if syncinterval.WatermarksAdvanced(previousWatermarks, s.Watermarks()) {
+		s.changes.Notify()
 	}
 }
 
@@ -168,6 +177,9 @@ func (s *boltStore) mergePerformancesFrom(incoming []Performance, sourceOrigin s
 		copyOf := performance
 		s.perfCache[key] = &copyOf
 	}
+	clear(s.learnedBiasCache)
+	s.performanceGeneration++
+	s.invalidateWatermarksCacheLocked()
 	return nil
 }
 
@@ -179,20 +191,37 @@ func (s *boltStore) LearnedBias(nodeID, model, taskType string) float64 {
 	if s == nil {
 		return 0
 	}
+	key := perfKey(nodeID, model, taskType)
 	s.mu.RLock()
-	p, ok := s.perfCache[perfKey(nodeID, model, taskType)]
+	if bias, ok := s.learnedBiasCache[key]; ok {
+		s.mu.RUnlock()
+		return bias
+	}
+	generation := s.performanceGeneration
+	p, ok := s.perfCache[key]
 	if !ok {
 		// Fall back to the pairing's general-purpose record.
 		p, ok = s.perfCache[perfKey(nodeID, model, "general")]
 	}
 	if !ok {
 		s.mu.RUnlock()
+		s.mu.Lock()
+		if generation == s.performanceGeneration {
+			s.learnedBiasCache[key] = 0
+		}
+		s.mu.Unlock()
 		return 0
 	}
 	snapshot := *p
 	s.mu.RUnlock()
 
-	return learnedBias(snapshot)
+	bias := learnedBias(snapshot)
+	s.mu.Lock()
+	if generation == s.performanceGeneration {
+		s.learnedBiasCache[key] = bias
+	}
+	s.mu.Unlock()
+	return bias
 }
 
 func learnedBias(snapshot Performance) float64 {
@@ -377,6 +406,13 @@ func (s *boltStore) Prune(olderThan time.Duration) (int, error) {
 		}
 		return nil
 	})
+	if err == nil {
+		s.pruneRecentExperienceCache(cutoff)
+		s.invalidateSnapshotCache()
+		if removed > 0 {
+			s.changes.Notify()
+		}
+	}
 	return removed, err
 }
 

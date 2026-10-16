@@ -202,6 +202,22 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 	}
 
 	values := map[string]any{
+		"cluster-health.schema.json": map[string]any{
+			"nodes": []any{map[string]any{
+				"node_id": "worker-1", "healthy": true, "active": 2, "max": 4,
+				"remaining": 2, "oversubscribed": false, "telemetry_state": "fresh", "telemetry_age_ms": 500,
+			}},
+			"global_dispatch": map[string]any{
+				"global_limit": 8, "active_slots": 2, "queue_depth": 1, "active_workers": 2,
+			},
+			"engine_readiness": map[string]any{
+				"ready_engines": 1, "total_engines": 2, "nodes_with_engines": 1, "nodes_with_ready_engine": 1,
+			},
+			"telemetry_freshness": map[string]any{
+				"fresh_nodes": 1, "stale_nodes": 0, "unavailable_nodes": 0, "freshness_window_ms": 30000,
+			},
+			"warnings": []string{},
+		},
 		"node-config.schema.json":         nodeConfig,
 		"orchestrator-config.schema.json": orchestratorConfig,
 		"task.schema.json":                task,
@@ -217,6 +233,14 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		"performance.schema.json":         snapshot.Performances[0],
 		"dialogue-record.schema.json":     snapshot.Dialogues[0],
 		"snapshot.schema.json":            snapshot,
+		"assignment-explanation.schema.json": map[string]any{
+			"task_id": "task-1",
+			"assignments": []any{map[string]any{
+				"subtask_id": "work", "description": "Do the work", "node_id": "worker-1",
+				"model": "general", "score": 1.5, "score_factors": scheduler.ScoreFactors{},
+				"learned_bias": 0.25, "summary": "Assigned using the stored scheduler score.",
+			}},
+		},
 	}
 
 	schemaDir := filepath.Join("schemas")
@@ -272,7 +296,7 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 
 func TestSchemaSetIsComplete(t *testing.T) {
 	expected := []string{
-		"announcement.schema.json", "assignment.schema.json", "dialogue-record.schema.json",
+		"announcement.schema.json", "assignment-explanation.schema.json", "assignment.schema.json", "cluster-health.schema.json", "dialogue-record.schema.json",
 		"dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
 		"fact.schema.json", "node-config.schema.json",
 		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json",

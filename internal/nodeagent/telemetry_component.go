@@ -7,6 +7,8 @@ import (
 	"github.com/maistr0/maistr0/internal/hardware"
 )
 
+const hardwareProbeInterval = 5 * time.Second
+
 func fastScore(hw hardware.Info) float64 {
 	return cluster.FastScore(hw)
 }
@@ -21,9 +23,14 @@ func (c *telemetryComponent) telemetryTimestamp() time.Time {
 }
 
 func (c *telemetryComponent) hardwareSnapshot() hardware.Info {
+	snapshot, _ := c.hardwareSnapshotVersioned()
+	return snapshot
+}
+
+func (c *telemetryComponent) hardwareSnapshotVersioned() (hardware.Info, uint64) {
 	c.hwMu.RLock()
 	defer c.hwMu.RUnlock()
-	return c.hw
+	return c.hw, c.hwGeneration
 }
 
 func (c *telemetryComponent) hardwareUsageLoop() {
@@ -54,10 +61,11 @@ func (c *telemetryComponent) hardwareUsageLoop() {
 		c.hw.MemoryStatsAvailable = memoryAvailable
 		c.hw.MemoryUsage = memoryUsage
 		c.systemHistory = appendSystemUsageSample(c.systemHistory, systemSample)
+		c.hwGeneration++
 		c.hwMu.Unlock()
 	}
 	refresh()
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(hardwareProbeInterval)
 	defer ticker.Stop()
 	for range ticker.C {
 		refresh()

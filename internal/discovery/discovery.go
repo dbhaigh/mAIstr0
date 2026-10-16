@@ -88,6 +88,8 @@ type Listener struct {
 	conn    net.PacketConn
 	ready   chan struct{}
 
+	// mu protects peers and listener readiness/connection state. Copy values
+	// under the lock, then release it before closing connections or waiting.
 	mu       sync.RWMutex
 	peers    map[string]Peer
 	readyErr error

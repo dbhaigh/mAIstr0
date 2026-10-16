@@ -9,10 +9,8 @@ import (
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/workpool"
-	"log"
 	"net/http"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -33,25 +31,33 @@ type dispatchHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-type dispatchCapacityProbe interface {
-	discoveredNodeStatusContext(context.Context, string) (cluster.NodeStatus, error)
-}
-
 type dispatcherComponent struct {
 	registry      *cluster.Registry
 	tasks         *taskmgr.Manager
 	memory        memory.Store
 	executeClient dispatchHTTPClient
-	capacityProbe dispatchCapacityProbe
+	capacityGate  workpool.CapacityGate
 	pool          *workpool.Pool[dispatchJob]
-	slots         chan struct{}
 	limit         int
-	// nodeGateMu protects the per-node dispatch gate map.
-	nodeGateMu          sync.Mutex
-	nodeGates           map[string]*nodeDispatchGate
+	// These atomics are independent live metrics; they are not guarded by a
+	// mutex and never impose lock ordering on dispatch paths.
 	dependencyWaiters   atomic.Int64
 	dependencyWaitNanos atomic.Int64
 	dispatchNanos       atomic.Int64
+}
+
+type dispatcherAPI interface {
+	close()
+	schedulerNodes() []cluster.NodeStatus
+	dispatch(string, scheduler.Assignment)
+	dispatchWithContext(context.Context, string, scheduler.Assignment)
+	submitDispatch(string, scheduler.Assignment) error
+	snapshot() *dispatchSnapshot
+	executeSubtask(context.Context, scheduler.Assignment, string) (string, error, bool)
+	retryAssignment(context.Context, scheduler.Subtask, map[string]bool) (scheduler.Assignment, error)
+	experience() scheduler.Experience
+	recordDispatch(scheduler.Assignment, string, error, time.Duration)
+	reservations() workpool.CapacityGate
 }
 
 func newDispatcherComponent(
@@ -64,9 +70,8 @@ func newDispatcherComponent(
 ) *dispatcherComponent {
 	dispatcher := &dispatcherComponent{
 		registry: registry, tasks: tasks, memory: store,
-		executeClient: executeClient, capacityProbe: capacityProbe,
-		limit: limit, slots: make(chan struct{}, limit),
-		nodeGates: make(map[string]*nodeDispatchGate),
+		executeClient: executeClient, capacityGate: newDispatchCapacityGate(registry, capacityProbe, limit),
+		limit: limit,
 	}
 	// Dispatch reloads the task's canonical context instead of inheriting the submitter's request context.
 	dispatcher.pool = workpool.NewWithOptions(
@@ -86,6 +91,10 @@ func (d *dispatcherComponent) close() {
 	}
 }
 
+func (d *dispatcherComponent) reservations() workpool.CapacityGate {
+	return d.capacityGate
+}
+
 func (d *dispatcherComponent) schedulerNodes() []cluster.NodeStatus {
 	nodes := d.registry.Active()
 	byID := make(map[string]*cluster.NodeStatus, len(nodes))
@@ -102,56 +111,6 @@ func (d *dispatcherComponent) schedulerNodes() []cluster.NodeStatus {
 
 func (d *dispatcherComponent) dispatch(taskID string, assignment scheduler.Assignment) {
 	d.dispatchWithContext(context.Background(), taskID, assignment)
-}
-
-func (d *dispatcherComponent) nodeDispatchGate(nodeID string, limit int) *nodeDispatchGate {
-	d.nodeGateMu.Lock()
-	defer d.nodeGateMu.Unlock()
-	gate, ok := d.nodeGates[nodeID]
-	if !ok {
-		gate = newNodeDispatchGate(limit)
-		d.nodeGates[nodeID] = gate
-	}
-	return gate
-}
-
-func (d *dispatcherComponent) dispatchCapacity(ctx context.Context, gate *nodeDispatchGate, nodeID, address string) (int, int, int, bool) {
-	select {
-	case gate.refreshMu <- struct{}{}:
-		defer func() { <-gate.refreshMu }()
-	case <-ctx.Done():
-		return 0, 0, 0, false
-	}
-
-	status, exists := d.registry.Get(nodeID)
-	if !exists || !status.Healthy || status.Address != address {
-		return 0, 0, 0, false
-	}
-	if time.Since(status.LastSeen) > nodeCapacityFreshnessWindow {
-		refreshed, err := d.capacityProbe.discoveredNodeStatusContext(ctx, status.Address)
-		if err != nil {
-			if ctx.Err() != nil {
-				return 0, 0, 0, false
-			}
-			log.Printf("orchestrator: refreshing capacity for node %s failed: %v", nodeID, err)
-			d.registry.MarkUnhealthy(nodeID)
-			return 0, 0, 0, false
-		}
-		if refreshed.ID != nodeID || refreshed.Address != address {
-			log.Printf("orchestrator: capacity response identity mismatch for node %s", nodeID)
-			d.registry.MarkUnhealthy(nodeID)
-			return 0, 0, 0, false
-		}
-		d.registry.Upsert(refreshed)
-		status = refreshed
-	}
-	limit := status.MaxConcurrentTasks
-	available := status.AvailableCapacity
-	if limit <= 0 {
-		limit = d.limit
-		available = limit
-	}
-	return limit, available, status.ActiveTasks, true
 }
 
 func (d *dispatcherComponent) submitDispatch(taskID string, assignment scheduler.Assignment) error {
@@ -185,7 +144,7 @@ func (d *dispatcherComponent) snapshot() *dispatchSnapshot {
 	}
 	return &dispatchSnapshot{
 		GlobalLimit:           d.limit,
-		ActiveGlobalSlots:     len(d.slots),
+		ActiveGlobalSlots:     d.capacityGate.Active(),
 		ActiveDispatchWorkers: activeWorkers,
 		QueueDepth:            queue,
 		DependencyWaiters:     d.dependencyWaiters.Load(),

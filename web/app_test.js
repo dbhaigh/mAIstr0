@@ -10,6 +10,7 @@ const taskSource = source.slice(source.indexOf("function renderTaskHistoryTable(
 const resourceHistorySource = source.slice(source.indexOf("function gpuGaugeMarkup("), source.indexOf("const TASK_ACTIVE_STATES"));
 const engineStatusSource = source.slice(source.indexOf("function formatNodeHardware("), source.indexOf("function renderDirectMessages("));
 const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
+const optionalFeaturesSource = source.slice(source.indexOf("let optionalFeaturesInitialized = false;"), source.indexOf("async function refreshPersistenceStatus()"));
 const sendInteractiveStart = source.indexOf("async function sendInteractiveMessage(text) {");
 const sendInteractiveEnd = source.indexOf("\nfunction handleStreamEvent(", sendInteractiveStart);
 const sendInteractiveSource = source.slice(sendInteractiveStart, sendInteractiveEnd);
@@ -37,6 +38,12 @@ test("Live node context is expandable from cluster overview node cards", () => {
   assert.match(source, /if \(agentSidebar\) agentSidebar\.hidden = direct;/);
 });
 
+test("Dashboard capacity display uses the shared cluster health view", () => {
+  assert.match(source, /if \(snap\.cluster_health\) dashboardState\.capacity = snap\.cluster_health/);
+  assert.match(source, /Dispatch \$\{dispatch\.active_slots\}\/\$\{dispatch\.global_limit\} · Queue \$\{dispatch\.queue_depth\}/);
+  assert.match(source, /\$\{capacity\.remaining\}\/\$\{capacity\.max\} slots free/);
+});
+
 test("mAIstr0 is the default chat mode and does not create an agent session on startup", async () => {
   const defaultMode = source.match(/let activeChatMode = "([^"]+)";/);
   const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
@@ -47,7 +54,7 @@ test("mAIstr0 is the default chat mode and does not create an agent session on s
   let created = 0;
   const context = vm.createContext({
     activeChatMode: "direct",
-    currentSessions: [],
+    dashboardState: { sessions: [] },
     fetchJSON: async (url) => {
       assert.equal(url, "/api/agent/sessions");
       return [{ id: "existing-pi-session", harness: "pi" }];
@@ -62,9 +69,38 @@ test("mAIstr0 is the default chat mode and does not create an agent session on s
   vm.runInContext(sessionSource, context);
   await context.loadSessions();
 
-  assert.equal(context.currentSessions.length, 1);
+  assert.equal(context.dashboardState.sessions.length, 1);
   assert.equal(selected, 0);
   assert.equal(created, 0);
+});
+
+test("minimal mode hides harness and learning controls without loading optional APIs", () => {
+  let optionalCalls = 0;
+  const memoryTab = {
+    hidden: false,
+    classList: { contains: () => false },
+  };
+  const directTab = { dataset: { agent: "direct" }, hidden: false, disabled: false };
+  const harnessTab = { dataset: { agent: "pi" }, hidden: false, disabled: false };
+  const context = vm.createContext({
+    agentTabs: [directTab, harnessTab],
+    document: {
+      querySelector: (selector) => selector.includes("memory-tab") ? memoryTab : null,
+    },
+    activeChatMode: "direct",
+    activateDirectChat: () => assert.fail("direct mode should remain selected"),
+    loadAgentTools: () => { optionalCalls++; },
+    loadAgentBackend: () => { optionalCalls++; return Promise.resolve(); },
+    loadSessions: () => { optionalCalls++; },
+  });
+  vm.runInContext(optionalFeaturesSource, context);
+  context.initializeOptionalFeatures(false);
+
+  assert.equal(optionalCalls, 0);
+  assert.equal(directTab.hidden, false);
+  assert.equal(harnessTab.hidden, true);
+  assert.equal(harnessTab.disabled, true);
+  assert.equal(memoryTab.hidden, true);
 });
 
 test("mAIstr0 sends questions and work through one task submission action", async () => {
@@ -215,8 +251,7 @@ function discoveryContext(nodes = [], pairing = null) {
   };
   const context = vm.createContext({
     discoveryList: list,
-    currentNodes: nodes,
-    currentPairingStatus: pairing,
+    dashboardState: { nodes, pairing: { status: pairing } },
     document: { createElement: () => ({ innerHTML: "", className: "" }) },
     escapeHtml: (value) => String(value),
     attachNodeContextMenu: () => {},
@@ -339,7 +374,7 @@ test("Tasks are searchable and filterable in an expandable table", () => {
       createElement,
     },
     escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
-    window: { latestTasks: [] },
+    dashboardState: { tasks: [] },
     fetchJSON: async () => {},
     submitStatus: null,
     copyText: async () => {},
@@ -447,6 +482,80 @@ test("Tasks are searchable and filterable in an expandable table", () => {
   assert.match(rows[0].innerHTML, /<span class="badge failed">failed<\/span>/);
 });
 
+test("Task history loads cursor pages and restarts when filters change", async () => {
+  const start = source.indexOf("function taskHistoryURL(");
+  const end = source.indexOf("async function refreshDiscovery(", start);
+  const pagingSource = source.slice(start, end);
+  const responses = [
+    { items: [{ id: "task-new", updated_at: "2026-01-03" }], next_cursor: "next-1", has_more: true },
+    { items: [{ id: "task-old", updated_at: "2026-01-02" }], next_cursor: "", has_more: false },
+    { items: [{ id: "filtered-task", updated_at: "2026-01-01" }], next_cursor: "", has_more: false },
+  ];
+  const requests = [];
+  const pageState = {
+    items: [], nextCursor: "", hasMore: false, loading: false,
+    generation: 0, initialized: false, filterKey: "",
+  };
+  const context = vm.createContext({
+    taskHistorySearch: { value: "compiler" },
+    taskHistoryStatus: { value: "completed" },
+    taskHistoryPage: pageState,
+    URLSearchParams,
+    fetchJSON: async (url) => { requests.push(url); return responses.shift(); },
+    renderTasks: () => {},
+    console: { error: () => {} },
+  });
+  vm.runInContext(pagingSource, context);
+
+  await context.refreshTaskHistory(true);
+  await context.loadMoreTaskHistory();
+  assert.match(requests[0], /page_size=50/);
+  assert.match(requests[0], /q=compiler/);
+  assert.match(requests[0], /status=completed/);
+  assert.match(requests[1], /cursor=next-1/);
+  assert.deepEqual(Array.from(pageState.items, (task) => task.id), ["task-new", "task-old"]);
+  assert.equal(pageState.hasMore, false);
+
+  context.taskHistorySearch.value = "different";
+  await context.refreshTaskHistory(true);
+  assert.doesNotMatch(requests[2], /cursor=/);
+  assert.match(requests[2], /q=different/);
+  assert.deepEqual(Array.from(pageState.items, (task) => task.id), ["filtered-task"]);
+});
+
+test("Memory history requests cursor pages for the load-more controls", async () => {
+  const start = source.indexOf("async function fetchMemoryHistoryPage(");
+  const end = source.indexOf("function renderLearning(", start);
+  const pagingSource = source.slice(start, end);
+  const responses = [
+    { items: [{ id: 1 }], next_cursor: "memory-next", has_more: true },
+    { items: [{ id: 2 }], next_cursor: "", has_more: false },
+  ];
+  const requests = [];
+  const context = vm.createContext({
+    memoryHistoryPages: {
+      experiences: { items: [], nextCursor: "", hasMore: false, loading: false, generation: 0, url: "" },
+    },
+    fetchJSON: async (url) => { requests.push(url); return responses.shift(); },
+    document: { createElement: () => ({ addEventListener() {} }) },
+    renderFacts: () => {},
+    renderExperiences: () => {},
+    renderTranscripts: () => {},
+    console: { error: () => {} },
+  });
+  vm.runInContext(pagingSource, context);
+
+  await context.fetchMemoryHistoryPage("experiences", "/api/memory/experiences?q=cache", true);
+  await context.fetchMemoryHistoryPage("experiences", "/api/memory/experiences?q=cache");
+  assert.equal(requests[0], "/api/memory/experiences?q=cache&page_size=30");
+  assert.match(requests[1], /cursor=memory-next/);
+  assert.deepEqual(
+    Array.from(context.memoryHistoryPages.experiences.items, (item) => item.id),
+    [1, 2],
+  );
+  assert.equal(context.memoryHistoryPages.experiences.hasMore, false);
+});
+
 test("Overview recent activity uses the shared expandable task history table", () => {
   assert.match(source, /renderTaskHistoryTable\(overviewActivity, overviewTasks, "overview-task", true\)/);
   assert.doesNotMatch(source, /activity-card/);
@@ -467,20 +576,30 @@ test("Persistence warning is displayed only when the API reports degraded storag
   const sourceBlock = source.slice(source.indexOf("async function refreshPersistenceStatus("), source.indexOf("function updateClusterTitle("));
   const persistenceWarning = { hidden: true, textContent: "" };
   let persistence = { available: true };
+  let mode = "full";
+  const initializedModes = [];
   const context = vm.createContext({
     persistenceWarning,
-    fetchJSON: async () => ({ persistence }),
+    fetchJSON: async () => ({ persistence, mode }),
+    initializeOptionalFeatures: (enabled) => initializedModes.push(enabled),
     console: { error: () => {} },
   });
   vm.runInContext(sourceBlock, context);
 
   await context.refreshPersistenceStatus();
   assert.equal(persistenceWarning.hidden, true);
+  assert.deepEqual(initializedModes, [true]);
 
   persistence = { available: false, warning: "Memory will not survive restart." };
   await context.refreshPersistenceStatus();
   assert.equal(persistenceWarning.hidden, false);
   assert.equal(persistenceWarning.textContent, "Memory will not survive restart.");
+
+  mode = "minimal";
+  persistence = { available: false };
+  await context.refreshPersistenceStatus();
+  assert.equal(persistenceWarning.hidden, true);
+  assert.deepEqual(initializedModes, [true, true, false]);
 });
 
 test("An open yielded dashboard navigates to the local worker before using pairing controls", async () => {
@@ -504,7 +623,18 @@ test("Same-subnet auto-join suppresses the automatic pairing dialog", async () =
       fetchJSON: async (path) => path === "/api/pairing/status"
         ? { role: "node", joined: false, auto_join_available: autoJoinAvailable, orchestrator_addr: "https://192.168.1.10:7450" }
         : { pending: false },
-      currentPairingStatus: null,
+      dashboardState: {
+        nodes: [],
+        tasks: [],
+        sessions: [],
+        pairing: {
+          status: null,
+          targetNode: null,
+          setupFocused: true,
+          promptShown: promptAlreadyOpen,
+          dialogAutoOpened: promptAlreadyOpen,
+        },
+      },
       pairingPinView: {},
       pairingNodeConnect: {},
       pairingConnectOpenBtn: {},
@@ -515,9 +645,6 @@ test("Same-subnet auto-join suppresses the automatic pairing dialog", async () =
       pairingInvitationDialog: { open: false, close() {}, addEventListener() {} },
       pairingInvitationAcceptBtn: { addEventListener() {} },
       pairingInvitationDeclineBtn: { addEventListener() {} },
-      pairingSetupFocused: true,
-      pairingPromptShown: promptAlreadyOpen,
-      pairingDialogAutoOpened: promptAlreadyOpen,
       openPairingDialog: () => { dialogsShown++; },
       document: { querySelector: () => null },
     });
@@ -541,9 +668,13 @@ test("Pairing the local worker uses its join form, not an invitation to itself",
   const dialogSource = source.slice(source.indexOf("function openPairingDialog("), source.indexOf("pairingPinRegenerateBtn?.addEventListener("));
   let shown = false;
   const context = vm.createContext({
-    currentPairingStatus: { role: "node", node_id: "self-worker", joined: false, orchestrator_addr: "https://leader:7450" },
+    dashboardState: {
+      pairing: {
+        status: { role: "node", node_id: "self-worker", joined: false, orchestrator_addr: "https://leader:7450" },
+        targetNode: null,
+      },
+    },
     pairingConnectDialog: { open: false, showModal: () => { shown = true; } },
-    pairingTargetNode: null,
     pairingStatus: {},
     pairingAddressField: {},
     pairingAddress: { value: "", focus: () => {} },
@@ -554,7 +685,7 @@ test("Pairing the local worker uses its join form, not an invitation to itself",
   vm.runInContext(dialogSource, context);
   context.openPairingDialog({ id: "self-worker", discovered: true });
   assert.equal(shown, true);
-  assert.equal(context.pairingTargetNode, null);
+  assert.equal(context.dashboardState.pairing.targetNode, null);
   assert.equal(context.pairingConnectButton.textContent, "Join cluster");
   assert.equal(context.pairingAddress.value, "https://leader:7450");
   assert.equal(context.pairingAddressField.hidden, false);

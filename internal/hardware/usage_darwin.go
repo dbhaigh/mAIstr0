@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+// darwinCPUUsage serializes updates to the previous sysctl CPU sample; its
+// mutex protects only these counters and is not nested with other locks.
 var darwinCPUUsage struct {
 	sync.Mutex
 	total uint64

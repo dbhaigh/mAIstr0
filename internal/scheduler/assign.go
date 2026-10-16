@@ -8,8 +8,18 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
-	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/scheduler/score"
 )
+
+// ScoreFactors and ScoringConfig remain aliases so callers of the scheduler
+// package keep their existing public type names.
+type ScoreFactors = score.ScoreFactors
+type ScoringConfig = score.ScoringConfig
+
+// DefaultScoringConfig returns the established scheduler defaults.
+func DefaultScoringConfig() ScoringConfig {
+	return score.DefaultScoringConfig()
+}
 
 // Assignment pairs a subtask with the node and model chosen to run it.
 type Assignment struct {
@@ -22,74 +32,9 @@ type Assignment struct {
 	Factors ScoreFactors `json:"score_factors"`
 }
 
-// ScoreFactors explains the additive scheduler score for an assignment.
-type ScoreFactors struct {
-	ModelMatch            float64  `json:"model_match"`
-	Hardware              float64  `json:"hardware"`
-	ActiveTasks           int      `json:"active_tasks"`
-	QueuedTasks           int      `json:"queued_tasks"`
-	PendingDependents     int      `json:"pending_dependents,omitempty"`
-	CapacityPenalty       float64  `json:"capacity_penalty,omitempty"`
-	LoadPenalty           float64  `json:"load_penalty"`
-	GPUCompatibilityScore float64  `json:"gpu_compatibility_score,omitempty"`
-	GPUUtilizationPenalty float64  `json:"gpu_utilization_penalty"`
-	NPUUtilizationPenalty float64  `json:"npu_utilization_penalty"`
-	CPUUtilizationPenalty float64  `json:"cpu_utilization_penalty,omitempty"`
-	MemoryUsagePenalty    float64  `json:"memory_usage_penalty,omitempty"`
-	CapabilityScore       float64  `json:"capability_score,omitempty"`
-	MatchedCapabilities   []string `json:"matched_capabilities,omitempty"`
-	ModelQualityScore     float64  `json:"model_quality_score,omitempty"`
-	TopologyScore         float64  `json:"topology_score,omitempty"`
-	LearnedBias           float64  `json:"learned_bias"`
-	TelemetryFresh        bool     `json:"telemetry_fresh"`
-	TelemetryAgeMs        int64    `json:"telemetry_age_ms,omitempty"`
-}
-
-// ScoringConfig defines tunable weights and bonuses for node scoring.
-type ScoringConfig struct {
-	ModelMatchWeight       float64 `json:"model_match_weight"`
-	HardwareWeight         float64 `json:"hardware_weight"`
-	LoadPenaltyWeight      float64 `json:"load_penalty_weight"`
-	GPUCompatibilityBonus  float64 `json:"gpu_compatibility_bonus"`
-	DependentPenaltyWeight float64 `json:"dependent_penalty_weight"`
-	GPUUtilizationWeight   float64 `json:"gpu_utilization_weight"`
-	NPUUtilizationWeight   float64 `json:"npu_utilization_weight"`
-	CPUUtilizationWeight   float64 `json:"cpu_utilization_weight"`
-	MemoryUsageWeight      float64 `json:"memory_usage_weight"`
-	RequiredCapMatchBonus  float64 `json:"required_cap_match_bonus"`
-	PreferredCapMatchBonus float64 `json:"preferred_cap_match_bonus"`
-	ModelQualityBonus      float64 `json:"model_quality_bonus"`
-	CriticalPathBonus      float64 `json:"critical_path_bonus"`
-	LearnedBiasWeight      float64 `json:"learned_bias_weight"`
-}
-
-// DefaultScoringConfig returns balanced default weights for scheduler scoring.
-func DefaultScoringConfig() ScoringConfig {
-	return ScoringConfig{
-		ModelMatchWeight:       10.0,
-		HardwareWeight:         0.3,
-		LoadPenaltyWeight:      8.0,
-		GPUCompatibilityBonus:  10.0,
-		DependentPenaltyWeight: 2.0,
-		GPUUtilizationWeight:   0.1,
-		NPUUtilizationWeight:   0.1,
-		CPUUtilizationWeight:   0.05,
-		MemoryUsageWeight:      0.05,
-		RequiredCapMatchBonus:  15.0,
-		PreferredCapMatchBonus: 5.0,
-		ModelQualityBonus:      3.0,
-		CriticalPathBonus:      2.0,
-		LearnedBiasWeight:      1.0,
-	}
-}
-
 // ErrNoHealthyNodes is returned when the cluster has no node available to
 // take on any work.
 var ErrNoHealthyNodes = errors.New("scheduler: no healthy nodes available")
-
-const telemetryFreshnessWindow = 30 * time.Second
-const gpuLMStudioModelBonus = 3.0
-const gpuSmallModelBonus = 0.5
 
 // UnassignableSubtasksError reports work for which no healthy node advertises
 // a compatible model. Assign is all-or-nothing so callers cannot silently
@@ -159,8 +104,10 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 
 	simulatedLoad := make(map[string]int, len(healthy))
 	pendingDependents := make(map[string]int, len(healthy))
-	for _, n := range healthy {
+	nodeCapabilities := make([][]string, len(healthy))
+	for i, n := range healthy {
 		simulatedLoad[n.ID] = n.ActiveTasks + n.QueuedTasks
+		nodeCapabilities[i] = n.EffectiveCapabilities()
 	}
 
 	assignments := make([]Assignment, 0, len(subtasks))
@@ -173,7 +120,7 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 			outDegree = graph.OutDegree(st.ID)
 		}
 
-		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, simulatedLoad, pendingDependents, exp, cfg, now)
+		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, nodeCapabilities, simulatedLoad, pendingDependents, exp, cfg, now)
 		if bestNode == nil {
 			unassignable = append(unassignable, st.ID)
 			continue
@@ -206,231 +153,86 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	return assignments, nil
 }
 
-func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, load map[string]int, pendingDependents map[string]int, exp Experience, cfg *ScoringConfig, now time.Time) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
+func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabilities [][]string, load map[string]int, pendingDependents map[string]int, exp Experience, cfg *ScoringConfig, now time.Time) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
 	var best *cluster.NodeStatus
 	bestModel := ""
 	bestEngine := ""
 	bestScore := math.Inf(-1)
 	var bestFactors ScoreFactors
+	scoringSubtask := toScoringSubtask(st, outDegree)
 
 	for i := range nodes {
-		n := &nodes[i]
-		model, engineName, matchScore, modelQuality, matchedCaps := bestModelForNode(st, n, n.Models, n.DefaultModel, cfg)
-		if model == "" {
+		candidate, ok := prepareScoringCandidate(&nodes[i], scoringSubtask, nodeCapabilities[i])
+		if !ok {
 			continue
 		}
-
-		hw := n.Hardware
-		telemetryAge := time.Duration(0)
-		if !n.TelemetryAt.IsZero() && !n.TelemetryAt.After(now) {
-			telemetryAge = now.Sub(n.TelemetryAt)
-		}
-		telemetryFresh := !n.TelemetryAt.IsZero() && !n.TelemetryAt.After(now) && telemetryAge <= telemetryFreshnessWindow
-
-		var gpuPenalty, npuPenalty, cpuPenalty, memoryPenalty float64
-		if telemetryFresh {
-			if hw.GPUStatsAvailable {
-				gpuPenalty = float64(hw.GPUUtilization) * cfg.GPUUtilizationWeight
-			}
-			if hw.NPUStatsAvailable {
-				npuPenalty = float64(hw.NPUUtilization) * cfg.NPUUtilizationWeight
-			}
-			if hw.CPUStatsAvailable {
-				cpuPenalty = float64(hw.CPUUtilization) * cfg.CPUUtilizationWeight
-			}
-			if hw.MemoryStatsAvailable {
-				memoryPenalty = float64(hw.MemoryUsage) * cfg.MemoryUsageWeight
-			}
-		}
-
-		hardwareScore := hw.Score * cfg.HardwareWeight
-		loadPenalty := float64(load[n.ID])*cfg.LoadPenaltyWeight + float64(pendingDependents[n.ID])*cfg.DependentPenaltyWeight
-		capacityPenalty := 0.0
-		if n.MaxConcurrentTasks > 0 && load[n.ID] >= n.MaxConcurrentTasks {
-			capacityPenalty = float64(load[n.ID]-n.MaxConcurrentTasks+1) * cfg.LoadPenaltyWeight
-		}
-		gpuCompatibilityScore := 0.0
-		if hw.HasGPU {
-			gpuCompatibilityScore = cfg.GPUCompatibilityBonus
-		}
-
-		// Topology score: prioritize capable nodes for high-impact critical path nodes
-		topologyScore := 0.0
-		if outDegree > 0 {
-			topologyScore = float64(outDegree) * cfg.CriticalPathBonus * (hw.Score / 100.0)
-		}
-
-		learned := 0.0
+		node := candidate.node
+		learnedBias := 0.0
 		if exp != nil {
-			learned = exp.LearnedBias(n.ID, model, st.TaskType) * cfg.LearnedBiasWeight
+			learnedBias = exp.LearnedBias(node.ID, candidate.prepared.Model(), st.TaskType)
 		}
-
-		capScore := float64(len(matchedCaps)) * cfg.PreferredCapMatchBonus
-		if len(st.RequiredCapabilities) > 0 {
-			capScore += float64(len(st.RequiredCapabilities)) * cfg.RequiredCapMatchBonus
-		}
-
-		factors := ScoreFactors{
-			ModelMatch:            matchScore * cfg.ModelMatchWeight,
-			Hardware:              hardwareScore,
-			ActiveTasks:           n.ActiveTasks,
-			QueuedTasks:           load[n.ID] - n.ActiveTasks,
-			PendingDependents:     pendingDependents[n.ID],
-			CapacityPenalty:       capacityPenalty,
-			LoadPenalty:           loadPenalty,
-			GPUCompatibilityScore: gpuCompatibilityScore,
-			GPUUtilizationPenalty: gpuPenalty,
-			NPUUtilizationPenalty: npuPenalty,
-			CPUUtilizationPenalty: cpuPenalty,
-			MemoryUsagePenalty:    memoryPenalty,
-			CapabilityScore:       capScore,
-			MatchedCapabilities:   matchedCaps,
-			ModelQualityScore:     modelQuality,
-			TopologyScore:         topologyScore,
-			LearnedBias:           learned,
-			TelemetryFresh:        telemetryFresh,
-			TelemetryAgeMs:        telemetryAge.Milliseconds(),
-		}
-
-		score := factors.ModelMatch + factors.Hardware + factors.GPUCompatibilityScore + factors.CapabilityScore +
-			factors.ModelQualityScore + factors.TopologyScore - factors.LoadPenalty - factors.CapacityPenalty -
-			factors.GPUUtilizationPenalty - factors.NPUUtilizationPenalty -
-			factors.CPUUtilizationPenalty - factors.MemoryUsagePenalty + factors.LearnedBias
-
-		if score > bestScore {
-			bestScore = score
-			best = n
-			bestModel = model
-			bestEngine = engineName
+		scoreValue, factors := score.ScorePrepared(
+			*node, scoringSubtask, candidate.prepared, load[node.ID], pendingDependents[node.ID],
+			score.Experience{LearnedBias: learnedBias}, *cfg, now,
+		)
+		if scoreValue > bestScore {
+			bestScore = scoreValue
+			best = node
+			bestModel = candidate.prepared.Model()
+			bestEngine = candidate.prepared.Engine()
 			bestFactors = factors
 		}
 	}
 	return best, bestModel, bestEngine, bestScore, bestFactors
 }
 
-// bestModelForNode finds the best model on a node, validating required capabilities and scoring preferences.
-func bestModelForNode(st Subtask, n *cluster.NodeStatus, models []engine.Model, defaultModel string, cfg *ScoringConfig) (string, string, float64, float64, []string) {
-	nodeCaps := n.EffectiveCapabilities()
-
-	// Check required capabilities on the node/model level
-	if len(st.RequiredCapabilities) > 0 {
-		for _, reqCap := range st.RequiredCapabilities {
-			reqCapLower := strings.ToLower(strings.TrimSpace(reqCap))
-			if !hasCapability(nodeCaps, reqCapLower) {
-				return "", "", 0, 0, nil
-			}
-		}
-	}
-
-	bestName := ""
-	bestEngine := ""
-	bestScore := -1.0
-	bestQuality := 0.0
-	var bestMatchedCaps []string
-
-	for _, m := range models {
-		if !n.EngineReady(m.Engine) {
-			continue
-		}
-		if st.TaskType != "general" && hasSpecialtyTag(m.Tags) &&
-			!containsTag(m.Tags, st.TaskType) && !containsTag(m.Tags, "general") {
-			continue
-		}
-
-		// Check min model size if specified
-		if st.MinModelSizeGB > 0 && m.SizeGB > 0 && m.SizeGB < st.MinModelSizeGB {
-			continue
-		}
-
-		score := 0.0
-		quality := 0.0
-		if m.Name == defaultModel {
-			score += 1.0
-		}
-		if st.PreferredModel != "" && strings.EqualFold(m.Name, st.PreferredModel) {
-			score += 2.0
-		}
-
-		for _, tag := range m.Tags {
-			if tag == st.TaskType {
-				score += 2
-			} else if tag == "general" {
-				score += 0.5
-			} else if tag == "fast" {
-				score += 0.25
-			}
-			if tag == "high-quality" || tag == "reasoning" {
-				quality += cfg.ModelQualityBonus
-			}
-		}
-
-		if n.Hardware.HasGPU && strings.EqualFold(m.Engine, "lmstudio") {
-			score += gpuLMStudioModelBonus
-			if containsTag(m.Tags, "small") || containsTag(m.Tags, "fast") {
-				score += gpuSmallModelBonus
-			}
-		}
-
-		if m.SizeGB >= 7.0 {
-			quality += cfg.ModelQualityBonus * 0.5
-		}
-
-		// Calculate matched preferred capabilities
-		matchedCaps := make([]string, 0)
-		for _, prefCap := range st.PreferredCapabilities {
-			prefLower := strings.ToLower(strings.TrimSpace(prefCap))
-			if hasCapability(nodeCaps, prefLower) || containsTag(m.Tags, prefLower) {
-				matchedCaps = append(matchedCaps, prefCap)
-			}
-		}
-
-		if score > bestScore {
-			bestScore = score
-			bestName = m.Name
-			bestEngine = m.Engine
-			bestQuality = quality
-			bestMatchedCaps = matchedCaps
-		}
-	}
-
-	if bestName == "" {
-		return "", "", 0, 0, nil
-	}
-	return bestName, bestEngine, bestScore, bestQuality, bestMatchedCaps
+type scoringCandidate struct {
+	node     *cluster.NodeStatus
+	prepared score.Candidate
 }
 
-func hasCapability(caps []string, target string) bool {
-	for _, c := range caps {
-		if strings.EqualFold(c, target) {
-			return true
-		}
+// filterSubtaskCandidates excludes unhealthy nodes and nodes without required
+// capabilities or a ready model matching the subtask tags and minimum size.
+// Capacity-full nodes remain candidates because the established score penalizes
+// them rather than excluding them, preserving assignments and score factors.
+func filterSubtaskCandidates(st Subtask, outDegree int, nodes []cluster.NodeStatus) []scoringCandidate {
+	nodeCapabilities := make([][]string, len(nodes))
+	for i, node := range nodes {
+		nodeCapabilities[i] = node.EffectiveCapabilities()
 	}
-	return false
+	return filterSubtaskCandidatesWithCapabilities(st, outDegree, nodes, nodeCapabilities)
 }
 
-// bestModelFor maintains backward compatibility for helper callers.
-func bestModelFor(st Subtask, models []engine.Model, defaultModel string) (string, float64) {
-	cfg := DefaultScoringConfig()
-	n := cluster.NodeStatus{Models: models, DefaultModel: defaultModel}
-	name, _, score, _, _ := bestModelForNode(st, &n, models, defaultModel, &cfg)
-	return name, score
-}
-
-func hasSpecialtyTag(tags []string) bool {
-	for _, tag := range tags {
-		switch tag {
-		case "code", "summarize", "translate", "math", "vision", "creative":
-			return true
+func filterSubtaskCandidatesWithCapabilities(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabilities [][]string) []scoringCandidate {
+	subtask := toScoringSubtask(st, outDegree)
+	candidates := make([]scoringCandidate, 0, len(nodes))
+	for i := range nodes {
+		candidate, ok := prepareScoringCandidate(&nodes[i], subtask, nodeCapabilities[i])
+		if ok {
+			candidates = append(candidates, candidate)
 		}
 	}
-	return false
+	return candidates
 }
 
-func containsTag(tags []string, target string) bool {
-	for _, tag := range tags {
-		if tag == target {
-			return true
-		}
+func prepareScoringCandidate(node *cluster.NodeStatus, subtask score.Subtask, nodeCapabilities []string) (scoringCandidate, bool) {
+	if !node.Healthy {
+		return scoringCandidate{}, false
 	}
-	return false
+	prepared, ok := score.PrepareWithCapabilities(*node, subtask, nodeCapabilities)
+	if !ok {
+		return scoringCandidate{}, false
+	}
+	return scoringCandidate{node: node, prepared: prepared}, true
+}
+
+func toScoringSubtask(st Subtask, outDegree int) score.Subtask {
+	return score.Subtask{
+		TaskType:              st.TaskType,
+		PreferredModel:        st.PreferredModel,
+		RequiredCapabilities:  st.RequiredCapabilities,
+		PreferredCapabilities: st.PreferredCapabilities,
+		MinModelSizeGB:        st.MinModelSizeGB,
+		OutDegree:             outDegree,
+	}
 }

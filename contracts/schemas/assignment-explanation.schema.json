@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/assignment-explanation.schema.json",
+  "title": "AssignmentExplanation",
+  "type": "object",
+  "required": ["task_id", "assignments"],
+  "properties": {
+    "task_id": {"type": "string"},
+    "assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["subtask_id", "description", "node_id", "model", "score", "score_factors", "learned_bias", "summary"],
+        "properties": {
+          "subtask_id": {"type": "string"},
+          "description": {"type": "string"},
+          "node_id": {"type": "string"},
+          "model": {"type": "string"},
+          "engine": {"type": "string"},
+          "score": {"type": "number"},
+          "score_factors": {"$ref": "https://maistr0.dev/contracts/schemas/score-factors.schema.json"},
+          "learned_bias": {"type": "number"},
+          "summary": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

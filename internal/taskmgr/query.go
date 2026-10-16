@@ -94,22 +94,38 @@ func (m *Manager) Recent(limit int) []*Task {
 		return []*Task{}
 	}
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	tasks := make([]*Task, 0, len(m.tasks))
-	for _, task := range m.tasks {
-		tasks = append(tasks, task)
+	if m.recentTasksValid {
+		out := m.recentTasksLocked(limit)
+		m.mu.RUnlock()
+		return out
 	}
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].UpdatedAt.Equal(tasks[j].UpdatedAt) {
-			return tasks[i].ID > tasks[j].ID
+	m.mu.RUnlock()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.recentTasksValid {
+		m.recentTasks = make([]*Task, 0, len(m.tasks))
+		for _, task := range m.tasks {
+			m.recentTasks = append(m.recentTasks, task)
 		}
-		return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
-	})
-	if len(tasks) > limit {
-		tasks = tasks[:limit]
+		sort.Slice(m.recentTasks, func(i, j int) bool {
+			if m.recentTasks[i].UpdatedAt.Equal(m.recentTasks[j].UpdatedAt) {
+				return m.recentTasks[i].ID > m.recentTasks[j].ID
+			}
+			return m.recentTasks[i].UpdatedAt.After(m.recentTasks[j].UpdatedAt)
+		})
+		m.recentTasksValid = true
 	}
-	out := make([]*Task, 0, len(tasks))
-	for _, task := range tasks {
+	return m.recentTasksLocked(limit)
+}
+
+func (m *Manager) recentTasksLocked(limit int) []*Task {
+	count := len(m.recentTasks)
+	if count > limit {
+		count = limit
+	}
+	out := make([]*Task, 0, count)
+	for _, task := range m.recentTasks[:count] {
 		out = append(out, cloneTask(task))
 	}
 	return out

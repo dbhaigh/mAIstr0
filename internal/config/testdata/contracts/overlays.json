@@ -14,6 +14,7 @@
   },
   "orchestrator": {
     "listen_addr": ":7450",
+    "mode": "full",
     "harness": "deepseek",
     "max_concurrent_dispatches": 7,
     "discovery_enabled": true,

@@ -15,7 +15,9 @@ type systemFileTime struct {
 
 var (
 	procGetSystemTimes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetSystemTimes")
-	windowsCPUUsage    struct {
+	// windowsCPUUsage serializes updates to the previous system-time sample;
+	// this lock protects only these counters and is not nested with other locks.
+	windowsCPUUsage struct {
 		sync.Mutex
 		idle, kernel, user uint64
 		ready              bool

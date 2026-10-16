@@ -53,8 +53,8 @@ func (s *Server) InitializeIdentity() error {
 		return fmt.Errorf("remove unsupported orchestrator pairing: %w", err)
 	}
 	s.identity = identity
-	s.election.setIdentity(identity)
-	s.nodeClient.setTransport(identity.ClientTransport)
+	s.electionPort().setIdentity(identity)
+	s.nodeClientPort().setTransport(identity.ClientTransport)
 	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", pin)
 	return nil
 }

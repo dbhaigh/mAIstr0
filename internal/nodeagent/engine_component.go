@@ -12,6 +12,7 @@ import (
 const (
 	engineDetectionInterval    = 10 * time.Second
 	engineDetectionGracePeriod = 3 * engineDetectionInterval
+	modelInventoryCacheTTL     = 5 * time.Second
 )
 
 func prioritizeAcceleratedEngines(engines []engine.Engine, hw hardware.Info) []engine.Engine {
@@ -49,7 +50,7 @@ type ModelState struct {
 }
 
 func (c *engineComponent) enabledModels() []engine.Model {
-	c.refreshReportedModels()
+	c.refreshReportedModelsIfStale()
 	return c.reportedModelList()
 }
 
@@ -166,7 +167,10 @@ func (c *engineComponent) scanDetectedEnginesLocked(retainMissing bool) {
 	c.detectedEngines = detected
 	c.detectedSeenAt = lastSeen
 	c.lastEngineScan = now
+	c.engineGeneration++
+	c.engineSnapshotCacheValid = false
 	c.enginesMu.Unlock()
+	c.markReportedModelsStale()
 }
 
 func engineIdentity(eng engine.Engine) string {
@@ -174,13 +178,17 @@ func engineIdentity(eng engine.Engine) string {
 }
 
 func (c *engineComponent) engineSnapshot() []engine.Engine {
-	c.enginesMu.RLock()
-	configured := append([]engine.Engine(nil), c.engines...)
-	detected := append([]engine.Engine(nil), c.detectedEngines...)
-	c.enginesMu.RUnlock()
-	engines := make([]engine.Engine, 0, len(configured)+len(detected))
-	seen := make(map[string]struct{}, len(configured)+len(detected))
-	for _, group := range [][]engine.Engine{configured, detected} {
+	hw, hardwareGeneration := c.telemetry.hardwareSnapshotVersioned()
+	c.enginesMu.Lock()
+	defer c.enginesMu.Unlock()
+	if c.engineSnapshotCacheValid &&
+		c.engineSnapshotGeneration == c.engineGeneration &&
+		c.engineSnapshotHardwareGen == hardwareGeneration {
+		return append([]engine.Engine(nil), c.engineSnapshotCache...)
+	}
+	engines := make([]engine.Engine, 0, len(c.engines)+len(c.detectedEngines))
+	seen := make(map[string]struct{}, len(c.engines)+len(c.detectedEngines))
+	for _, group := range [][]engine.Engine{c.engines, c.detectedEngines} {
 		for _, eng := range group {
 			key := engineIdentity(eng)
 			if _, ok := seen[key]; ok {
@@ -190,12 +198,16 @@ func (c *engineComponent) engineSnapshot() []engine.Engine {
 			engines = append(engines, eng)
 		}
 	}
-	return prioritizeAcceleratedEngines(engines, c.telemetry.hardwareSnapshot())
+	c.engineSnapshotCache = prioritizeAcceleratedEngines(engines, hw)
+	c.engineSnapshotGeneration = c.engineGeneration
+	c.engineSnapshotHardwareGen = hardwareGeneration
+	c.engineSnapshotCacheValid = true
+	return append([]engine.Engine(nil), c.engineSnapshotCache...)
 }
 
 func (c *engineComponent) allModelsWithState() []ModelState {
 	c.refreshDetectedEngines()
-	c.refreshReportedModels()
+	c.refreshReportedModelsIfStale()
 	return c.reportedAllModelList()
 }
 
@@ -235,8 +247,25 @@ func (c *engineComponent) reportedEngineList() []engine.Status {
 // contacting an LLM server. Status and registration must stay responsive even
 // when a local model is loading or the engine is unavailable.
 func (c *engineComponent) refreshReportedModels() {
+	c.refreshReportedModelsWithForce(true)
+}
+
+func (c *engineComponent) refreshReportedModelsIfStale() {
+	c.refreshReportedModelsWithForce(false)
+}
+
+func (c *engineComponent) refreshReportedModelsWithForce(force bool) {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
+
+	if !force {
+		c.modelMu.Lock()
+		fresh := !c.reportedAt.IsZero() && time.Since(c.reportedAt) < modelInventoryCacheTTL
+		c.modelMu.Unlock()
+		if fresh {
+			return
+		}
+	}
 
 	models, engines := c.inspectInventory()
 	c.modelMu.Lock()
@@ -288,16 +317,24 @@ func (c *engineComponent) engineFor(model string) engine.Engine {
 
 func (c *engineComponent) engineForModel(model, engineName string) engine.Engine {
 	c.refreshDetectedEngines()
-	for _, eng := range c.engineSnapshot() {
-		if engineName != "" && !strings.EqualFold(eng.Name(), engineName) {
+	c.refreshReportedModelsIfStale()
+	for _, candidate := range c.reportedAllModelList() {
+		if candidate.Name != model || (engineName != "" && !strings.EqualFold(candidate.Engine, engineName)) {
 			continue
 		}
-		models, err := eng.ListModels()
-		if err != nil {
+		ready := false
+		for _, status := range c.reportedEngineList() {
+			if strings.EqualFold(status.Name, candidate.Engine) && status.Ready {
+				ready = true
+				break
+			}
+		}
+		if !ready {
 			continue
 		}
-		for _, candidate := range models {
-			if candidate.Name == model {
+		for _, eng := range c.engineSnapshot() {
+			if strings.EqualFold(eng.Name(), candidate.Engine) &&
+				(engineName == "" || strings.EqualFold(eng.Name(), engineName)) {
 				return eng
 			}
 		}
@@ -323,6 +360,8 @@ func (c *engineComponent) configureModels(disabled map[string]bool, defaultModel
 func (c *engineComponent) replaceConfiguredEngine(eng engine.Engine) {
 	c.enginesMu.Lock()
 	c.engines = []engine.Engine{eng}
+	c.engineGeneration++
+	c.engineSnapshotCacheValid = false
 	c.enginesMu.Unlock()
 	c.invalidateReportedModels()
 }
@@ -333,6 +372,14 @@ func (c *engineComponent) invalidateReportedModels() {
 	c.modelMu.Lock()
 	c.reportedModels = nil
 	c.reportedEngines = nil
+	c.reportedAt = time.Time{}
+	c.modelMu.Unlock()
+}
+
+func (c *engineComponent) markReportedModelsStale() {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	c.modelMu.Lock()
 	c.reportedAt = time.Time{}
 	c.modelMu.Unlock()
 }

@@ -42,6 +42,8 @@ type identityFile struct {
 // Identity owns a node's self-signed TLS identity and the pins for cluster
 // members explicitly admitted through pairing.
 type Identity struct {
+	// mu protects identity, pairing, and trust state and serializes persistence
+	// of those updates. No other application lock is nested beneath it.
 	mu              sync.RWMutex
 	id              string
 	path            string

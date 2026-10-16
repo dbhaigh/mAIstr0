@@ -1018,6 +1018,8 @@ func (t *ClusterParallelDispatchTool) Execute(ctx context.Context, h *Harness, s
 	results := make([]parallelResult, len(assignments))
 	var wg sync.WaitGroup
 	var nodesUsed = make(map[string]bool)
+	// nodesUsedMu protects the result set shared by dispatch goroutines; it is
+	// released before network dispatch and is not nested with component locks.
 	var nodesUsedMu sync.Mutex
 
 	for idx, asg := range assignments {

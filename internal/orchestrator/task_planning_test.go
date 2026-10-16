@@ -31,6 +31,7 @@ func (m *fallbackPlannerModel) callNodeGenerateWithOptionsContext(_ context.Cont
 }
 
 func TestAutoPlanRunsRoleTasksWithValidationAndReview(t *testing.T) {
+	// Counts concurrent execute requests from the planner test.
 	var executeCalls atomic.Int32
 	var receivedPrompt string
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +222,7 @@ func TestReviewerMustExplicitlyApprove(t *testing.T) {
 }
 
 func TestFencedJSONOutputAllowsDependentSubtaskToRun(t *testing.T) {
+	// Publishes the prompt observed by the HTTP handler to the test goroutine.
 	var dependentPrompt atomic.Value
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {

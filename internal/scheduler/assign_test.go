@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -9,6 +10,69 @@ import (
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
 )
+
+func TestFilterSubtaskCandidatesDropsIneligibleNodesAndKeepsFullNodes(t *testing.T) {
+	subtask := Subtask{TaskType: "code", RequiredCapabilities: []string{"coder"}, MinModelSizeGB: 7}
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "unhealthy", Healthy: false,
+			Models: []engine.Model{{Name: "code", Engine: "ready", Tags: []string{"code"}, SizeGB: 8}},
+		},
+		{
+			ID: "engine-not-ready", Healthy: true,
+			Engines: []engine.Status{{Name: "vllm", Ready: false}},
+			Models:  []engine.Model{{Name: "code", Engine: "vllm", Tags: []string{"code"}, SizeGB: 8}},
+		},
+		{
+			ID: "wrong-tags", Healthy: true,
+			Models: []engine.Model{{Name: "general", Tags: []string{"general"}, SizeGB: 8}},
+		},
+		{
+			ID: "too-small", Healthy: true,
+			Models: []engine.Model{{Name: "code", Tags: []string{"code"}, SizeGB: 4}},
+		},
+		{
+			ID: "full", Healthy: true, MaxConcurrentTasks: 1, ActiveTasks: 1, AvailableCapacity: 0,
+			Models: []engine.Model{{Name: "code", Tags: []string{"code"}, SizeGB: 8}},
+		},
+		{
+			ID: "available", Healthy: true, MaxConcurrentTasks: 2, AvailableCapacity: 2,
+			Models: []engine.Model{{Name: "code", Tags: []string{"code"}, SizeGB: 8}},
+		},
+	}
+
+	candidates := filterSubtaskCandidates(subtask, 0, nodes)
+	got := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		got = append(got, candidate.node.ID)
+	}
+	if want := []string{"full", "available"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("filtered candidates = %v, want %v", got, want)
+	}
+}
+
+func TestAssignKeepsFullNodeWhenItsExistingScoreWins(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "full", Address: "http://full", Healthy: true, ActiveTasks: 1,
+			MaxConcurrentTasks: 1, AvailableCapacity: 0,
+			Hardware: hardware.Info{Score: 100},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+		{
+			ID: "available", Address: "http://available", Healthy: true,
+			MaxConcurrentTasks: 1, AvailableCapacity: 1,
+			Models: []engine.Model{{Name: "model", Tags: []string{"general"}}},
+		},
+	}
+	assignments, err := Assign([]Subtask{{ID: "work", TaskType: "general"}}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignments[0].NodeID != "full" || assignments[0].Factors.CapacityPenalty != 8 {
+		t.Fatalf("full-node scoring behavior changed: %+v", assignments[0])
+	}
+}
 
 func TestAssignRejectsUnassignableSubtasks(t *testing.T) {
 	subtasks := []Subtask{
@@ -240,7 +304,7 @@ func TestAssignIgnoresStaleAcceleratorTelemetry(t *testing.T) {
 		t.Fatalf("stale load reading affected routing; assigned to %q", got)
 	}
 	if assignments[0].Factors.TelemetryFresh || assignments[0].Factors.GPUUtilizationPenalty != 0 ||
-		assignments[0].Factors.TelemetryAgeMs < telemetryFreshnessWindow.Milliseconds() {
+		assignments[0].Factors.TelemetryAgeMs < (30*time.Second).Milliseconds() {
 		t.Fatalf("stale telemetry was not marked and ignored: %+v", assignments[0].Factors)
 	}
 }

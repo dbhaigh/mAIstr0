@@ -144,6 +144,14 @@ paths:
   /api/status:
     get:
       responses: {"200": {description: Get node or cluster status}}
+  /api/cluster/health:
+    get:
+      responses:
+        "200":
+          description: Get the shared cluster capacity and readiness view
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ClusterHealth"}
   /api/pairing/join:
     post:
       responses: {"200": {description: Join a cluster}}
@@ -272,13 +280,37 @@ paths:
       responses: {"200": {description: Invite a discovered instance}}
   /api/events:
     get:
-      responses: {"200": {description: Subscribe to server events}}
+      responses:
+        "200":
+          description: >-
+            Subscribe to server events. Each JSON snapshot additively includes
+            cluster_health using the same view model as GET /api/cluster/health.
   /api/router/requests:
     get:
       responses: {"200": {description: List recent prompt-free inference routing events}}
   /api/tasks:
     get:
-      responses: {"200": {description: List tasks}}
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          schema: {type: string}
+        - name: status
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: List tasks; page_size or cursor opts in to the cursor envelope.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: {$ref: "#/components/schemas/Task"}
+                  - $ref: "#/components/schemas/TaskHistoryPage"
+        "400": {description: Invalid page size or cursor}
+        "413": {description: One task exceeds the 64 MiB page response limit}
     post:
       requestBody:
         required: true
@@ -309,6 +341,17 @@ paths:
       - $ref: "#/components/parameters/ID"
     get:
       responses: {"200": {description: Get a task}}
+  /api/tasks/{id}/assignment-explanation:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses:
+        "200":
+          description: Explain the stored scheduler score for each task assignment
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AssignmentExplanation"}
+        "404": {description: Task not found}
   /api/tasks/{id}/cancel:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -361,7 +404,39 @@ paths:
       responses: {"200": {description: Converse with a peer}}
   /api/memory/experiences:
     get:
-      responses: {"200": {description: List memory experiences}}
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          schema: {type: string}
+        - name: task_type
+          in: query
+          schema: {type: string}
+        - name: node_id
+          in: query
+          schema: {type: string}
+        - name: model
+          in: query
+          schema: {type: string}
+        - name: tool
+          in: query
+          schema: {type: string}
+        - name: success_only
+          in: query
+          schema: {type: boolean}
+      responses:
+        "200":
+          description: List memory experiences; page_size or cursor opts in to the cursor envelope.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: {$ref: "#/components/schemas/Experience"}
+                  - $ref: "#/components/schemas/ExperienceHistoryPage"
+        "400": {description: Invalid page size, cursor, or success_only value}
+        "413": {description: One experience exceeds the 64 MiB page response limit}
   /api/memory/insights:
     get:
       responses: {"200": {description: Get memory insights}}
@@ -370,7 +445,24 @@ paths:
       responses: {"200": {description: Get memory recommendations}}
   /api/memory/facts:
     get:
-      responses: {"200": {description: List memory facts}}
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+        - name: scope
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: List memory facts; page_size or cursor opts in to the cursor envelope.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: {$ref: "#/components/schemas/Fact"}
+                  - $ref: "#/components/schemas/FactHistoryPage"
+        "400": {description: Invalid page size or cursor}
+        "413": {description: One fact exceeds the 64 MiB page response limit}
     post:
       responses: {"200": {description: Store a memory fact}}
   /api/memory/facts/{key}:
@@ -380,7 +472,21 @@ paths:
       responses: {"200": {description: Delete a memory fact}}
   /api/memory/dialogues:
     get:
-      responses: {"200": {description: List memory dialogues}}
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: List memory dialogues; page_size or cursor opts in to the cursor envelope.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: {$ref: "#/components/schemas/DialogueRecord"}
+                  - $ref: "#/components/schemas/DialogueHistoryPage"
+        "400": {description: Invalid page size or cursor}
+        "413": {description: One dialogue exceeds the 64 MiB page response limit}
   /api/memory/dialogues/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -496,6 +602,18 @@ paths:
       responses: {"200": {description: Route an Ollama-compatible generate request}}
 components:
   parameters:
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      description: Opts into cursor paging; page sizes are from 1 through 100.
+      schema: {type: integer, minimum: 1, maximum: 100}
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque continuation token bound to the list resource and filters.
+      schema: {type: string}
     ID:
       name: id
       in: path
@@ -528,6 +646,8 @@ components:
       $ref: "./schemas/assignment.schema.json"
     ScoreFactors:
       $ref: "./schemas/score-factors.schema.json"
+    AssignmentExplanation:
+      $ref: "./schemas/assignment-explanation.schema.json"
     NodeStatus:
       $ref: "./schemas/node-status.schema.json"
     Announcement:
@@ -542,16 +662,59 @@ components:
       $ref: "./schemas/dialogue-record.schema.json"
     Snapshot:
       $ref: "./schemas/snapshot.schema.json"
+    ClusterHealth:
+      $ref: "./schemas/cluster-health.schema.json"
     DispatchAttempt:
       $ref: "./schemas/dispatch-attempt.schema.json"
     EngineStatus:
       $ref: "./schemas/engine-status.schema.json"
     RouterRequestEvent:
       $ref: "./schemas/router-request-event.schema.json"
+    TaskHistoryPage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Task"}
+        next_cursor: {type: string}
+        has_more: {type: boolean}
+      additionalProperties: false
+    ExperienceHistoryPage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Experience"}
+        next_cursor: {type: string}
+        has_more: {type: boolean}
+      additionalProperties: false
+    FactHistoryPage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Fact"}
+        next_cursor: {type: string}
+        has_more: {type: boolean}
+      additionalProperties: false
+    DialogueHistoryPage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/DialogueRecord"}
+        next_cursor: {type: string}
+        has_more: {type: boolean}
+      additionalProperties: false
 x-maistr0-registered-routes:
   - "orchestrator|POST /api/pairing/join"
   - "orchestrator|GET /api/pairing/status"
   - "orchestrator|GET /api/status"
+  - "orchestrator|GET /api/cluster/health"
   - "orchestrator|POST /api/pairing/pin"
   - "orchestrator|POST /api/pairing/connect"
   - "orchestrator|GET /api/pairing/roster"
@@ -578,6 +741,7 @@ x-maistr0-registered-routes:
   - "orchestrator|GET /api/tasks"
   - "orchestrator|GET /api/tasks/resumable"
   - "orchestrator|GET /api/tasks/{id}"
+  - "orchestrator|GET /api/tasks/{id}/assignment-explanation"
   - "orchestrator|POST /api/tasks/{id}/cancel"
   - "orchestrator|POST /api/tasks/{id}/approve"
   - "orchestrator|POST /api/tasks/{id}/resume"
@@ -681,6 +845,7 @@ x-maistr0-registered-routes:
   - "node|POST /api/tasks"
   - "node|GET /api/tasks"
   - "node|GET /api/tasks/{id}"
+  - "node|GET /api/tasks/{id}/assignment-explanation"
   - "node|POST /api/tasks/{id}/cancel"
   - "node|POST /api/tasks/{id}/approve"
   - "node|POST /api/tasks/{id}/resume"

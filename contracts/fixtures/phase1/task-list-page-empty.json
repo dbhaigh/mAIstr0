@@ -1,0 +1,18 @@
+{
+  "name": "task-list-page-empty",
+  "request": {
+    "method": "GET",
+    "path": "/api/tasks?page_size=50&q=empty"
+  },
+  "expected_response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "items": [],
+      "has_more": false
+    }
+  },
+  "normalization_rules": [
+    "No generated values are present in the empty page response."
+  ]
+}

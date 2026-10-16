@@ -15,6 +15,8 @@ type AgentProfile struct {
 }
 
 var (
+	// customProfilesMu protects the custom profile map only; profile lookup
+	// releases it before any agent work, with no nested lock order.
 	customProfilesMu sync.RWMutex
 	customProfiles   = make(map[string]AgentProfile)
 )

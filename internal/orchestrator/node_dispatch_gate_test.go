@@ -40,6 +40,7 @@ func TestNodeDispatchGateCapacityMath(t *testing.T) {
 
 func TestNodeDispatchGateRespectsAvailableCapacity(t *testing.T) {
 	gate := newNodeDispatchGate(1)
+	// available models the changing node-advertised capacity read by the waiter.
 	var available atomic.Int64
 	capacity := func() (int, int, int, bool) { return 1, int(available.Load()), 0, true }
 	acquired := make(chan error, 1)
@@ -65,6 +66,7 @@ func TestNodeDispatchGateRespectsAvailableCapacity(t *testing.T) {
 
 func TestNodeDispatchGateRechecksFreshCapacity(t *testing.T) {
 	gate := newNodeDispatchGate(1)
+	// available models concurrent capacity updates without adding test locks.
 	var available atomic.Int64
 	capacity := func() (int, int, int, bool) { return 1, int(available.Load()), 0, true }
 	acquired := make(chan error, 1)

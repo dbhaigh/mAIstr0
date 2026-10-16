@@ -70,7 +70,10 @@ type Session struct {
 	Config    SessionConfig     `json:"config"`
 	Active    bool              `json:"active"`
 
-	mu     sync.RWMutex
+	// mu protects mutable session fields. When both locks are needed,
+	// toolMu is acquired first; session methods never acquire toolMu from mu.
+	mu sync.RWMutex
+	// toolMu serializes tool execution and snapshots against session mutation.
 	toolMu sync.Mutex
 }
 

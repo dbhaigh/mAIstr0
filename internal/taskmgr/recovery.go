@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+// managerSyncID allocates process-local origins without taking a manager lock.
 var managerSyncID atomic.Uint64
 
 func NewManager() *Manager {

@@ -14,6 +14,8 @@ import (
 const dateFormat = "2006-01-02"
 
 type DailyFile struct {
+	// mu serializes writes, rotation, and close for this file; it is the only
+	// lock in the logger and may cover the corresponding filesystem operations.
 	mu            sync.Mutex
 	path          string
 	file          *os.File

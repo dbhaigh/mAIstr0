@@ -17,16 +17,21 @@ type Backend struct {
 	provider Provider
 	toolHost agent.Backend
 
+	// mu protects the session map; release it before taking a piSession.mu or
+	// calling toolHost methods, so the locks are never nested.
 	mu       sync.RWMutex
 	sessions map[string]*piSession
 
 	activeCancels map[string]context.CancelFunc
-	cancelsMu     sync.Mutex
+	// cancelsMu protects cancellation handles independently of mu; invoke
+	// callbacks only after unlocking and never nest these locks.
+	cancelsMu sync.Mutex
 }
 
 type piSession struct {
 	session *agent.Session
-	mu      sync.Mutex
+	// mu protects the session value; Backend.mu is released before acquiring it.
+	mu sync.Mutex
 }
 
 func New(provider Provider, toolHost agent.Backend) *Backend {

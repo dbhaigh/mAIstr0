@@ -14,16 +14,40 @@ import (
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/version"
 )
 
+type pairingJoinRequest struct {
+	ID             string            `json:"id"`
+	Role           string            `json:"role"`
+	PeerAddr       string            `json:"peer_addr,omitempty"`
+	PIN            string            `json:"pin"`
+	CertificatePEM string            `json:"certificate_pem"`
+	Peers          map[string]string `json:"peers,omitempty"`
+}
+
+type pairingJoinResponse struct {
+	ID             string            `json:"id"`
+	Role           string            `json:"role"`
+	CertificatePEM string            `json:"certificate_pem"`
+	Peers          map[string]string `json:"peers"`
+}
+
 func (s *Server) handleSystemStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	persistence := memory.AvailabilityFor(s.mem != nil)
+	status := map[string]any{
 		"role":        "orchestrator",
-		"persistence": memory.AvailabilityFor(s.mem != nil),
-	})
+		"persistence": persistence,
+	}
+	if s.mode == config.OrchestratorModeMinimal {
+		persistence = memory.Availability{}
+		status["persistence"] = persistence
+		status["mode"] = config.OrchestratorModeMinimal
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +161,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	peerAddr := request.PeerAddr
 	if peerAddr == "" {
-		for _, peer := range s.election.discoverySnapshot() {
+		for _, peer := range s.electionPort().discoverySnapshot() {
 			if peer.ID == request.ID && peer.PeerAddr != "" {
 				peerAddr = peer.PeerAddr
 				break
@@ -169,11 +193,11 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 // handleDiscovery returns other mAIstr0 instances (orchestrators or nodes)
 // found on the local network via UDP broadcast, for the GUI's network panel.
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
-	if !s.election.hasDiscovery() {
+	if !s.electionPort().hasDiscovery() {
 		writeJSON(w, http.StatusOK, []discovery.Peer{})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.election.discoverySnapshot())
+	writeJSON(w, http.StatusOK, s.electionPort().discoverySnapshot())
 }
 
 func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
@@ -214,12 +238,12 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UnavailableError(errors.New("orchestrator HTTPS address is invalid")))
 		return
 	}
-	if !s.election.hasDiscovery() {
+	if !s.electionPort().hasDiscovery() {
 		writeError(w, apperr.UnavailableError(errors.New("LAN discovery is unavailable")))
 		return
 	}
 	var nodePeer *discovery.Peer
-	for _, peer := range s.election.discoverySnapshot() {
+	for _, peer := range s.electionPort().discoverySnapshot() {
 		if peer.ID == nodeID && peer.Role == "node" {
 			copy := peer
 			nodePeer = &copy

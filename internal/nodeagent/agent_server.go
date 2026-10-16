@@ -97,6 +97,7 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("POST /api/tasks", a.handleAPITasksPost)
 	mux.HandleFunc("GET /api/tasks", a.handleAPITasksList)
 	mux.HandleFunc("GET /api/tasks/{id}", a.handleAPITaskGet)
+	mux.HandleFunc("GET /api/tasks/{id}/assignment-explanation", a.handleAPITaskAssignmentExplanation)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", a.handleAPITaskCancel)
 	mux.HandleFunc("POST /api/tasks/{id}/approve", a.handleAPITaskApprove)
 	mux.HandleFunc("POST /api/tasks/{id}/resume", a.handleAPITaskResume)

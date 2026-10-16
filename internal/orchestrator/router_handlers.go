@@ -18,6 +18,7 @@ import (
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/workpool"
 )
 
 const (
@@ -108,11 +109,10 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		gate := s.dispatcher.nodeDispatchGate(assignment.NodeID, node.MaxConcurrentTasks)
-		capacity := func() (int, int, int, bool) {
-			return s.dispatcher.dispatchCapacity(ctx, gate, assignment.NodeID, assignment.Address)
-		}
-		if err := gate.acquire(ctx, capacity); err != nil {
+		reservation, err := s.dispatcherPort().reservations().Reserve(ctx, []workpool.CapacityTarget{{
+			NodeID: assignment.NodeID, Address: assignment.Address,
+		}})
+		if err != nil {
 			if ctx.Err() != nil {
 				continue
 			}
@@ -124,17 +124,12 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
-		select {
-		case s.dispatcher.slots <- struct{}{}:
-		case <-ctx.Done():
-			gate.release()
-			continue
-		}
+		reservedNodeID := reservation.Target().NodeID
 		queueMs := time.Since(startedAt).Milliseconds()
-		s.registry.IncrementLoad(assignment.NodeID, 1)
+		s.registry.IncrementLoad(reservedNodeID, 1)
 		s.recordRouterEvent(routerRequestEvent{
 			RequestID: requestID, AttemptID: attemptID, Phase: "attempt_started",
-			Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
+			Timestamp: time.Now(), NodeID: reservedNodeID, Model: assignment.Model,
 			Engine: assignment.Engine, QueueMs: queueMs,
 		})
 
@@ -143,7 +138,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			payload["model"], _ = json.Marshal(assignment.Model)
 			body, err = json.Marshal(payload)
 			if err != nil {
-				s.releaseRouterReservation(assignment.NodeID, gate)
+				s.releaseRouterReservation(reservedNodeID, reservation)
 				writeRouterError(w, http.StatusInternalServerError, "could not prepare inference request")
 				return
 			}
@@ -154,7 +149,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 		if err != nil {
-			s.releaseRouterReservation(assignment.NodeID, gate)
+			s.releaseRouterReservation(reservedNodeID, reservation)
 			writeRouterError(w, http.StatusInternalServerError, "could not prepare inference request")
 			return
 		}
@@ -164,10 +159,10 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Set(inferroute.HeaderRequestID, requestID)
 		upstreamReq.Header.Set(inferroute.HeaderAttemptID, attemptID)
 		attemptStarted := time.Now()
-		resp, requestErr := s.nodeClient.dispatcher.Do(upstreamReq)
+		resp, requestErr := s.nodeClientPort().DoDispatch(upstreamReq)
 
 		if requestErr != nil {
-			s.releaseRouterReservation(assignment.NodeID, gate)
+			s.releaseRouterReservation(reservedNodeID, reservation)
 			failureClass := "transport"
 			if errors.Is(requestErr, context.DeadlineExceeded) {
 				failureClass = "timeout"
@@ -194,7 +189,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, routerMaxErrorBytes+1))
 			resp.Body.Close()
-			s.releaseRouterReservation(assignment.NodeID, gate)
+			s.releaseRouterReservation(reservedNodeID, reservation)
 			if ctx.Err() != nil {
 				s.recordRouterEvent(routerRequestEvent{
 					RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
@@ -242,7 +237,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		firstByteMs := time.Since(attemptStarted).Milliseconds()
 		if n == 0 && readErr != nil && !errors.Is(readErr, io.EOF) {
 			resp.Body.Close()
-			s.releaseRouterReservation(assignment.NodeID, gate)
+			s.releaseRouterReservation(reservedNodeID, reservation)
 			s.recordRouterEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
@@ -271,7 +266,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		if n > 0 {
 			if _, err := w.Write(firstByte[:n]); err != nil {
 				resp.Body.Close()
-				s.releaseRouterReservation(assignment.NodeID, gate)
+				s.releaseRouterReservation(reservedNodeID, reservation)
 				return
 			}
 			if flusher, ok := w.(http.Flusher); ok {
@@ -285,7 +280,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			streamErr = streamRouterResponse(w, resp.Body)
 		}
 		resp.Body.Close()
-		s.releaseRouterReservation(assignment.NodeID, gate)
+		s.releaseRouterReservation(reservedNodeID, reservation)
 		event := routerRequestEvent{
 			RequestID: requestID, AttemptID: attemptID, Phase: "attempt_succeeded",
 			Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
@@ -308,7 +303,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol, tried map[string]bool) (scheduler.Assignment, error) {
-	nodes := s.dispatcher.schedulerNodes()
+	nodes := s.dispatcherPort().schedulerNodes()
 	eligible := make([]cluster.NodeStatus, 0, len(nodes))
 	for _, node := range nodes {
 		models := make([]engine.Model, 0, len(node.Models))
@@ -344,7 +339,7 @@ func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol,
 		ID: "router-inference", Description: "Transparent inference request",
 		TaskType: "general", PreferredModel: model,
 	}
-	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{subtask}, eligible, s.dispatcher.experience())
+	assignments, err := scheduler.AssignWithExperience([]scheduler.Subtask{subtask}, eligible, s.dispatcherPort().experience())
 	if err != nil {
 		return scheduler.Assignment{}, err
 	}
@@ -354,10 +349,9 @@ func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol,
 	return assignments[0], nil
 }
 
-func (s *Server) releaseRouterReservation(nodeID string, gate *nodeDispatchGate) {
+func (s *Server) releaseRouterReservation(nodeID string, reservation workpool.CapacityReservation) {
 	s.registry.IncrementLoad(nodeID, -1)
-	gate.release()
-	<-s.dispatcher.slots
+	reservation.Release()
 }
 
 func (s *Server) recordRouterEvent(event routerRequestEvent) {

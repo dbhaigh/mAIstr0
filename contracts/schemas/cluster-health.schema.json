@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/cluster-health.schema.json",
+  "title": "ClusterHealth",
+  "type": "object",
+  "required": ["nodes", "global_dispatch", "engine_readiness", "telemetry_freshness", "warnings"],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["node_id", "healthy", "active", "max", "remaining", "oversubscribed", "telemetry_state"],
+        "properties": {
+          "node_id": {"type": "string"},
+          "healthy": {"type": "boolean"},
+          "active": {"type": "integer", "minimum": 0},
+          "max": {"type": "integer", "minimum": 0},
+          "remaining": {"type": "integer", "minimum": 0},
+          "oversubscribed": {"type": "boolean"},
+          "telemetry_state": {"enum": ["fresh", "stale", "unavailable"]},
+          "telemetry_age_ms": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": false
+      }
+    },
+    "global_dispatch": {
+      "type": "object",
+      "required": ["global_limit", "active_slots", "queue_depth", "active_workers"],
+      "properties": {
+        "global_limit": {"type": "integer", "minimum": 0},
+        "active_slots": {"type": "integer", "minimum": 0},
+        "queue_depth": {"type": "integer", "minimum": 0},
+        "active_workers": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "engine_readiness": {
+      "type": "object",
+      "required": ["ready_engines", "total_engines", "nodes_with_engines", "nodes_with_ready_engine"],
+      "properties": {
+        "ready_engines": {"type": "integer", "minimum": 0},
+        "total_engines": {"type": "integer", "minimum": 0},
+        "nodes_with_engines": {"type": "integer", "minimum": 0},
+        "nodes_with_ready_engine": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "telemetry_freshness": {
+      "type": "object",
+      "required": ["fresh_nodes", "stale_nodes", "unavailable_nodes", "freshness_window_ms"],
+      "properties": {
+        "fresh_nodes": {"type": "integer", "minimum": 0},
+        "stale_nodes": {"type": "integer", "minimum": 0},
+        "unavailable_nodes": {"type": "integer", "minimum": 0},
+        "freshness_window_ms": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

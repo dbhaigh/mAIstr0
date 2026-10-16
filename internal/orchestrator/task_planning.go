@@ -54,6 +54,12 @@ type taskPlanner struct {
 	experience scheduler.Experience
 }
 
+type taskPlannerAPI interface {
+	createTask(context.Context, createTaskRequest) (*taskmgr.Task, error)
+	planSubtasks(context.Context, string) (*scheduler.TaskGraph, []scheduler.Subtask, error)
+	executeWorkflow(context.Context, string, []scheduler.Subtask, bool) (string, error)
+}
+
 type schedulerAdapter struct{}
 
 func (schedulerAdapter) AssignWithExperience(subtasks []scheduler.Subtask, nodes []cluster.NodeStatus, experience scheduler.Experience) ([]scheduler.Assignment, error) {
@@ -75,11 +81,11 @@ func newTaskPlanner(
 }
 
 func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmgr.Task, error) {
-	return s.planner.createTask(ctx, req)
+	return s.plannerPort().createTask(ctx, req)
 }
 
 func (s *Server) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
-	return s.planner.planSubtasks(ctx, description)
+	return s.plannerPort().planSubtasks(ctx, description)
 }
 
 func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*taskmgr.Task, error) {
@@ -172,7 +178,7 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 }
 
 func (s *Server) executeWorkflow(ctx context.Context, description string, subtasks []scheduler.Subtask, requireReview bool) (string, error) {
-	return s.planner.executeWorkflow(ctx, description, subtasks, requireReview)
+	return s.plannerPort().executeWorkflow(ctx, description, subtasks, requireReview)
 }
 
 func (p *taskPlanner) executeWorkflow(ctx context.Context, description string, subtasks []scheduler.Subtask, requireReview bool) (string, error) {

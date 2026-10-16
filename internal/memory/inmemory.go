@@ -8,11 +8,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/syncinterval"
 )
 
+// inMemoryStoreID allocates unique process-local origins without store locking.
 var inMemoryStoreID atomic.Uint64
 
 type memoryStore struct {
+	// mu protects all in-memory records, indexes, and watermarks. Methods release
+	// it before notifying the change signal; no store lock is nested beneath it.
 	mu             sync.RWMutex
 	origin         string
 	nextID         uint64
@@ -25,6 +30,7 @@ type memoryStore struct {
 	performances   map[string]Performance
 	dialogues      map[string]DialogueRecord
 	agentSessions  map[string][]byte
+	changes        syncinterval.Signal
 }
 
 func NewInMemoryStore() Store {
@@ -45,6 +51,8 @@ func NewInMemoryStore() Store {
 func (s *memoryStore) Path() string { return "" }
 
 func (s *memoryStore) Close() error { return nil }
+
+func (s *memoryStore) Changes() <-chan struct{} { return s.changes.Changes() }
 
 func (s *memoryStore) Snapshot() Snapshot {
 	s.mu.RLock()
@@ -118,6 +126,7 @@ func (s *memoryStore) nextSequenceLocked(origin string) uint64 {
 	sequence++
 	s.sequences[origin] = sequence
 	s.watermarks[origin] = sequence
+	s.changes.Notify()
 	return sequence
 }
 
@@ -127,6 +136,7 @@ func (s *memoryStore) observeRecordLocked(origin string, sequence uint64) {
 	}
 	if sequence > s.watermarks[origin] {
 		s.watermarks[origin] = sequence
+		s.changes.Notify()
 	}
 	if sequence > s.sequences[origin] {
 		s.sequences[origin] = sequence
@@ -400,8 +410,12 @@ func (s *memoryStore) DeleteFact(scope, key string) error {
 		scope = "cluster"
 	}
 	s.mu.Lock()
+	_, existed := s.facts[scope+"|"+key]
 	delete(s.facts, scope+"|"+key)
 	s.mu.Unlock()
+	if existed {
+		s.changes.Notify()
+	}
 	return nil
 }
 
@@ -690,6 +704,9 @@ func (s *memoryStore) Prune(olderThan time.Duration) (int, error) {
 		kept = append(kept, experience)
 	}
 	s.experiences = kept
+	if removed > 0 {
+		s.changes.Notify()
+	}
 	return removed, nil
 }
 

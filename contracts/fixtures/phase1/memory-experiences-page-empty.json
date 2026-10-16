@@ -1,0 +1,18 @@
+{
+  "name": "memory-experiences-page-empty",
+  "request": {
+    "method": "GET",
+    "path": "/api/memory/experiences?page_size=50&q=empty"
+  },
+  "expected_response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "items": [],
+      "has_more": false
+    }
+  },
+  "normalization_rules": [
+    "No generated values are present in the empty page response."
+  ]
+}

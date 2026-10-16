@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/syncinterval"
 )
 
 type Status string
@@ -82,7 +83,10 @@ type Task struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	changed         chan struct{}
-	persistMu       *sync.Mutex // Serializes durable updates to this task.
+	// persistMu serializes durable updates to this task. Writers acquire
+	// persistGate first, then this lock, then Manager.mu; never wait for it
+	// while holding Manager.mu.
+	persistMu *sync.Mutex
 }
 
 // Finalizer converts completed subtask outputs into the task's final result.
@@ -98,18 +102,26 @@ type Store interface {
 }
 
 // Manager is a thread-safe in-memory store of tasks. Writers acquire
-// persistGate before per-task persistMu and mu. State replacement takes
-// persistGate exclusively before mu, and Close takes it exclusively before
-// closing the store. Read-only operations take only mu.
+// persistGate before per-task persistMu and mu. They may briefly use mu to
+// look up a task, but release it before waiting for persistMu. State
+// replacement takes persistGate exclusively before mu, and Close takes it
+// exclusively before closing the store. Read-only operations take only mu.
 type Manager struct {
-	mu          sync.RWMutex
-	persistGate sync.RWMutex // Excludes replica replacement and database close during task writes.
+	// mu protects tasks and the recent-task cache; every task write invalidates the cache before unlocking.
+	mu sync.RWMutex
+	// persistGate is outermost: writers hold its read lock through persistence;
+	// replacement and Close take it exclusively before touching mu or the store.
+	persistGate sync.RWMutex
 	tasks       map[string]*Task
-	seq         int
-	syncOrigin  string
-	syncSeq     map[string]uint64
-	finalizer   Finalizer
-	store       Store
+	recentTasks []*Task
+	// recentTasksValid is protected by mu and cleared on every task mutation.
+	recentTasksValid bool
+	seq              int
+	syncOrigin       string
+	syncSeq          map[string]uint64
+	finalizer        Finalizer
+	store            Store
+	changes          syncinterval.Signal
 }
 
 func (m *Manager) lockTaskForUpdate(id string) (*Task, bool) {
@@ -144,6 +156,7 @@ func cloneTask(t *Task) *Task {
 	cloned.Subtasks = append([]SubtaskResult(nil), t.Subtasks...)
 	for i := range cloned.Subtasks {
 		cloned.Subtasks[i].Subtask = cloneSubtask(t.Subtasks[i].Subtask)
+		cloned.Subtasks[i].Factors.MatchedCapabilities = append([]string(nil), t.Subtasks[i].Factors.MatchedCapabilities...)
 		cloned.Subtasks[i].Attempts = append([]DispatchAttempt(nil), t.Subtasks[i].Attempts...)
 		for j := range cloned.Subtasks[i].Attempts {
 			if finishedAt := t.Subtasks[i].Attempts[j].FinishedAt; finishedAt != nil {
@@ -157,6 +170,15 @@ func cloneTask(t *Task) *Task {
 	}
 	return &cloned
 }
+
+func (m *Manager) invalidateRecentTasksLocked() {
+	m.recentTasksValid = false
+	m.recentTasks = nil
+	m.changes.Notify()
+}
+
+// Changes returns a broadcast signal that closes when task history changes.
+func (m *Manager) Changes() <-chan struct{} { return m.changes.Changes() }
 
 func cloneSubtask(subtask scheduler.Subtask) scheduler.Subtask {
 	subtask.Tags = append([]string(nil), subtask.Tags...)

@@ -20,6 +20,7 @@ import (
 
 func TestRouterRetriesTransientFailureBeforeForwardingContent(t *testing.T) {
 	srv := newTestServer(t)
+	// Atomic counters observe concurrent HTTP handler calls from retry attempts.
 	var firstCalls, secondCalls atomic.Int32
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstCalls.Add(1)
@@ -96,6 +97,7 @@ func TestRouterRetriesTransientFailureBeforeForwardingContent(t *testing.T) {
 
 func TestRouterDoesNotRetryClientErrors(t *testing.T) {
 	srv := newTestServer(t)
+	// Counts whether a later candidate was incorrectly called after a client error.
 	var secondCalls atomic.Int32
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -148,6 +150,7 @@ func TestRouterNeverSwitchesNodesAfterContentIsCommitted(t *testing.T) {
 	srv := newTestServer(t)
 	srv.registry.Upsert(routerTestNode("a-first", "http://node-a", 100))
 	srv.registry.Upsert(routerTestNode("b-second", "http://node-b", 1))
+	// Counts concurrent node requests while ensuring committed streams do not fail over.
 	var firstCalls, secondCalls atomic.Int32
 	srv.nodeClient.dispatcher.Transport = routerRoundTripper(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Host {

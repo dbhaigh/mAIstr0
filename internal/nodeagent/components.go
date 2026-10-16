@@ -19,7 +19,8 @@ import (
 )
 
 type agentState struct {
-	// mu protects cfg, model selection, active task count, and peer membership.
+	// mu protects config, model selection, active-task count, and peer membership.
+	// It is a leaf lock: copy state under it, then release before touching other components or doing I/O.
 	mu             sync.Mutex
 	cfg            config.NodeConfig
 	disabledModels map[string]bool
@@ -32,22 +33,32 @@ type engineComponent struct {
 	engines         []engine.Engine
 	detectedEngines []engine.Engine
 	detectedSeenAt  map[string]time.Time
-	// enginesMu protects engine snapshots and lastEngineScan.
+	// enginesMu protects configured/detected engines and the generation-keyed ordered snapshot cache.
+	// When both scan locks are needed, engineScanMu precedes enginesMu; engine calls happen without enginesMu held.
 	enginesMu sync.RWMutex
-	// engineScanMu serializes calls to the detector and detected-engine updates.
+	// engineSnapshotCache is invalidated on engine scans/configuration and reused until hwGeneration changes.
+	engineGeneration          uint64
+	engineSnapshotCache       []engine.Engine
+	engineSnapshotGeneration  uint64
+	engineSnapshotHardwareGen uint64
+	engineSnapshotCacheValid  bool
+	// engineScanMu serializes detector calls and updates; if both scan locks are needed, it precedes enginesMu.
 	engineScanMu   sync.Mutex
 	engineDetector func() []engine.Engine
 	lastEngineScan time.Time
-	telemetry      interface{ hardwareSnapshot() hardware.Info }
-	state          interface {
+	telemetry      interface {
+		hardwareSnapshot() hardware.Info
+		hardwareSnapshotVersioned() (hardware.Info, uint64)
+	}
+	state interface {
 		disabledModelSnapshot() map[string]bool
 		defaultModelName() string
 		setModelConfig(map[string]bool, string)
 	}
 
-	// refreshMu serializes inventory refresh and invalidation.
+	// refreshMu serializes inventory refresh and invalidation; its order is refreshMu -> modelMu -> agentState.mu.
 	refreshMu sync.Mutex
-	// modelMu protects the reported model and engine inventory snapshots.
+	// modelMu protects reported inventory; never acquire refreshMu while holding it.
 	modelMu         sync.Mutex
 	reportedModels  []ModelState
 	reportedEngines []engine.Status
@@ -55,9 +66,11 @@ type engineComponent struct {
 }
 
 type telemetryComponent struct {
-	// hwMu protects hardware and all published telemetry histories.
+	// hwMu protects the latest hardware snapshot, its generation, and telemetry histories.
+	// It is a leaf lock; probes and consumers run after releasing it.
 	hwMu          sync.RWMutex
 	hw            hardware.Info
+	hwGeneration  uint64
 	gpuHistory    []hardware.GPUUsageSample
 	npuHistory    []hardware.NPUUsageSample
 	systemHistory []hardware.SystemUsageSample
@@ -100,14 +113,14 @@ type orchestratorLink struct {
 	events         *hub.Hub
 	statusSnapshot func() statusResponse
 	currentTasks   func() []*taskmgr.Task
-	// orchMu protects the current orchestrator address and ID.
+	// orchMu protects the current orchestrator address and ID; it is not nested with joinedMu or pairingInviteMu.
 	orchMu           sync.RWMutex
 	orchestratorAddr string
 	orchestratorID   string
-	// joinedMu protects the registration state.
+	// joinedMu protects registration state and is not held across registration or network calls.
 	joinedMu sync.Mutex
 	joined   bool
-	// pairingInviteMu protects the pending invitation and acceptance state.
+	// pairingInviteMu protects invitation state; do not hold it while calling peers or waiting for user confirmation.
 	pairingInviteMu  sync.Mutex
 	pairingInvite    *pairingInvitation
 	pairingAccepting bool
@@ -134,10 +147,10 @@ type peerComponent struct {
 
 type dialogueComponent struct {
 	dialogues map[string]*Dialogue
-	// dialoguesMu protects dialogue sessions.
+	// dialoguesMu protects dialogue state; release it before inference, persistence, or cancellation callbacks.
 	dialoguesMu     sync.RWMutex
 	dialogueCancels map[string]context.CancelFunc
-	// dialogueCancelsMu protects cancellation handles for active turns.
+	// dialogueCancelsMu protects cancellation handles; never nest it with dialoguesMu and invoke cancels after unlock.
 	dialogueCancelsMu sync.Mutex
 	nodeID            string
 	mem               memory.Store
@@ -198,7 +211,10 @@ func (s *agentState) setModelConfig(disabled map[string]bool, defaultModel strin
 func newEngineComponent(
 	engines []engine.Engine,
 	detector func() []engine.Engine,
-	telemetry interface{ hardwareSnapshot() hardware.Info },
+	telemetry interface {
+		hardwareSnapshot() hardware.Info
+		hardwareSnapshotVersioned() (hardware.Info, uint64)
+	},
 	state interface {
 		disabledModelSnapshot() map[string]bool
 		defaultModelName() string

@@ -47,7 +47,8 @@ type splitListener struct {
 	plain  chan net.Conn
 	secure chan net.Conn
 	done   chan struct{}
-	once   sync.Once
+	// once closes done exactly once; it is independent of listener channels.
+	once sync.Once
 }
 
 func newSplitListener(raw net.Listener) *splitListener {

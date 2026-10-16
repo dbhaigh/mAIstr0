@@ -14,6 +14,7 @@ import (
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/syncinterval"
 )
 
 func flattenChatML(msgs []engine.ChatMessage) string {
@@ -398,20 +399,20 @@ func (a *Agent) syncMemoryToOrchestrator() {
 	if a.mem == nil {
 		return
 	}
-	sync := func() {
+	var backoff syncinterval.Backoff
+	for {
+		changes := memorySyncChanges(a.mem)
+		before := a.mem.Watermarks()
 		addr := a.getOrchestratorAddr()
-		if addr == "" {
-			return
+		if addr != "" {
+			if err := a.syncOrchestratorMemory(addr); err != nil {
+				log.Printf("FILE_ONLY: nodeagent: memory sync with orchestrator %s failed: %v", addr, err)
+			}
 		}
-		if err := a.syncOrchestratorMemory(addr); err != nil {
-			log.Printf("FILE_ONLY: nodeagent: memory sync with orchestrator %s failed: %v", addr, err)
+		backoff.Observe(syncinterval.WatermarksAdvanced(before, a.mem.Watermarks()))
+		if syncinterval.Wait(backoff.Current(), changes) {
+			backoff.Reset()
 		}
-	}
-	sync()
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		sync()
 	}
 }
 

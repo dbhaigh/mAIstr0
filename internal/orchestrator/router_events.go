@@ -20,6 +20,7 @@ type routerRequestEvent struct {
 }
 
 type routerEventLog struct {
+	// mu protects the bounded event slice; callers must not hold it while doing I/O.
 	mu       sync.RWMutex
 	capacity int
 	events   []routerRequestEvent

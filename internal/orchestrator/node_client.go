@@ -21,10 +21,40 @@ type nodeClient struct {
 	status     *http.Client
 }
 
+type nodeClientAPI interface {
+	setTransport(func() *http.Transport)
+	discoveredNodeStatus(string) (cluster.NodeStatus, error)
+	discoveredNodeStatusContext(context.Context, string) (cluster.NodeStatus, error)
+	streamNodeGenerate(http.ResponseWriter, *http.Request, string, string, generateAPIRequest, string)
+	callNodeGenerate(string, string, string) (string, error)
+	callNodeGenerateWithOptions(string, string, string, float64, int) (string, error)
+	callNodeGenerateWithOptionsContext(context.Context, string, string, string, float64, int) (string, error)
+	Do(*http.Request) (*http.Response, error)
+	DoDispatch(*http.Request) (*http.Response, error)
+	Get(string) (*http.Response, error)
+	PostDispatch(string, string, io.Reader) (*http.Response, error)
+}
+
 func newNodeClient(client, dispatcher, status *http.Client) *nodeClient {
 	return &nodeClient{
 		client: client, dispatcher: dispatcher, status: status,
 	}
+}
+
+func (c *nodeClient) Do(request *http.Request) (*http.Response, error) {
+	return c.client.Do(request)
+}
+
+func (c *nodeClient) DoDispatch(request *http.Request) (*http.Response, error) {
+	return c.dispatcher.Do(request)
+}
+
+func (c *nodeClient) Get(url string) (*http.Response, error) {
+	return c.client.Get(url)
+}
+
+func (c *nodeClient) PostDispatch(url, contentType string, body io.Reader) (*http.Response, error) {
+	return c.dispatcher.Post(url, contentType, body)
 }
 
 func (c *nodeClient) setTransport(newTransport func() *http.Transport) {

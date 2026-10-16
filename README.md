@@ -87,6 +87,27 @@ The [OpenAPI specification](./contracts/openapi.yaml), [JSON Schemas](./contract
 and [porting guide](./contracts/PORTING.md) describe the language-neutral HTTP,
 configuration, task, scheduler, node, discovery, and memory contracts.
 
+## Architecture and concurrency
+
+Scheduler assignments use the deterministic, lock-free scorer in
+[`internal/scheduler/score`](./internal/scheduler/score/score.go); eligibility
+and capacity prefilters run before scoring. Workflow dispatch and direct
+OpenAI-compatible routing share the [`CapacityGate`](./internal/workpool/pool.go),
+which reserves per-node and global slots until released. The
+[`ClusterHealth`](./internal/orchestrator/cluster_health.go) view model is the
+single source of truth for capacity and readiness in both the API and SSE
+dashboard snapshots.
+
+Keep critical sections narrow and avoid calling other components or doing
+network work while holding state locks. The task-manager write hierarchy is
+`persistGate` → per-task `persistMu` → `Manager.mu`; release `Manager.mu`
+before waiting for a task lock. Node-agent engine scans acquire
+`engineScanMu` before `enginesMu`, while inventory refresh follows
+`refreshMu` → `modelMu` → agent state. Pass request and task contexts through
+dispatch and capacity waits. Workpool `Options` controls whether submitter
+cancellation continues to propagate after a job is accepted; pool shutdown
+always cancels running work.
+
 ## Orchestrator agent backends
 
 The interactive orchestrator uses [Pi](https://github.com/earendil-works/pi)
@@ -103,10 +124,15 @@ with `--harness deepseek`. The Interactive Orchestrator sidebar can switch the
 default harness at runtime; this applies to new conversations, while existing
 conversations stay on their original harness. Runtime changes last until the
 orchestrator restarts; use the `harness` setting in the orchestrator
-configuration to choose the startup default.
+configuration to choose the startup default. The default `full` mode enables
+interactive harnesses and persistent learning. Set `"mode": "minimal"` in the
+orchestrator configuration to omit harness and memory/learning endpoints and
+their storage; cluster task history and the `/router/...` and `/v1/...`
+routing APIs remain available.
 
 ```json
 {
+  "mode": "full",
   "harness": "pi"
 }
 ```
@@ -242,7 +268,8 @@ Configuration is normalized before startup. Empty harness settings default to
 `pi` (harness names are trimmed and lowercased), empty tray modes default to
 `taskbar`, and zero or omitted concurrency settings use their documented
 defaults. Negative concurrency values are rejected. Orchestrator configs must
-keep LAN discovery enabled.
+keep LAN discovery enabled. The optional orchestrator `mode` setting accepts
+`full` or `minimal`; omitted or empty values normalize to `full`.
 
 Listen addresses must use `host:port` or `:port` syntax. A node's
 `orchestrator_addr` and `advertise_addr` must be empty or HTTPS URLs. Configured

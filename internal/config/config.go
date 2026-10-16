@@ -18,6 +18,9 @@ import (
 const (
 	DefaultNodeConcurrency     = 2
 	DefaultDispatchConcurrency = 16
+
+	OrchestratorModeFull    = "full"
+	OrchestratorModeMinimal = "minimal"
 )
 
 type EngineConfig struct {
@@ -106,7 +109,8 @@ func DefaultNodeConfig() NodeConfig {
 
 type OrchestratorConfig struct {
 	ListenAddr                 string `json:"listen_addr"`
-	Harness                    string `json:"harness"` // "deepseek" or "pi"
+	Mode                       string `json:"mode,omitempty"` // "full" or "minimal"
+	Harness                    string `json:"harness"`        // "deepseek" or "pi"
 	MaxConcurrentDispatches    int    `json:"max_concurrent_dispatches"`
 	DiscoveryEnabled           bool   `json:"discovery_enabled"`
 	AutoOpenBrowser            bool   `json:"auto_open_browser"`
@@ -118,6 +122,10 @@ type OrchestratorConfig struct {
 func (cfg *OrchestratorConfig) Normalize() {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = DefaultOrchestratorConfig().ListenAddr
+	}
+	cfg.Mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if cfg.Mode == "" {
+		cfg.Mode = OrchestratorModeFull
 	}
 	cfg.Harness = strings.ToLower(strings.TrimSpace(cfg.Harness))
 	if cfg.Harness == "" {
@@ -136,6 +144,9 @@ func (cfg OrchestratorConfig) Validate() error {
 	var violations []error
 	if err := validateListenAddr(cfg.ListenAddr); err != nil {
 		violations = append(violations, fmt.Errorf("listen_addr: %w", err))
+	}
+	if cfg.Mode != "" && cfg.Mode != OrchestratorModeFull && cfg.Mode != OrchestratorModeMinimal {
+		violations = append(violations, fmt.Errorf("mode must be %q or %q", OrchestratorModeFull, OrchestratorModeMinimal))
 	}
 	if cfg.Harness != "pi" && cfg.Harness != "deepseek" {
 		violations = append(violations, fmt.Errorf("harness must be \"pi\" or \"deepseek\""))
@@ -158,6 +169,7 @@ func (cfg OrchestratorConfig) Validate() error {
 func DefaultOrchestratorConfig() OrchestratorConfig {
 	return OrchestratorConfig{
 		ListenAddr:              ":7450",
+		Mode:                    OrchestratorModeFull,
 		Harness:                 "pi",
 		MaxConcurrentDispatches: DefaultDispatchConcurrency,
 		DiscoveryEnabled:        true,

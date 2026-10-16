@@ -10,6 +10,8 @@ import (
 	"sync"
 )
 
+// linuxCPUUsageState serializes updates to the previous /proc/stat sample;
+// the mutex protects only these counters and is not nested with other locks.
 var linuxCPUUsageState struct {
 	sync.Mutex
 	total uint64

@@ -333,103 +333,26 @@ func memorySyncRecordCount(snapshot memory.Snapshot) int {
 	return len(snapshot.Experiences) + len(snapshot.Facts) + len(snapshot.Performances) + len(snapshot.Dialogues)
 }
 
-func (a *Agent) syncPeerMemoryLoop() {
-	a.syncPeerMemory()
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		a.syncPeerMemory()
+func memorySyncChanges(store memory.Store) <-chan struct{} {
+	if source, ok := store.(memory.ChangeSource); ok {
+		return source.Changes()
 	}
+	return nil
+}
+
+func memorySyncWatermarks(store memory.Store) map[string]uint64 {
+	if store == nil {
+		return nil
+	}
+	return store.Watermarks()
+}
+
+func (a *Agent) syncPeerMemoryLoop() {
+	a.syncer.syncPeerMemoryLoop()
 }
 
 // syncPeerMemory makes the elected node a relay for memory in standalone
 // peer clusters. Joined nodes use the orchestrator as their memory relay.
 func (a *Agent) syncPeerMemory() {
-	if a.mem == nil || (a.getOrchestratorAddr() != "" && a.getOrchestratorID() != "") {
-		return
-	}
-	if a.mostCapableNode().ID != a.cfg.NodeID {
-		return
-	}
-
-	peers := a.Peers()
-	remoteSnapshots := make(map[string]memory.Snapshot)
-	for _, peer := range peers {
-		if !peer.Healthy || peer.ID == a.cfg.NodeID || peer.Address == "" {
-			continue
-		}
-		fetchStarted := time.Now()
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_start node_id=%s peer_id=%s body_bytes=unknown",
-			a.cfg.NodeID, peer.ID)
-		snapshot, bodyBytes, err := fetchMemorySyncSnapshot(
-			a.memorySyncClient,
-			strings.TrimRight(peer.Address, "/")+"/memory/sync",
-			memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peer.ID)),
-		)
-		if err != nil {
-			log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_failed node_id=%s peer_id=%s body_bytes=0 elapsed=%s stage=request error=%v",
-				a.cfg.NodeID, peer.ID, time.Since(fetchStarted), err)
-			log.Printf("FILE_ONLY: nodeagent: cluster memory fetch from %s failed: %v", peer.ID, err)
-			continue
-		}
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_complete node_id=%s peer_id=%s status=%d body_bytes=%d records=%d elapsed=%s",
-			a.cfg.NodeID, peer.ID, http.StatusOK, bodyBytes, memorySyncRecordCount(snapshot), time.Since(fetchStarted))
-		mergeStarted := time.Now()
-		if err := a.mem.MergeSnapshotFrom(snapshot, peer.ID); err != nil {
-			log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=merge_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s error=%v",
-				a.cfg.NodeID, peer.ID, bodyBytes, time.Since(mergeStarted), err)
-			log.Printf("FILE_ONLY: nodeagent: cluster memory import from %s failed: %v", peer.ID, err)
-		} else {
-			remoteSnapshots[peer.ID] = snapshot
-			log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=merge_complete node_id=%s peer_id=%s body_bytes=%d records=%d elapsed=%s",
-				a.cfg.NodeID, peer.ID, bodyBytes, memorySyncRecordCount(snapshot), time.Since(mergeStarted))
-		}
-	}
-
-	for _, peer := range peers {
-		if !peer.Healthy || peer.ID == a.cfg.NodeID || peer.Address == "" {
-			continue
-		}
-		remoteSnapshot, fetched := remoteSnapshots[peer.ID]
-		peerVersion := 0
-		peerWatermarks := map[string]uint64(nil)
-		if fetched {
-			peerVersion = remoteSnapshot.SyncVersion
-			peerWatermarks = remoteSnapshot.Watermarks
-		}
-		outgoing := memory.SnapshotForPeer(a.mem, peerVersion, peerWatermarks)
-		bodies, err := marshalMemorySnapshotPages(outgoing, maxMemorySyncBodyBytes, func(page memory.Snapshot) ([]byte, error) {
-			return marshalMemorySnapshot(page)
-		})
-		if err != nil {
-			log.Printf("FILE_ONLY: nodeagent: cluster memory encode for %s failed: %v", peer.ID, err)
-			continue
-		}
-		sendStarted := time.Now()
-		var totalBodyBytes int64
-		for _, body := range bodies {
-			totalBodyBytes += int64(len(body))
-		}
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_start node_id=%s peer_id=%s body_bytes=%d pages=%d",
-			a.cfg.NodeID, peer.ID, totalBodyBytes, len(bodies))
-		sentBytes, err := postMemorySnapshotPages(
-			a.memorySyncClient,
-			strings.TrimRight(peer.Address, "/")+"/memory/sync",
-			bodies,
-			a.mem.Watermarks(),
-		)
-		if err != nil {
-			log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed node_id=%s peer_id=%s body_bytes=%d elapsed=%s error=%v",
-				a.cfg.NodeID, peer.ID, sentBytes, time.Since(sendStarted), err)
-			log.Printf("FILE_ONLY: nodeagent: cluster memory replication to %s failed: %v", peer.ID, err)
-			continue
-		}
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_complete node_id=%s peer_id=%s status=%d body_bytes=%d elapsed=%s",
-			a.cfg.NodeID, peer.ID, http.StatusNoContent, sentBytes, time.Since(sendStarted))
-		if fetched && memory.SupportsIncrementalSync(peerVersion) {
-			if err := a.mem.SetPeerWatermarks(peer.ID, outgoing.Watermarks); err != nil {
-				log.Printf("FILE_ONLY: nodeagent: persist memory watermarks for %s failed: %v", peer.ID, err)
-			}
-		}
-	}
+	a.syncer.syncPeerMemory()
 }

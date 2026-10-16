@@ -11,6 +11,7 @@ import (
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/maistr0/maistr0/internal/workpool"
 	"io"
 	"log"
 	"net"
@@ -105,15 +106,10 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("node was ejected before dispatch"))
 			return
 		}
-		limit := node.MaxConcurrentTasks
-		if limit <= 0 {
-			limit = d.limit
-		}
-		gate := d.nodeDispatchGate(current.NodeID, limit)
-		capacity := func() (int, int, int, bool) {
-			return d.dispatchCapacity(dispatchCtx, gate, current.NodeID, current.Address)
-		}
-		if err := gate.acquire(dispatchCtx, capacity); err != nil {
+		reservation, err := d.capacityGate.Reserve(dispatchCtx, []workpool.CapacityTarget{{
+			NodeID: current.NodeID, Address: current.Address,
+		}})
+		if err != nil {
 			if dispatchCtx.Err() != nil {
 				return
 			}
@@ -130,22 +126,12 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
 			return
 		}
-		nodeSlotHeld := true
-		globalSlotHeld := false
+		reservationHeld := true
 		defer func() {
-			if nodeSlotHeld {
-				gate.release()
-			}
-			if globalSlotHeld {
-				<-d.slots
+			if reservationHeld {
+				reservation.Release()
 			}
 		}()
-		select {
-		case d.slots <- struct{}{}:
-			globalSlotHeld = true
-		case <-dispatchCtx.Done():
-			return
-		}
 		if err := d.tasks.StartSubtaskChecked(taskID, assignment.Subtask.ID); err != nil {
 			log.Printf("orchestrator: could not persist start of subtask %s: %v", assignment.Subtask.ID, err)
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
@@ -198,10 +184,8 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 			attemptPrompt = validationRetryPrompt(prompt, attemptErr, output)
 		}
 		d.registry.IncrementLoad(current.NodeID, -1)
-		<-d.slots
-		globalSlotHeld = false
-		gate.release()
-		nodeSlotHeld = false
+		reservation.Release()
+		reservationHeld = false
 
 		if attemptErr == nil {
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, output, nil)

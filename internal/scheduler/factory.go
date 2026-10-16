@@ -12,13 +12,13 @@ import (
 
 // SubAgentSpec is a 4-tuple style request to create a specialized worker.
 type SubAgentSpec struct {
-	Name                  string   `json:"name,omitempty"`                  // Optional worker name
-	Role                  string   `json:"role,omitempty"`                  // Virtual role name (e.g. "code-auditor")
-	Instruction           string   `json:"instruction"`                     // 1. Instruction / system prompt
-	RequiredTools         []string `json:"required_tools,omitempty"`        // 2. Required tools
-	RequiredCapabilities  []string `json:"required_capabilities,omitempty"` // 3. Required model capabilities
-	PreferredCapabilities []string `json:"preferred_capabilities,omitempty"`// 3b. Preferred model capabilities
-	Context               string   `json:"context,omitempty"`               // 4. Relevant context
+	Name                  string   `json:"name,omitempty"`                   // Optional worker name
+	Role                  string   `json:"role,omitempty"`                   // Virtual role name (e.g. "code-auditor")
+	Instruction           string   `json:"instruction"`                      // 1. Instruction / system prompt
+	RequiredTools         []string `json:"required_tools,omitempty"`         // 2. Required tools
+	RequiredCapabilities  []string `json:"required_capabilities,omitempty"`  // 3. Required model capabilities
+	PreferredCapabilities []string `json:"preferred_capabilities,omitempty"` // 3b. Preferred model capabilities
+	Context               string   `json:"context,omitempty"`                // 4. Relevant context
 	TaskType              string   `json:"task_type,omitempty"`
 	OutputFormat          string   `json:"output_format,omitempty"`
 	ExpectedOutput        string   `json:"expected_output,omitempty"`
@@ -104,6 +104,8 @@ func (h *SubAgentHandle) FormatPrompt(subtaskDescription, prereqOutputs string) 
 
 // SubAgentFactory creates and tracks specialized virtual workers for the scheduler.
 type SubAgentFactory struct {
+	// mu protects the sequence and registered handle map; it is released before
+	// invoking scheduler, agent, or handle behavior.
 	mu      sync.RWMutex
 	agents  map[string]*SubAgentHandle
 	seq     int

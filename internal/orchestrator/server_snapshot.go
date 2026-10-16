@@ -30,16 +30,17 @@ func (s *Server) healthSweepLoop() {
 // clusterSnapshot is the payload pushed over /api/events; the GUI applies
 // it directly instead of polling the individual REST endpoints.
 type clusterSnapshot struct {
-	Nodes        []cluster.NodeStatus `json:"nodes"`
-	Tasks        []*taskmgr.Task      `json:"tasks"`
-	Discovery    []discovery.Peer     `json:"discovery"`
-	BuildVersion string               `json:"build_version"`
-	LeaderID     string               `json:"leader_id,omitempty"`
-	MemberCount  int                  `json:"member_count"`
-	AgentStats   *agent.AgentStats    `json:"agent_stats,omitempty"`
-	Memory       *memory.Insights     `json:"memory,omitempty"`
-	Dispatch     *dispatchSnapshot    `json:"dispatch"`
-	RouterEvents []routerRequestEvent `json:"router_events,omitempty"`
+	Nodes         []cluster.NodeStatus `json:"nodes"`
+	Tasks         []*taskmgr.Task      `json:"tasks"`
+	Discovery     []discovery.Peer     `json:"discovery"`
+	BuildVersion  string               `json:"build_version"`
+	LeaderID      string               `json:"leader_id,omitempty"`
+	MemberCount   int                  `json:"member_count"`
+	AgentStats    *agent.AgentStats    `json:"agent_stats,omitempty"`
+	Memory        *memory.Insights     `json:"memory,omitempty"`
+	Dispatch      *dispatchSnapshot    `json:"dispatch"`
+	ClusterHealth ClusterHealth        `json:"cluster_health"`
+	RouterEvents  []routerRequestEvent `json:"router_events,omitempty"`
 }
 
 func (s *Server) snapshot() clusterSnapshot {
@@ -55,18 +56,22 @@ func (s *Server) snapshot() clusterSnapshot {
 			break
 		}
 	}
-	s.election.recordLeader(leaderID)
-	stats := s.agentStats()
+	s.electionPort().recordLeader(leaderID)
+	dispatch := s.dispatcher.snapshot()
 	snapshot := clusterSnapshot{
-		Nodes:        nodes,
-		Tasks:        s.tasks.Recent(50),
-		Discovery:    s.election.discoverySnapshot(),
-		BuildVersion: version.String(),
-		LeaderID:     leaderID,
-		MemberCount:  activeNodes,
-		AgentStats:   &stats,
-		Dispatch:     s.dispatcher.snapshot(),
-		RouterEvents: s.routerEvents.snapshot(),
+		Nodes:         nodes,
+		Tasks:         s.tasks.Recent(50),
+		Discovery:     s.electionPort().discoverySnapshot(),
+		BuildVersion:  version.String(),
+		LeaderID:      leaderID,
+		MemberCount:   activeNodes,
+		Dispatch:      dispatch,
+		ClusterHealth: s.clusterHealthFor(nodes, dispatch),
+		RouterEvents:  s.routerEvents.snapshot(),
+	}
+	if s.harness != nil {
+		stats := s.agentStats()
+		snapshot.AgentStats = &stats
 	}
 	if s.mem != nil {
 		insights := s.mem.Insights()

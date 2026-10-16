@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.0.8 - 2026-10-15
+
+### Changed
+
+- Share node/global capacity reservations between workflow dispatch and direct
+  inference routing, and expose the same cluster health/capacity view through
+  the API and SSE dashboard snapshots.
+- Reduce scheduler and history hot-path work with capability/readiness
+  prefilters, pure score calculation, in-memory indexes, adaptive sync
+  intervals, and opt-in cursor paging; split dashboard code by view and keep
+  component lock and context rules documented.
+
+### Validation
+
+- `go test ./... -count=1`
+- `go vet ./...`
+- `node --test web/app_test.js`
+- `.\build\build.ps1` (Windows, Linux, and Ubuntu Linux release binaries)
+
 ## 0.0.7 - 2026-10-15
 
 ### Added
