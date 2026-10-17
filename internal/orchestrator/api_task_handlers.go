@@ -124,7 +124,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.metrics.recordSyncPage()
-		log.Printf("orchestrator: task history sync event=page_served %s records=%d more=%t",
+		log.Printf("FILE_ONLY: orchestrator: task history sync event=page_served %s records=%d more=%t",
 			syncLogFields(syncLogRequestID(r), syncLogNodeID(r), time.Since(pageStarted), "none"), len(tasks), more)
 	}
 	if err := memory.SetSyncResponseHeaders(w, currentWatermarks); err != nil {

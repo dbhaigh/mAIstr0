@@ -113,7 +113,7 @@ func (s *boltStore) Watermarks() map[string]uint64 {
 		})
 	})
 	if err != nil {
-		log.Printf("memory: read watermarks: %v", err)
+		log.Printf("FILE_ONLY: memory: read watermarks: %v", err)
 		return watermarks
 	}
 	s.mu.Lock()
@@ -150,7 +150,7 @@ func (s *boltStore) PeerWatermarks(peer string) map[string]uint64 {
 		return nil
 	})
 	if err != nil {
-		log.Printf("memory: read watermarks for peer %s: %v", peer, err)
+		log.Printf("FILE_ONLY: memory: read watermarks for peer %s: %v", peer, err)
 		return map[string]uint64{}
 	}
 	s.mu.Lock()

@@ -81,9 +81,11 @@ not inferred from whichever orchestrator happens to be visible first.
 Application logs are appended to `maistr0.log` in the user's configuration
 directory (`%APPDATA%\maistr0\maistr0.log` on Windows). Choose **View Logs**
 from the tray icon's right-click menu to inspect pairing and TLS diagnostics,
-including when the console is hidden. Logs roll over daily; dated archives are
-kept for seven calendar days and are available through **Open Logs Folder** in
-the same menu.
+including detailed task-history and memory-sync diagnostics, even when the
+console is hidden. Routine sync messages are kept in the log file rather than
+printed to the console. Logs roll over daily; dated archives are kept for
+seven calendar days and are available through **Open Logs Folder** in the same
+menu.
 
 `GET /api/status` reports whether persistent memory is available. If its
 database cannot be opened, the dashboard shows a warning that conversation
@@ -202,9 +204,10 @@ sequence metadata, and legacy task databases are backfilled automatically.
 Memory and task-history requests remain limited to 64 MiB each; larger
 histories transfer in multiple bounded pages. A single record larger than the
 limit is rejected explicitly. Sync transfers use a dedicated 10-minute HTTP
-timeout, and sync diagnostics are retained in the rolling log without being
-printed to the console. Dispatch and sync log records include request/attempt
-IDs, node/model/engine, elapsed time, and a failure class where applicable.
+timeout. Task-history and memory-sync diagnostics are retained in the rolling
+log without being printed to the console. Dispatch and sync log records include
+request/attempt IDs, node/model/engine, elapsed time, and a failure class where
+applicable.
 The scheduler uses successful and failed node/model/task outcomes to improve
 future assignments.
 

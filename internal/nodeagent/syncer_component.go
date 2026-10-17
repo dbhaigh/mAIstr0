@@ -75,17 +75,17 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 			watermarks,
 		)
 		if err != nil {
-			log.Printf("nodeagent: task history fetch from %s failed: %v", peer.ID, err)
+			log.Printf("FILE_ONLY: nodeagent: task history fetch from %s failed: %v", peer.ID, err)
 			continue
 		}
 		if err := s.tasks.MergeFromReplicaFrom(tasks, "task:"+peer.ID); err != nil {
-			log.Printf("nodeagent: task history import from %s failed: %v", peer.ID, err)
+			log.Printf("FILE_ONLY: nodeagent: task history import from %s failed: %v", peer.ID, err)
 			continue
 		}
 		remoteSnapshots[peer.ID] = taskSyncSnapshot{version: version, watermarks: watermarks}
 		if s.memory != nil {
 			if err := s.memory.SetPeerWatermarks(peer.ID, watermarks); err != nil {
-				log.Printf("nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
+				log.Printf("FILE_ONLY: nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
 			}
 		}
 	}
@@ -110,12 +110,12 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 			maxTaskSyncBodyBytes,
 		)
 		if err != nil {
-			log.Printf("nodeagent: task history replication to %s failed: %v", peer.ID, err)
+			log.Printf("FILE_ONLY: nodeagent: task history replication to %s failed: %v", peer.ID, err)
 			continue
 		}
 		if s.memory != nil && fetched && memory.SupportsIncrementalSync(version) {
 			if err := s.memory.SetPeerWatermarks(peer.ID, taskmgr.SnapshotWatermarks(tasks)); err != nil {
-				log.Printf("nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
+				log.Printf("FILE_ONLY: nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
 			}
 		}
 	}

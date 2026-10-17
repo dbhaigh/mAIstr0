@@ -6,6 +6,8 @@
 
 - Correct coordinator candidate selection after switching orchestrators, and
   stop probing stale node announcements that now belong to another coordinator.
+- Keep task-history sync diagnostics in the rolling log file without printing
+  routine sync messages to the console.
 
 ### Development
 
