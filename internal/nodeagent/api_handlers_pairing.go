@@ -50,14 +50,25 @@ func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 
 func (a *Agent) handlePairingConnect(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Address string `json:"address"`
-		PIN     string `json:"pin"`
+		Address        string `json:"address"`
+		PIN            string `json:"pin"`
+		OrchestratorID string `json:"orchestrator_id,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
 		writeError(w, apperr.Invalid(errors.New("invalid pairing request")))
 		return
 	}
-	if err := a.PairWithOrchestrator(request.Address, request.PIN); err != nil {
+	var err error
+	if request.OrchestratorID != "" {
+		err = a.orchestratorLink.pairWithDiscoveredOrchestrator(request.OrchestratorID, request.Address, request.PIN)
+	} else {
+		err = a.PairWithOrchestrator(request.Address, request.PIN)
+	}
+	if errors.Is(err, errSelectedOrchestratorNotDiscovered) {
+		writeError(w, apperr.ConflictError(err))
+		return
+	}
+	if err != nil {
 		writeError(w, apperr.UpstreamError(err))
 		return
 	}

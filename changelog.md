@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.11 - 2026-10-18
+
+### Added
+
+- Let an unjoined node join a selected LAN-discovered orchestrator from the
+  Local network context menu, using the selected coordinator's TLS identity
+  and an optional one-use PIN.
+
 ## 0.0.10 - 2026-10-18
 
 ### Added

@@ -322,7 +322,19 @@ function openPairingDialog(node = null) {
   if (pairingStatus) pairingStatus.textContent = "";
   const title = document.getElementById("pairing-title-node");
   const description = document.getElementById("pairing-dialog-description");
-  if (node) {
+  if (node?.joinOrchestrator) {
+    const pairingStatus2 = dashboardState.pairing.status;
+    const alreadyPairedWithTarget = pairingStatus2?.joined && pairingStatus2.orchestrator_id === node.id;
+    if (title) title.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}'s cluster` : `Join ${node.id}'s cluster`;
+    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. A PIN is only needed when joining across subnets.`;
+    if (pairingAddressField) pairingAddressField.hidden = false;
+    if (pairingAddress) {
+      pairingAddress.required = true;
+      pairingAddress.value = node.peer_addr || node.address || "";
+    }
+    if (pairingCode) pairingCode.value = "";
+    if (pairingConnectButton) pairingConnectButton.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}` : "Join cluster";
+  } else if (node) {
     const invitation = Boolean(node.discovered);
     if (title) title.textContent = invitation ? `Pair ${node.id} with this cluster` : `Re-pair ${node.id} with this cluster`;
     if (description) description.textContent = invitation ? `Send a pairing invitation to ${node.address}. The node must confirm locally before it joins.` : "Enter this cluster's HTTPS address and an active one-use PIN. The selected node must be online and already trusted by this cluster.";
@@ -566,15 +578,20 @@ pairingConnectForm?.addEventListener("submit", async (event) => {
   pairingStatus.textContent = "Connecting securely…";
   try {
     const node = dashboardState.pairing.targetNode;
-    const invitation = Boolean(node?.discovered);
-    const endpoint = invitation ? `/api/discovery/${encodeURIComponent(node.id)}/pairing/invite` : node ? `/api/nodes/${encodeURIComponent(node.id)}/pairing/connect` : "/api/pairing/connect";
+    const joiningOrchestrator = Boolean(node?.joinOrchestrator);
+    const invitation = Boolean(node?.discovered && !joiningOrchestrator);
+    const endpoint = invitation ? `/api/discovery/${encodeURIComponent(node.id)}/pairing/invite` : joiningOrchestrator ? "/api/pairing/connect" : node ? `/api/nodes/${encodeURIComponent(node.id)}/pairing/connect` : "/api/pairing/connect";
     const result = await fetchJSON(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(invitation ? { pin: pairingCode.value.trim() } : { address: pairingAddress.value.trim(), pin: pairingCode.value.trim() })
+      body: JSON.stringify(invitation ? { pin: pairingCode.value.trim() } : {
+        address: pairingAddress.value.trim(),
+        pin: pairingCode.value.trim(),
+        ...joiningOrchestrator ? { orchestrator_id: node.id } : {}
+      })
     });
     pairingCode.value = "";
-    pairingStatus.textContent = invitation ? `Invitation sent to ${node.id}. Confirm it on the node to complete pairing.` : node ? `${node.id} paired with this cluster.` : `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}. Connecting to the cluster…`;
+    pairingStatus.textContent = invitation ? `Invitation sent to ${node.id}. Confirm it on the node to complete pairing.` : joiningOrchestrator ? `Connected to ${result.orchestrator_id}. Waiting for cluster registration…` : node ? `${node.id} paired with this cluster.` : `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}. Connecting to the cluster…`;
     if (invitation && pairingState) {
       pairingState.textContent = `Invitation sent to ${node.id}; waiting for confirmation on that node.`;
     }
@@ -2141,15 +2158,17 @@ function showNodeMenu(x, y) {
   const properties = menu.querySelector("[data-action=properties]");
   const pairing = menu.querySelector("[data-action=pair]");
   const nodeIsDiscovered = Boolean(contextNode.discovered);
+  const joiningOrchestrator = Boolean(contextNode.joinOrchestrator);
   if (properties) {
-    properties.textContent = `Configure ${contextNode.id}`;
-    properties.disabled = !contextNode.healthy || nodeIsDiscovered;
+    properties.textContent = joiningOrchestrator ? "Configure host properties" : `Configure ${contextNode.id}`;
+    properties.disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
   }
   if (pairing) {
-    pairing.textContent = nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
+    const currentOrchestrator = dashboardState.pairing.status?.orchestrator_id === contextNode.id;
+    pairing.textContent = joiningOrchestrator ? dashboardState.pairing.status?.joined && currentOrchestrator ? `Re-pair with ${contextNode.id}` : `Join ${contextNode.id}'s cluster` : nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
     pairing.disabled = !contextNode.healthy;
   }
-  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered;
+  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
   menu.hidden = false;
   const bounds = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
@@ -2386,7 +2405,7 @@ function renderDiscovery(peers) {
   for (const p of ordered) {
     const card = document.createElement("div");
     card.className = "card";
-    const associated = p.role === "node" ? p.orchestrator_id || "Not announced" : p.role === "orchestrator" ? "self" : "Not elected";
+    const associated = p.role === "node" ? p.orchestrator_id || "Not announced" : p.role === "orchestrator" ? dashboardState.pairing.status?.role === "node" ? p.id === dashboardState.pairing.status.orchestrator_id ? "current orchestrator" : "available to join" : "self" : "Not elected";
     const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
     const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
     card.innerHTML = `
@@ -2407,6 +2426,16 @@ function renderDiscovery(peers) {
         models: [],
         active_tasks: 0,
         hardware: {}
+      });
+    } else if (p.role === "orchestrator" && dashboardState.pairing.status?.role === "node" && !p.local) {
+      attachNodeContextMenu(card, {
+        id: p.id,
+        role: p.role,
+        address: p.peer_addr || p.http_addr,
+        peer_addr: p.peer_addr,
+        healthy: true,
+        discovered: true,
+        joinOrchestrator: true
       });
     }
   }

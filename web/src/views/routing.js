@@ -93,7 +93,13 @@ function renderDiscovery(peers) {
   for (const p of ordered) {
     const card = document.createElement("div");
     card.className = "card";
-    const associated = p.role === "node" ? (p.orchestrator_id || "Not announced") : p.role === "orchestrator" ? "self" : "Not elected";
+    const associated = p.role === "node"
+      ? (p.orchestrator_id || "Not announced")
+      : p.role === "orchestrator"
+        ? dashboardState.pairing.status?.role === "node"
+          ? p.id === dashboardState.pairing.status.orchestrator_id ? "current orchestrator" : "available to join"
+          : "self"
+        : "Not elected";
     const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
     const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
     card.innerHTML = `
@@ -114,6 +120,16 @@ function renderDiscovery(peers) {
         models: [],
         active_tasks: 0,
         hardware: {},
+      });
+    } else if (p.role === "orchestrator" && dashboardState.pairing.status?.role === "node" && !p.local) {
+      attachNodeContextMenu(card, {
+        id: p.id,
+        role: p.role,
+        address: p.peer_addr || p.http_addr,
+        peer_addr: p.peer_addr,
+        healthy: true,
+        discovered: true,
+        joinOrchestrator: true,
       });
     }
   }

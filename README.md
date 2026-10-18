@@ -78,6 +78,11 @@ The **Local network** tab lists LAN-discovered instances regardless of pairing,
 plus online cluster nodes and the local worker. Membership is labeled
 separately from visibility; an associated orchestrator is shown only when known,
 not inferred from whichever orchestrator happens to be visible first.
+From a node dashboard, right-click a discovered orchestrator in **Local
+network** and choose **Join [orchestrator]'s cluster** to pair this node
+directly with that specific coordinator. Enter its one-use PIN when joining
+across subnets; same-subnet pairing can proceed without a PIN. The selected
+orchestrator identity is checked against its TLS certificate before pairing.
 Application logs are appended to `maistr0.log` in the user's configuration
 directory (`%APPDATA%\maistr0\maistr0.log` on Windows). Choose **View Logs**
 from the tray icon's right-click menu to inspect pairing and TLS diagnostics,

@@ -28,6 +28,7 @@ var (
 	errPairingInvitationWaiting          = errors.New("another pairing invitation is waiting for local confirmation")
 	errPairingInvitationExpired          = errors.New("pairing invitation is missing or expired")
 	errPairingInvitationRejecting        = errors.New("pairing invitation is being accepted")
+	errSelectedOrchestratorNotDiscovered = errors.New("selected orchestrator is no longer discovered")
 )
 
 func (c *orchestratorLink) getOrchestratorID() string {

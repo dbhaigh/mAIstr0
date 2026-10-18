@@ -437,15 +437,16 @@ function discoveryContext(nodes = [], pairing = null) {
     cards: [],
     appendChild(card) { this.cards.push(card); },
   };
+  const contextMenus = [];
   const context = vm.createContext({
     discoveryList: list,
     dashboardState: { nodes, pairing: { status: pairing } },
     document: { createElement: () => ({ innerHTML: "", className: "" }) },
     escapeHtml: (value) => String(value),
-    attachNodeContextMenu: () => {},
+    attachNodeContextMenu: (element, node) => contextMenus.push({ element, node }),
   });
   vm.runInContext(discoverySource, context);
-  return { context, list };
+  return { context, list, contextMenus };
 }
 
 test("Local Network merges discovered nonmembers with online members without duplicates", () => {
@@ -482,6 +483,64 @@ test("Local Network shows the unjoined local worker when discovery excludes self
   assert.match(list.cards[0].innerHTML, /self-worker/);
   assert.match(list.cards[0].innerHTML, /not a member of this cluster \u00b7 local node/);
   assert.doesNotMatch(list.cards[0].innerHTML, /old-orchestrator/);
+});
+
+test("An unjoined node can open pairing for a selected discovered orchestrator", () => {
+  const { context, contextMenus } = discoveryContext([], {
+    role: "node", node_id: "self-worker", node_addr: "https://self:7451", joined: false,
+  });
+  context.renderDiscovery([{
+    id: "selected-orchestrator",
+    role: "orchestrator",
+    peer_addr: "https://192.168.1.20:7450",
+  }]);
+  const target = contextMenus.find(({ node }) => node.id === "selected-orchestrator")?.node;
+  assert.ok(target);
+  assert.equal(target.role, "orchestrator");
+  assert.equal(target.joinOrchestrator, true);
+  assert.equal(target.address, "https://192.168.1.20:7450");
+});
+
+test("Selected orchestrator context action offers join or re-pair by current membership", () => {
+  const contextMenuSource = source.slice(source.indexOf("function showNodeMenu("), source.indexOf("function attachNodeContextMenu("));
+  const pairing = {};
+  const properties = {};
+  const open = {};
+  const menu = {
+    hidden: true,
+    style: {},
+    querySelector: (selector) => ({
+      "[data-action=properties]": properties,
+      "[data-action=pair]": pairing,
+      "[data-action=open]": open,
+    })[selector],
+    getBoundingClientRect: () => ({ width: 180, height: 100 }),
+  };
+  const selected = {
+    id: "selected-orchestrator",
+    joinOrchestrator: true,
+    healthy: true,
+    discovered: true,
+  };
+  const context = vm.createContext({
+    contextNode: selected,
+    dashboardState: { pairing: { status: { role: "node", joined: false } } },
+    document: { getElementById: () => menu },
+    window: { innerWidth: 800, innerHeight: 600 },
+  });
+  vm.runInContext(contextMenuSource, context);
+  context.showNodeMenu(100, 100);
+  assert.equal(menu.hidden, false);
+  assert.equal(pairing.textContent, "Join selected-orchestrator's cluster");
+  assert.equal(pairing.disabled, false);
+  assert.equal(properties.disabled, true);
+  assert.equal(open.disabled, true);
+
+  context.dashboardState.pairing.status = {
+    role: "node", joined: true, orchestrator_id: selected.id,
+  };
+  context.showNodeMenu(100, 100);
+  assert.equal(pairing.textContent, "Re-pair with selected-orchestrator");
 });
 
 test("A local member stays deduplicated and identified as local", () => {
@@ -908,4 +967,83 @@ test("Pairing the local worker uses its join form, not an invitation to itself",
   assert.equal(context.pairingConnectButton.textContent, "Join cluster");
   assert.equal(context.pairingAddress.value, "https://leader:7450");
   assert.equal(context.pairingAddressField.hidden, false);
+});
+
+test("Pairing a selected orchestrator pre-fills its secure address and optional PIN", () => {
+  const dialogSource = source.slice(source.indexOf("function openPairingDialog("), source.indexOf("pairingPinRegenerateBtn?.addEventListener("));
+  let shown = false;
+  const title = {};
+  const description = {};
+  const context = vm.createContext({
+    dashboardState: {
+      pairing: {
+        status: { role: "node", node_id: "self-worker", joined: false },
+        targetNode: null,
+      },
+    },
+    pairingConnectDialog: { open: false, showModal: () => { shown = true; } },
+    pairingStatus: {},
+    pairingAddressField: {},
+    pairingAddress: { value: "", focus: () => {} },
+    pairingCode: { value: "old-pin" },
+    pairingConnectButton: {},
+    document: {
+      getElementById: (id) => id === "pairing-title-node" ? title : description,
+    },
+  });
+  vm.runInContext(dialogSource, context);
+  context.openPairingDialog({
+    id: "selected-orchestrator",
+    role: "orchestrator",
+    address: "https://192.168.1.20:7450",
+    peer_addr: "https://192.168.1.20:7450",
+    discovered: true,
+    joinOrchestrator: true,
+  });
+  assert.equal(shown, true);
+  assert.equal(title.textContent, "Join selected-orchestrator's cluster");
+  assert.match(description.textContent, /PIN is only needed when joining across subnets/);
+  assert.equal(context.pairingAddress.value, "https://192.168.1.20:7450");
+  assert.equal(context.pairingAddress.required, true);
+  assert.equal(context.pairingAddressField.hidden, false);
+  assert.equal(context.pairingCode.value, "");
+  assert.equal(context.pairingConnectButton.textContent, "Join cluster");
+});
+
+test("Pairing a selected orchestrator sends its expected identity to the local node API", async () => {
+  const start = source.indexOf("pairingConnectForm?.addEventListener(");
+  const end = source.indexOf("\n});", start) + 4;
+  const submissionSource = source.slice(start, end);
+  const requests = [];
+  let submit;
+  const targetNode = {
+    id: "selected-orchestrator",
+    joinOrchestrator: true,
+  };
+  const context = vm.createContext({
+    dashboardState: { pairing: { targetNode } },
+    pairingConnectForm: { addEventListener: (_event, handler) => { submit = handler; } },
+    pairingConnectButton: { disabled: false },
+    pairingAddress: { value: "https://192.168.1.20:7450" },
+    pairingCode: { value: "" },
+    pairingStatus: { textContent: "" },
+    pairingState: { textContent: "" },
+    pairingConnectDialog: { close() {} },
+    fetchJSON: async (endpoint, options) => {
+      requests.push({ endpoint, options });
+      return { orchestrator_id: targetNode.id, orchestrator_addr: "https://192.168.1.20:7450" };
+    },
+    loadPairingStatus: async () => {},
+    refresh: async () => {},
+  });
+  vm.runInContext(submissionSource, context);
+  await submit({ preventDefault() {} });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].endpoint, "/api/pairing/connect");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    address: "https://192.168.1.20:7450",
+    pin: "",
+    orchestrator_id: "selected-orchestrator",
+  });
+  assert.match(context.pairingStatus.textContent, /Connected to selected-orchestrator/);
 });

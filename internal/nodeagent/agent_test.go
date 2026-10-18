@@ -346,7 +346,7 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/pairing/join" {
 			t.Errorf("pairing path = %q", r.URL.Path)
 		}
@@ -366,6 +366,8 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 			ID: orchestrator.ID(), Role: "orchestrator", CertificatePEM: orchestrator.CertificatePEM(),
 		})
 	}))
+	server.TLS = orchestrator.ServerTLSConfig()
+	server.StartTLS()
 	defer server.Close()
 
 	agent := mustNewTestAgent(t, config.NodeConfig{
@@ -377,7 +379,11 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	requestBody, _ := json.Marshal(map[string]string{"address": server.URL, "pin": ""})
+	agent.setOrchestratorAddr(server.URL)
+	agent.setOrchestratorID(orchestrator.ID())
+	requestBody, _ := json.Marshal(map[string]string{
+		"address": server.URL, "pin": "", "orchestrator_id": orchestrator.ID(),
+	})
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(requestBody))
 	response := httptest.NewRecorder()
 	agent.handlePairingConnect(response, request)
@@ -386,6 +392,31 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	}
 	if !agent.identity.IsTrustedID(orchestrator.ID()) || agent.getOrchestratorAddr() != server.URL {
 		t.Fatal("node did not trust and select the auto-joined orchestrator")
+	}
+}
+
+func TestPairingConnectRejectsStaleSelectedOrchestrator(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "node-stale-orchestrator", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if agent.Memory() != nil {
+		t.Cleanup(func() { _ = agent.Memory().Close() })
+	}
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	agent.setOrchestratorAddr("https://127.0.0.1:7450")
+	agent.setOrchestratorID("visible-orchestrator")
+	body, err := json.Marshal(map[string]string{
+		"address": "https://127.0.0.1:7450", "orchestrator_id": "stale-orchestrator",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	agent.handlePairingConnect(response, httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(body)))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "no longer discovered") {
+		t.Fatalf("stale selected orchestrator returned %d: %s", response.Code, response.Body.String())
 	}
 }
 

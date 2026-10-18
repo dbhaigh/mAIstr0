@@ -37,6 +37,26 @@ func (c *orchestratorLink) pairWithOrchestrator(address, pin string) error {
 	return c.pairWithAddress(address, "", strings.TrimSpace(pin))
 }
 
+func (c *orchestratorLink) pairWithDiscoveredOrchestrator(id, address, pin string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("selected orchestrator identity is required")
+	}
+	address, err := normalizeOrchestratorAddress(address)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range c.orchestratorCandidates() {
+		if candidate.id != id {
+			continue
+		}
+		candidateAddress, err := normalizeOrchestratorAddress(candidate.address)
+		if err == nil && candidateAddress == address {
+			return c.pairWithAddress(address, id, strings.TrimSpace(pin))
+		}
+	}
+	return errSelectedOrchestratorNotDiscovered
+}
+
 func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (resultErr error) {
 	defer func() {
 		if resultErr != nil {

@@ -7,7 +7,27 @@ function openPairingDialog(node = null) {
   if (pairingStatus) pairingStatus.textContent = "";
   const title = document.getElementById("pairing-title-node");
   const description = document.getElementById("pairing-dialog-description");
-  if (node) {
+  if (node?.joinOrchestrator) {
+    const pairingStatus = dashboardState.pairing.status;
+    const alreadyPairedWithTarget = pairingStatus?.joined && pairingStatus.orchestrator_id === node.id;
+    if (title) title.textContent = alreadyPairedWithTarget
+      ? `Re-pair with ${node.id}`
+      : pairingStatus?.joined
+        ? `Switch to ${node.id}'s cluster`
+        : `Join ${node.id}'s cluster`;
+    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. A PIN is only needed when joining across subnets.`;
+    if (pairingAddressField) pairingAddressField.hidden = false;
+    if (pairingAddress) {
+      pairingAddress.required = true;
+      pairingAddress.value = node.peer_addr || node.address || "";
+    }
+    if (pairingCode) pairingCode.value = "";
+    if (pairingConnectButton) pairingConnectButton.textContent = alreadyPairedWithTarget
+      ? `Re-pair with ${node.id}`
+      : pairingStatus?.joined
+        ? `Switch to ${node.id}`
+        : "Join cluster";
+  } else if (node) {
     const invitation = Boolean(node.discovered);
     if (title) title.textContent = invitation
       ? `Pair ${node.id} with this cluster`

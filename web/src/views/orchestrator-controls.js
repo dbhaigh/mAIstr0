@@ -118,9 +118,12 @@ pairingConnectForm?.addEventListener("submit", async (event) => {
   pairingStatus.textContent = "Connecting securely…";
   try {
     const node = dashboardState.pairing.targetNode;
-    const invitation = Boolean(node?.discovered);
+    const joiningOrchestrator = Boolean(node?.joinOrchestrator);
+    const invitation = Boolean(node?.discovered && !joiningOrchestrator);
     const endpoint = invitation
       ? `/api/discovery/${encodeURIComponent(node.id)}/pairing/invite`
+      : joiningOrchestrator
+        ? "/api/pairing/connect"
       : node
         ? `/api/nodes/${encodeURIComponent(node.id)}/pairing/connect`
         : "/api/pairing/connect";
@@ -129,11 +132,17 @@ pairingConnectForm?.addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(invitation
         ? { pin: pairingCode.value.trim() }
-        : { address: pairingAddress.value.trim(), pin: pairingCode.value.trim() }),
+        : {
+            address: pairingAddress.value.trim(),
+            pin: pairingCode.value.trim(),
+            ...(joiningOrchestrator ? { orchestrator_id: node.id } : {}),
+          }),
     });
     pairingCode.value = "";
     pairingStatus.textContent = invitation
       ? `Invitation sent to ${node.id}. Confirm it on the node to complete pairing.`
+      : joiningOrchestrator
+        ? `Connected to ${result.orchestrator_id}. Waiting for cluster registration…`
       : node
         ? `${node.id} paired with this cluster.`
       : `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}. Connecting to the cluster…`;

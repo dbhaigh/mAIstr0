@@ -166,7 +166,21 @@ paths:
       responses: {"200": {description: Regenerate the pairing PIN}}
   /api/pairing/connect:
     post:
-      responses: {"200": {description: Connect to a cluster}}
+      description: Connect this node to an orchestrator. When orchestrator_id is supplied, it must identify a currently discovered orchestrator at the supplied HTTPS address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address: {type: string, format: uri, description: Orchestrator HTTPS address}
+                pin: {type: string, description: Optional one-use PIN for cross-subnet pairing}
+                orchestrator_id: {type: string, description: Stable identity of the selected discovered orchestrator}
+      responses:
+        "200": {description: Connected to the orchestrator}
+        "409": {description: Selected orchestrator is no longer discovered}
   /api/pairing/roster:
     get:
       responses: {"200": {description: Get the pairing roster}}

@@ -306,15 +306,21 @@ function showNodeMenu(x, y) {
   const properties = menu.querySelector("[data-action=properties]");
   const pairing = menu.querySelector("[data-action=pair]");
   const nodeIsDiscovered = Boolean(contextNode.discovered);
+  const joiningOrchestrator = Boolean(contextNode.joinOrchestrator);
   if (properties) {
-    properties.textContent = `Configure ${contextNode.id}`;
-    properties.disabled = !contextNode.healthy || nodeIsDiscovered;
+    properties.textContent = joiningOrchestrator ? "Configure host properties" : `Configure ${contextNode.id}`;
+    properties.disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
   }
   if (pairing) {
-    pairing.textContent = nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
+    const currentOrchestrator = dashboardState.pairing.status?.orchestrator_id === contextNode.id;
+    pairing.textContent = joiningOrchestrator
+      ? dashboardState.pairing.status?.joined && currentOrchestrator
+        ? `Re-pair with ${contextNode.id}`
+        : `Join ${contextNode.id}'s cluster`
+      : nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
     pairing.disabled = !contextNode.healthy;
   }
-  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered;
+  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
   menu.hidden = false;
   const bounds = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
