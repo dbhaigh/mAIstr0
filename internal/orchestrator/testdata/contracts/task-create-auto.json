@@ -1,0 +1,118 @@
+{
+  "status": 202,
+  "content_type": "application/json",
+  "body": {
+    "created_at": "\u003cTIME\u003e",
+    "description": "Research the subject then summarize the findings",
+    "graph": {
+      "edges": [
+        {
+          "from": "research",
+          "to": "summary"
+        }
+      ],
+      "nodes": {
+        "research": {
+          "description": "Research the subject",
+          "expected_output": "Evidence",
+          "id": "research",
+          "output_format": "text",
+          "role": "researcher",
+          "tags": [
+            "general"
+          ],
+          "task_type": "general"
+        },
+        "summary": {
+          "depends_on": [
+            "research"
+          ],
+          "description": "Summarize the findings",
+          "expected_output": "A concise summary",
+          "id": "summary",
+          "output_format": "text",
+          "role": "summarizer",
+          "tags": [
+            "summarize",
+            "general"
+          ],
+          "task_type": "summarize"
+        }
+      }
+    },
+    "id": "\u003cTASK_ID\u003e",
+    "last_checkpoint": "\u003cCHECKPOINT_ID\u003e",
+    "origin": "\u003cTASK_ORIGIN\u003e",
+    "resumable": true,
+    "sequence": 0,
+    "status": "running",
+    "subtasks": [
+      {
+        "address": "\u003cWORKER_URL\u003e",
+        "engine": "simulated",
+        "model": "simulated-general",
+        "node_id": "simulated-planner",
+        "score": 0,
+        "score_factors": {
+          "active_tasks": 0,
+          "gpu_utilization_penalty": 0,
+          "hardware": 0,
+          "learned_bias": 0,
+          "load_penalty": 0,
+          "model_match": 30,
+          "npu_utilization_penalty": 0,
+          "queued_tasks": 0,
+          "telemetry_fresh": false
+        },
+        "status": "pending",
+        "subtask": {
+          "description": "Research the subject",
+          "expected_output": "Evidence",
+          "id": "research",
+          "output_format": "text",
+          "role": "researcher",
+          "tags": [
+            "general"
+          ],
+          "task_type": "general"
+        }
+      },
+      {
+        "address": "\u003cWORKER_URL\u003e",
+        "engine": "simulated",
+        "model": "simulated-general",
+        "node_id": "simulated-planner",
+        "score": 0,
+        "score_factors": {
+          "active_tasks": 0,
+          "gpu_utilization_penalty": 0,
+          "hardware": 0,
+          "learned_bias": 0,
+          "load_penalty": 0,
+          "model_match": 15,
+          "npu_utilization_penalty": 0,
+          "pending_dependents": 0,
+          "queued_tasks": 0,
+          "telemetry_fresh": false
+        },
+        "status": "pending",
+        "subtask": {
+          "depends_on": [
+            "research"
+          ],
+          "description": "Summarize the findings",
+          "expected_output": "A concise summary",
+          "id": "summary",
+          "output_format": "text",
+          "role": "summarizer",
+          "tags": [
+            "summarize",
+            "general"
+          ],
+          "task_type": "summarize"
+        }
+      }
+    ],
+    "updated_at": "\u003cTIME\u003e"
+  }
+}

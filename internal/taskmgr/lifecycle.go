@@ -195,82 +195,6 @@ func (m *Manager) ReassignSubtaskChecked(taskID, subtaskID string, assignment sc
 	return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
 }
 
-// DispatchAttemptID returns the stable identifier stored for a dispatch attempt.
-func DispatchAttemptID(taskID, subtaskID string, number int) string {
-	return fmt.Sprintf("%s:%s:%d", taskID, subtaskID, number)
-}
-
-func (m *Manager) BeginDispatchAttemptChecked(taskID, subtaskID string, assignment scheduler.Assignment) (int, error) {
-	t, ok := m.lockTaskForUpdate(taskID)
-	if !ok {
-		return 0, fmt.Errorf("taskmgr: task %s not found", taskID)
-	}
-	defer m.unlockTaskForUpdate(t)
-	for i := range t.Subtasks {
-		result := &t.Subtasks[i]
-		if result.Subtask.ID != subtaskID {
-			continue
-		}
-		if result.Status != StatusRunning {
-			return 0, fmt.Errorf("taskmgr: subtask %s in task %s is not running", subtaskID, taskID)
-		}
-		number := len(result.Attempts) + 1
-		now := time.Now()
-		result.Attempts = append(result.Attempts, DispatchAttempt{
-			ID:     DispatchAttemptID(taskID, subtaskID, number),
-			Number: number, NodeID: assignment.NodeID, Model: assignment.Model,
-			Engine: assignment.Engine, Status: DispatchAttemptRunning, StartedAt: now,
-		})
-		t.UpdatedAt = now
-		signalChanged(t)
-		if err := m.persistLocked(t); err != nil {
-			return 0, err
-		}
-		return number, nil
-	}
-	return 0, fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
-}
-
-func (m *Manager) FinishDispatchAttemptChecked(taskID, subtaskID string, number int, status DispatchAttemptStatus, failureClass string, httpStatus int, attemptErr error, duration time.Duration) error {
-	if status != DispatchAttemptSucceeded && status != DispatchAttemptFailed {
-		return fmt.Errorf("taskmgr: invalid dispatch attempt status %q", status)
-	}
-	t, ok := m.lockTaskForUpdate(taskID)
-	if !ok {
-		return fmt.Errorf("taskmgr: task %s not found", taskID)
-	}
-	defer m.unlockTaskForUpdate(t)
-	for i := range t.Subtasks {
-		result := &t.Subtasks[i]
-		if result.Subtask.ID != subtaskID {
-			continue
-		}
-		for j := range result.Attempts {
-			attempt := &result.Attempts[j]
-			if attempt.Number != number {
-				continue
-			}
-			if attempt.Status != DispatchAttemptRunning {
-				return fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s is already finished", number, subtaskID)
-			}
-			attempt.Status = status
-			attempt.FailureClass = failureClass
-			attempt.HTTPStatus = httpStatus
-			if attemptErr != nil {
-				attempt.Error = attemptErr.Error()
-			}
-			finishedAt := time.Now()
-			attempt.FinishedAt = &finishedAt
-			attempt.DurationMs = duration.Milliseconds()
-			t.UpdatedAt = finishedAt
-			signalChanged(t)
-			return m.persistLocked(t)
-		}
-		return fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s not found", number, subtaskID)
-	}
-	return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
-}
-
 // CompleteSubtask records the outcome of a dispatched subtask and rolls the
 // parent task's overall status up once every subtask has finished.
 func (m *Manager) CompleteSubtask(taskID, subtaskID string, output string, taskErr error) {
@@ -290,6 +214,23 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 		m.unlockTaskForUpdate(t)
 		return nil
 	}
+	completion, err := m.completeSubtaskLocked(t, subtaskID, output, taskErr)
+	if err != nil {
+		m.unlockTaskForUpdate(t)
+		return err
+	}
+	m.unlockTaskForUpdate(t)
+	return m.finishSubtaskCompletion(taskID, completion)
+}
+
+type subtaskCompletion struct {
+	finalize   Finalizer
+	snapshot   *Task
+	taskCtx    context.Context
+	persistErr error
+}
+
+func (m *Manager) completeSubtaskLocked(t *Task, subtaskID, output string, taskErr error) (subtaskCompletion, error) {
 	found := false
 	for i := range t.Subtasks {
 		if t.Subtasks[i].Subtask.ID != subtaskID {
@@ -306,8 +247,7 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 		break
 	}
 	if !found {
-		m.unlockTaskForUpdate(t)
-		return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
+		return subtaskCompletion{}, fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, t.ID)
 	}
 
 	allDone := true
@@ -346,16 +286,16 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 	signalChanged(t)
 	_, checkpointErr := m.saveCheckpointLocked(t)
 	persistErr := errors.Join(checkpointErr, m.persistLocked(t))
-	taskCtx := t.ctx
-	m.unlockTaskForUpdate(t)
+	return subtaskCompletion{
+		finalize: finalize, snapshot: snapshot, taskCtx: t.ctx, persistErr: persistErr,
+	}, nil
+}
 
-	if finalize == nil {
-		return persistErr
+func (m *Manager) finishSubtaskCompletion(taskID string, completion subtaskCompletion) error {
+	if completion.finalize == nil || completion.persistErr != nil {
+		return completion.persistErr
 	}
-	if persistErr != nil {
-		return persistErr
-	}
-	return m.finishSynthesis(taskID, taskCtx, snapshot, finalize, persistErr)
+	return m.finishSynthesis(taskID, completion.taskCtx, completion.snapshot, completion.finalize, completion.persistErr)
 }
 
 // ApproveChecked releases a completed task's approval gate and starts

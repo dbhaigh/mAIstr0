@@ -47,6 +47,7 @@
               "model": "general-model",
               "node_id": "failed-worker",
               "number": 1,
+              "request_id": "task-1:work",
               "started_at": "\u003cTIME\u003e",
               "status": "failed"
             }

@@ -51,6 +51,7 @@ const (
 
 type DispatchAttempt struct {
 	ID           string                `json:"id"`
+	RequestID    string                `json:"request_id,omitempty"`
 	Number       int                   `json:"number"`
 	NodeID       string                `json:"node_id"`
 	Model        string                `json:"model"`
@@ -105,7 +106,8 @@ type Store interface {
 // persistGate before per-task persistMu and mu. They may briefly use mu to
 // look up a task, but release it before waiting for persistMu. State
 // replacement takes persistGate exclusively before mu, and Close takes it
-// exclusively before closing the store. Read-only operations take only mu.
+// exclusively before closing the store. Wait follows the same hierarchy when
+// reading a snapshot so it cannot report a terminal state before persistence.
 type Manager struct {
 	// mu protects tasks and the recent-task cache; every task write invalidates the cache before unlocking.
 	mu sync.RWMutex
@@ -159,6 +161,11 @@ func cloneTask(t *Task) *Task {
 		cloned.Subtasks[i].Factors.MatchedCapabilities = append([]string(nil), t.Subtasks[i].Factors.MatchedCapabilities...)
 		cloned.Subtasks[i].Attempts = append([]DispatchAttempt(nil), t.Subtasks[i].Attempts...)
 		for j := range cloned.Subtasks[i].Attempts {
+			if cloned.Subtasks[i].Attempts[j].RequestID == "" {
+				cloned.Subtasks[i].Attempts[j].RequestID = DispatchRequestID(
+					cloned.ID, cloned.Subtasks[i].Subtask.ID,
+				)
+			}
 			if finishedAt := t.Subtasks[i].Attempts[j].FinishedAt; finishedAt != nil {
 				clonedFinishedAt := *finishedAt
 				cloned.Subtasks[i].Attempts[j].FinishedAt = &clonedFinishedAt

@@ -1,11 +1,34 @@
 package taskmgr
 
 import (
+	"context"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
+
+type blockingCheckpointStore struct {
+	Store
+	entered     chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func (s *blockingCheckpointStore) unblock() {
+	s.releaseOnce.Do(func() { close(s.release) })
+}
+
+func (s *blockingCheckpointStore) SaveCheckpoint(checkpoint *Checkpoint) error {
+	if checkpoint.Status == StatusCompleted {
+		close(s.entered)
+		<-s.release
+	}
+	return s.Store.SaveCheckpoint(checkpoint)
+}
 
 func TestCheckpointSaveAndRetrieve(t *testing.T) {
 	dir := t.TempDir()
@@ -69,6 +92,76 @@ func TestCheckpointSaveAndRetrieve(t *testing.T) {
 	}
 	if !frontierMap["node-2"] || !frontierMap["node-3"] {
 		t.Fatalf("expected node-2 and node-3 in frontier, got %v", latest.Frontier)
+	}
+}
+
+func TestWaitDoesNotReturnBeforeTerminalCheckpointIsPersisted(t *testing.T) {
+	store := &blockingCheckpointStore{
+		Store:   NewMemoryStore(),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	manager, err := NewManagerWithStore(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		store.unblock()
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+
+	task := manager.Create("wait for checkpoint persistence", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work", Description: "Work"},
+	}})
+	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	completion := make(chan error, 1)
+	go func() {
+		completion <- manager.CompleteSubtaskChecked(task.ID, "work", "done", nil)
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(time.Second):
+		t.Fatal("completion did not enter checkpoint persistence")
+	}
+
+	type waitResult struct {
+		task *Task
+		err  error
+	}
+	waiting := make(chan struct{})
+	result := make(chan waitResult, 1)
+	go func() {
+		close(waiting)
+		completed, err := manager.Wait(context.Background(), task.ID)
+		result <- waitResult{task: completed, err: err}
+	}()
+	<-waiting
+	runtime.Gosched()
+	select {
+	case got := <-result:
+		t.Fatalf("Wait returned before checkpoint persistence: task=%+v err=%v", got.task, got.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	store.unblock()
+	if err := <-completion; err != nil {
+		t.Fatalf("complete subtask: %v", err)
+	}
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("Wait returned error: %v", got.err)
+		}
+		if got.task == nil || got.task.Status != StatusCompleted {
+			t.Fatalf("Wait returned task %#v, want completed", got.task)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not return after checkpoint persistence")
 	}
 }
 
