@@ -65,3 +65,12 @@ governed by their existing PIN/trust checks and are not fenced by these
 optional headers. A yielded server continues to reject service with HTTP 503
 (`apperr.Unavailable`); request-view fencing does not create consensus or make
 partition-local elections globally authoritative.
+
+## Consensus migration status
+
+The application still runs the ranking-and-TTL election described above.
+Quorum consensus is being introduced in stages; the current status and the
+coordinated-upgrade requirement are documented in
+[`consensus-migration.md`](./consensus-migration.md). Until consensus is wired
+to startup and all mutation paths, the runtime does not guarantee one global
+coordinator across partitions.

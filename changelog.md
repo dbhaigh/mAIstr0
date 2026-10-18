@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.0.10 - 2026-10-18
+
+### Added
+
+- Add an experimental durable consensus foundation with persistent cluster
+  identity, mutual-TLS transport primitives, dynamic voter membership, and
+  partition/restart tests. Runtime election and mutation paths are not yet
+  integrated, so this release does not provide a global no-split-brain
+  guarantee.
+
 ## 0.0.9 - 2026-10-18
 
 ### Fixed
