@@ -67,23 +67,17 @@ async function loadPairingStatus() {
     }
     dashboardState.pairing.status = status;
     if (status.role === "orchestrator") {
-      if (pairingPinView) pairingPinView.hidden = false;
+      const pinViewModel = dashboardViewModel.pairingPINViewModel(status);
+      if (pairingPinView) pairingPinView.hidden = !pinViewModel.visible;
       if (pairingNodeConnect) pairingNodeConnect.hidden = true;
       if (pairingInstructions) pairingInstructions.textContent = "Nodes on the same subnet join this cluster automatically. Nodes on different subnets can join using a one-use PIN generated here.";
-      const hasPIN = Boolean(status.pin);
       if (pairingPinRegenerateBtn) {
-        pairingPinRegenerateBtn.textContent = hasPIN ? "Generate / replace pairing PIN" : "Generate pairing PIN";
+        pairingPinRegenerateBtn.textContent = pinViewModel.regenerateText;
       }
       if (pairingAddressDisplay) pairingAddressDisplay.textContent = status.address || "HTTPS address unavailable";
-      if (pairingPin) pairingPin.textContent = status.pin || "Expired";
-      if (pairingPinExpiry) {
-        pairingPinExpiry.textContent = status.expires_at
-          ? `Expires ${new Date(status.expires_at).toLocaleTimeString()}. The PIN can be used once.`
-          : "No active PIN. Generate a new PIN to pair another node.";
-      }
-      if (pairingState) pairingState.textContent = hasPIN
-        ? "Share the PIN and HTTPS address only with the node you intend to add."
-        : "No active PIN. Generate one to add or re-pair a node.";
+      if (pairingPin) pairingPin.textContent = pinViewModel.pinText;
+      if (pairingPinExpiry) pairingPinExpiry.textContent = pinViewModel.expiryText;
+      if (pairingState) pairingState.textContent = pinViewModel.stateText;
       return;
     }
     if (status.role === "node") {

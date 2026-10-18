@@ -6,6 +6,8 @@ import { transform } from "esbuild";
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourceFiles = [
   "src/shared/state.js",
+  "src/shared/view-model.js",
+  "src/shared/snapshot.js",
   "src/shared/navigation.js",
   "src/components/pairing-dialog.js",
   "src/views/orchestrator-controls.js",

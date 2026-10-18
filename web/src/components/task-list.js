@@ -46,7 +46,21 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
       const attemptTimestamps = attempts.length
         ? attempts.map((attempt, attemptIndex) => {
           const attemptNumber = Number(attempt.number) || attemptIndex + 1;
-          return `<div class="task-step-attempt"><strong>Attempt ${attemptNumber}</strong>${formatTimestamp("Started", attempt.started_at)}${attempt.finished_at ? formatTimestamp("Finished", attempt.finished_at) : ""}</div>`;
+          const attemptStatus = typeof attempt.status === "string" ? attempt.status : "unknown";
+          const durationMs = Number(attempt.duration_ms);
+          const details = [
+            `<strong>Attempt ${attemptNumber} · ${escapeHtml(attemptStatus)}</strong>`,
+            attempt.id ? `<span>Attempt ID: ${escapeHtml(attempt.id)}</span>` : "",
+            attempt.request_id ? `<span>Request ID: ${escapeHtml(attempt.request_id)}</span>` : "",
+            attempt.node_id ? `<span>Node: ${escapeHtml(attempt.node_id)}</span>` : "",
+            attempt.model ? `<span>Model: ${escapeHtml(attempt.model)}</span>` : "",
+            attempt.engine ? `<span>Engine: ${escapeHtml(attempt.engine)}</span>` : "",
+            attempt.failure_class ? `<span>Failure: ${escapeHtml(attempt.failure_class)}</span>` : "",
+            attempt.http_status ? `<span>HTTP ${escapeHtml(attempt.http_status)}</span>` : "",
+            Number.isFinite(durationMs) && durationMs >= 0 ? `<span>Duration: ${durationMs} ms</span>` : "",
+            attempt.error ? `<span>Error: ${escapeHtml(attempt.error)}</span>` : "",
+          ].join("");
+          return `<div class="task-step-attempt">${details}${formatTimestamp("Started", attempt.started_at)}${formatTimestamp("Finished", attempt.finished_at)}</div>`;
         }).join("")
         : `<div class="task-step-attempt"><span>Not dispatched</span>${formatTimestamp("Task created", t.created_at)}</div>`;
       return `
@@ -140,7 +154,7 @@ function renderTasks(tasks, hasMore = false, loading = false) {
   if (!tasksList) return;
   if (!tasks || tasks.length === 0) {
     tasksList.innerHTML = '<p class="task-history-empty">No tasks submitted yet.</p>';
-    if (taskHistoryCount) taskHistoryCount.textContent = "0 tasks";
+    if (taskHistoryCount) taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(0, 0);
     appendTaskHistoryLoadMore(hasMore, loading);
     return;
   }
@@ -164,7 +178,7 @@ function renderTasks(tasks, hasMore = false, loading = false) {
       new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
     );
   if (taskHistoryCount) {
-    taskHistoryCount.textContent = `Showing ${orderedTasks.length} of ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
+    taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(orderedTasks.length, tasks.length);
   }
   if (orderedTasks.length === 0) {
     tasksList.innerHTML = '<p class="task-history-empty">No tasks match the selected filters.</p>';

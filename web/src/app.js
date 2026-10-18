@@ -152,57 +152,26 @@ async function refreshDiscovery() {
 setInterval(refreshDiscovery, 5000);
 
 function applySnapshot(snap) {
-  if (snap.complete_tasks) {
-    dashboardState.tasks = snap.tasks || [];
-    dashboardState.fullTaskHistoryLoaded = true;
-  } else if (dashboardState.fullTaskHistoryLoaded) {
-    const merged = new Map((dashboardState.tasks || []).map((task) => [task.id, task]));
-    for (const task of snap.tasks || []) merged.set(task.id, task);
-    dashboardState.tasks = [...merged.values()].sort((a, b) =>
-      new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
-    );
-  } else {
-    dashboardState.tasks = snap.tasks || [];
-  }
+  const taskSnapshot = dashboardSnapshot.mergeTaskSnapshot(
+    dashboardState.tasks, snap.tasks, snap.complete_tasks, dashboardState.fullTaskHistoryLoaded,
+  );
+  dashboardState.tasks = taskSnapshot.tasks;
+  dashboardState.fullTaskHistoryLoaded = taskSnapshot.fullTaskHistoryLoaded;
   mergeLiveTaskHistory(snap.tasks || []);
   dashboardState.nodes = snap.nodes || [];
   if (snap.cluster_health) dashboardState.capacity = snap.cluster_health;
   const capacityByNode = new Map(
     (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node]),
   );
-  const nodeCount = snap.member_count ?? dashboardState.nodes.filter((node) => node.healthy).length;
-  updateClusterTitle(nodeCount);
+  const status = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState.nodes, dashboardState.capacity);
+  updateClusterTitle(status.nodeCount);
 
   // Update header stats pills
-  if (statNodes) statNodes.textContent = `Nodes: ${nodeCount}`;
-  let modelCount = 0;
-  let activeLoad = 0;
-  if (Array.isArray(dashboardState.capacity?.nodes)) {
-    for (const node of dashboardState.capacity.nodes) {
-      if (!node.healthy) continue;
-      activeLoad += Number(node.active) || 0;
-    }
-  } else {
-    for (const n of dashboardState.nodes) {
-      if (!n.healthy) continue;
-      activeLoad += (n.active_tasks || 0);
-    }
-  }
-  for (const n of dashboardState.nodes) {
-    if (!n.healthy) continue;
-    modelCount += (n.models || []).length;
-  }
-  if (statModels) statModels.textContent = `Models: ${modelCount}`;
-  if (statLoad) {
-    const dispatch = dashboardState.capacity?.global_dispatch;
-    statLoad.textContent = dispatch
-      ? `Active Load: ${activeLoad} · Dispatch ${dispatch.active_slots}/${dispatch.global_limit} · Queue ${dispatch.queue_depth}`
-      : `Active Load: ${activeLoad}`;
-  }
-  if (statMemory && snap.memory) {
-    statMemory.textContent = `Memory: ${snap.memory.total_experiences || 0} · ${Math.round((snap.memory.success_rate || 0) * 100)}%`;
-  }
-  if (statVersion && snap.build_version) statVersion.textContent = snap.build_version;
+  if (statNodes) statNodes.textContent = `Nodes: ${status.nodeCount}`;
+  if (statModels) statModels.textContent = `Models: ${status.modelCount}`;
+  if (statLoad) statLoad.textContent = status.loadLabel;
+  if (statMemory && status.memoryLabel) statMemory.textContent = status.memoryLabel;
+  if (statVersion && status.buildVersion) statVersion.textContent = status.buildVersion;
 
   const nodeState = dashboardState.nodes.map((node) => ({
     id: node.id, version: node.version, address: node.address, hardware: node.hardware,
@@ -335,14 +304,7 @@ function refreshOverviewTimes() {
 setInterval(refreshOverviewTimes, 15000);
 
 function connectEvents() {
-  const es = new EventSource("/api/events");
-  es.onmessage = (evt) => {
-    try {
-      applySnapshot(JSON.parse(evt.data));
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  dashboardSnapshot.connectDashboardEvents(applySnapshot);
 }
 
 submitBtn?.addEventListener("click", async () => {

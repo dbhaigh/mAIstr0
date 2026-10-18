@@ -6,54 +6,199 @@ const vm = require("node:vm");
 
 const indexSource = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
 const appScriptPaths = [...indexSource.matchAll(/<script\s+src="([^"]+)"\s*><\/script>/g)].map((match) => match[1]);
-const appSources = new Map(appScriptPaths.map((scriptPath) => [
-  path.basename(scriptPath),
-  fs.readFileSync(path.join(__dirname, "static", path.basename(scriptPath)), "utf8"),
-]));
-const source = [...appSources.values()].join("\n");
-const sharedSource = appSources.get("app-shared.js");
-const clusterSource = appSources.get("app-cluster.js");
+const source = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8");
+const sharedSource = fs.readFileSync(path.join(__dirname, "src", "shared", "api.js"), "utf8");
+const applySnapshotStart = source.indexOf("function applySnapshot(snap) {");
+const applySnapshotSource = source.slice(applySnapshotStart, source.indexOf("\nfunction refreshOverviewTimes(", applySnapshotStart));
 const discoverySource = source.slice(source.indexOf("function visibleNetworkPeers("), source.indexOf("function renderTasks("));
-const taskSource = source.slice(source.indexOf("function renderTaskHistoryTable("), source.indexOf("async function copyText("));
+const taskSourceStart = source.lastIndexOf("function renderTaskHistoryTable(");
+const taskSource = source.slice(taskSourceStart, source.indexOf("async function copyText(", taskSourceStart));
 const resourceHistorySource = source.slice(source.indexOf("function gpuGaugeMarkup("), source.indexOf("const TASK_ACTIVE_STATES"));
-const engineStatusSource = clusterSource.slice(clusterSource.indexOf("function formatNodeHardware("), clusterSource.indexOf("function gpuGaugeMarkup("));
+const engineStatusSource = fs.readFileSync(path.join(__dirname, "src", "components", "node-card.js"), "utf8");
 const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
 const optionalFeaturesSource = source.slice(source.indexOf("let optionalFeaturesInitialized = false;"), source.indexOf("async function refreshPersistenceStatus()"));
 const sendInteractiveStart = source.indexOf("async function sendInteractiveMessage(text) {");
 const sendInteractiveEnd = source.indexOf("\nfunction handleStreamEvent(", sendInteractiveStart);
 const sendInteractiveSource = source.slice(sendInteractiveStart, sendInteractiveEnd);
+const dashboardViewModel = require("./src/shared/view-model.js");
+const dashboardSnapshot = require("./src/shared/snapshot.js");
 
-test("Dashboard loads shared utilities and each view without a build step", () => {
-  assert.deepEqual(appScriptPaths, [
-    "/app-shared.js",
-    "/app-cluster.js",
-    "/app-memory.js",
-    "/app-orchestrator.js",
-    "/app.js",
-  ]);
+test("Dashboard loads its generated bundle through the Go embedded static path", () => {
+  assert.deepEqual(appScriptPaths, ["/app.js"]);
   for (const scriptPath of appScriptPaths) {
     assert.ok(fs.existsSync(path.join(__dirname, "static", path.basename(scriptPath))), `${scriptPath} is missing`);
   }
+  const embedSource = fs.readFileSync(path.join(__dirname, "embed.go"), "utf8");
+  assert.match(embedSource, /\/\/go:embed static/);
 });
 
-test("Dashboard view scripts execute in HTML load order", () => {
-  const element = {
-    addEventListener() {},
-    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
-    dataset: {},
-    style: {},
-  };
-  const context = vm.createContext({
-    document: {
-      getElementById: () => element,
-      querySelector: () => element,
-      querySelectorAll: () => [],
-      addEventListener() {},
+test("Dashboard bundle parses as a plain JavaScript browser script", () => {
+  assert.doesNotThrow(() => new vm.Script(source, { filename: "static/app.js" }));
+});
+
+test("Dashboard status view model renders node, model, load, memory, and version counts", () => {
+  const capacityStatus = dashboardViewModel.dashboardStatusViewModel(
+    {
+      member_count: 3,
+      memory: { total_experiences: 5, success_rate: 0.8 },
+      build_version: "v1.2.3",
     },
+    [
+      { healthy: true, models: [{}, {}], active_tasks: 2 },
+      { healthy: false, models: [{}], active_tasks: 9 },
+      { healthy: true, models: [{}], active_tasks: 1 },
+    ],
+    {
+      nodes: [{ healthy: true, active: 2 }, { healthy: false, active: 8 }],
+      global_dispatch: { active_slots: 2, global_limit: 6, queue_depth: 1 },
+    },
+  );
+
+  assert.equal(capacityStatus.nodeCount, 3);
+  assert.equal(capacityStatus.modelCount, 3);
+  assert.equal(capacityStatus.activeLoad, 2);
+  assert.equal(capacityStatus.loadLabel, "Active Load: 2 · Dispatch 2/6 · Queue 1");
+  assert.equal(capacityStatus.memoryLabel, "Memory: 5 · 80%");
+  assert.equal(capacityStatus.buildVersion, "v1.2.3");
+
+  const fallbackStatus = dashboardViewModel.dashboardStatusViewModel(
+    {},
+    [{ healthy: true, models: [], active_tasks: 2 }, { healthy: false, active_tasks: 8 }],
+    null,
+  );
+  assert.equal(fallbackStatus.nodeCount, 1);
+  assert.equal(fallbackStatus.activeLoad, 2);
+  assert.equal(fallbackStatus.loadLabel, "Active Load: 2");
+});
+
+test("SSE snapshot application updates status pills and preserves loaded task history", () => {
+  const dashboardState = {
+    nodes: [],
+    tasks: [{ id: "old", updated_at: "2026-10-16T00:00:00Z" }],
+    pairing: { status: null },
+    fullTaskHistoryLoaded: true,
+    capacity: null,
+  };
+  const statNodes = { textContent: "" };
+  const statModels = { textContent: "" };
+  const statLoad = { textContent: "" };
+  const statMemory = { textContent: "Memory: 1 · 50%" };
+  const statVersion = { textContent: "" };
+  let titleCount;
+  const context = vm.createContext({
+    dashboardState,
+    dashboardSnapshot,
+    dashboardViewModel,
+    taskHistoryPage: { items: [], hasMore: false, loading: false },
+    window: {},
+    statNodes,
+    statModels,
+    statLoad,
+    statMemory,
+    statVersion,
+    updateClusterTitle: (count) => { titleCount = count; },
+    mergeLiveTaskHistory() {},
+    renderOverview() {},
+    renderNodes() {},
+    renderSetupNodes() {},
+    renderRouting() {},
+    renderDiscovery() {},
+    renderTasks() {},
+    refreshOverviewTimes() {},
   });
-  for (const scriptPath of appScriptPaths.slice(0, -1)) {
-    vm.runInContext(appSources.get(path.basename(scriptPath)), context, { filename: scriptPath });
+  vm.runInContext(applySnapshotSource, context);
+  context.applySnapshot({
+    member_count: 3,
+    build_version: "v1.2.3",
+    cluster_health: {
+      nodes: [{ node_id: "healthy", healthy: true, active: 2, max: 4, remaining: 2 }],
+      global_dispatch: { active_slots: 2, global_limit: 8, queue_depth: 1 },
+    },
+    memory: { total_experiences: 5, success_rate: 0.8 },
+    nodes: [
+      { id: "healthy", healthy: true, active_tasks: 2, models: [{}, {}] },
+      { id: "offline", healthy: false, active_tasks: 9, models: [{}] },
+    ],
+    tasks: [
+      { id: "old", status: "completed", updated_at: "2026-10-16T01:00:00Z" },
+      { id: "new", status: "running", updated_at: "2026-10-16T02:00:00Z" },
+    ],
+    discovery: [],
+  });
+
+  assert.equal(titleCount, 3);
+  assert.equal(statNodes.textContent, "Nodes: 3");
+  assert.equal(statModels.textContent, "Models: 2");
+  assert.equal(statLoad.textContent, "Active Load: 2 · Dispatch 2/8 · Queue 1");
+  assert.equal(statMemory.textContent, "Memory: 5 · 80%");
+  assert.equal(statVersion.textContent, "v1.2.3");
+  assert.deepEqual(dashboardState.tasks.map((task) => task.id), ["new", "old"]);
+  assert.equal(dashboardState.fullTaskHistoryLoaded, true);
+});
+
+test("Task history count labels preserve empty, singular, and plural forms", () => {
+  assert.equal(dashboardViewModel.taskHistoryCountLabel(0, 0), "0 tasks");
+  assert.equal(dashboardViewModel.taskHistoryCountLabel(1, 1), "Showing 1 of 1 task");
+  assert.equal(dashboardViewModel.taskHistoryCountLabel(2, 4), "Showing 2 of 4 tasks");
+});
+
+test("Pairing PIN view model covers active, missing, and node-side states", () => {
+  const active = dashboardViewModel.pairingPINViewModel({
+    role: "orchestrator",
+    pin: "123456",
+    expires_at: "2026-10-18T00:00:00Z",
+  });
+  assert.equal(active.visible, true);
+  assert.equal(active.hasPIN, true);
+  assert.equal(active.pinText, "123456");
+  assert.equal(active.regenerateText, "Generate / replace pairing PIN");
+  assert.match(active.expiryText, /^Expires .+ The PIN can be used once\.$/);
+  assert.match(active.stateText, /Share the PIN/);
+
+  const missing = dashboardViewModel.pairingPINViewModel({ role: "orchestrator" });
+  assert.equal(missing.visible, true);
+  assert.equal(missing.hasPIN, false);
+  assert.equal(missing.pinText, "Expired");
+  assert.equal(missing.regenerateText, "Generate pairing PIN");
+  assert.equal(missing.expiryText, "No active PIN. Generate a new PIN to pair another node.");
+  assert.equal(missing.stateText, "No active PIN. Generate one to add or re-pair a node.");
+
+  assert.equal(dashboardViewModel.pairingPINViewModel({ role: "node" }).visible, false);
+});
+
+test("SSE snapshots parse safely and merge live task updates without losing history", () => {
+  const snapshots = [];
+  const errors = [];
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+    }
   }
+  const eventSource = dashboardSnapshot.connectDashboardEvents(
+    (snapshot) => snapshots.push(snapshot),
+    { EventSourceImpl: FakeEventSource, onError: (error) => errors.push(error) },
+  );
+  assert.equal(eventSource.url, "/api/events");
+  eventSource.onmessage({ data: '{"nodes":[{"id":"node-a"}]}' });
+  eventSource.onmessage({ data: "{" });
+  assert.deepEqual(snapshots, [{ nodes: [{ id: "node-a" }] }]);
+  assert.equal(errors.length, 1);
+
+  const merged = dashboardSnapshot.mergeTaskSnapshot(
+    [
+      { id: "old", updated_at: "2026-10-16T00:00:00Z" },
+      { id: "same", updated_at: "2026-10-16T01:00:00Z", status: "running" },
+    ],
+    [
+      { id: "same", updated_at: "2026-10-16T02:00:00Z", status: "completed" },
+      { id: "new", updated_at: "2026-10-16T03:00:00Z" },
+    ],
+    false,
+    true,
+  );
+  assert.deepEqual(merged.tasks.map((task) => task.id), ["new", "same", "old"]);
+  assert.equal(merged.tasks[1].status, "completed");
+  assert.equal(merged.fullTaskHistoryLoaded, true);
 });
 
 test("Node properties allow configuring llama.cpp", () => {
@@ -225,6 +370,7 @@ test("Nodes page omits GPU and NPU details when the hardware is absent", () => {
 
 test("Node engine inventory indicators distinguish available, empty, failed, and unchecked states", () => {
   const context = vm.createContext({
+    dashboardViewModel,
     escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
   });
   vm.runInContext(engineStatusSource, context);
@@ -260,6 +406,7 @@ test("Node engine inventory indicators distinguish available, empty, failed, and
 
 test("Expandable node context includes hardware, engine status, and model capabilities", () => {
   const context = vm.createContext({
+    dashboardViewModel,
     escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
   });
   vm.runInContext(engineStatusSource, context);
@@ -414,6 +561,7 @@ test("Tasks are searchable and filterable in an expandable table", () => {
     document: {
       createElement,
     },
+    dashboardViewModel,
     escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
     dashboardState: { tasks: [] },
     fetchJSON: async () => {},
@@ -436,8 +584,29 @@ test("Tasks are searchable and filterable in an expandable table", () => {
         model: "model-a",
         attempts: [{
           number: 1,
+          id: "task-2:review:1",
+          request_id: "task-2:review",
+          node_id: "node-old",
+          model: "model-old",
+          engine: "test-engine",
+          status: "failed",
+          failure_class: "upstream_5xx",
+          http_status: 503,
+          error: "temporary <failure>",
           started_at: "2026-10-13T10:01:00Z",
           finished_at: "2026-10-13T10:04:00Z",
+          duration_ms: 180000,
+        }, {
+          number: 2,
+          id: "task-2:review:2",
+          request_id: "task-2:review",
+          node_id: "node-a",
+          model: "model-a",
+          engine: "test-engine",
+          status: "succeeded",
+          started_at: "2026-10-13T10:04:00Z",
+          finished_at: "2026-10-13T10:04:30Z",
+          duration_ms: 30000,
         }],
         output: "review complete",
       }],
@@ -470,6 +639,14 @@ test("Tasks are searchable and filterable in an expandable table", () => {
   assert.match(rows[1].innerHTML, /datetime="2026-10-13T10:04:00Z"/);
   assert.match(rows[1].innerHTML, /Started/);
   assert.match(rows[1].innerHTML, /Finished/);
+  assert.match(rows[1].innerHTML, /Attempt ID: task-2:review:1/);
+  assert.match(rows[1].innerHTML, /Request ID: task-2:review/);
+  assert.match(rows[1].innerHTML, /Node: node-old/);
+  assert.match(rows[1].innerHTML, /Model: model-old/);
+  assert.match(rows[1].innerHTML, /Failure: upstream_5xx/);
+  assert.match(rows[1].innerHTML, /HTTP 503/);
+  assert.match(rows[1].innerHTML, /temporary &lt;failure&gt;/);
+  assert.match(rows[1].innerHTML, /Attempt 2 · succeeded/);
   assert.match(rows[1].innerHTML, /review complete/);
   assert.equal(taskHistoryCount.textContent, "Showing 1 of 2 tasks");
 
@@ -696,6 +873,7 @@ test("Same-subnet auto-join suppresses the automatic pairing dialog", async () =
 
   const automatic = await pairingContext(true);
   assert.equal(automatic.dialogsShown, 0);
+  assert.equal(automatic.context.pairingPinView.hidden, true);
   assert.match(automatic.context.pairingState.textContent, /Connecting automatically/);
 
   const automaticAfterPrompt = await pairingContext(true, true);
