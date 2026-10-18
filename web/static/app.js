@@ -2408,12 +2408,25 @@ function renderDiscovery(peers) {
     const associated = p.role === "node" ? p.orchestrator_id || "Not announced" : p.role === "orchestrator" ? dashboardState.pairing.status?.role === "node" ? p.id === dashboardState.pairing.status.orchestrator_id ? "current orchestrator" : "available to join" : "self" : "Not elected";
     const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
     const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
+    const joinOrchestrator = p.role === "orchestrator" && dashboardState.pairing.status?.role === "node" && !p.local;
+    const orchestratorTarget = joinOrchestrator ? {
+      id: p.id,
+      role: p.role,
+      address: p.peer_addr || "",
+      peer_addr: p.peer_addr,
+      healthy: true,
+      discovered: true,
+      joinOrchestrator: true
+    } : null;
+    const alreadyJoined = dashboardState.pairing.status?.joined && dashboardState.pairing.status.orchestrator_id === p.id;
+    const joinLabel = alreadyJoined ? `Re-pair with ${p.id}` : dashboardState.pairing.status?.joined ? `Switch to ${p.id}'s cluster` : `Join ${p.id}'s cluster`;
     card.innerHTML = `
       <h3>${escapeHtml(p.id)} <span class="badge healthy">${escapeHtml(p.role)}</span></h3>
       <div class="row"><span>Address</span><span>${escapeHtml(p.peer_addr || p.http_addr || "Address unavailable")}</span></div>
       ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
       <div class="row"><span>Associated orchestrator</span><span>${escapeHtml(associated)}</span></div>
       <div class="row"><span>Last seen</span><span>${p.local ? "This device" : p.last_seen ? new Date(p.last_seen).toLocaleTimeString() : "Online in cluster"}</span></div>
+      ${orchestratorTarget ? `<button type="button" class="discovery-join-orchestrator" data-action="join-orchestrator" ${p.peer_addr ? "" : "disabled"}>${escapeHtml(joinLabel)}</button>` : ""}
     `;
     discoveryList.appendChild(card);
     if (p.role === "node") {
@@ -2427,16 +2440,11 @@ function renderDiscovery(peers) {
         active_tasks: 0,
         hardware: {}
       });
-    } else if (p.role === "orchestrator" && dashboardState.pairing.status?.role === "node" && !p.local) {
-      attachNodeContextMenu(card, {
-        id: p.id,
-        role: p.role,
-        address: p.peer_addr || p.http_addr,
-        peer_addr: p.peer_addr,
-        healthy: true,
-        discovered: true,
-        joinOrchestrator: true
+    } else if (orchestratorTarget) {
+      card.querySelector("[data-action=join-orchestrator]")?.addEventListener("click", () => {
+        openPairingDialog(orchestratorTarget);
       });
+      attachNodeContextMenu(card, orchestratorTarget);
     }
   }
 }

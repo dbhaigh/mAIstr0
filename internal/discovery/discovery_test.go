@@ -42,6 +42,20 @@ func TestBestOrchestratorCandidateWithTwoVisibleCandidates(t *testing.T) {
 	}
 }
 
+func TestBestActiveOrchestratorIgnoresCandidates(t *testing.T) {
+	peers := []Peer{
+		{Announcement: Announcement{Role: "candidate", ID: "candidate-high", Score: 100}},
+		{Announcement: Announcement{Role: "orchestrator", ID: "active-low", Score: 10}},
+		{Announcement: Announcement{Role: "orchestrator", ID: "active-high", Score: 20}},
+		{Announcement: Announcement{Role: "node", ID: "node-high", Score: 200}},
+	}
+
+	best, ok := BestActiveOrchestrator(peers)
+	if !ok || best.ID != "active-high" {
+		t.Fatalf("BestActiveOrchestrator() = %#v, %v; want active-high", best, ok)
+	}
+}
+
 func TestPartitionedCandidatesCanElectIndependentLocalWinners(t *testing.T) {
 	candidateA := Announcement{Role: "candidate", ID: "orchestrator-a", Score: 1}
 	candidateB := Announcement{Role: "candidate", ID: "orchestrator-b", Score: 2}

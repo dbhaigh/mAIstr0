@@ -237,9 +237,15 @@ func (l *Listener) FirstOrchestrator(timeout time.Duration) string {
 // BestOrchestrator returns the announcing orchestrator with the highest
 // capability score (ties broken by lowest ID): the current election winner.
 func (l *Listener) BestOrchestrator() (Peer, bool) {
+	return BestActiveOrchestrator(l.Snapshot())
+}
+
+// BestActiveOrchestrator selects from running orchestrators, ignoring
+// candidates that have not completed startup.
+func BestActiveOrchestrator(peers []Peer) (Peer, bool) {
 	var best Peer
 	found := false
-	for _, p := range l.Snapshot() {
+	for _, p := range peers {
 		if p.Role != "orchestrator" {
 			continue
 		}

@@ -7,11 +7,13 @@ available on those nodes, and provides a dashboard and OpenAI-compatible API.
 ## Quick start
 
 Run `maistr0.exe` on Windows, or the `maistr0` binary on Linux. By default,
-instances announce an orchestrator candidacy for six seconds. The candidate
-with the highest capability score wins, with the lowest stable ID breaking
-ties. The winner starts both the orchestrator and a local worker node; all
-other instances join as nodes. This lets the orchestrator host contribute its
-own compute resources to cluster work.
+instances first look for an active orchestrator and join it as a node. If no
+orchestrator is active, instances announce candidacy for 15 seconds (one full
+LAN discovery lease); the candidate with the highest capability score wins,
+with the lowest stable ID breaking ties. The winner starts both the
+orchestrator and a local worker node; other simultaneous starters join as
+nodes. This lets the orchestrator host contribute its own compute resources to
+cluster work.
 
 LAN election is based only on announcements currently visible to each instance.
 During a network partition, each side may therefore elect and serve its own
@@ -78,11 +80,13 @@ The **Local network** tab lists LAN-discovered instances regardless of pairing,
 plus online cluster nodes and the local worker. Membership is labeled
 separately from visibility; an associated orchestrator is shown only when known,
 not inferred from whichever orchestrator happens to be visible first.
-From a node dashboard, right-click a discovered orchestrator in **Local
-network** and choose **Join [orchestrator]'s cluster** to pair this node
-directly with that specific coordinator. Enter its one-use PIN when joining
-across subnets; same-subnet pairing can proceed without a PIN. The selected
-orchestrator identity is checked against its TLS certificate before pairing.
+From a node dashboard, use the **Join [orchestrator]'s cluster** button on a
+discovered orchestrator in **Local network**, or right-click its card and
+choose the same action, to pair this node directly with that specific
+coordinator. Enter its one-use PIN when joining across subnets; same-subnet
+pairing can proceed without a PIN. The selected orchestrator identity is
+checked against its TLS certificate before pairing. The node can initiate this
+join even if the orchestrator has not discovered the node yet.
 Application logs are appended to `maistr0.log` in the user's configuration
 directory (`%APPDATA%\maistr0\maistr0.log` on Windows). Choose **View Logs**
 from the tray icon's right-click menu to inspect pairing and TLS diagnostics,

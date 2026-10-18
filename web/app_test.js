@@ -438,15 +438,27 @@ function discoveryContext(nodes = [], pairing = null) {
     appendChild(card) { this.cards.push(card); },
   };
   const contextMenus = [];
+  const openedPairingTargets = [];
   const context = vm.createContext({
     discoveryList: list,
     dashboardState: { nodes, pairing: { status: pairing } },
-    document: { createElement: () => ({ innerHTML: "", className: "" }) },
+    document: {
+      createElement: () => {
+        const joinButton = { addEventListener(_event, handler) { this.handler = handler; } };
+        return {
+          innerHTML: "",
+          className: "",
+          joinButton,
+          querySelector: (selector) => selector === "[data-action=join-orchestrator]" ? joinButton : null,
+        };
+      },
+    },
     escapeHtml: (value) => String(value),
     attachNodeContextMenu: (element, node) => contextMenus.push({ element, node }),
+    openPairingDialog: (node) => openedPairingTargets.push(node),
   });
   vm.runInContext(discoverySource, context);
-  return { context, list, contextMenus };
+  return { context, list, contextMenus, openedPairingTargets };
 }
 
 test("Local Network merges discovered nonmembers with online members without duplicates", () => {
@@ -485,8 +497,8 @@ test("Local Network shows the unjoined local worker when discovery excludes self
   assert.doesNotMatch(list.cards[0].innerHTML, /old-orchestrator/);
 });
 
-test("An unjoined node can open pairing for a selected discovered orchestrator", () => {
-  const { context, contextMenus } = discoveryContext([], {
+test("An unjoined node can join a selected discovered orchestrator from its Local Network card", () => {
+  const { context, list, contextMenus, openedPairingTargets } = discoveryContext([], {
     role: "node", node_id: "self-worker", node_addr: "https://self:7451", joined: false,
   });
   context.renderDiscovery([{
@@ -499,6 +511,11 @@ test("An unjoined node can open pairing for a selected discovered orchestrator",
   assert.equal(target.role, "orchestrator");
   assert.equal(target.joinOrchestrator, true);
   assert.equal(target.address, "https://192.168.1.20:7450");
+  const card = list.cards.find((item) => item.innerHTML.includes("selected-orchestrator"));
+  assert.match(card.innerHTML, /Join selected-orchestrator's cluster/);
+  card.joinButton.handler();
+  assert.equal(openedPairingTargets[0].id, "selected-orchestrator");
+  assert.equal(openedPairingTargets[0].address, "https://192.168.1.20:7450");
 });
 
 test("Selected orchestrator context action offers join or re-pair by current membership", () => {

@@ -27,6 +27,8 @@ import (
 	buildversion "github.com/maistr0/maistr0/internal/version"
 )
 
+const startupElectionWindow = 15 * time.Second
+
 func main() {
 	role := flag.String("role", "auto", "which component to run: auto, orchestrator, node, or both")
 	nodeConfigPath := flag.String("node-config", "", "path to node JSON config file")
@@ -59,6 +61,7 @@ func main() {
 	if *role == "auto" && *orchestratorAddr != "" {
 		*role = "node"
 	}
+	preferActiveOrchestrator := *role == "auto"
 	var electionOrchCfg config.OrchestratorConfig
 	var electionNodeCfg config.NodeConfig
 	if *role == "auto" || *role == "orchestrator" || *role == "both" {
@@ -100,17 +103,17 @@ func main() {
 		}
 		stop := make(chan struct{})
 		go discovery.Beacon(func() discovery.Announcement { return candidate }, 250*time.Millisecond, stop)
-		log.Printf("main: checking for the highest-capability orchestrator candidate")
-		time.Sleep(6 * time.Second)
+		log.Printf("main: checking for an active orchestrator and startup candidates for %s", startupElectionWindow)
+		time.Sleep(startupElectionWindow)
 		close(stop)
 		peers := probe.Snapshot()
 		probe.Close()
-		winner := discovery.BestOrchestratorCandidate(candidate, peers)
+		winner := startupOrchestratorWinner(candidate, peers, preferActiveOrchestrator)
 		if winner.ID != candidate.ID {
 			if winner.PeerAddr == "" {
 				log.Fatalf("orchestrator election selected %s without an HTTPS address", winner.ID)
 			}
-			log.Printf("main: yielding orchestrator role to %s at %s; joining as a node", winner.ID, winner.PeerAddr)
+			log.Printf("main: joining orchestrator %s at %s as a node", winner.ID, winner.PeerAddr)
 			*orchestratorAddr = winner.PeerAddr
 			*role = "node"
 		} else {
@@ -262,6 +265,15 @@ func main() {
 			os.Exit(0)
 		},
 	})
+}
+
+func startupOrchestratorWinner(candidate discovery.Announcement, peers []discovery.Peer, preferActive bool) discovery.Announcement {
+	if preferActive {
+		if active, ok := discovery.BestActiveOrchestrator(peers); ok {
+			return active.Announcement
+		}
+	}
+	return discovery.BestOrchestratorCandidate(candidate, peers)
 }
 
 func configureLogging() (*logging.DailyFile, string, error) {

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.0.12 - 2026-10-18
+
+### Fixed
+
+- Make default automatic startup join an already-running orchestrator instead
+  of starting a competing coordinator based on local capability. Wait one full
+  discovery lease for late LAN announcements; simultaneous first starts still
+  elect a coordinator by capability and stable ID.
+
+### Added
+
+- Add a visible join action for discovered orchestrators in the Local network
+  view while retaining the context-menu action.
+
 ## 0.0.11 - 2026-10-18
 
 ### Added

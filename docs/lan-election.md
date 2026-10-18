@@ -1,9 +1,12 @@
 # LAN election and partitions
 
-Orchestrator startup uses the capability score and stable ID of orchestrator
-candidates visible during the six-second startup election. The UDP discovery
-listener keeps an announcement visible for 15 seconds after it was last heard.
-The election has no quorum, consensus log, or cross-partition coordinator.
+Default automatic startup waits one 15-second discovery lease before choosing
+a role. If it sees an active orchestrator, it joins that coordinator as a node;
+otherwise, it elects among the visible startup candidates by capability score
+and stable ID. Explicit orchestrator startup still uses capability and stable
+ID to select its coordinator. The UDP discovery listener keeps an announcement
+visible for 15 seconds after it was last heard. The election has no quorum,
+consensus log, or cross-partition coordinator.
 
 If a LAN is partitioned, the candidates visible on each side can differ. Each
 partition may elect its own local winner, and both winners may continue serving
