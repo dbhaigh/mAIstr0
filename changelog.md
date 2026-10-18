@@ -2,12 +2,32 @@
 
 ## Unreleased
 
+## 0.0.9 - 2026-10-18
+
 ### Fixed
 
+- Ensure task waits do not report terminal completion before the final task
+  checkpoint has been persisted.
 - Correct coordinator candidate selection after switching orchestrators, and
   stop probing stale node announcements that now belong to another coordinator.
 - Keep task-history sync diagnostics in the rolling log file without printing
   routine sync messages to the console.
+- Persist successful dispatch attempt metadata and subtask output in one task
+  snapshot, and mark in-flight attempts indeterminate when restart recovery
+  finds them still running.
+
+### Added
+
+- Show request/attempt IDs, worker placement, status, failure class, HTTP
+  status, duration, and error details for every task dispatch attempt.
+- Support optional worker-local `Idempotency-Key` result replay for successful
+  non-streaming generate requests; this is bounded best-effort deduplication,
+  not exactly-once execution.
+
+### Changed
+
+- Preserve an external dispatch deadline as a timeout when it expires during a
+  retry rather than reporting it as ordinary cancellation.
 
 ### Development
 
