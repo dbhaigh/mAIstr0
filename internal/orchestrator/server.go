@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
-	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
@@ -304,24 +303,16 @@ func (s *Server) Run(listenAddr string) error {
 	go s.electionPort().discoverySyncLoop(s.publishSnapshot)
 	log.Printf("orchestrator listening on %s", listenAddr)
 	mux := s.fenceStateChangingRequests(s.Mux())
-	secure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.isElectedOrchestrator() {
-			writeError(w, apperr.UnavailableError(fmt.Errorf("this instance yielded orchestrator leadership to a higher-ranked cluster member")))
-			return
-		}
+	secure := requireElectedOrchestrator(s.isElectedOrchestrator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/pairing/join" {
 			mux.ServeHTTP(w, r)
 			return
 		}
 		s.identity.RequireTrustedPeer(mux).ServeHTTP(w, r)
-	})
-	loopback := peeridentity.LoopbackOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.isElectedOrchestrator() {
-			s.handleYieldedDashboard(w, r)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	}))
+	}), nil)
+	loopback := peeridentity.LoopbackOnly(requireElectedOrchestrator(
+		s.isElectedOrchestrator, mux, http.HandlerFunc(s.handleYieldedDashboard),
+	))
 	return peeridentity.ServeDual(
 		listenAddr,
 		loopback,

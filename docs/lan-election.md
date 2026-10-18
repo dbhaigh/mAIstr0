@@ -20,6 +20,34 @@ remote pairing requires that leader's one-time PIN, and a node may accept its
 invitation locally. The existing same-subnet auto-pairing behavior is
 unchanged. Discovery visibility alone does not grant membership.
 
+## Write authority and trust
+
+Election is evaluated against each process's current discovery snapshot. An
+orchestrator that sees a higher-ranked active orchestrator stops serving its
+control API with HTTP 503; this applies to paired TLS callers as well as local
+dashboard requests. A partition that cannot see the other winner can continue
+to accept writes under its own local view. Ranking and expiration cannot fence
+a remote partition that is not visible; this system does not provide consensus
+or globally exclusive writes.
+
+Node agents accept plaintext API traffic only from loopback. Other requests
+must present a client certificate whose fingerprint is pinned by pairing.
+When a node sees a different active election winner, it rejects state-changing
+requests signed by a previously paired orchestrator identity; reads and
+requests from other pinned cluster members retain their existing behavior.
+The paired identities remain pinned across a leadership change, but a pin
+proves identity, not current leadership. A previously paired orchestrator can
+become the local authority again if it is the best active orchestrator visible
+to that node.
+
+Pairing bootstrap is the deliberate exception to ordinary pin authentication.
+`POST /api/pairing/join` is accepted only by the locally elected orchestrator
+and requires its one-time PIN, except for the existing same-subnet auto-pair
+flow. A TLS invitation to a node creates only a pending invitation; the node
+user must accept it locally, and the subsequent join still goes through the
+orchestrator's PIN check. An off-subnet join with a wrong or expired PIN does
+not add a trust pin.
+
 ## Optional request-view fencing
 
 Active orchestrator responses expose the server's current view in

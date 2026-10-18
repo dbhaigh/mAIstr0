@@ -235,6 +235,14 @@ paths:
   /api/nodes/{id}/generate:
     parameters:
       - $ref: "#/components/parameters/ID"
+      - in: header
+        name: Idempotency-Key
+        required: false
+        description: Optional worker-local result replay key for non-streaming generation.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
     post:
       responses: {"200": {description: Generate text on a node}}
   /api/nodes/{id}/chat:
@@ -260,6 +268,14 @@ paths:
     parameters:
       - $ref: "#/components/parameters/ID"
       - $ref: "#/components/parameters/Model"
+      - in: header
+        name: Idempotency-Key
+        required: false
+        description: Optional worker-local result replay key for non-streaming generation.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
     post:
       responses: {"200": {description: Generate with a node model}}
   /api/nodes/{id}/models/{model}/test:
@@ -335,6 +351,7 @@ paths:
       responses:
         "202": {description: Task accepted}
         "400": {description: Invalid task request}
+        "502": {description: Planning model failed to produce a valid plan}
         "503": {description: No healthy node can accept the task}
   /api/tasks/resumable:
     get:

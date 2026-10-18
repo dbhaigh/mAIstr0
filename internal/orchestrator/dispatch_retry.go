@@ -40,10 +40,11 @@ func (p dispatchRetryPolicy) delay(attempt int) time.Duration {
 }
 
 func dispatchContextFailure(ctx context.Context) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	cause := context.Cause(ctx)
+	if errors.Is(cause, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errors.New("subtask dispatch deadline exceeded")
 	}
-	if errors.Is(ctx.Err(), context.Canceled) {
+	if errors.Is(cause, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 		return context.Canceled
 	}
 	return nil

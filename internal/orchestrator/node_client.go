@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/inferroute"
 )
 
 type nodeClient struct {
@@ -29,6 +30,7 @@ type nodeClientAPI interface {
 	callNodeGenerate(string, string, string) (string, error)
 	callNodeGenerateWithOptions(string, string, string, float64, int) (string, error)
 	callNodeGenerateWithOptionsContext(context.Context, string, string, string, float64, int) (string, error)
+	callNodeGenerateWithOptionsContextAndIdempotency(context.Context, string, string, string, float64, int, string) (string, error)
 	Do(*http.Request) (*http.Response, error)
 	DoDispatch(*http.Request) (*http.Response, error)
 	Get(string) (*http.Response, error)
@@ -169,6 +171,16 @@ func (c *nodeClient) callNodeGenerateWithOptions(nodeAddr, model, prompt string,
 }
 
 func (c *nodeClient) callNodeGenerateWithOptionsContext(ctx context.Context, nodeAddr, model, prompt string, temperature float64, maxTokens int) (string, error) {
+	return c.callNodeGenerateWithOptionsContextAndIdempotency(ctx, nodeAddr, model, prompt, temperature, maxTokens, "")
+}
+
+func (c *nodeClient) callNodeGenerateWithOptionsContextAndIdempotency(
+	ctx context.Context,
+	nodeAddr, model, prompt string,
+	temperature float64,
+	maxTokens int,
+	idempotencyKey string,
+) (string, error) {
 	genPayload, err := marshalGeneratePayload(model, prompt, temperature, maxTokens)
 	if err != nil {
 		return "", err
@@ -179,7 +191,42 @@ func (c *nodeClient) callNodeGenerateWithOptionsContext(ctx context.Context, nod
 		return "", err
 	}
 	genReq.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		genReq.Header.Set(inferroute.HeaderIdempotencyKey, idempotencyKey)
+	}
 	resp, err := c.dispatcher.Do(genReq)
+	if idempotencyKey != "" {
+		if err != nil {
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			return "", fmt.Errorf("node generate request failed: %w", err)
+		}
+		if resp == nil {
+			return "", errors.New("node generate request returned no response")
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+			if readErr != nil {
+				return "", fmt.Errorf("read node error response failed: %w", readErr)
+			}
+			return "", &nodeResponseError{
+				statusCode: resp.StatusCode, status: resp.Status, body: strings.TrimSpace(string(errBody)),
+			}
+		}
+		var result struct {
+			Output string `json:"output"`
+			Error  string `json:"error,omitempty"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", fmt.Errorf("invalid response from node: %w", err)
+		}
+		if result.Error != "" {
+			return "", errors.New(result.Error)
+		}
+		return result.Output, nil
+	}
 	if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		defer resp.Body.Close()
 		var res struct {
@@ -227,6 +274,19 @@ func (c *nodeClient) callNodeGenerateWithOptionsContext(ctx context.Context, nod
 		return "", errors.New(out.Error)
 	}
 	return out.Output, nil
+}
+
+type nodeResponseError struct {
+	statusCode int
+	status     string
+	body       string
+}
+
+func (e *nodeResponseError) Error() string {
+	if e.body == "" {
+		return "node returned " + e.status
+	}
+	return "node returned " + e.status + ": " + e.body
 }
 
 func marshalGeneratePayload(model, prompt string, temperature float64, maxTokens int) ([]byte, error) {

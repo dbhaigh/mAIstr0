@@ -22,11 +22,13 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 	if !ok {
 		return
 	}
-	dispatchCtx, cancel := context.WithCancel(ctx)
-	stopParent := context.AfterFunc(parent, cancel)
+	dispatchCtx, cancel := context.WithCancelCause(ctx)
+	stopParent := context.AfterFunc(parent, func() {
+		cancel(parent.Err())
+	})
 	defer func() {
 		stopParent()
-		cancel()
+		cancel(context.Canceled)
 	}()
 
 	dependencyStarted := time.Now()
@@ -160,14 +162,15 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 				break
 			}
 			attemptID := taskmgr.DispatchAttemptID(taskID, assignment.Subtask.ID, attemptNumber)
-			requestID := taskID + ":" + assignment.Subtask.ID
+			requestID := taskmgr.DispatchRequestID(taskID, assignment.Subtask.ID)
 			outcome := d.executeSubtaskWithIDs(dispatchCtx, current, attemptPrompt, requestID, attemptID)
 			output, attemptErr, retryable = outcome.output, outcome.err, outcome.retryable
 			failureClass, httpStatus := outcome.failureClass, outcome.httpStatus
 			if contextFailure := dispatchContextFailure(dispatchCtx); contextFailure != nil {
 				attemptErr = contextFailure
 				retryable = false
-				if errors.Is(dispatchCtx.Err(), context.DeadlineExceeded) {
+				if errors.Is(context.Cause(dispatchCtx), context.DeadlineExceeded) ||
+					errors.Is(dispatchCtx.Err(), context.DeadlineExceeded) {
 					failureClass = "timeout"
 				} else {
 					failureClass = "cancelled"
@@ -180,21 +183,25 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 					failureClass = assembled.failureClass
 				}
 			}
-			attemptStatus := taskmgr.DispatchAttemptSucceeded
-			if attemptErr != nil {
-				attemptStatus = taskmgr.DispatchAttemptFailed
+			var persistErr error
+			if attemptErr == nil {
+				failureClass = "none"
+				_, persistErr = d.tasks.CompleteDispatchAttemptChecked(
+					taskID, assignment.Subtask.ID, attemptNumber,
+					failureClass, httpStatus, time.Since(started), output,
+				)
+			} else {
+				persistErr = d.tasks.FinishDispatchAttemptChecked(
+					taskID, assignment.Subtask.ID, attemptNumber, taskmgr.DispatchAttemptFailed,
+					failureClass, httpStatus, attemptErr, time.Since(started),
+				)
 			}
-			if persistErr := d.tasks.FinishDispatchAttemptChecked(
-				taskID, assignment.Subtask.ID, attemptNumber, attemptStatus,
-				failureClass, httpStatus, attemptErr, time.Since(started),
-			); persistErr != nil {
+			if persistErr != nil {
 				attemptErr = fmt.Errorf("persist dispatch attempt: %w", persistErr)
 				retryable = false
 				failureClass = "persistence"
 			}
-			if attemptErr == nil {
-				failureClass = "none"
-			} else if failureClass == "" {
+			if attemptErr != nil && failureClass == "" {
 				failureClass = "dispatch_error"
 			}
 			d.recordDispatchWithAttemptID(current, requestID, attemptID, output, attemptErr, time.Since(started), failureClass, httpStatus)
@@ -206,7 +213,6 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 		reservation.Release()
 
 		if attemptErr == nil {
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, output, nil)
 			return
 		}
 		if !d.retryPolicy.canRetry(retryable, attempt+1, dispatchCtx) {
@@ -310,6 +316,9 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 	d.metrics.recordDispatch()
 	resp, err := d.executeClient.Do(req)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		if errors.Is(err, context.Canceled) {
 			return dispatchOutcome{err: err, failureClass: "cancelled"}
 		}

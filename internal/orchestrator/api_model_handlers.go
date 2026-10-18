@@ -13,6 +13,7 @@ import (
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
@@ -22,6 +23,17 @@ func (s *Server) handleListAllModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
+	idempotencyKey := r.Header.Get(inferroute.HeaderIdempotencyKey)
+	if err := inferroute.ValidateIdempotencyKey(idempotencyKey); err != nil {
+		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
+		return
+	}
+	streaming := strings.EqualFold(r.URL.Query().Get("stream"), "true")
+	if idempotencyKey != "" && streaming {
+		err := apperr.Invalid(errors.New("Idempotency-Key is supported only for non-streaming generate requests"))
+		writeJSONError(w, err, generateAPIResponse{Error: err.Error()})
+		return
+	}
 	var req generateAPIRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
@@ -107,16 +119,37 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	s.registry.IncrementLoad(targetNode.ID, 1)
 	defer s.registry.IncrementLoad(targetNode.ID, -1)
-	if strings.EqualFold(r.URL.Query().Get("stream"), "true") {
+	if streaming {
 		s.streamNodeGenerate(w, r, targetNode.Address, targetModel, req, fullPrompt)
 		return
 	}
 
 	start := time.Now()
-	output, err := s.callNodeGenerateWithOptions(targetNode.Address, targetModel, fullPrompt, req.Temperature, req.MaxTokens)
+	var output string
+	if idempotencyKey != "" {
+		output, err = s.callNodeGenerateWithOptionsContextAndIdempotency(
+			r.Context(), targetNode.Address, targetModel, fullPrompt,
+			req.Temperature, req.MaxTokens, idempotencyKey,
+		)
+	} else {
+		output, err = s.callNodeGenerateWithOptions(targetNode.Address, targetModel, fullPrompt, req.Temperature, req.MaxTokens)
+	}
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
+		var nodeErr *nodeResponseError
+		if idempotencyKey != "" && errors.As(err, &nodeErr) {
+			message := nodeErr.body
+			var backend generateAPIResponse
+			if json.Unmarshal([]byte(nodeErr.body), &backend) == nil && backend.Error != "" {
+				message = backend.Error
+			}
+			writeJSON(w, nodeErr.statusCode, generateAPIResponse{
+				NodeID: targetNode.ID, NodeAddress: targetNode.Address, Model: targetModel,
+				DurationMs: duration, Error: message,
+			})
+			return
+		}
 		appErr := apperr.InternalError(err)
 		writeJSONError(w, appErr, generateAPIResponse{
 			NodeID:      targetNode.ID,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/inferroute"
 )
 
 type ollamaOptions struct {
@@ -234,6 +235,15 @@ const (
 )
 
 func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIRequest, stream bool, mode compatMode, handler http.HandlerFunc) {
+	idempotencyKey := r.Header.Get(inferroute.HeaderIdempotencyKey)
+	if err := inferroute.ValidateIdempotencyKey(idempotencyKey); err != nil {
+		writeCompatError(w, apperr.Invalid(err), mode)
+		return
+	}
+	if idempotencyKey != "" && stream {
+		writeCompatError(w, apperr.Invalid(errors.New("Idempotency-Key is supported only for non-streaming generate requests")), mode)
+		return
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		writeCompatError(w, apperr.InternalError(err), mode)
@@ -247,6 +257,9 @@ func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIR
 	if err != nil {
 		writeCompatError(w, apperr.InternalError(err), mode)
 		return
+	}
+	if idempotencyKey != "" {
+		fakeRequest.Header.Set(inferroute.HeaderIdempotencyKey, idempotencyKey)
 	}
 	if stream {
 		var target http.ResponseWriter

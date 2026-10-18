@@ -379,6 +379,14 @@ func (i *Identity) IsTrustedID(id string) bool {
 	return ok
 }
 
+// IsTrustedOrchestratorID reports whether id is pinned with the orchestrator role.
+func (i *Identity) IsTrustedOrchestratorID(id string) bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	peer, ok := i.trusted[id]
+	return ok && peer.Role == "orchestrator"
+}
+
 // TrustedIDs returns the IDs of all paired cluster members.
 func (i *Identity) TrustedIDs() []string {
 	i.mu.RLock()

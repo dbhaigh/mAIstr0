@@ -37,7 +37,11 @@ func TestServeDualSeparatesLoopbackAndPairedTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := "https://" + listener.Addr().String()
-	localHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mutations := 0
+	localHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			mutations++
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	secureHandler := serverIdentity.RequireTrustedPeer(localHandler)
@@ -64,6 +68,14 @@ func TestServeDualSeparatesLoopbackAndPairedTraffic(t *testing.T) {
 	if pairedResponse.StatusCode != http.StatusNoContent {
 		t.Fatalf("paired request status = %d, want 204", pairedResponse.StatusCode)
 	}
+	pairedMutation, err := pairedHTTP.Post(address+"/api/tasks", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairedMutation.Body.Close()
+	if pairedMutation.StatusCode != http.StatusNoContent || mutations != 1 {
+		t.Fatalf("paired mutation status = %d and count = %d, want 204 and 1", pairedMutation.StatusCode, mutations)
+	}
 
 	unpairedHTTP := &http.Client{
 		Timeout: 3 * time.Second,
@@ -79,6 +91,14 @@ func TestServeDualSeparatesLoopbackAndPairedTraffic(t *testing.T) {
 	unpairedResponse.Body.Close()
 	if unpairedResponse.StatusCode != http.StatusForbidden {
 		t.Fatalf("unpaired request status = %d, want 403", unpairedResponse.StatusCode)
+	}
+	unpairedMutation, err := unpairedHTTP.Post(address+"/api/tasks", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpairedMutation.Body.Close()
+	if unpairedMutation.StatusCode != http.StatusForbidden || mutations != 1 {
+		t.Fatalf("unpaired mutation status = %d and count = %d, want 403 and 1", unpairedMutation.StatusCode, mutations)
 	}
 
 	_ = listener.Close()

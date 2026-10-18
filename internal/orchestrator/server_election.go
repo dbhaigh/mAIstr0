@@ -1,6 +1,10 @@
 package orchestrator
 
 import (
+	"fmt"
+	"net/http"
+
+	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/discovery"
 )
 
@@ -12,6 +16,21 @@ func (s *Server) SelfID() string { return s.electionPort().selfIDValue() }
 
 func (s *Server) isElectedOrchestrator() bool {
 	return s.election == nil || s.electionPort().isElectedOrchestrator()
+}
+
+func requireElectedOrchestrator(isElected func() bool, next, yielded http.Handler) http.Handler {
+	if yielded == nil {
+		yielded = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, apperr.UnavailableError(fmt.Errorf("this instance yielded orchestrator leadership to a higher-ranked cluster member")))
+		})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isElected() {
+			yielded.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) discoverySyncLoop() {
