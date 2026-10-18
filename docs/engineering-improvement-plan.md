@@ -1,16 +1,26 @@
 # Engineering Improvement Plan
 
-Assessment date: 2026-10-15
+Assessment date: 2026-10-18
 Repository: `dbhaigh/mAIstr0`
-Scope: Prompt 0 repository assessment; no production behavior changed in this phase.
+Scope: Current-state assessment of Phases 0–8. This document update is
+documentation-only and does not change production behavior.
+
+See the [phase prompt pack](../improvements.md) for goals and acceptance
+criteria. This assessment records current implementation status; it is not a
+replacement for review or CI.
 
 ## Assessment boundaries
 
 - The repository is a Go 1.27 module with an embedded static web dashboard. The dashboard has a Node test file but no separate frontend package manifest.
-- No repository `AGENTS.md`, `copilot-instructions.md`, or `.github/instructions/` files were found.
-- The working tree was already dirty when assessed. The assessment preserves those changes and runs checks against that working tree; it does not claim a clean-HEAD baseline.
-- The checked-out branch is `main` at `8ae1fcf4d717556f675634efdcef48eb3a4a4e06`.
-- `improvements.md` describes an older baseline that refers to uncommitted `dispatch_pool.go` files. Those files are absent now; the shared `internal/workpool` implementation is present. No `.flm/memory.json.*.tmp` files are tracked, and `.gitignore` already contains `.flm/*.tmp`.
+- Repository-wide agent guidance and contributor workflow are in
+  [`AGENTS.md`](../AGENTS.md) and [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+- At assessment time, `main` was at `78d00f0`; the worktree was already dirty
+  across contracts, orchestrator, node-agent, task-manager, and dashboard
+  files. Phase status therefore distinguishes implemented source from work
+  still awaiting review and merge.
+- Phase 0's clean-baseline requirement is not currently met. The full Linux
+  race suite passed in Ubuntu 24.04 WSL with Go 1.27.2; native Windows remains
+  blocked by ThreadSanitizer error 87. See [README Development](../README.md#development).
 
 ## Current architecture
 
@@ -37,54 +47,52 @@ Scope: Prompt 0 repository assessment; no production behavior changed in this ph
 
 The broad dependency flow is: CLI/configuration → orchestrator and/or node-agent composition roots → cluster registry, scheduler, task manager and engine adapters. The orchestrator communicates with paired nodes through its node client and authenticated HTTP; nodes report status and execute routed work. Memory and task stores provide persistence and peer synchronization. The dashboard consumes the existing APIs and SSE snapshots.
 
-## Baseline and working-tree state
+## Baseline and validation
 
-### Uncommitted work
+The working tree is not a clean-HEAD baseline, so results from earlier
+checkpoints must not be interpreted as validation of every current change.
+Before closing Phase 0, review and merge or move the in-flight work to a
+focused branch, then confirm the CI workflow is green.
 
-`git diff --stat` reported 11 modified files, 466 insertions and 69 deletions; there were no untracked files. These changes are the preceding per-node engine-inventory implementation, not changes made for this assessment:
-
-- README and engine-status schema: document and define the new optional inventory status fields.
-- `internal/engine/engine.go`, `internal/nodeagent/agent.go`, `api_handlers.go`, `components.go`, `engine_component.go`: distinguish unknown, available, empty and failed inventory checks; expose check timestamps/errors; preserve the last successful inventory on failure; retain temporarily unavailable discovered engines for a bounded grace period.
-- `internal/nodeagent/components_test.go`: cover inventory changes, empty results, error retention and temporary engine loss.
-- `web/static/app.js`, `style.css`, `web/app_test.js`: render per-engine status and grouped model details and test the visible status states.
-
-The Go, schema and UI changes have focused test coverage and passed the checks below, but they remain unreviewed and uncommitted on `main`. The user-visible change has a README update but no corresponding `changelog.md` entry yet.
-
-### Commands run
-
-| Command | Result |
-|---|---|
-| `go build ./...` | Pass |
-| `go vet ./...` | Pass |
-| `go test ./...` | Pass; package results were reported as cached in this assessment run |
-| `node --test web/app_test.js` | Pass; 13 tests |
-| `go test -race ./...` | Could not build: `runtime/cgo: ... cgo.exe: exit status 2`. `CGO_ENABLED=1`, `CC=gcc`, and GCC 16.1 are present; a focused `go test -race -x ./internal/workpool` produced the same cgo failure without additional compiler diagnostics. No toolchain was installed or changed. A race-enabled run on a supported Linux runner remains outstanding. |
-
-The local toolchain is Go 1.27.0, Windows/amd64, Node 24.15.0. CI currently targets Ubuntu and Windows, uses the Go version in `go.mod`, and sets up Node 22. The CI workflow runs contract generation/drift checks, Go tests, vet, application build and dashboard tests. No standalone lint or static-analysis tool beyond `go vet` is configured. The cross-platform `build/build.ps1` and `build/build.sh` packaging scripts were not run because they overwrite existing `dist/` artifacts; `go build ./...` was run instead.
+CI in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) regenerates and
+checks contract fixtures, runs `go test ./contracts`, `go test ./...`,
+`go vet ./...`, `go build ./cmd/maistr0`, and `node --test web/app_test.js` on
+Ubuntu and Windows. It also runs `go test -race ./...` on Linux. The exact
+commands and known local race limitations are documented in
+[README Development](../README.md#development).
 
 ## Status of items in `improvements.md`
 
 | Phase | Assessment | Current evidence and next action |
 |---|---|---|
-| 0 — Stabilize baseline | **Not complete** | The tree is dirty on `main`, and the race suite did not build on this Windows toolchain. The tracked-temp-file condition is already satisfied: `.gitignore` ignores `.flm/*.tmp`, and no matching temp files are tracked. Review and commit or move the existing inventory work before beginning another implementation phase; rerun race tests on a supported runner. |
-| 1 — Characterization and contract tests | **Substantially implemented; coverage audit remains** | There are task/workflow and compatibility fixtures, config tests, scheduler tests, route/schema drift checks and a contract export/generation workflow. Compare each Prompt 1 scenario against actual assertions—particularly API error/stream response shapes and lifecycle/restart edges—before declaring the phase closed. Add only missing behavioral tests, not duplicate suites. |
-| 2 — Config validation and normalization | **Implemented** | `NodeConfig` and `OrchestratorConfig` have `Normalize` and `Validate`; constructors call them, and table-driven tests cover URL, listen address, PIN, concurrency, tray, harness and memory-path cases. Maintain compatibility with existing JSON keys and defaults. |
-| 3 — Separate domain errors from HTTP | **Implemented in current source** | `internal/apperr` defines error kinds and status mapping; task planning returns typed errors and orchestrator/node handlers use shared mapping helpers. No `taskCreateError` symbol remains. Preserve existing response body shapes when extending errors. |
-| 4 — Unify dispatch/worker pool | **Implemented in current source** | `internal/workpool` is used by orchestrator and node-agent; the orchestrator opts out of submitter-context propagation to preserve its task-context lifecycle. The node dispatch gate remains separate and has focused tests. Keep queue and active-slot snapshot semantics stable. |
-| 5 — Persistence behind interfaces | **Implemented in current source** | `taskmgr.Store` and `memory.Store` are defined; bbolt adapters, in-memory stores, legacy database fixtures and restart tests exist. The orchestrator also declares a session-store seam. Preserve bucket/key formats and task persistence lock ordering. |
-| 6 — Split god objects | **Partial** | Responsibilities are split into components and `orchestrator/server.go` is 369 lines; task manager logic is split by lifecycle, query, recovery and sync. Remaining files exceed the plan's approximate 500-line target, including `nodeagent/agent.go` (527), `nodeagent/api_handlers.go` (936), `orchestrator/dispatcher_component.go` (584), and `orchestrator/router_handlers.go` (480, near the limit). Continue incrementally, task manager first, then node-agent, then orchestrator, without changing exported behavior. |
-| 7 — Incremental memory sync | **Implemented in current source; retain regression coverage** | Memory/task records carry origin and sequence data; protocol v2 has per-peer watermarks and cursor paging with legacy/full-snapshot support. Tests cover idempotency, out-of-order convergence, fallback, watermark persistence and page bounds. Keep watermarks from advancing before data is accepted. |
-| 8 — Language-neutral artifacts | **Implemented in current source** | OpenAPI, JSON schemas, request/response fixtures, scheduler fixtures and a porting guide exist. `contracts/contracts_test.go` checks route registration and schema/fixture validity; CI checks generated fixture drift. Update contracts with any future wire changes. |
+| 0 — Stabilize baseline | **Partial** | `.gitignore` covers `.flm/*.tmp`; CI has a Linux race job, but a clean reviewed baseline and an unqualified race result are still required. The current working tree is dirty. |
+| 1 — Characterization and contract tests | **Coverage complete in the current worktree; review/merge pending** | The matrix below maps the requested lifecycle, scheduler, compatibility, configuration, status, and error behaviors to assertions. Current changes add terminal-checkpoint and compatibility-error fixtures; the former `BUG:` skip is now a failing assertion. |
+| 2 — Config validation and normalization | **Implemented** | `NodeConfig` and `OrchestratorConfig` normalize and validate values, with constructor use and table-driven tests. Preserve existing keys and defaults. |
+| 3 — Separate domain errors from HTTP | **Implemented** | `internal/apperr` supplies typed categories and status mapping. Keep domain code independent of HTTP and preserve response bodies. |
+| 4 — Unify dispatch/worker pool | **Implemented** | `internal/workpool` serves orchestrator and node-agent work; node-capacity gating remains a separate orchestrator concern. Preserve the tested cancellation and capacity semantics. |
+| 5 — Persistence behind interfaces | **Implemented** | Task and memory stores have interfaces, bbolt adapters, in-memory implementations, and recovery/compatibility tests. Preserve on-disk encodings and locking rules. |
+| 6 — Split god objects | **Partial; review pending** | Task-manager and node-agent responsibilities are split into components, including dispatch-attempt persistence and status reporting. The current non-test files in `internal/taskmgr`, `internal/nodeagent`, and `internal/orchestrator` are all below 500 lines (largest measured: `router_handlers.go`, 472 lines). Review explicit dependency boundaries and lock ownership before declaring the phase complete; no further split is justified by file size alone. |
+| 7 — Incremental memory sync | **Implemented** | Versioned watermark/cursor sync has a full-snapshot compatibility path. Keep merges idempotent and advance watermarks only after accepted data. |
+| 8 — Language-neutral artifacts | **Implemented** | OpenAPI, JSON Schemas, exported HTTP fixtures, scheduler fixtures, and a porting guide are checked by tests and CI drift generation. Maintain them with every intentional contract change. |
 
-`improvements.md` itself should be reconciled with this assessment: its baseline note references absent dispatch-pool files and its Phase 0 is a stabilization task, whereas the implementation prompt used for this assessment defines Prompt 0 as a repository/architecture assessment. Keep the distinction explicit rather than treating the two Prompt 0 scopes as interchangeable.
+### Phase 1 coverage map
+
+| Behavior | Existing assertions |
+|---|---|
+| Heuristic, explicit subtasks/graph, automatic planning and planner failure | `TestTaskCreateHTTPContracts`, `TestAutoPlanHTTPContracts`, and `TestAutoPlanRetriesWithAnotherModelAfterModelLoadFailure` |
+| Dependency ordering/output propagation, reviewer insertion, approval and cancellation | `TestTaskDependencyReviewAndApprovalContracts`, `TestTaskHTTPErrorAndCancelContracts`, and `TestGraphTopologicalOrderContract` |
+| Task execution failure, restart recovery, and checkpoint visibility after completion | `TestTaskExecutionFailureHTTPContract`, `TestInterruptedTaskRecoveryHTTPContract`, `TestRestartRecoveryContract`, `TestCompletedTaskCheckpointContract`, and `TestWaitDoesNotReturnBeforeTerminalCheckpointIsPersisted` |
+| Deterministic assignment, unassignable tasks, no healthy nodes, and telemetry freshness | `TestAssignmentContractForFixedNodeAndModel`, `TestAssignmentErrorsAndTelemetryContract`, `TestScheduler_TelemetryFreshnessWindow`, and `TestAssignIgnoresStaleAcceleratorTelemetry` |
+| OpenAI/Ollama/Anthropic success and stream framing, plus validation error envelopes | `TestCompatibilityAPIContracts`, `TestCompatibilityErrorContracts`, `TestOpenAIStreamingPreservesOptionsAndMessageRoles`, and `TestAnthropicTextBlocksAndRequestValidation` |
+| Configuration defaults, overlays, missing files, malformed files, and validation | `TestConfigDefaultsAndOverlaysContract`, `TestConfigMissingFilesKeepDefaults`, `TestConfigMalformedFilesReturnErrors`, and `TestConfigValidationReportsAllViolations` |
+| Status and persistence-degradation shape; registered routes and schemas | `TestSystemStatusContract`, `TestSystemStatusReportsUnavailablePersistence`, `TestRegisteredHTTPRoutesAreDocumented`, `TestRepresentativeValuesValidateAgainstJSONSchemas`, and `TestSchemaSetIsComplete` |
 
 ## Prioritized follow-up
 
-1. **Close the current baseline:** review the 11-file engine-inventory change, add its changelog entry, and commit it or move it to a named feature branch. Do not overwrite or silently discard the working-tree changes. Keep subsequent phases off `main` and wait for maintainer review as required by the prompt pack.
-2. **Complete Phase 1's gap audit:** map each listed lifecycle, API compatibility, configuration, scheduler and recovery behavior to an existing assertion. Fill only demonstrated gaps with deterministic tests and normalized fixtures.
-3. **Run race validation on a supported environment:** add no local dependencies for this assessment. Use a Linux CI runner or another supported cgo toolchain and record the exact result before concurrency-focused refactors.
-4. **Continue Phase 6 after prerequisite review:** keep the decomposition in small, separately reviewable changes—task manager, node agent, then orchestrator. Prioritize lock ownership, explicit dependencies and focused tests; avoid file splitting without a clear responsibility boundary.
-5. **Treat Phases 2–5, 7 and 8 as maintenance unless a fresh audit finds a specific missing acceptance criterion.** Their current implementations and tests are already present; do not redo them just to match the old plan wording.
+1. **Re-establish the baseline:** review the current mixed worktree, keep unrelated changes intact, and merge or move work to focused branches. Confirm the full CI matrix before marking Phase 0 complete.
+2. **Close Phase 1 deliberately:** the coverage audit is complete in the current worktree. Review and merge the new goldens with the test changes; add no duplicate coverage.
+3. **Close Phase 6 review:** review the current task-manager and node-agent extractions and lock/dependency ownership. Continue only if that review finds a concrete responsibility boundary.
+4. **Maintain completed phases:** treat Phases 2–5, 7, and 8 as maintenance unless an audit finds a specific unmet criterion. Keep tests, contracts, and documentation synchronized with later changes.
 
 ## Highest-risk design and correctness questions
 

@@ -1,21 +1,24 @@
 # mAIstr0 Improvement Plan
 
-Repo: `C:\Users\ahaigh\source\repos\mAIstr0` (Go 1.27, bbolt, embedded web dashboard)
+This file is the phase prompt pack and acceptance checklist. For a dated
+assessment of implementation and remaining work, see
+[docs/engineering-improvement-plan.md](./docs/engineering-improvement-plan.md).
+The current status below is a working-tree snapshot, not a claim that all
+changes have been reviewed or merged.
 
-Baseline when this plan was written: `go test ./...`, `go vet ./...`, and `node --test web/app_test.js` all pass.
-There are uncommitted changes in the working tree, including new `dispatch_pool.go` files.
+## Current implementation update — 2026-10-18
 
-## Recent implementation update — 2026-10-14
-
-- CI actions now use Node.js 24-based releases. Contract fixture checkouts keep
-  LF line endings on Windows and Linux so golden-file assertions do not report
-  false changes caused by Git's automatic CRLF conversion.
-- Automatic task planning now retries using another advertised node/model when
-  the selected planning model fails, rather than aborting after the first
-  dispatch error. If no candidate succeeds, the planner returns the final
-  model error.
-- Added regression coverage for falling back from a model-load failure to a
-  different planning model.
+- Phases 2–5, 7, and 8 are implemented in the current source. Phase 0 remains
+  open pending a clean reviewed baseline and supported-platform race result.
+- The Phase 1 scenario-to-assertion audit is complete in the current worktree,
+  including task lifecycle, scheduler freshness, compatibility success/stream
+  behavior, and error envelopes. Review and merge its fixtures with the tests.
+- Phase 6 remains partial pending review of the task-manager and node-agent
+  extractions. Current non-test source files in the target packages are below
+  500 lines; split more only if review identifies a concrete ownership boundary.
+- Election authority, dispatch retry/attempt visibility, and dashboard helper
+  work are documented in their focused docs. These changes must still be
+  reviewed and merged before the branch can be treated as a clean baseline.
 
 ## Ground rules for every phase
 
@@ -34,18 +37,25 @@ There are uncommitted changes in the working tree, including new `dispatch_pool.
 
 ## Phase overview
 
-| # | Phase | Depends on | Risk | Outcome |
-|---|-------|-----------|------|---------|
-| 0 | Stabilize baseline | none | Low | Clean, committed, green starting point |
-| 1 | Characterization and contract tests | 0 | Low | Behavior locked down before refactoring |
-| 2 | Config validation and normalization | 1 | Low | One source of truth for config rules |
-| 3 | Separate domain errors from HTTP | 1 | Medium | Domain services don't depend on HTTP |
-| 4 | Unify dispatch/worker pool | 1 | Medium | One tested concurrency primitive |
-| 5 | Persistence behind interfaces | 1 | Medium | bbolt isolated behind repositories |
-| 6 | Split god objects | 3, 4, 5 | High | `Server`, `Agent`, and `Manager` decomposed |
-| 7 | Incremental memory sync | 5 | Medium | Sync no longer needs full snapshots |
+| # | Phase | Depends on | Risk | Outcome | Current status |
+|---|-------|-----------|------|---------|----------------|
+| 0 | Stabilize baseline | none | Low | Clean, reviewed, green starting point | **Partial** — race caveats are documented; the current worktree is not clean |
+| 1 | Characterization and contract tests | 0 | Low | Behavior locked down before refactoring | **Coverage complete in current worktree** — review and merge the test/golden updates |
+| 2 | Config validation and normalization | 1 | Low | One source of truth for config rules | **Implemented** |
+| 3 | Separate domain errors from HTTP | 1 | Medium | Domain services don't depend on HTTP status codes | **Implemented** |
+| 4 | Unify dispatch/worker pool | 1 | Medium | One tested concurrency primitive | **Implemented** |
+| 5 | Persistence behind interfaces | 1 | Medium | bbolt isolated behind repositories | **Implemented** |
+| 6 | Split god objects | 3, 4, 5 | High | `Server`, `Agent`, and `Manager` decomposed | **Partial** — review current extractions and lock/dependency ownership before further splits |
+| 7 | Incremental memory sync | 5 | Medium | Sync supports watermarks with full-snapshot fallback | **Implemented** |
+| 8 | Language-neutral contracts | 1–7 | Medium | OpenAPI, schemas, fixtures, and porting guide | **Implemented** |
 
 You can run phases 2, 3, 4, and 5 in parallel after Phase 1. Don't start Phase 6 until 3, 4, and 5 are merged.
+
+Phase 8 is a continuing compatibility guardrail, not a one-time final step:
+update it whenever a route, schema, or externally visible payload changes.
+Phase 0 is the stabilization phase in this prompt pack; it is distinct from
+the repository assessment documented in
+[docs/engineering-improvement-plan.md](./docs/engineering-improvement-plan.md).
 
 ---
 
@@ -58,7 +68,7 @@ You can run phases 2, 3, 4, and 5 in parallel after Phase 1. Don't start Phase 6
 - The new `internal/orchestrator/dispatch_pool.go`, `internal/orchestrator/dispatch_pool_test.go`, and
   `internal/nodeagent/dispatch_pool.go` are either committed with tests or reverted.
 - `go test -race ./...` passes on at least one platform where cgo/race is available, or the gap is documented.
-- Stray `.flm/memory.json.*.tmp` files are removed from git, and `.gitignore` covers them.
+- `git ls-files -- '*.tmp'` is empty, and `.gitignore` ignores `.flm/*.tmp`.
 
 ### Prompt 0
 ```text

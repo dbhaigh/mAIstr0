@@ -422,6 +422,10 @@ node's operating system.
 
 ## Development
 
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for branch, review, and contract-change
+guidance, and [AGENTS.md](./AGENTS.md) for repository architecture and coding
+conventions.
+
 Run the test suite with:
 
 ```sh
@@ -438,10 +442,21 @@ review the resulting golden-file changes before committing.
 Contract fixtures use LF line endings enforced by `.gitattributes` so
 byte-for-byte comparisons remain consistent on Windows and Linux.
 The GitHub Actions workflow runs these checks and builds the application on
-Windows and Linux. It also runs `go test -race ./...` on Ubuntu. On the current
-Windows development host, the race run is blocked because ThreadSanitizer
-cannot allocate its shadow memory (error code 87); this is a local runtime
-limitation, not a passing race result.
+Windows and Linux.
+
+### Race tests
+
+Run the race-enabled Go suite with:
+
+```sh
+go test -race ./...
+```
+
+GitHub Actions runs this command on Ubuntu. The full suite passed in Ubuntu
+24.04 WSL with Go 1.27.2. The node-agent capacity test uses an injected
+no-op engine detector so its start signal does not depend on host-local engine
+discovery. On the native Windows host, ThreadSanitizer cannot allocate its
+shadow memory (error code 87); use Linux or CI for race validation.
 
 On Windows, cross-compile the release binaries for Windows and Linux with:
 
