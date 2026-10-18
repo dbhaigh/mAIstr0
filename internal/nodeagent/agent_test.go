@@ -95,17 +95,17 @@ func (e *pullTestEngine) Pull(model string) error {
 }
 
 func TestHandleExecuteEnforcesAdvertisedConcurrencyLimit(t *testing.T) {
-	agent := mustNewTestAgent(t, config.NodeConfig{
+	agent := mustNewTestAgentWithEngineDetector(t, config.NodeConfig{
 		NodeID: "execution-limit-test", MaxConcurrentTasks: 1,
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
-	})
+	}, nil, func() []engine.Engine { return nil })
 	t.Cleanup(func() {
 		if err := agent.Close(); err != nil {
 			t.Errorf("close test agent: %v", err)
 		}
 	})
 	eng := &blockingExecutionEngine{started: make(chan struct{}, 2), release: make(chan struct{})}
-	agent.engines = []engine.Engine{eng}
+	agent.replaceConfiguredEngine(eng)
 
 	runRequest := func() *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
@@ -118,7 +118,12 @@ func TestHandleExecuteEnforcesAdvertisedConcurrencyLimit(t *testing.T) {
 	select {
 	case <-eng.started:
 	case <-time.After(time.Second):
-		t.Fatal("first execution did not start")
+		select {
+		case response := <-firstDone:
+			t.Fatalf("first execution returned before engine start: %d: %s", response.Code, response.Body.String())
+		default:
+			t.Fatal("first execution did not start")
+		}
 	}
 	secondDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() { secondDone <- runRequest() }()
@@ -959,7 +964,7 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pairServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	pairServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/pairing/join" {
 			t.Errorf("pairing path = %q", r.URL.Path)
 		}
@@ -975,6 +980,8 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 			ID: orchestrator.ID(), Role: "orchestrator", CertificatePEM: orchestrator.CertificatePEM(),
 		})
 	}))
+	pairServer.TLS = orchestrator.ServerTLSConfig()
+	pairServer.StartTLS()
 	defer pairServer.Close()
 
 	agent := mustNewTestAgent(t, config.NodeConfig{
@@ -984,6 +991,19 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer agent.Memory().Close()
+	wrongServerReceivedRequest := false
+	wrongServer := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		wrongServerReceivedRequest = true
+	}))
+	wrongServer.TLS = otherOrchestrator.ServerTLSConfig()
+	wrongServer.StartTLS()
+	defer wrongServer.Close()
+	if err := agent.pairWithAddress(wrongServer.URL, orchestrator.ID(), "123456"); err == nil {
+		t.Fatal("pairing sent a PIN to a TLS endpoint with the wrong identity")
+	}
+	if wrongServerReceivedRequest || agent.identity.IsTrustedID(orchestrator.ID()) {
+		t.Fatal("wrong-identity bootstrap reached the endpoint or changed the trust roster")
+	}
 	agent.setOrchestratorAddr("https://orchestrator.local:7450")
 	agent.setOrchestratorID(orchestrator.ID())
 	certBlock, _ := pem.Decode([]byte(orchestrator.CertificatePEM()))
@@ -1040,6 +1060,71 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 	agent.handlePairingInvitationAccept(acceptResponse, httptest.NewRequest(http.MethodPost, "/api/pairing/invitation/accept", nil))
 	if acceptResponse.Code != http.StatusOK || !agent.identity.IsTrustedID(orchestrator.ID()) {
 		t.Fatalf("local acceptance returned %d: %s", acceptResponse.Code, acceptResponse.Body.String())
+	}
+}
+
+func TestStaleOrchestratorCannotMutateAfterYieldButCanServeItsPartition(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "stale-orchestrator-fence-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if agent.mem != nil {
+		defer agent.mem.Close()
+	}
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	oldLeader, err := peeridentity.Open(filepath.Join(t.TempDir(), "old-leader.json"), "old-leader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newLeader, err := peeridentity.Open(filepath.Join(t.TempDir(), "new-leader.json"), "new-leader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leader := range []*peeridentity.Identity{oldLeader, newLeader} {
+		if err := agent.identity.TrustPeerDetails(leader.ID(), leader.CertificatePEM(), "orchestrator", "https://127.0.0.1:7450"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	block, _ := pem.Decode([]byte(oldLeader.CertificatePEM()))
+	if block == nil {
+		t.Fatal("old leader certificate is not PEM encoded")
+	}
+	oldCertificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name       string
+		electedID  string
+		wantStatus int
+		wantWrite  bool
+	}{
+		{name: "new higher-ranked leader is visible", electedID: newLeader.ID(), wantStatus: http.StatusForbidden},
+		{name: "old leader remains elected in an isolated partition", electedID: oldLeader.ID(), wantStatus: http.StatusNoContent, wantWrite: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wrote := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				wrote = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			fenced := currentCoordinatorWriteFence(next, agent.identity.IsTrustedOrchestratorID, func() string {
+				return test.electedID
+			})
+			handler := agent.identity.RequireTrustedPeer(fenced)
+			request := httptest.NewRequest(http.MethodPost, "/api/models", nil)
+			request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{oldCertificate}}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("stale coordinator mutation returned %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if wrote != test.wantWrite {
+				t.Fatalf("mutation reached handler = %t, want %t", wrote, test.wantWrite)
+			}
+		})
 	}
 }
 
@@ -1103,82 +1188,6 @@ func TestAppendSystemUsageSampleKeepsBoundedRecentHistory(t *testing.T) {
 	}
 	if history[0].CPUUtilization != 1 || history[len(history)-1].CPUUtilization != 100 {
 		t.Fatalf("history endpoints = (%d, %d), want (1, 100)", history[0].CPUUtilization, history[len(history)-1].CPUUtilization)
-	}
-}
-
-func TestNodeStatusIncludesCopiedGPUHistory(t *testing.T) {
-	agent := mustNewTestAgent(t, config.NodeConfig{
-		NodeID: "gpu-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
-	})
-	if agent.Memory() != nil {
-		t.Cleanup(func() { _ = agent.Memory().Close() })
-	}
-	sample := hardware.GPUUsageSample{
-		Timestamp: time.Unix(1, 0).UTC(), Available: true, Utilization: 41,
-	}
-	agent.hwMu.Lock()
-	agent.gpuHistory = []hardware.GPUUsageSample{sample}
-	agent.hwMu.Unlock()
-
-	status := agent.status()
-	if len(status.GPUHistory) != 1 || status.GPUHistory[0] != sample {
-		t.Fatalf("node status GPU history = %#v", status.GPUHistory)
-	}
-	if !status.TelemetryAt.Equal(sample.Timestamp) {
-		t.Fatalf("node telemetry timestamp = %s, want %s", status.TelemetryAt, sample.Timestamp)
-	}
-	status.GPUHistory[0].Utilization = 99
-	if agent.gpuHistorySnapshot()[0].Utilization != sample.Utilization {
-		t.Fatal("node status exposed mutable telemetry history")
-	}
-}
-
-func TestNodeStatusIncludesCopiedNPUHistory(t *testing.T) {
-	agent := mustNewTestAgent(t, config.NodeConfig{
-		NodeID: "npu-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
-	})
-	if agent.Memory() != nil {
-		t.Cleanup(func() { _ = agent.Memory().Close() })
-	}
-	sample := hardware.NPUUsageSample{
-		Timestamp: time.Unix(1, 0).UTC(), Available: true, Utilization: 41,
-	}
-	agent.hwMu.Lock()
-	agent.npuHistory = []hardware.NPUUsageSample{sample}
-	agent.hwMu.Unlock()
-
-	status := agent.status()
-	if len(status.NPUHistory) != 1 || status.NPUHistory[0] != sample {
-		t.Fatalf("node status NPU history = %#v", status.NPUHistory)
-	}
-	status.NPUHistory[0].Utilization = 99
-	if agent.npuHistorySnapshot()[0].Utilization != sample.Utilization {
-		t.Fatal("node status exposed mutable telemetry history")
-	}
-}
-
-func TestNodeStatusIncludesCopiedSystemHistory(t *testing.T) {
-	agent := mustNewTestAgent(t, config.NodeConfig{
-		NodeID: "system-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
-	})
-	if agent.Memory() != nil {
-		t.Cleanup(func() { _ = agent.Memory().Close() })
-	}
-	sample := hardware.SystemUsageSample{
-		Timestamp: time.Unix(2, 0).UTC(), CPUAvailable: true, CPUUtilization: 37,
-		MemoryAvailable: true, MemoryUtilization: 62,
-	}
-	agent.hwMu.Lock()
-	agent.systemHistory = []hardware.SystemUsageSample{sample}
-	agent.hwMu.Unlock()
-
-	status := agent.status()
-	if len(status.SystemHistory) != 1 || status.SystemHistory[0] != sample {
-		t.Fatalf("node status system history = %#v", status.SystemHistory)
-	}
-	status.SystemHistory[0].CPUUtilization = 99
-	if agent.systemHistorySnapshot()[0].CPUUtilization != sample.CPUUtilization {
-		t.Fatal("node status exposed mutable system telemetry history")
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -16,7 +15,6 @@ import (
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
-	"github.com/maistr0/maistr0/internal/version"
 	"log"
 	"net/http"
 	"net/url"
@@ -38,7 +36,9 @@ type Agent struct {
 	*peerComponent
 	*dialogueComponent
 
-	mem memory.Store
+	mem                 memory.Store
+	generateIdempotency *generateIdempotencyCache
+	statusReporter      *statusComponent
 }
 
 type peerDispatchJob struct {
@@ -139,19 +139,22 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 	identity := newIdentityComponent()
 	events := hub.New()
 	link := newOrchestratorLink(state, identity, telemetry, engines, tasks, events)
+	statusReporter := newStatusComponent(state, telemetry, engines, executor)
 	peers := newPeerComponent(
 		state, telemetry, engines, executor, tasks,
 		func() *http.Client { return link.peerClient },
 		config.DefaultDispatchConcurrency,
 	)
 	a := &Agent{
-		engineComponent:    engines,
-		telemetryComponent: telemetry,
-		agentState:         state,
-		identityComponent:  identity,
-		orchestratorLink:   link,
-		executorComponent:  executor,
-		peerComponent:      peers,
+		engineComponent:     engines,
+		telemetryComponent:  telemetry,
+		agentState:          state,
+		identityComponent:   identity,
+		orchestratorLink:    link,
+		executorComponent:   executor,
+		peerComponent:       peers,
+		generateIdempotency: newGenerateIdempotencyCache(),
+		statusReporter:      statusReporter,
 	}
 	link.statusSnapshot = a.status
 	link.currentTasks = peers.currentTasks
@@ -322,50 +325,6 @@ type executeRequest struct {
 type executeResponse struct {
 	Output string `json:"output"`
 	Error  string `json:"error,omitempty"`
-}
-
-type statusResponse struct {
-	ID                 string                       `json:"id"`
-	Version            string                       `json:"version"`
-	Address            string                       `json:"address"`
-	Hardware           hardware.Info                `json:"hardware"`
-	TelemetryAt        time.Time                    `json:"telemetry_at"`
-	GPUHistory         []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
-	NPUHistory         []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
-	SystemHistory      []hardware.SystemUsageSample `json:"system_history,omitempty"`
-	Models             []engine.Model               `json:"models"`
-	Engines            []engine.Status              `json:"engines,omitempty"`
-	Capabilities       []string                     `json:"capabilities,omitempty"`
-	DefaultModel       string                       `json:"default_model,omitempty"`
-	FastScore          float64                      `json:"fast_score"`
-	ActiveTasks        int                          `json:"active_tasks"`
-	MaxConcurrentTasks int                          `json:"max_concurrent_tasks"`
-	AvailableCapacity  int                          `json:"available_capacity"`
-}
-
-func (a *Agent) status() statusResponse {
-	cfg := a.configSnapshot()
-	active := a.executorComponent.activeTaskCount()
-	hw := a.hardwareSnapshot()
-	models := a.reportedModelList()
-	return statusResponse{
-		ID:                 cfg.NodeID,
-		Version:            version.String(),
-		Address:            cfg.AdvertiseAddr,
-		Hardware:           hw,
-		TelemetryAt:        a.telemetryTimestamp(),
-		GPUHistory:         a.gpuHistorySnapshot(),
-		NPUHistory:         a.npuHistorySnapshot(),
-		SystemHistory:      a.systemHistorySnapshot(),
-		Models:             models,
-		Engines:            a.reportedEngineList(),
-		Capabilities:       cluster.NodeStatus{Hardware: hw, Models: models}.EffectiveCapabilities(),
-		DefaultModel:       a.defaultModelName(),
-		FastScore:          fastScore(hw),
-		ActiveTasks:        active,
-		MaxConcurrentTasks: cfg.MaxConcurrentTasks,
-		AvailableCapacity:  a.executorComponent.availableCapacity(cfg.MaxConcurrentTasks),
-	}
 }
 
 type generateRequest struct {

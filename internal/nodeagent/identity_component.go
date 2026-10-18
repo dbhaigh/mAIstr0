@@ -61,6 +61,13 @@ func (c *identityComponent) BootstrapTransport() *http.Transport {
 	return c.identity.BootstrapTransport()
 }
 
+func (c *identityComponent) BootstrapTransportForID(expectedID string) *http.Transport {
+	if c.identity == nil {
+		return nil
+	}
+	return c.identity.BootstrapTransportForID(expectedID)
+}
+
 func (c *identityComponent) TrustPeer(id, certificate string) error {
 	if c.identity == nil {
 		return errors.New("node identity is not initialized")
@@ -91,6 +98,10 @@ func (c *identityComponent) RemovePeer(id string) error {
 
 func (c *identityComponent) IsTrustedID(id string) bool {
 	return c.identity != nil && c.identity.IsTrustedID(id)
+}
+
+func (c *identityComponent) IsTrustedOrchestratorID(id string) bool {
+	return c.identity != nil && c.identity.IsTrustedOrchestratorID(id)
 }
 
 func (c *identityComponent) requireTrustedPeer(handler http.Handler) http.Handler {

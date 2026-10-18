@@ -34,10 +34,7 @@ func (a *Agent) handleTaskSync(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) handleTaskReplica(w http.ResponseWriter, r *http.Request) {
 	peerID := taskSyncPeerID(r)
-	coordinatorID := a.mostCapableNode().ID
-	if orchestratorID := a.getOrchestratorID(); orchestratorID != "" && peerID == orchestratorID {
-		coordinatorID = peerID
-	}
+	coordinatorID := a.currentElectedOrchestratorID()
 	if peerID == "" || peerID != coordinatorID {
 		http.Error(w, "task replica update requires the current coordinator", http.StatusForbidden)
 		return

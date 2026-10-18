@@ -159,7 +159,7 @@ func (a *Agent) Run() error {
 
 	cfg = a.configSnapshot()
 	log.Printf("node agent %q listening on %s (advertised as %s)", cfg.NodeID, cfg.ListenAddr, cfg.AdvertiseAddr)
-	trustedHandler := a.identityComponent.requireTrustedPeer(mux)
+	trustedHandler := a.identityComponent.requireTrustedPeer(a.currentCoordinatorWriteFence(mux))
 	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/pairing/invitation" {
 			a.handlePairingInvitation(w, r)
@@ -173,4 +173,45 @@ func (a *Agent) Run() error {
 		secureHandler,
 		a.identityComponent.serverTLSConfig(),
 	)
+}
+
+func (a *Agent) currentElectedOrchestratorID() string {
+	if a.orchestratorLink.discoveryListener != nil {
+		if leader, ok := a.orchestratorLink.discoveryListener.BestOrchestrator(); ok {
+			return leader.ID
+		}
+	}
+	if id := a.getOrchestratorID(); id != "" {
+		return id
+	}
+	return a.mostCapableNode().ID
+}
+
+func (a *Agent) currentCoordinatorWriteFence(next http.Handler) http.Handler {
+	return currentCoordinatorWriteFence(
+		next,
+		a.identityComponent.IsTrustedOrchestratorID,
+		a.currentElectedOrchestratorID,
+	)
+}
+
+func currentCoordinatorWriteFence(next http.Handler, isOrchestrator func(string) bool, electedID func() string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		default:
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		peerID := r.TLS.PeerCertificates[0].Subject.CommonName
+		if isOrchestrator(peerID) && electedID() != peerID {
+			http.Error(w, "state-changing request requires the current elected orchestrator", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

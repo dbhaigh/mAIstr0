@@ -93,6 +93,7 @@ type orchestratorLink struct {
 		Initialized() bool
 		CertificatePEM() string
 		BootstrapTransport() *http.Transport
+		BootstrapTransportForID(string) *http.Transport
 		TrustPeer(string, string) error
 		TrustPeerDetails(string, string, string, string) error
 		TrustedIDs() []string
@@ -245,6 +246,7 @@ func newOrchestratorLink(
 		Initialized() bool
 		CertificatePEM() string
 		BootstrapTransport() *http.Transport
+		BootstrapTransportForID(string) *http.Transport
 		TrustPeer(string, string) error
 		TrustPeerDetails(string, string, string, string) error
 		TrustedIDs() []string

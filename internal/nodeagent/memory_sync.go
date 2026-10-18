@@ -113,10 +113,7 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 
 func (a *Agent) handlePeerMemorySyncPost(w http.ResponseWriter, r *http.Request) {
 	peerID := taskSyncPeerID(r)
-	coordinatorID := a.mostCapableNode().ID
-	if orchestratorID := a.getOrchestratorID(); orchestratorID != "" && peerID == orchestratorID {
-		coordinatorID = orchestratorID
-	}
+	coordinatorID := a.currentElectedOrchestratorID()
 	if peerID == "" || peerID != coordinatorID {
 		http.Error(w, "memory replica update requires the current coordinator", http.StatusForbidden)
 		return

@@ -59,9 +59,13 @@ func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (res
 	if err != nil {
 		return fmt.Errorf("encode pairing request: %w", err)
 	}
+	transport := c.trust.BootstrapTransport()
+	if expectedID != "" {
+		transport = c.trust.BootstrapTransportForID(expectedID)
+	}
 	client := &http.Client{
 		Timeout:   5 * time.Second,
-		Transport: c.trust.BootstrapTransport(),
+		Transport: transport,
 	}
 	resp, err := client.Post(address+"/api/pairing/join", "application/json", bytes.NewReader(body))
 	if err != nil {
