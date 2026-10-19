@@ -108,6 +108,13 @@ type ModelManager interface {
 	Pull(model string) error
 }
 
+// ContextModelManager is a model manager whose downloads can be cancelled by
+// the request that initiated them.
+type ContextModelManager interface {
+	ModelManager
+	PullContext(context.Context, string) error
+}
+
 // DetectAll probes the host for every known engine implementation and returns
 // only engines that respond. A real node must never advertise a simulated
 // model as locally servable.

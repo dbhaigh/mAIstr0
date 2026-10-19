@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/inferroute"
@@ -20,6 +21,7 @@ type nodeClient struct {
 	client     *http.Client
 	dispatcher *http.Client
 	status     *http.Client
+	modelPull  *http.Client
 }
 
 type nodeClientAPI interface {
@@ -40,6 +42,7 @@ type nodeClientAPI interface {
 func newNodeClient(client, dispatcher, status *http.Client) *nodeClient {
 	return &nodeClient{
 		client: client, dispatcher: dispatcher, status: status,
+		modelPull: &http.Client{Timeout: time.Hour},
 	}
 }
 
@@ -49,6 +52,13 @@ func (c *nodeClient) Do(request *http.Request) (*http.Response, error) {
 
 func (c *nodeClient) DoDispatch(request *http.Request) (*http.Response, error) {
 	return c.dispatcher.Do(request)
+}
+
+func (c *nodeClient) DoModelPull(request *http.Request) (*http.Response, error) {
+	if c.modelPull == nil {
+		return nil, errors.New("model pull client is unavailable")
+	}
+	return c.modelPull.Do(request)
 }
 
 func (c *nodeClient) Get(url string) (*http.Response, error) {
@@ -63,6 +73,9 @@ func (c *nodeClient) setTransport(newTransport func() *http.Transport) {
 	c.client.Transport = newTransport()
 	c.dispatcher.Transport = newTransport()
 	c.status.Transport = newTransport()
+	if c.modelPull != nil {
+		c.modelPull.Transport = newTransport()
+	}
 }
 
 func (c *nodeClient) discoveredNodeStatus(addr string) (cluster.NodeStatus, error) {

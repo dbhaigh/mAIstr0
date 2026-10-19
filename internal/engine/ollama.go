@@ -14,16 +14,18 @@ import (
 // Ollama is an Engine implementation backed by a local Ollama server
 // (https://ollama.com), the most common cross-platform local LLM runner.
 type Ollama struct {
-	baseURL   string
-	client    *http.Client // short timeout, used for health/list checks
-	genClient *http.Client // long timeout, generation can take minutes on a cold model load
+	baseURL    string
+	client     *http.Client // short timeout, used for health/list checks
+	genClient  *http.Client // long timeout, generation can take minutes on a cold model load
+	pullClient *http.Client
 }
 
 func NewOllama(baseURL string) *Ollama {
 	return &Ollama{
-		baseURL:   strings.TrimRight(baseURL, "/"),
-		client:    &http.Client{Timeout: 3 * time.Second},
-		genClient: &http.Client{Timeout: 10 * time.Minute},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		client:     &http.Client{Timeout: 3 * time.Second},
+		genClient:  &http.Client{Timeout: 10 * time.Minute},
+		pullClient: &http.Client{Timeout: time.Hour},
 	}
 }
 
@@ -41,11 +43,22 @@ func (o *Ollama) Available() bool {
 
 // Pull downloads a model from the Ollama registry and waits for completion.
 func (o *Ollama) Pull(model string) error {
+	return o.PullContext(context.Background(), model)
+}
+
+// PullContext downloads a model from the Ollama registry until completion or
+// until the initiating request is cancelled.
+func (o *Ollama) PullContext(ctx context.Context, model string) error {
 	body, err := json.Marshal(map[string]any{"name": model, "stream": false})
 	if err != nil {
 		return err
 	}
-	resp, err := o.genClient.Post(o.baseURL+"/api/pull", "application/json", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/api/pull", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	resp, err := o.pullClient.Do(request)
 	if err != nil {
 		return err
 	}

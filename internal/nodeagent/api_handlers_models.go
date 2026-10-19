@@ -139,7 +139,13 @@ func (a *Agent) handleModelPull(w http.ResponseWriter, r *http.Request) {
 		}
 		foundEngine = true
 		if manager, ok := e.(engine.ModelManager); ok {
-			if err := manager.Pull(req.Model); err != nil {
+			var err error
+			if contextManager, ok := manager.(engine.ContextModelManager); ok {
+				err = contextManager.PullContext(r.Context(), req.Model)
+			} else {
+				err = manager.Pull(req.Model)
+			}
+			if err != nil {
 				writeJSONError(w, apperr.UpstreamError(err), map[string]any{"error": err.Error()})
 				return
 			}

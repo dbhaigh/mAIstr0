@@ -239,6 +239,15 @@ vision, and other common workloads; it does not fetch catalog metadata or send
 prompts to a remote catalog service. Choose an online target node and its
 download-capable engine before installing. Installed models are shown as
 either usable or disabled for scheduling.
+When a submitted workflow has a subtask with no compatible model anywhere in
+the cluster, task assignment can automatically pull a matching model from the
+bundled Ollama catalog. It chooses only healthy nodes reporting Ollama and
+enough estimated available system RAM (using fresh memory telemetry when
+available) or fresh GPU memory for the model footprint, refreshes that node's
+inventory, and retries assignment. A task request may therefore wait for a
+model download; if no catalog model fits or a pull fails, the task returns an
+unavailable error. Automatic provisioning does not pull custom model names or
+use non-Ollama engines.
 Task details show the scheduler's score components and whether accelerator
 telemetry was fresh enough to influence the assignment; telemetry older than
 30 seconds is ignored for routing. Scheduler load includes active node work and

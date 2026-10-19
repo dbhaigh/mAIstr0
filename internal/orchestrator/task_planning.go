@@ -45,13 +45,18 @@ type plannerModel interface {
 	callNodeGenerateWithOptionsContext(context.Context, string, string, string, float64, int) (string, error)
 }
 
+type taskModelProvisioner interface {
+	provision(context.Context, []scheduler.Subtask) error
+}
+
 type taskPlanner struct {
-	scheduler  taskScheduler
-	tasks      taskStore
-	dispatch   taskDispatcher
-	model      plannerModel
-	nodes      func() []cluster.NodeStatus
-	experience scheduler.Experience
+	scheduler   taskScheduler
+	tasks       taskStore
+	dispatch    taskDispatcher
+	model       plannerModel
+	nodes       func() []cluster.NodeStatus
+	experience  scheduler.Experience
+	provisioner taskModelProvisioner
 }
 
 type taskPlannerAPI interface {
@@ -159,7 +164,27 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 	}
 	assignments, err := p.scheduler.AssignWithExperience(subtasks, p.nodes(), p.experience)
 	if err != nil {
-		return nil, apperr.UnavailableError(err)
+		var unassignable *scheduler.UnassignableSubtasksError
+		if p.provisioner == nil || !errors.As(err, &unassignable) {
+			return nil, apperr.UnavailableError(err)
+		}
+		unassignableIDs := make(map[string]bool, len(unassignable.SubtaskIDs))
+		for _, id := range unassignable.SubtaskIDs {
+			unassignableIDs[id] = true
+		}
+		missing := make([]scheduler.Subtask, 0, len(unassignableIDs))
+		for _, subtask := range subtasks {
+			if unassignableIDs[subtask.ID] {
+				missing = append(missing, subtask)
+			}
+		}
+		if provisionErr := p.provisioner.provision(ctx, missing); provisionErr != nil {
+			return nil, apperr.UnavailableError(fmt.Errorf("%w; automatic model provisioning failed: %v", err, provisionErr))
+		}
+		assignments, err = p.scheduler.AssignWithExperience(subtasks, p.nodes(), p.experience)
+		if err != nil {
+			return nil, apperr.UnavailableError(fmt.Errorf("task remained unassignable after model provisioning: %w", err))
+		}
 	}
 	if len(assignments) != len(subtasks) {
 		return nil, apperr.UnavailableError(errors.New("scheduler returned an incomplete assignment"))

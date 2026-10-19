@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.0.13 - 2026-10-19
+
+### Added
+
+- Automatically provision a fitting model from the bundled Ollama catalog
+  when a workflow subtask has no compatible model in the cluster.
+
+### Changed
+
+- Cancel model downloads when the initiating request is cancelled and allow
+  longer model-pull operations than inference requests.
+
 ## 0.0.12 - 2026-10-18
 
 ### Fixed

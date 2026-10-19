@@ -168,7 +168,7 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequest(r.Method, n.Address+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, n.Address+path, bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return
