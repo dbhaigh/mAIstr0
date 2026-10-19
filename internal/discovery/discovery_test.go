@@ -86,6 +86,31 @@ func TestSnapshotExpiresCandidatesAndAllowsPartitionLocalWinner(t *testing.T) {
 	}
 }
 
+func TestExcludePeerSuppressesAndCanRestoreAnnouncements(t *testing.T) {
+	listener := &Listener{
+		peers: map[string]Peer{
+			"leader": {
+				Announcement: Announcement{Role: "orchestrator", ID: "leader"},
+				LastSeen:     time.Now(),
+			},
+		},
+	}
+	listener.ExcludePeer("leader")
+	if peers := listener.Snapshot(); len(peers) != 0 {
+		t.Fatalf("excluded leader is still visible: %#v", peers)
+	}
+	listener.IncludePeer("leader")
+	listener.mu.Lock()
+	listener.peers["leader"] = Peer{
+		Announcement: Announcement{Role: "orchestrator", ID: "leader"},
+		LastSeen:     time.Now(),
+	}
+	listener.mu.Unlock()
+	if peers := listener.Snapshot(); len(peers) != 1 || peers[0].ID != "leader" {
+		t.Fatalf("leader was not restored after recovery: %#v", peers)
+	}
+}
+
 func TestElectedOrchestratorDoesNotPreemptActiveLeader(t *testing.T) {
 	self := Announcement{Role: "orchestrator", ID: "orchestrator-old", Score: 10}
 	challenger := Peer{Announcement: Announcement{Role: "candidate", ID: "orchestrator-new", Score: 20}}

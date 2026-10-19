@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // AgentProfile describes the bounded role a worker performs for a subtask.
@@ -14,25 +15,55 @@ type AgentProfile struct {
 	Tools        []string
 }
 
+// customProfiles publishes immutable snapshots for lock-free profile reads;
+// customProfilesMu serializes copy-on-write updates.
 var (
-	// customProfilesMu protects the custom profile map only; profile lookup
-	// releases it before any agent work, with no nested lock order.
-	customProfilesMu sync.RWMutex
-	customProfiles   = make(map[string]AgentProfile)
+	customProfilesMu sync.Mutex
+	customProfiles   atomic.Pointer[agentProfileRegistry]
 )
+
+type agentProfileRegistry struct {
+	profiles map[string]AgentProfile
+}
+
+func init() {
+	customProfiles.Store(&agentProfileRegistry{profiles: make(map[string]AgentProfile)})
+}
 
 // RegisterCustomAgentProfile dynamically registers a role profile for specialized workers.
 func RegisterCustomAgentProfile(role string, profile AgentProfile) {
 	customProfilesMu.Lock()
 	defer customProfilesMu.Unlock()
-	customProfiles[strings.ToLower(strings.TrimSpace(role))] = profile
+	current := customProfiles.Load()
+	profiles := make(map[string]AgentProfile, len(current.profiles)+1)
+	for key, registered := range current.profiles {
+		profiles[key] = registered
+	}
+	profiles[strings.ToLower(strings.TrimSpace(role))] = cloneAgentProfile(profile)
+	customProfiles.Store(&agentProfileRegistry{profiles: profiles})
 }
 
 // UnregisterCustomAgentProfile removes a registered custom profile.
 func UnregisterCustomAgentProfile(role string) {
 	customProfilesMu.Lock()
 	defer customProfilesMu.Unlock()
-	delete(customProfiles, strings.ToLower(strings.TrimSpace(role)))
+	current := customProfiles.Load()
+	key := strings.ToLower(strings.TrimSpace(role))
+	if _, exists := current.profiles[key]; !exists {
+		return
+	}
+	profiles := make(map[string]AgentProfile, len(current.profiles)-1)
+	for registeredKey, registered := range current.profiles {
+		if registeredKey != key {
+			profiles[registeredKey] = registered
+		}
+	}
+	customProfiles.Store(&agentProfileRegistry{profiles: profiles})
+}
+
+func cloneAgentProfile(profile AgentProfile) AgentProfile {
+	profile.Tools = append([]string(nil), profile.Tools...)
+	return profile
 }
 
 var agentProfiles = map[string]AgentProfile{
@@ -73,11 +104,8 @@ var agentProfiles = map[string]AgentProfile{
 // AgentProfileFor returns the registered role profile.
 func AgentProfileFor(role string) (AgentProfile, bool) {
 	key := strings.ToLower(strings.TrimSpace(role))
-	customProfilesMu.RLock()
-	custom, ok := customProfiles[key]
-	customProfilesMu.RUnlock()
-	if ok {
-		return custom, true
+	if custom, ok := customProfiles.Load().profiles[key]; ok {
+		return cloneAgentProfile(custom), true
 	}
 	profile, ok := agentProfiles[key]
 	return profile, ok

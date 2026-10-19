@@ -92,6 +92,7 @@ type Listener struct {
 	// under the lock, then release it before closing connections or waiting.
 	mu       sync.RWMutex
 	peers    map[string]Peer
+	excluded map[string]bool
 	readyErr error
 }
 
@@ -105,7 +106,13 @@ func Listen(selfIDs ...string) *Listener {
 	for _, id := range selfIDs {
 		exclude[id] = true
 	}
-	l := &Listener{selfIDs: exclude, peers: make(map[string]Peer), stop: make(chan struct{}), ready: make(chan struct{})}
+	l := &Listener{
+		selfIDs:  exclude,
+		peers:    make(map[string]Peer),
+		excluded: make(map[string]bool),
+		stop:     make(chan struct{}),
+		ready:    make(chan struct{}),
+	}
 	go l.run()
 	return l
 }
@@ -154,7 +161,9 @@ func (l *Listener) run() {
 			continue
 		}
 		l.mu.Lock()
-		l.peers[ann.ID] = Peer{Announcement: ann, LastSeen: time.Now()}
+		if !l.excluded[ann.ID] {
+			l.peers[ann.ID] = Peer{Announcement: ann, LastSeen: time.Now()}
+		}
 		l.mu.Unlock()
 	}
 }
@@ -210,6 +219,10 @@ func (l *Listener) Snapshot() []Peer {
 	out := make([]Peer, 0, len(l.peers))
 	cutoff := time.Now().Add(-peerTTL)
 	for id, p := range l.peers {
+		if l.excluded[id] {
+			delete(l.peers, id)
+			continue
+		}
 		if p.LastSeen.After(cutoff) {
 			out = append(out, p)
 		} else {
@@ -217,6 +230,32 @@ func (l *Listener) Snapshot() []Peer {
 		}
 	}
 	return out
+}
+
+// ExcludePeer suppresses future announcements from a peer until IncludePeer
+// is called. It is used while a health check has declared the current leader
+// unavailable, so that stale beacons cannot keep it in the failover election.
+func (l *Listener) ExcludePeer(id string) {
+	if id == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.excluded == nil {
+		l.excluded = make(map[string]bool)
+	}
+	l.excluded[id] = true
+	delete(l.peers, id)
+}
+
+// IncludePeer resumes accepting announcements from a previously excluded peer.
+func (l *Listener) IncludePeer(id string) {
+	if id == "" {
+		return
+	}
+	l.mu.Lock()
+	delete(l.excluded, id)
+	l.mu.Unlock()
 }
 
 // FirstOrchestrator blocks (up to timeout) waiting for an orchestrator to be

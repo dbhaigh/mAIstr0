@@ -28,6 +28,7 @@ type memoryStore struct {
 	fingerprints   map[string]bool
 	facts          map[string]Fact
 	performances   map[string]Performance
+	learnedBiases  atomic.Pointer[performanceSnapshot]
 	dialogues      map[string]DialogueRecord
 	agentSessions  map[string][]byte
 	changes        syncinterval.Signal
@@ -557,6 +558,15 @@ func (s *memoryStore) updatePerformanceLocked(experience Experience) {
 	performance.Origin = s.origin
 	performance.Sequence = s.nextSequenceLocked(s.origin)
 	s.performances[key] = performance
+	s.publishPerformanceSnapshotLocked()
+}
+
+func (s *memoryStore) publishPerformanceSnapshotLocked() {
+	records := make(map[string]Performance, len(s.performances))
+	for key, performance := range s.performances {
+		records[key] = performance
+	}
+	s.learnedBiases.Store(&performanceSnapshot{records: records})
 }
 
 func (s *memoryStore) Performances() []Performance {
@@ -582,6 +592,7 @@ func (s *memoryStore) MergePerformances(incoming []Performance) {
 func (s *memoryStore) mergePerformancesFrom(incoming []Performance, sourceOrigin string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	changed := false
 	for _, performance := range incoming {
 		if performance.NodeID == "" || performance.Model == "" {
 			continue
@@ -601,20 +612,15 @@ func (s *memoryStore) mergePerformancesFrom(incoming []Performance, sourceOrigin
 			s.observeRecordLocked(performance.Origin, performance.Sequence)
 		}
 		s.performances[key] = performance
+		changed = true
+	}
+	if changed {
+		s.publishPerformanceSnapshotLocked()
 	}
 }
 
 func (s *memoryStore) LearnedBias(nodeID, model, taskType string) float64 {
-	s.mu.RLock()
-	performance, ok := s.performances[perfKey(nodeID, model, taskType)]
-	if !ok {
-		performance, ok = s.performances[perfKey(nodeID, model, "general")]
-	}
-	s.mu.RUnlock()
-	if !ok {
-		return 0
-	}
-	return learnedBias(performance)
+	return s.learnedBiases.Load().learnedBias(nodeID, model, taskType)
 }
 
 func (s *memoryStore) Recommend(taskType string, limit int) []Recommendation {

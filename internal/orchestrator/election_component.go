@@ -37,6 +37,7 @@ type electionAPI interface {
 	syncDiscoveredPeers(func())
 	recordLeader(string)
 	selfIDValue() string
+	setSelfID(string)
 }
 
 func newElectionComponent(
@@ -57,6 +58,10 @@ func newElectionComponent(
 
 func (e *electionComponent) setIdentity(identity interface{ IsTrustedID(string) bool }) {
 	e.identity = identity
+}
+
+func (e *electionComponent) setSelfID(id string) {
+	e.selfID = id
 }
 
 func (e *electionComponent) setDiscoveryEnabled(enabled bool) {

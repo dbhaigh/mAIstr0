@@ -17,7 +17,7 @@ func TestNodeStatusIncludesCopiedGPUHistory(t *testing.T) {
 		t.Cleanup(func() { _ = agent.Memory().Close() })
 	}
 	sample := hardware.GPUUsageSample{
-		Timestamp: time.Unix(1, 0).UTC(), Available: true, Utilization: 41,
+		Timestamp: time.Now().UTC(), Available: true, Utilization: 41,
 	}
 	agent.hwMu.Lock()
 	agent.gpuHistory = []hardware.GPUUsageSample{sample}
@@ -44,7 +44,7 @@ func TestNodeStatusIncludesCopiedNPUHistory(t *testing.T) {
 		t.Cleanup(func() { _ = agent.Memory().Close() })
 	}
 	sample := hardware.NPUUsageSample{
-		Timestamp: time.Unix(1, 0).UTC(), Available: true, Utilization: 41,
+		Timestamp: time.Now().UTC(), Available: true, Utilization: 41,
 	}
 	agent.hwMu.Lock()
 	agent.npuHistory = []hardware.NPUUsageSample{sample}
@@ -68,7 +68,7 @@ func TestNodeStatusIncludesCopiedSystemHistory(t *testing.T) {
 		t.Cleanup(func() { _ = agent.Memory().Close() })
 	}
 	sample := hardware.SystemUsageSample{
-		Timestamp: time.Unix(2, 0).UTC(), CPUAvailable: true, CPUUtilization: 37,
+		Timestamp: time.Now().UTC(), CPUAvailable: true, CPUUtilization: 37,
 		MemoryAvailable: true, MemoryUtilization: 62,
 	}
 	agent.hwMu.Lock()

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/syncinterval"
@@ -44,13 +45,12 @@ type boltStore struct {
 
 	// mu protects persisted-record caches: Record/Merge/Prune update recent
 	// entries, sequence writes invalidate snapshot/watermark caches, and
-	// performance writes clear learned-bias results. Some merge paths hold it
-	// across bbolt updates (mu -> transaction); transaction callbacks must not
-	// acquire another store mutex.
+	// performance writes publish an immutable learned-bias snapshot. Some merge
+	// paths hold it across bbolt updates (mu -> transaction); transaction
+	// callbacks must not acquire another store mutex.
 	mu                        sync.RWMutex
 	perfCache                 map[string]*Performance
-	learnedBiasCache          map[string]float64
-	performanceGeneration     uint64
+	learnedBiases             atomic.Pointer[performanceSnapshot]
 	recentExperiences         []Experience
 	recentExperiencesLoaded   bool
 	watermarksCache           map[string]uint64
@@ -475,7 +475,6 @@ func Open(path, owner string) (Store, error) {
 
 	s := &boltStore{
 		db: db, path: path, owner: owner, perfCache: make(map[string]*Performance),
-		learnedBiasCache:         make(map[string]float64),
 		peerWatermarksCache:      make(map[string]map[string]uint64),
 		peerWatermarksLoaded:     make(map[string]bool),
 		peerWatermarksGeneration: make(map[string]uint64),

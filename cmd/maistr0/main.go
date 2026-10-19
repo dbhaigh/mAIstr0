@@ -147,13 +147,40 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to open node task history: %v", err)
 		}
+		var nodeDiscovery *discovery.Listener
+		if cfg.DiscoveryEnabled {
+			nodeDiscovery = discovery.Listen(agent.ID())
+			agent.SetDiscovery(nodeDiscovery)
+
+			orchCfg := loadOrchestratorConfig(*orchConfigPath, *orchListenAddr, *noDiscovery)
+			if *harness != "" {
+				orchCfg.Harness = *harness
+			}
+			if *memoryPath != "" {
+				orchCfg.MemoryPath = *memoryPath
+			}
+			if *trayMode != "" {
+				orchCfg.TrayMode = *trayMode
+			}
+			orchCfg.Normalize()
+			if err := orchCfg.Validate(); err != nil {
+				exitConfigValidation(err)
+			}
+			failover := newFailoverCoordinator(agent, nodeDiscovery, orchCfg, cfg.ListenAddr)
+			agent.SetElectionStarter(failover.StartElection)
+			closeOrchestrator = func() {
+				if err := failover.Close(); err != nil {
+					log.Printf("promoted orchestrator shutdown: %v", err)
+				}
+			}
+		}
 		closeNode = func() {
+			if nodeDiscovery != nil {
+				nodeDiscovery.Close()
+			}
 			if err := agent.Close(); err != nil {
 				log.Printf("node shutdown: %v", err)
 			}
-		}
-		if cfg.DiscoveryEnabled {
-			agent.SetDiscovery(discovery.Listen(agent.ID()))
 		}
 		dashboardURL = localURL(cfg.ListenAddr)
 		effectiveTrayMode, autoOpen = cfg.TrayMode, cfg.AutoOpenBrowser

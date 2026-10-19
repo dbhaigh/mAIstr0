@@ -79,6 +79,7 @@ func Detect() Info {
 // reported as idle.
 func CurrentGPUUsage() (utilization int, freeMemoryMB uint64, available bool) {
 	if _, err := exec.LookPath("nvidia-smi"); err != nil {
+		// Keep missing hardware or tooling distinct from an idle GPU.
 		return 0, 0, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

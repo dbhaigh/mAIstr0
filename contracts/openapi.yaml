@@ -375,6 +375,17 @@ paths:
       - $ref: "#/components/parameters/ID"
     get:
       responses: {"200": {description: Get a task}}
+  /api/tasks/{id}/dependencies:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses:
+        "200":
+          description: Get task dependency graph nodes and edges
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TaskDependencies"}
+        "404": {description: Task not found}
   /api/tasks/{id}/assignment-explanation:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -676,6 +687,8 @@ components:
       $ref: "./schemas/subtask.schema.json"
     TaskGraph:
       $ref: "./schemas/task-graph.schema.json"
+    TaskDependencies:
+      $ref: "./schemas/task-dependencies.schema.json"
     Assignment:
       $ref: "./schemas/assignment.schema.json"
     ScoreFactors:
@@ -776,6 +789,7 @@ x-maistr0-registered-routes:
   - "orchestrator|GET /api/tasks"
   - "orchestrator|GET /api/tasks/resumable"
   - "orchestrator|GET /api/tasks/{id}"
+  - "orchestrator|GET /api/tasks/{id}/dependencies"
   - "orchestrator|GET /api/tasks/{id}/assignment-explanation"
   - "orchestrator|POST /api/tasks/{id}/cancel"
   - "orchestrator|POST /api/tasks/{id}/approve"

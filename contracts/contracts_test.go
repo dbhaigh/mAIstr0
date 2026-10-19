@@ -301,7 +301,8 @@ func TestSchemaSetIsComplete(t *testing.T) {
 		"fact.schema.json", "node-config.schema.json",
 		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json",
 		"router-request-event.schema.json", "score-factors.schema.json", "snapshot.schema.json",
-		"subtask-result.schema.json", "subtask.schema.json", "task-graph.schema.json", "task.schema.json",
+		"subtask-result.schema.json", "subtask.schema.json", "task-dependencies.schema.json",
+		"task-graph.schema.json", "task.schema.json",
 	}
 	actual, err := filepath.Glob(filepath.Join("schemas", "*.schema.json"))
 	if err != nil {

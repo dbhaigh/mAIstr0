@@ -1,9 +1,12 @@
 package nodeagent
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -20,6 +23,11 @@ type syncerComponent struct {
 	memorySyncClient func() *http.Client
 	peers            func() []cluster.NodeStatus
 	standaloneLeader func() bool
+
+	memoryBufferMu  sync.Mutex
+	memoryBuffer    []memory.Payload
+	memoryRecordIDs map[string]struct{}
+	memoryFlushMu   sync.Mutex
 }
 
 func newSyncerComponent(
@@ -186,21 +194,131 @@ func (s *syncerComponent) syncPeerMemory() {
 			peerWatermarks = remoteSnapshot.Watermarks
 		}
 		outgoing := memory.SnapshotForPeer(s.memory, peerVersion, peerWatermarks)
-		sendStarted := time.Now()
-		requestID := syncLogRequestID(nil)
-		bodies, err := marshalMemorySnapshotPages(outgoing, maxMemorySyncBodyBytes, marshalMemorySnapshot)
+		if fetched && !memory.SupportsIncrementalSync(peerVersion) {
+			filtered, err := memory.SnapshotDifference(outgoing, remoteSnapshot)
+			if err != nil {
+				log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s stage=deduplicate error=%v",
+					syncLogFields(syncLogRequestID(nil), s.nodeID, 0, "deduplicate"), peer.ID, err)
+				continue
+			}
+			outgoing = filtered
+		}
+		payload, err := memory.PayloadFromSnapshot(outgoing)
 		if err != nil {
-			log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s stage=encode error=%v",
-				syncLogFields(requestID, s.nodeID, time.Since(sendStarted), "encode"), peer.ID, err)
-			log.Printf("FILE_ONLY: nodeagent: cluster memory encode for %s failed: %v", peer.ID, err)
+			log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s stage=buffer error=%v",
+				syncLogFields(syncLogRequestID(nil), s.nodeID, 0, "buffer"), peer.ID, err)
 			continue
 		}
-		var totalBodyBytes int64
-		for _, body := range bodies {
-			totalBodyBytes += int64(len(body))
+		s.bufferMemoryPayload(payload)
+	}
+	if err := s.FlushToCluster(); err != nil {
+		log.Printf("FILE_ONLY: nodeagent: cluster memory batch flush failed: %v", err)
+	}
+}
+
+func (s *syncerComponent) bufferMemoryPayload(payload memory.Payload) {
+	if len(payload.RecordIDs) == 0 {
+		return
+	}
+	s.memoryBufferMu.Lock()
+	defer s.memoryBufferMu.Unlock()
+	if s.memoryRecordIDs == nil {
+		s.memoryRecordIDs = make(map[string]struct{})
+	}
+	filtered, err := memory.PayloadDifference(payload, s.memoryRecordIDs)
+	if err != nil {
+		log.Printf("FILE_ONLY: nodeagent: memory sync event=buffer_failed node_id=%s error=%v", s.nodeID, err)
+		return
+	}
+	if len(filtered.RecordIDs) == 0 {
+		return
+	}
+	for _, id := range filtered.RecordIDs {
+		s.memoryRecordIDs[id] = struct{}{}
+	}
+	s.memoryBuffer = append(s.memoryBuffer, filtered)
+}
+
+func (s *syncerComponent) restoreMemoryPayloads(payloads []memory.Payload) {
+	s.memoryBufferMu.Lock()
+	defer s.memoryBufferMu.Unlock()
+	if s.memoryRecordIDs == nil {
+		s.memoryRecordIDs = make(map[string]struct{})
+	}
+	for _, payload := range payloads {
+		for _, id := range payload.RecordIDs {
+			s.memoryRecordIDs[id] = struct{}{}
 		}
+	}
+	s.memoryBuffer = append(payloads, s.memoryBuffer...)
+}
+
+func (s *syncerComponent) FlushToCluster() error {
+	s.memoryFlushMu.Lock()
+	defer s.memoryFlushMu.Unlock()
+
+	s.memoryBufferMu.Lock()
+	if len(s.memoryBuffer) == 0 {
+		s.memoryBufferMu.Unlock()
+		return nil
+	}
+	payloads := s.memoryBuffer
+	s.memoryBuffer = nil
+	s.memoryBufferMu.Unlock()
+
+	requeue := func(err error) error {
+		s.restoreMemoryPayloads(payloads)
+		return err
+	}
+	complete := func() {
+		s.memoryBufferMu.Lock()
+		defer s.memoryBufferMu.Unlock()
+		for _, payload := range payloads {
+			for _, id := range payload.RecordIDs {
+				delete(s.memoryRecordIDs, id)
+			}
+		}
+	}
+	if s.memory == nil {
+		return requeue(errors.New("memory store unavailable"))
+	}
+	if s.memorySyncClient == nil {
+		return requeue(errors.New("memory sync HTTP client unavailable"))
+	}
+	if s.peers == nil {
+		return requeue(errors.New("cluster peer provider unavailable"))
+	}
+	batch, err := memory.CombinePayloads(payloads)
+	if err != nil {
+		return requeue(fmt.Errorf("combine memory sync batch: %w", err))
+	}
+	if len(batch.RecordIDs) == 0 {
+		complete()
+		return nil
+	}
+	bodies, err := marshalMemorySnapshotPages(batch.Snapshot, maxMemorySyncBodyBytes, marshalMemorySnapshot)
+	if err != nil {
+		return requeue(fmt.Errorf("encode memory sync batch: %w", err))
+	}
+	var totalBodyBytes int64
+	for _, body := range bodies {
+		totalBodyBytes += int64(len(body))
+	}
+	peers := s.peers()
+	client := s.memorySyncClient()
+	if client == nil {
+		return requeue(errors.New("memory sync HTTP client unavailable"))
+	}
+	successfulPeers := 0
+	var flushErrors []error
+	for _, peer := range peers {
+		if !peer.Healthy || peer.ID == s.nodeID || peer.Address == "" {
+			continue
+		}
+		started := time.Now()
+		requestID := syncLogRequestID(nil)
 		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_start %s peer_id=%s body_bytes=%d pages=%d",
-			syncLogFields(requestID, s.nodeID, time.Since(sendStarted), "none"), peer.ID, totalBodyBytes, len(bodies))
+			syncLogFields(requestID, s.nodeID, time.Since(started), "none"), peer.ID, totalBodyBytes, len(bodies))
 		sentBytes, err := postMemorySnapshotPages(
 			client,
 			strings.TrimRight(peer.Address, "/")+"/memory/sync",
@@ -209,18 +327,28 @@ func (s *syncerComponent) syncPeerMemory() {
 		)
 		if err != nil {
 			log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s body_bytes=%d elapsed=%s error=%v",
-				syncLogFields(requestID, s.nodeID, time.Since(sendStarted), "send"), peer.ID, sentBytes, time.Since(sendStarted), err)
-			log.Printf("FILE_ONLY: nodeagent: cluster memory replication to %s failed: %v", peer.ID, err)
+				syncLogFields(requestID, s.nodeID, time.Since(started), "send"), peer.ID, sentBytes, time.Since(started), err)
+			flushErrors = append(flushErrors, fmt.Errorf("replicate memory to %s: %w", peer.ID, err))
 			continue
 		}
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_complete %s peer_id=%s status=%d body_bytes=%d elapsed=%s",
-			syncLogFields(requestID, s.nodeID, time.Since(sendStarted), "none"), peer.ID, http.StatusNoContent, sentBytes, time.Since(sendStarted))
-		if fetched && memory.SupportsIncrementalSync(peerVersion) {
-			if err := s.memory.SetPeerWatermarks(peer.ID, outgoing.Watermarks); err != nil {
-				log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=watermark_persist_failed %s peer_id=%s error=%v",
-					syncLogFields(requestID, s.nodeID, time.Since(sendStarted), "persistence"), peer.ID, err)
-				log.Printf("FILE_ONLY: nodeagent: persist memory watermarks for %s failed: %v", peer.ID, err)
-			}
+		successfulPeers++
+		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_complete %s peer_id=%s status=%d body_bytes=%d elapsed=%s records=%d",
+			syncLogFields(requestID, s.nodeID, time.Since(started), "none"), peer.ID, http.StatusNoContent, sentBytes, time.Since(started), len(batch.RecordIDs))
+		if err := s.memory.SetPeerWatermarks(peer.ID, batch.Snapshot.Watermarks); err != nil {
+			log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=watermark_persist_failed %s peer_id=%s error=%v",
+				syncLogFields(requestID, s.nodeID, time.Since(started), "persistence"), peer.ID, err)
+			log.Printf("FILE_ONLY: nodeagent: persist memory watermarks for %s failed: %v", peer.ID, err)
 		}
 	}
+	if successfulPeers == 0 {
+		if len(flushErrors) == 0 {
+			flushErrors = append(flushErrors, errors.New("no healthy cluster peers available for memory sync"))
+		}
+		return requeue(errors.Join(flushErrors...))
+	}
+	if len(flushErrors) > 0 {
+		return requeue(errors.Join(flushErrors...))
+	}
+	complete()
+	return nil
 }

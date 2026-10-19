@@ -89,6 +89,13 @@ func (c *identityComponent) TrustedIDs() []string {
 	return c.identity.TrustedIDs()
 }
 
+func (c *identityComponent) TrustedPeers() map[string]string {
+	if c.identity == nil {
+		return nil
+	}
+	return c.identity.TrustedPeers()
+}
+
 func (c *identityComponent) RemovePeer(id string) error {
 	if c.identity == nil {
 		return errors.New("node identity is not initialized")
@@ -110,4 +117,10 @@ func (c *identityComponent) requireTrustedPeer(handler http.Handler) http.Handle
 
 func (c *identityComponent) serverTLSConfig() *tls.Config {
 	return c.identity.ServerTLSConfig()
+}
+
+// ClusterIdentity returns the initialized identity shared by the node agent
+// and any orchestrator promoted on this process.
+func (a *Agent) ClusterIdentity() *peeridentity.Identity {
+	return a.identityComponent.identity
 }

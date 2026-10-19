@@ -59,6 +59,27 @@ func (s *Server) InitializeIdentity() error {
 	return nil
 }
 
+// UseIdentity attaches an existing cluster identity to a promoted orchestrator.
+// It must be called before Run and preserves the node's paired-member roster.
+func (s *Server) UseIdentity(identity *peeridentity.Identity) error {
+	if identity == nil || identity.ID() == "" {
+		return errors.New("orchestrator identity is required")
+	}
+	if s.identity != nil {
+		return errors.New("orchestrator identity is already initialized")
+	}
+	pin, err := identity.NewPairingPIN()
+	if err != nil {
+		return fmt.Errorf("create promoted orchestrator pairing PIN: %w", err)
+	}
+	s.identity = identity
+	s.electionPort().setSelfID(identity.ID())
+	s.electionPort().setIdentity(identity)
+	s.nodeClientPort().setTransport(identity.ClientTransport)
+	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", pin)
+	return nil
+}
+
 func (s *Server) IdentityCertificate() (string, error) {
 	if s.identity == nil {
 		return "", errors.New("orchestrator identity is not initialized")

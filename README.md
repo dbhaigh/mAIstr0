@@ -17,12 +17,14 @@ cluster work.
 
 LAN election is based only on announcements currently visible to each instance.
 During a network partition, each side may therefore elect and serve its own
-local winner; there is no quorum or automatic transfer of trust between winners.
-A node joining a different winner must be authorized separately: remote pairing
-requires that leader's PIN, while the existing same-subnet auto-pairing and
-invitation flows remain unchanged. See
+local winner; there is no quorum. A node that loses four consecutive
+five-second health checks to its current orchestrator starts a background
+failover election. The winning trusted cluster node can promote itself using
+its existing TLS identity and paired-member roster, so surviving members can
+re-register without repeating pairing. Untrusted discovery peers are not
+eligible to take over, and new cluster members still require authorization. See
 [LAN election and partitions](docs/lan-election.md) for the visibility and
-request-fencing behavior.
+failover behavior.
 
 `--role orchestrator` and `--role both` use the same election. LAN discovery
 must be available to start an orchestrator; coordinator startup fails closed
@@ -111,7 +113,10 @@ configuration, task, scheduler, node, discovery, and memory contracts.
 
 Scheduler assignments use the deterministic, lock-free scorer in
 [`internal/scheduler/score`](./internal/scheduler/score/score.go); eligibility
-and capacity prefilters run before scoring. Workflow dispatch and direct
+and capacity prefilters run before scoring. The lock-free guarantee applies to
+the score calculations, which consume an already-resolved learned bias; it does
+not claim that every surrounding scheduler or dispatch operation is lock-free.
+Workflow dispatch and direct
 OpenAI-compatible routing share the [`CapacityGate`](./internal/workpool/pool.go),
 which reserves per-node and global slots until released. The
 [`ClusterHealth`](./internal/orchestrator/cluster_health.go) view model is the
@@ -356,7 +361,8 @@ candidate succeeds, the failure is returned. Work is rejected with a service
 unavailable response if any planned subtask has no compatible model, rather
 than accepting only part of the request. Query task status and results through
 `GET /api/tasks` or `GET /api/tasks/{id}`. Cancel a running task with
-`POST /api/tasks/{id}/cancel`.
+`POST /api/tasks/{id}/cancel`. Retrieve a task's workflow nodes and dependency
+edges for visualization through `GET /api/tasks/{id}/dependencies`.
 
 For precise multi-step workflows, submit an explicit plan. Dependencies name
 other subtask IDs; dependent work waits for its prerequisites and receives

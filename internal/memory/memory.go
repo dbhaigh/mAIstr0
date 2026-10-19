@@ -126,6 +126,11 @@ type Snapshot struct {
 	Watermarks   map[string]uint64 `json:"watermarks,omitempty"`
 }
 
+type Payload struct {
+	RecordIDs []string
+	Snapshot  Snapshot
+}
+
 type SearchFilter struct {
 	Query       string
 	TaskType    string

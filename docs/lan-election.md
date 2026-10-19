@@ -16,12 +16,24 @@ announcement that has expired is no longer part of that view. This is local
 leader selection, not a guarantee that only one leader exists across a
 partitioned network.
 
-Pairing trust is specific to the identity that was paired. It does not transfer
-to another elected orchestrator, even when the same node can see that
-orchestrator on the LAN. A node must be authorized separately by a new winner:
-remote pairing requires that leader's one-time PIN, and a node may accept its
-invitation locally. The existing same-subnet auto-pairing behavior is
-unchanged. Discovery visibility alone does not grant membership.
+Node agents probe their current orchestrator's `GET /api/status` endpoint every
+five seconds with a two-second request timeout. Four consecutive failed probes
+start a background failover election without blocking node task scheduling.
+The failed coordinator is excluded from that node's election view while the
+visible startup candidates are ranked for one 15-second discovery lease.
+
+A promoted node reuses its paired node identity and member certificate roster;
+it does not create a new trust identity. Members that already trust that node
+can register with the promoted coordinator, and update its role to
+orchestrator after registration. Untrusted LAN announcements cannot win a
+failover election. New members still require authorization: remote pairing
+requires the elected leader's one-time PIN, and the existing same-subnet
+auto-pairing and invitation flows remain unchanged. Discovery visibility alone
+does not grant membership.
+
+Failover remains partition-local. Simultaneous elections on disconnected
+network segments may promote different nodes, and recovery does not provide
+quorum-based conflict resolution or globally exclusive writes.
 
 ## Write authority and trust
 

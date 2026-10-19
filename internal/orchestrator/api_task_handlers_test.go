@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
 func TestTaskAssignmentExplanationUsesStoredAssignment(t *testing.T) {
@@ -59,6 +60,67 @@ func TestTaskAssignmentExplanationUsesStoredAssignment(t *testing.T) {
 
 	missing := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/tasks/missing/assignment-explanation", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing task returned %d, want %d: %s", missing.Code, http.StatusNotFound, missing.Body.String())
+	}
+}
+
+func TestTaskDependenciesReturnsNodesAndEdges(t *testing.T) {
+	srv := newTestServer(t)
+	subtasks := []scheduler.Subtask{
+		{ID: "prepare", Description: "Prepare inputs"},
+		{ID: "execute", Description: "Execute work", DependsOn: []string{"prepare"}},
+		{ID: "review", Description: "Review output", DependsOn: []string{"execute"}},
+	}
+	graph, err := scheduler.TaskGraphFromSubtasks(subtasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignments := make([]scheduler.Assignment, 0, len(subtasks))
+	for _, subtask := range subtasks {
+		assignments = append(assignments, scheduler.Assignment{Subtask: subtask})
+	}
+	task, err := srv.tasks.CreateWithGraphAndOptionsChecked("workflow", graph, assignments, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/dependencies", nil)
+	srv.Mux().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET task dependencies returned %d: %s", response.Code, response.Body.String())
+	}
+
+	var got taskDependenciesResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Nodes) != 3 || len(got.Edges) != 2 {
+		t.Fatalf("dependency graph has %d nodes and %d edges, want 3 and 2", len(got.Nodes), len(got.Edges))
+	}
+	wantNodes := []taskDependencyNode{
+		{ID: "execute", Status: taskmgr.StatusPending, Description: "Execute work"},
+		{ID: "prepare", Status: taskmgr.StatusPending, Description: "Prepare inputs"},
+		{ID: "review", Status: taskmgr.StatusPending, Description: "Review output"},
+	}
+	for i, want := range wantNodes {
+		if got.Nodes[i] != want {
+			t.Errorf("node %d = %+v, want %+v", i, got.Nodes[i], want)
+		}
+	}
+	wantEdges := []taskDependencyEdge{
+		{SourceID: "execute", DestID: "review"},
+		{SourceID: "prepare", DestID: "execute"},
+	}
+	for i, want := range wantEdges {
+		if got.Edges[i] != want {
+			t.Errorf("edge %d = %+v, want %+v", i, got.Edges[i], want)
+		}
+	}
+
+	missing := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/tasks/missing/dependencies", nil))
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("missing task returned %d, want %d: %s", missing.Code, http.StatusNotFound, missing.Body.String())
 	}

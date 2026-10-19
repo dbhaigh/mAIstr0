@@ -68,12 +68,14 @@ type engineComponent struct {
 type telemetryComponent struct {
 	// hwMu protects the latest hardware snapshot, its generation, and telemetry histories.
 	// It is a leaf lock; probes and consumers run after releasing it.
-	hwMu          sync.RWMutex
-	hw            hardware.Info
-	hwGeneration  uint64
-	gpuHistory    []hardware.GPUUsageSample
-	npuHistory    []hardware.NPUUsageSample
-	systemHistory []hardware.SystemUsageSample
+	hwMu               sync.RWMutex
+	hwRefreshMu        sync.Mutex
+	hw                 hardware.Info
+	hwGeneration       uint64
+	gpuHistory         []hardware.GPUUsageSample
+	npuHistory         []hardware.NPUUsageSample
+	systemHistory      []hardware.SystemUsageSample
+	hardwareUsageProbe func() hardwareUsageSample
 }
 
 type identityComponent struct {
@@ -97,8 +99,10 @@ type orchestratorLink struct {
 		TrustPeer(string, string) error
 		TrustPeerDetails(string, string, string, string) error
 		TrustedIDs() []string
+		TrustedPeers() map[string]string
 		RemovePeer(string) error
 		IsTrustedID(string) bool
+		IsTrustedOrchestratorID(string) bool
 	}
 	telemetry interface{ hardwareSnapshot() hardware.Info }
 	models    interface {
@@ -115,11 +119,13 @@ type orchestratorLink struct {
 	syncer         *syncerComponent
 	statusSnapshot func() statusResponse
 	currentTasks   func() []*taskmgr.Task
+	heartbeat      *HeartbeatMonitor
 	// orchMu protects the current and co-located orchestrator identities and address; it is not nested with joinedMu or pairingInviteMu.
-	orchMu              sync.RWMutex
-	orchestratorAddr    string
-	orchestratorID      string
-	localOrchestratorID string
+	orchMu                sync.RWMutex
+	orchestratorAddr      string
+	orchestratorID        string
+	localOrchestratorID   string
+	electionCandidateAddr string
 	// joinedMu protects registration state and is not held across registration or network calls.
 	joinedMu sync.Mutex
 	joined   bool
@@ -233,7 +239,7 @@ func newEngineComponent(
 }
 
 func newTelemetryComponent(hw hardware.Info) *telemetryComponent {
-	return &telemetryComponent{hw: hw}
+	return &telemetryComponent{hw: hw, hardwareUsageProbe: currentHardwareUsage}
 }
 
 func newIdentityComponent() *identityComponent {
@@ -250,8 +256,10 @@ func newOrchestratorLink(
 		TrustPeer(string, string) error
 		TrustPeerDetails(string, string, string, string) error
 		TrustedIDs() []string
+		TrustedPeers() map[string]string
 		RemovePeer(string) error
 		IsTrustedID(string) bool
+		IsTrustedOrchestratorID(string) bool
 	},
 	telemetry interface{ hardwareSnapshot() hardware.Info },
 	models interface {
@@ -262,7 +270,7 @@ func newOrchestratorLink(
 	events *hub.Hub,
 ) *orchestratorLink {
 	cfg := state.configSnapshot()
-	return &orchestratorLink{
+	link := &orchestratorLink{
 		peerClient:       &http.Client{Timeout: 5 * time.Second},
 		memorySyncClient: &http.Client{Timeout: memorySyncTimeout},
 		streamClient:     &http.Client{},
@@ -275,6 +283,19 @@ func newOrchestratorLink(
 		tasks:            tasks,
 		events:           events,
 	}
+	link.heartbeat = newHeartbeatMonitor(
+		link.getOrchestratorAddr,
+		link.heartbeatOrchestratorID,
+		func(ctx context.Context, address string) error {
+			return statusProbe(link.peerClient)(ctx, address)
+		},
+		func(id string) {
+			if id != "" && link.discoveryListener != nil {
+				link.discoveryListener.IncludePeer(id)
+			}
+		},
+	)
+	return link
 }
 
 func newExecutorComponent(maxConcurrentTasks int, state *agentState) *executorComponent {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
@@ -29,6 +30,22 @@ type assignmentExplanationDetail struct {
 	ScoreFactors scheduler.ScoreFactors `json:"score_factors"`
 	LearnedBias  float64                `json:"learned_bias"`
 	Summary      string                 `json:"summary"`
+}
+
+type taskDependenciesResponse struct {
+	Nodes []taskDependencyNode `json:"nodes"`
+	Edges []taskDependencyEdge `json:"edges"`
+}
+
+type taskDependencyNode struct {
+	ID          string         `json:"id"`
+	Status      taskmgr.Status `json:"status"`
+	Description string         `json:"description"`
+}
+
+type taskDependencyEdge struct {
+	SourceID string `json:"source_id"`
+	DestID   string `json:"dest_id"`
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +159,82 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) handleTaskDependencies(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task, ok := s.tasks.Get(id)
+	if !ok {
+		writeError(w, apperr.NotFoundError(errors.New("task not found")))
+		return
+	}
+
+	graph := task.Graph
+	if graph == nil || len(graph.Nodes) == 0 && len(task.Subtasks) > 0 {
+		subtasks := make([]scheduler.Subtask, 0, len(task.Subtasks))
+		for _, result := range task.Subtasks {
+			subtasks = append(subtasks, result.Subtask)
+		}
+		if len(subtasks) > 0 {
+			var err error
+			graph, err = scheduler.TaskGraphFromSubtasks(subtasks)
+			if err != nil {
+				writeError(w, apperr.InternalError(fmt.Errorf("could not reconstruct task dependency graph: %w", err)))
+				return
+			}
+		}
+	}
+	if graph == nil {
+		graph = scheduler.NewTaskGraph()
+	}
+	if len(graph.Nodes) > 0 {
+		if err := graph.Validate(); err != nil {
+			writeError(w, apperr.InternalError(fmt.Errorf("invalid task dependency graph: %w", err)))
+			return
+		}
+	}
+
+	statuses := make(map[string]taskmgr.Status, len(task.Subtasks))
+	for _, result := range task.Subtasks {
+		statuses[result.Subtask.ID] = result.Status
+	}
+	response := taskDependenciesResponse{
+		Nodes: make([]taskDependencyNode, 0, len(graph.Nodes)),
+		Edges: make([]taskDependencyEdge, 0, len(graph.Edges)),
+	}
+	for id, subtask := range graph.Nodes {
+		status, ok := statuses[id]
+		if !ok {
+			status = taskmgr.StatusPending
+		}
+		response.Nodes = append(response.Nodes, taskDependencyNode{
+			ID: id, Status: status, Description: subtask.Description,
+		})
+	}
+	edges := make(map[scheduler.Edge]struct{}, len(graph.Edges))
+	for _, edge := range graph.Edges {
+		edges[edge] = struct{}{}
+	}
+	for id, subtask := range graph.Nodes {
+		for _, prerequisite := range subtask.DependsOn {
+			edges[scheduler.Edge{From: prerequisite, To: id}] = struct{}{}
+		}
+	}
+	for edge := range edges {
+		response.Edges = append(response.Edges, taskDependencyEdge{
+			SourceID: edge.From, DestID: edge.To,
+		})
+	}
+	sort.Slice(response.Nodes, func(i, j int) bool {
+		return response.Nodes[i].ID < response.Nodes[j].ID
+	})
+	sort.Slice(response.Edges, func(i, j int) bool {
+		if response.Edges[i].SourceID != response.Edges[j].SourceID {
+			return response.Edges[i].SourceID < response.Edges[j].SourceID
+		}
+		return response.Edges[i].DestID < response.Edges[j].DestID
+	})
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleTaskAssignmentExplanation(w http.ResponseWriter, r *http.Request) {

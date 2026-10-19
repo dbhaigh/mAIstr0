@@ -1,6 +1,7 @@
 package nodeagent
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"log"
@@ -134,14 +135,23 @@ func (a *Agent) Run() error {
 		// Announce continuously: before joining this is how the cluster finds
 		// us, and after joining it keeps us visible in every LAN panel.
 		go discovery.Beacon(func() discovery.Announcement {
+			if a.orchestratorLink.localOrchestratorIDValue() == cfg.NodeID {
+				return discovery.Announcement{}
+			}
 			orchestratorID := ""
 			if a.isJoined() {
 				orchestratorID = a.getOrchestratorID()
 			}
+			role := "node"
+			peerAddr := a.configSnapshot().AdvertiseAddr
+			if candidateAddr := a.orchestratorLink.electionCandidateAddrValue(); candidateAddr != "" {
+				role = "candidate"
+				peerAddr = candidateAddr
+			}
 			return discovery.Announcement{
-				Role: "node", ID: cfg.NodeID,
+				Role: role, ID: cfg.NodeID,
 				HTTPAddr:       "http://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr),
-				PeerAddr:       a.configSnapshot().AdvertiseAddr,
+				PeerAddr:       peerAddr,
 				Score:          cluster.SelfScore(a.hardwareSnapshot()),
 				OrchestratorID: orchestratorID,
 			}
@@ -156,6 +166,9 @@ func (a *Agent) Run() error {
 	go a.syncPeerMemoryLoop()
 	go a.orchestratorLink.broadcastLoop()
 	go a.syncMemoryToOrchestrator()
+	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
+	defer stopHeartbeat()
+	go a.orchestratorLink.heartbeat.Run(heartbeatCtx)
 
 	cfg = a.configSnapshot()
 	log.Printf("node agent %q listening on %s (advertised as %s)", cfg.NodeID, cfg.ListenAddr, cfg.AdvertiseAddr)

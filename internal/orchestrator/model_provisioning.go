@@ -162,6 +162,7 @@ func nodeCanFitModel(node cluster.NodeStatus, sizeGB float64) bool {
 		return true
 	}
 
+	// Fall back to host CPU memory when fresh GPU memory stats are unavailable or insufficient.
 	totalRAM := node.Hardware.TotalRAMMB
 	if totalRAM == 0 {
 		return false

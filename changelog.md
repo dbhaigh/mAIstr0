@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.0.14 - 2026-10-19
+
+### Added
+
+- Detect unavailable orchestrators with periodic status probes and promote a
+  trusted cluster node after four consecutive failures, without blocking node
+  scheduling or requiring surviving members to pair again.
+- Expose task dependency graphs through `GET /api/tasks/{id}/dependencies`,
+  including sorted task nodes, statuses, descriptions, and dependency edges.
+
+### Changed
+
+- Batch periodic memory synchronization and de-duplicate buffered snapshots by
+  record ID, re-queuing failed batches for retry.
+- Refresh stale hardware telemetry after 30 seconds and mark unavailable GPU
+  statistics explicitly so schedulers do not treat missing data as idle.
+- Use atomic snapshots for built-in learned-bias and custom-profile reads in
+  scheduler scoring paths.
+
 ## 0.0.13 - 2026-10-19
 
 ### Added

@@ -222,6 +222,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /api/tasks/resumable", s.handleListResumableTasks)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("GET /api/tasks/{id}/dependencies", s.handleTaskDependencies)
 	mux.HandleFunc("GET /api/tasks/{id}/assignment-explanation", s.handleTaskAssignmentExplanation)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
 	mux.HandleFunc("POST /api/tasks/{id}/approve", s.handleApproveTask)
