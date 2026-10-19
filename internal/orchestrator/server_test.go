@@ -47,9 +47,10 @@ func newTestServer(t *testing.T) *Server {
 
 func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 	cfg := config.OrchestratorConfig{
-		Harness:          " DEEPSEEK ",
-		DiscoveryEnabled: true,
-		MemoryPath:       filepath.Join(t.TempDir(), "orchestrator.db"),
+		Harness:                " DEEPSEEK ",
+		DiscoveryEnabled:       true,
+		DispatchTimeoutSeconds: 90,
+		MemoryPath:             filepath.Join(t.TempDir(), "orchestrator.db"),
 	}
 	srv, err := NewWithConfig(cfg)
 	if err != nil {
@@ -65,6 +66,9 @@ func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 	}
 	if srv.dispatcher.limit != config.DefaultDispatchConcurrency {
 		t.Fatalf("dispatch limit = %d, want %d", srv.dispatcher.limit, config.DefaultDispatchConcurrency)
+	}
+	if srv.dispatcher.dispatchTimeout != 90*time.Second {
+		t.Fatalf("dispatch timeout = %s, want 90s", srv.dispatcher.dispatchTimeout)
 	}
 
 	cfg.DiscoveryEnabled = false
@@ -1982,6 +1986,54 @@ func TestDispatchRetryClassificationExcludesClientErrors(t *testing.T) {
 			t.Errorf("classifyDispatchStatus(%d, %q) = (%q, %t), want (%q, %t)",
 				test.status, test.body, class, retryable, test.class, test.retryable)
 		}
+
+	}
+}
+
+func TestDispatcherUsesConfiguredTimeout(t *testing.T) {
+	releaseWorker := make(chan struct{})
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-releaseWorker
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer worker.Close()
+	defer close(releaseWorker)
+
+	srv := newTestServer(t)
+	srv.dispatcher.dispatchTimeout = 50 * time.Millisecond
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "slow-worker", Address: worker.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{
+			ID: "slow", Description: "Run it", TaskType: "general", Tags: []string{"general"},
+		},
+		NodeID: "slow-worker", Address: worker.URL, Model: "general",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		srv.dispatcher.dispatchWithContext(context.Background(), task.ID, task.Subtasks[0].Assignment)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch did not stop at the configured timeout")
+	}
+
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("timed-out task = %+v", completed)
+	}
+	result := completed.Subtasks[0]
+	if !strings.Contains(result.Error, "subtask dispatch deadline exceeded") ||
+		len(result.Attempts) != 1 || result.Attempts[0].FailureClass != "timeout" {
+		t.Fatalf("timed-out subtask result = %+v", result)
 	}
 }
 

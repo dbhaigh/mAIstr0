@@ -52,7 +52,9 @@ can be set with `--node-config` and `--orchestrator-config`.
 
 Concurrency can be tuned in those JSON files. The orchestrator's
 `max_concurrent_dispatches` setting defaults to `16` and caps subtask execution
-across the cluster. A node's `max_concurrent_tasks` setting defaults to `2`;
+across the cluster. Its `dispatch_timeout_seconds` setting defaults to `600`
+(10 minutes) and limits each subtask's dispatch and retry attempts after its
+dependencies are complete. A node's `max_concurrent_tasks` setting defaults to `2`;
 the node advertises its active and remaining capacity in status/heartbeat
 updates, and both the orchestrator and node enforce that limit. These settings
 only affect new in-memory scheduling; they do not change task or memory storage
@@ -302,7 +304,8 @@ An orchestrator config can set the cluster-wide cap:
 
 ```json
 {
-  "max_concurrent_dispatches": 16
+  "max_concurrent_dispatches": 16,
+  "dispatch_timeout_seconds": 600
 }
 ```
 
@@ -311,8 +314,8 @@ An orchestrator config can set the cluster-wide cap:
 Configuration is normalized before startup. Empty harness settings default to
 `pi` (harness names are trimmed and lowercased), empty tray modes default to
 `taskbar`, and zero or omitted concurrency settings use their documented
-defaults. Negative concurrency values are rejected. Orchestrator configs must
-keep LAN discovery enabled. The optional orchestrator `mode` setting accepts
+defaults. Negative concurrency and dispatch timeout values are rejected.
+Orchestrator configs must keep LAN discovery enabled. The optional orchestrator `mode` setting accepts
 `full` or `minimal`; omitted or empty values normalize to `full`.
 
 Listen addresses must use `host:port` or `:port` syntax. A node's

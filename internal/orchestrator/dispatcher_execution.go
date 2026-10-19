@@ -51,7 +51,7 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 		log.Printf("orchestrator: dependency wait task=%s subtask=%s duration_ms=%d", taskID, assignment.Subtask.ID, dependencyElapsed.Milliseconds())
 	}
 
-	boundedCtx, cancelDeadline := context.WithTimeout(dispatchCtx, dispatchDeadline)
+	boundedCtx, cancelDeadline := context.WithTimeout(dispatchCtx, d.dispatchTimeout)
 	defer cancelDeadline()
 	dispatchCtx = boundedCtx
 	current := assignment

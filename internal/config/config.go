@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	DefaultNodeConcurrency     = 2
-	DefaultDispatchConcurrency = 16
+	DefaultNodeConcurrency        = 2
+	DefaultDispatchConcurrency    = 16
+	DefaultDispatchTimeoutSeconds = 600
 
 	OrchestratorModeFull    = "full"
 	OrchestratorModeMinimal = "minimal"
@@ -108,15 +109,17 @@ func DefaultNodeConfig() NodeConfig {
 }
 
 type OrchestratorConfig struct {
-	ListenAddr                 string `json:"listen_addr"`
-	Mode                       string `json:"mode,omitempty"` // "full" or "minimal"
-	Harness                    string `json:"harness"`        // "deepseek" or "pi"
-	MaxConcurrentDispatches    int    `json:"max_concurrent_dispatches"`
-	DiscoveryEnabled           bool   `json:"discovery_enabled"`
-	AutoOpenBrowser            bool   `json:"auto_open_browser"`
-	TrayMode                   string `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
-	MemoryPath                 string `json:"memory_path"` // empty = default per-user data dir
-	explicitInvalidConcurrency bool
+	ListenAddr                     string `json:"listen_addr"`
+	Mode                           string `json:"mode,omitempty"` // "full" or "minimal"
+	Harness                        string `json:"harness"`        // "deepseek" or "pi"
+	MaxConcurrentDispatches        int    `json:"max_concurrent_dispatches"`
+	DispatchTimeoutSeconds         int    `json:"dispatch_timeout_seconds"`
+	DiscoveryEnabled               bool   `json:"discovery_enabled"`
+	AutoOpenBrowser                bool   `json:"auto_open_browser"`
+	TrayMode                       string `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
+	MemoryPath                     string `json:"memory_path"` // empty = default per-user data dir
+	explicitInvalidConcurrency     bool
+	explicitInvalidDispatchTimeout bool
 }
 
 func (cfg *OrchestratorConfig) Normalize() {
@@ -134,6 +137,10 @@ func (cfg *OrchestratorConfig) Normalize() {
 	if cfg.MaxConcurrentDispatches <= 0 {
 		cfg.explicitInvalidConcurrency = cfg.explicitInvalidConcurrency || cfg.MaxConcurrentDispatches < 0
 		cfg.MaxConcurrentDispatches = DefaultDispatchConcurrency
+	}
+	if cfg.DispatchTimeoutSeconds <= 0 {
+		cfg.explicitInvalidDispatchTimeout = cfg.explicitInvalidDispatchTimeout || cfg.DispatchTimeoutSeconds < 0
+		cfg.DispatchTimeoutSeconds = DefaultDispatchTimeoutSeconds
 	}
 	if cfg.TrayMode == "" {
 		cfg.TrayMode = "taskbar"
@@ -154,6 +161,9 @@ func (cfg OrchestratorConfig) Validate() error {
 	if cfg.MaxConcurrentDispatches <= 0 || cfg.explicitInvalidConcurrency {
 		violations = append(violations, fmt.Errorf("max_concurrent_dispatches must be greater than zero"))
 	}
+	if cfg.DispatchTimeoutSeconds <= 0 || cfg.explicitInvalidDispatchTimeout {
+		violations = append(violations, fmt.Errorf("dispatch_timeout_seconds must be greater than zero"))
+	}
 	if cfg.TrayMode != "taskbar" && cfg.TrayMode != "hidden" {
 		violations = append(violations, fmt.Errorf("tray_mode must be \"taskbar\" or \"hidden\""))
 	}
@@ -172,6 +182,7 @@ func DefaultOrchestratorConfig() OrchestratorConfig {
 		Mode:                    OrchestratorModeFull,
 		Harness:                 "pi",
 		MaxConcurrentDispatches: DefaultDispatchConcurrency,
+		DispatchTimeoutSeconds:  DefaultDispatchTimeoutSeconds,
 		DiscoveryEnabled:        true,
 		AutoOpenBrowser:         true,
 		TrayMode:                "taskbar",

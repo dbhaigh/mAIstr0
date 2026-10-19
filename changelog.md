@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.15 - 2026-10-19
+
+### Changed
+
+- Make the per-subtask dispatch deadline configurable, defaulting to 10 minutes
+  for slower local model inference.
+
 ## 0.0.14 - 2026-10-19
 
 ### Added

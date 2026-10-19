@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-const dispatchDeadline = 3 * time.Minute
-
 type dispatchJob struct {
 	taskID     string
 	assignment scheduler.Assignment
@@ -27,15 +25,16 @@ type dispatchHTTPClient interface {
 }
 
 type dispatcherComponent struct {
-	registry      *cluster.Registry
-	tasks         *taskmgr.Manager
-	memory        memory.Store
-	metrics       *operationalMetrics
-	executeClient dispatchHTTPClient
-	capacityGate  workpool.CapacityGate
-	pool          *workpool.Pool[dispatchJob]
-	retryPolicy   dispatchRetryPolicy
-	limit         int
+	registry        *cluster.Registry
+	tasks           *taskmgr.Manager
+	memory          memory.Store
+	metrics         *operationalMetrics
+	executeClient   dispatchHTTPClient
+	capacityGate    workpool.CapacityGate
+	pool            *workpool.Pool[dispatchJob]
+	retryPolicy     dispatchRetryPolicy
+	limit           int
+	dispatchTimeout time.Duration
 	// These atomics are independent live metrics; they are not guarded by a
 	// mutex and never impose lock ordering on dispatch paths.
 	dependencyWaiters   atomic.Int64
@@ -64,12 +63,14 @@ func newDispatcherComponent(
 	executeClient dispatchHTTPClient,
 	capacityProbe dispatchCapacityProbe,
 	limit int,
+	dispatchTimeout time.Duration,
 ) *dispatcherComponent {
 	dispatcher := &dispatcherComponent{
 		registry: registry, tasks: tasks, memory: store,
 		executeClient: executeClient, capacityGate: newDispatchCapacityGate(registry, capacityProbe, limit),
-		retryPolicy: defaultDispatchRetryPolicy,
-		limit:       limit,
+		retryPolicy:     defaultDispatchRetryPolicy,
+		limit:           limit,
+		dispatchTimeout: dispatchTimeout,
 	}
 	// Dispatch reloads the task's canonical context instead of inheriting the submitter's request context.
 	dispatcher.pool = workpool.NewWithOptions(

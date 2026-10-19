@@ -72,7 +72,8 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches, cfg.Mode)
+	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
+		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode)
 }
 
 // NewWithConfig creates an orchestrator from its JSON configuration.
@@ -81,10 +82,11 @@ func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches, cfg.Mode)
+	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
+		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode)
 }
 
-func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatchLimit int, mode string) (*Server, error) {
+func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatchLimit int, dispatchTimeout time.Duration, mode string) (*Server, error) {
 	if harnessName != "deepseek" && harnessName != "pi" {
 		return nil, fmt.Errorf("unknown agent backend %q (want deepseek or pi)", harnessName)
 	}
@@ -114,7 +116,7 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		return nil, fmt.Errorf("orchestrator: open task history: %w", err)
 	}
 	nodeClient := newNodeClient(&http.Client{Timeout: 10 * time.Second}, disp, &http.Client{Timeout: discoveryRequestTimeout})
-	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit)
+	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit, dispatchTimeout)
 	dispatcher.metrics = metrics
 	planner := newTaskPlanner(schedulerAdapter{}, tasks, dispatcher, nodeClient, dispatcher.schedulerNodes, dispatcher.experience())
 	planner.provisioner = newAutoModelProvisioner(reg, nodeClient)

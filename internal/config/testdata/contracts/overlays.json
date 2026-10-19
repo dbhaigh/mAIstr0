@@ -17,6 +17,7 @@
     "mode": "full",
     "harness": "deepseek",
     "max_concurrent_dispatches": 7,
+    "dispatch_timeout_seconds": 600,
     "discovery_enabled": true,
     "auto_open_browser": true,
     "tray_mode": "taskbar",

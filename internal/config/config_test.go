@@ -18,8 +18,11 @@ func TestOrchestratorHarnessConfig(t *testing.T) {
 	if defaults.MaxConcurrentDispatches != DefaultDispatchConcurrency {
 		t.Fatalf("default dispatch concurrency = %d, want %d", defaults.MaxConcurrentDispatches, DefaultDispatchConcurrency)
 	}
+	if defaults.DispatchTimeoutSeconds != DefaultDispatchTimeoutSeconds {
+		t.Fatalf("default dispatch timeout = %d, want %d seconds", defaults.DispatchTimeoutSeconds, DefaultDispatchTimeoutSeconds)
+	}
 	path := filepath.Join(t.TempDir(), "orchestrator.json")
-	if err := os.WriteFile(path, []byte(`{"mode":"minimal","harness":"deepseek","max_concurrent_dispatches":7,"pi_base_url":"https://ignored.example/v1","pi_api_key_env":"UNUSED_KEY"}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"mode":"minimal","harness":"deepseek","max_concurrent_dispatches":7,"dispatch_timeout_seconds":420,"pi_base_url":"https://ignored.example/v1","pi_api_key_env":"UNUSED_KEY"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadOrchestratorConfig(path)
@@ -34,6 +37,9 @@ func TestOrchestratorHarnessConfig(t *testing.T) {
 	}
 	if cfg.MaxConcurrentDispatches != 7 {
 		t.Fatalf("dispatch concurrency = %d, want 7", cfg.MaxConcurrentDispatches)
+	}
+	if cfg.DispatchTimeoutSeconds != 420 {
+		t.Fatalf("dispatch timeout = %d, want 420 seconds", cfg.DispatchTimeoutSeconds)
 	}
 }
 
@@ -138,6 +144,7 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 	defaulted.Normalize()
 	if defaulted.ListenAddr != DefaultOrchestratorConfig().ListenAddr || defaulted.Harness != "pi" ||
 		defaulted.Mode != OrchestratorModeFull || defaulted.MaxConcurrentDispatches != DefaultDispatchConcurrency ||
+		defaulted.DispatchTimeoutSeconds != DefaultDispatchTimeoutSeconds ||
 		defaulted.TrayMode != "taskbar" {
 		t.Fatalf("normalized orchestrator defaults = %+v", defaulted)
 	}
@@ -162,6 +169,9 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 	if cfg.MaxConcurrentDispatches != DefaultDispatchConcurrency {
 		t.Fatalf("normalized concurrency = %d, want %d", cfg.MaxConcurrentDispatches, DefaultDispatchConcurrency)
 	}
+	if cfg.DispatchTimeoutSeconds != DefaultDispatchTimeoutSeconds {
+		t.Fatalf("normalized dispatch timeout = %d, want %d seconds", cfg.DispatchTimeoutSeconds, DefaultDispatchTimeoutSeconds)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("normalized config is invalid: %v", err)
 	}
@@ -175,6 +185,7 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 		{"mode", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Mode = "lite" }, "mode"},
 		{"harness", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Harness = "unknown" }, "harness"},
 		{"concurrency", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.MaxConcurrentDispatches = -1 }, "max_concurrent_dispatches"},
+		{"dispatch timeout", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.DispatchTimeoutSeconds = -1 }, "dispatch_timeout_seconds"},
 		{"tray mode", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.TrayMode = "minimized" }, "tray_mode"},
 		{"discovery", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.DiscoveryEnabled = false }, "discovery_enabled"},
 		{"memory parent", func(cfg *OrchestratorConfig, t *testing.T) {
@@ -221,6 +232,7 @@ func TestConfigValidationReportsAllViolations(t *testing.T) {
 		"listen_addr",
 		"harness",
 		"max_concurrent_dispatches",
+		"dispatch_timeout_seconds",
 		"tray_mode",
 		"discovery_enabled",
 		"memory_path",
