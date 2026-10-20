@@ -49,6 +49,8 @@ The default ports are `7450` for the orchestrator and `7451` for a node. Use
 `--no-browser` to prevent opening the dashboard automatically. Orchestrator
 election requires discovery. Node and orchestrator JSON configuration paths
 can be set with `--node-config` and `--orchestrator-config`.
+Use `--print-config` with the same role and config flags to print normalized
+JSON and exit without starting listeners or the dashboard.
 
 Concurrency can be tuned in those JSON files. The orchestrator's
 `max_concurrent_dispatches` setting defaults to `16` and caps subtask execution
@@ -217,22 +219,68 @@ starts its task-history loop after a short startup delay. Version 1 and newer
 task sync sends only records newer than each peer's watermark, while older
 peers receive full snapshots. Task records also carry optional origin and
 sequence metadata, and legacy task databases are backfilled automatically.
-Memory and task-history requests remain limited to 64 MiB each; larger
+Memory and task-history requests default to a 64 MiB per-page limit; larger
 histories transfer in multiple bounded pages. A single record larger than the
-limit is rejected explicitly. Sync transfers use a dedicated 10-minute HTTP
-timeout. Task-history and memory-sync diagnostics are retained in the rolling
+configured limit is rejected explicitly. Sync transfers use a dedicated HTTP
+timeout, configurable with the defaults described in
+[Configuration validation](#configuration-validation). Task-history and memory-sync diagnostics are retained in the rolling
 log without being printed to the console. Dispatch and sync log records include
 request/attempt IDs, node/model/engine, elapsed time, and a failure class where
 applicable.
 The scheduler uses successful and failed node/model/task outcomes to improve
 future assignments.
 
-`GET /api/metrics` exposes dependency-free Prometheus text counters for worker
-dispatch attempts, retries, task-history and memory-sync pages served, and
-successful capacity reservations. The endpoint uses the existing HTTP mux, so
-it follows the same loopback-only plaintext and trusted-peer mTLS rules as the
-rest of the API. Metrics have no per-node labels, keeping their cardinality
-bounded.
+`GET /metrics` exposes dependency-free Prometheus text metrics for active tasks,
+dispatch queue depth, reserved capacity, per-peer sync watermark lag, engine
+inventory freshness, successful pairing events, scheduler assignment latency,
+dispatch attempts/retries, and sync pages. `GET /api/metrics` remains as a
+compatible alias. The endpoint uses the existing HTTP mux, so it follows the
+same loopback-only plaintext and trusted-peer mTLS rules as the rest of the API.
+Sync lag is the maximum missing source-sequence count for a paired peer; `-1`
+means the value is unavailable. Inventory age is the age of the oldest
+successful report; `-1` means no successful inventory has been reported.
+Metrics have no per-node labels, keeping their cardinality bounded.
+
+### Reverse proxies and service managers
+
+For dashboard access, a reverse proxy on the orchestrator host can forward to
+the loopback-only HTTP listener. Restrict the proxy with your organization’s
+authentication or a private network; the local listener assumes requests come
+from the same host. Disable response buffering for `/api/events` so SSE updates
+arrive promptly. Cluster nodes must continue to connect directly to the
+orchestrator’s HTTPS/mTLS listener; do not terminate or replace the client
+certificate identity used for cluster traffic.
+
+Example Nginx location for an authenticated dashboard proxy:
+
+```nginx
+location / {
+    auth_basic "mAIstr0";
+    auth_basic_user_file /etc/nginx/maistr0.htpasswd;
+    proxy_pass http://127.0.0.1:7450;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    proxy_read_timeout 660s;
+}
+```
+
+Prometheus on the orchestrator host can scrape `http://127.0.0.1:7450/metrics`.
+Remote scrapers should use a trusted client certificate and the HTTPS listener,
+or a separately authenticated, network-restricted proxy.
+
+The systemd example can be installed as a user service in
+`~/.config/systemd/user/maistr0.service`; edit `ExecStart` for the installed
+binary path, then run `systemctl --user daemon-reload` and
+`systemctl --user enable --now maistr0`. For launchd, edit the binary path in
+[`com.maistr0.agent.plist`](./packaging/launchd/com.maistr0.agent.plist), copy it
+to `~/Library/LaunchAgents/`, and load it with:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
+```
 
 The Cluster & Workload **Setup** tab checks each node's engine and model
 readiness, refreshes an empty model registry, and links to node settings for
@@ -289,6 +337,8 @@ additional or remote engines in a node configuration file:
 {
   "listen_addr": ":7451",
   "max_concurrent_tasks": 2,
+  "sync_max_bytes": 67108864,
+  "sync_timeout_seconds": 600,
   "orchestrator_addr": "https://192.168.1.10:7450",
   "pairing_pin": "<six-digit-pin>",
   "engines": [
@@ -305,7 +355,9 @@ An orchestrator config can set the cluster-wide cap:
 ```json
 {
   "max_concurrent_dispatches": 16,
-  "dispatch_timeout_seconds": 600
+  "dispatch_timeout_seconds": 600,
+  "sync_max_bytes": 67108864,
+  "sync_timeout_seconds": 600
 }
 ```
 
@@ -315,6 +367,10 @@ Configuration is normalized before startup. Empty harness settings default to
 `pi` (harness names are trimmed and lowercased), empty tray modes default to
 `taskbar`, and zero or omitted concurrency settings use their documented
 defaults. Negative concurrency and dispatch timeout values are rejected.
+Memory and task-history transfers default to a 64 MiB page/request limit and a
+10-minute timeout. Both node and orchestrator configs may override
+`sync_max_bytes` (1 byte through 256 MiB) and `sync_timeout_seconds` (1 through
+3600 seconds); omitted or zero values retain the defaults.
 Orchestrator configs must keep LAN discovery enabled. The optional orchestrator `mode` setting accepts
 `full` or `minimal`; omitted or empty values normalize to `full`.
 
@@ -327,6 +383,8 @@ directory must be creatable; missing parent directories are created as needed.
 
 Invalid settings are reported individually and prevent startup with exit code
 `2`.
+The `--print-config` dry-run applies the same normalization and validation and
+prints the effective node and/or orchestrator JSON without starting services.
 
 The SSE cluster snapshot includes dispatch queue depth, active global slots,
 dependency waiters, cumulative dispatch/dependency-wait duration, goroutine

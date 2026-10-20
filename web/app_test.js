@@ -25,6 +25,7 @@ const dashboardSnapshot = require("./src/shared/snapshot.js");
 
 test("Dashboard loads its generated bundle through the Go embedded static path", () => {
   assert.deepEqual(appScriptPaths, ["/app.js"]);
+  assert.match(indexSource, /id="connection-status"[^>]*role="status"[^>]*aria-live="polite"/);
   for (const scriptPath of appScriptPaths) {
     assert.ok(fs.existsSync(path.join(__dirname, "static", path.basename(scriptPath))), `${scriptPath} is missing`);
   }
@@ -169,6 +170,7 @@ test("Pairing PIN view model covers active, missing, and node-side states", () =
 test("SSE snapshots parse safely and merge live task updates without losing history", () => {
   const snapshots = [];
   const errors = [];
+  const connectionChanges = [];
   class FakeEventSource {
     constructor(url) {
       this.url = url;
@@ -176,9 +178,16 @@ test("SSE snapshots parse safely and merge live task updates without losing hist
   }
   const eventSource = dashboardSnapshot.connectDashboardEvents(
     (snapshot) => snapshots.push(snapshot),
-    { EventSourceImpl: FakeEventSource, onError: (error) => errors.push(error) },
+    {
+      EventSourceImpl: FakeEventSource,
+      onError: (error) => errors.push(error),
+      onConnectionChange: (connected) => connectionChanges.push(connected),
+    },
   );
   assert.equal(eventSource.url, "/api/events");
+  eventSource.onopen();
+  eventSource.onerror();
+  assert.deepEqual(connectionChanges, [true, false]);
   eventSource.onmessage({ data: '{"nodes":[{"id":"node-a"}]}' });
   eventSource.onmessage({ data: "{" });
   assert.deepEqual(snapshots, [{ nodes: [{ id: "node-a" }] }]);

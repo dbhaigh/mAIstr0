@@ -1,6 +1,8 @@
 // Package nodeagent implements the per-node HTTP service: it detects local
 // LLM engines/models and hardware, reports itself to the orchestrator, and
-// executes subtasks dispatched to it.
+// executes subtasks dispatched to it. Engine probes run without inventory
+// locks; a generation check prevents an invalidated probe from restoring stale
+// state.
 package nodeagent
 
 import (
@@ -170,6 +172,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		func() *http.Client { return link.peerClient },
 		func() *http.Client { return link.memorySyncClient },
 		a.Peers,
+		cfg.SyncMaxBytes,
 		func() bool {
 			if a.getOrchestratorAddr() != "" && a.getOrchestratorID() != "" {
 				return false
@@ -221,7 +224,10 @@ func (a *Agent) InitializeIdentity() error {
 		return err
 	}
 	a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: transport}
-	a.memorySyncClient = &http.Client{Timeout: memorySyncTimeout, Transport: transport}
+	a.memorySyncClient = &http.Client{
+		Timeout:   time.Duration(a.cfg.SyncTimeoutSeconds) * time.Second,
+		Transport: transport,
+	}
 	a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: transport}
 	a.streamClient = &http.Client{Transport: transport}
 	return nil

@@ -47,6 +47,26 @@ func mustNewTestAgentWithEngineDetector(t *testing.T, cfg config.NodeConfig, tas
 	return agent
 }
 
+func TestNodeSyncConfigControlsPageLimitAndTimeout(t *testing.T) {
+	cfg := config.DefaultNodeConfig()
+	cfg.NodeID = "sync-config-test"
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "sync.db")
+	cfg.SyncMaxBytes = 4096
+	cfg.SyncTimeoutSeconds = 37
+	agent := mustNewTestAgentWithEngineDetector(t, cfg, taskmgr.NewManager(), func() []engine.Engine { return nil })
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+	if agent.orchestratorLink.syncer.maxSyncBytes != 4096 {
+		t.Fatalf("sync page limit = %d, want 4096", agent.orchestratorLink.syncer.maxSyncBytes)
+	}
+	if agent.memorySyncClient.Timeout != 37*time.Second {
+		t.Fatalf("memory sync timeout = %s, want 37s", agent.memorySyncClient.Timeout)
+	}
+}
+
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
 	_, err := New(config.NodeConfig{ListenAddr: "invalid"})
 	if err == nil || !strings.Contains(err.Error(), "listen_addr") {

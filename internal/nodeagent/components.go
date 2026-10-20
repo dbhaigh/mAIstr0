@@ -34,7 +34,7 @@ type engineComponent struct {
 	detectedEngines []engine.Engine
 	detectedSeenAt  map[string]time.Time
 	// enginesMu protects configured/detected engines and the generation-keyed ordered snapshot cache.
-	// When both scan locks are needed, engineScanMu precedes enginesMu; engine calls happen without enginesMu held.
+	// Engine calls happen without this lock held.
 	enginesMu sync.RWMutex
 	// engineSnapshotCache is invalidated on engine scans/configuration and reused until hwGeneration changes.
 	engineGeneration          uint64
@@ -42,8 +42,9 @@ type engineComponent struct {
 	engineSnapshotGeneration  uint64
 	engineSnapshotHardwareGen uint64
 	engineSnapshotCacheValid  bool
-	// engineScanMu serializes detector calls and updates; if both scan locks are needed, it precedes enginesMu.
+	// engineScanMu protects engineScanDone; detector calls run after releasing it.
 	engineScanMu   sync.Mutex
+	engineScanDone chan struct{}
 	engineDetector func() []engine.Engine
 	lastEngineScan time.Time
 	telemetry      interface {
@@ -56,9 +57,11 @@ type engineComponent struct {
 		setModelConfig(map[string]bool, string)
 	}
 
-	// refreshMu serializes inventory refresh and invalidation; its order is refreshMu -> modelMu -> agentState.mu.
-	refreshMu sync.Mutex
-	// modelMu protects reported inventory; never acquire refreshMu while holding it.
+	// refreshMu protects refresh coordination and generation; it is never held during engine calls.
+	refreshMu                sync.Mutex
+	refreshDone              chan struct{}
+	modelInventoryGeneration uint64
+	// modelMu protects reported inventory; refresh coordination may acquire it after refreshMu.
 	modelMu         sync.Mutex
 	reportedModels  []ModelState
 	reportedEngines []engine.Status
@@ -271,8 +274,10 @@ func newOrchestratorLink(
 ) *orchestratorLink {
 	cfg := state.configSnapshot()
 	link := &orchestratorLink{
-		peerClient:       &http.Client{Timeout: 5 * time.Second},
-		memorySyncClient: &http.Client{Timeout: memorySyncTimeout},
+		peerClient: &http.Client{Timeout: 5 * time.Second},
+		memorySyncClient: &http.Client{
+			Timeout: time.Duration(cfg.SyncTimeoutSeconds) * time.Second,
+		},
 		streamClient:     &http.Client{},
 		orchestratorAddr: cfg.OrchestratorAddr,
 		configState:      state,

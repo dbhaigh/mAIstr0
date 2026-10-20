@@ -79,7 +79,12 @@ func TestBoltHotCachesRefreshAfterWritesAndMerges(t *testing.T) {
 			Successes: 1, Failures: 9, SuccessRate: 0.1, AvgDurationMs: 60000,
 			Origin: "remote", Sequence: 3,
 		}},
-		Watermarks: map[string]uint64{"remote": 3},
+		Dialogues: []DialogueRecord{{
+			ID: "merged-dialogue", Origin: "remote", Sequence: 4,
+			Participants: []string{"node"}, Topic: "sync",
+			Turns: []Turn{{Speaker: "node", Content: "merged turn", At: time.Now()}},
+		}},
+		Watermarks: map[string]uint64{"remote": 4},
 	}
 	if err := boltStore.MergeSnapshotFrom(merged, "peer"); err != nil {
 		t.Fatal(err)
@@ -87,13 +92,28 @@ func TestBoltHotCachesRefreshAfterWritesAndMerges(t *testing.T) {
 	if got := boltStore.LearnedBias("node", "model", "code"); got >= 0 {
 		t.Fatalf("learned bias after merged performance = %v, want negative", got)
 	}
-	if got := boltStore.PeerWatermarks("peer")["remote"]; got != 3 {
-		t.Fatalf("peer watermark after merge = %d, want 3", got)
+	if got := boltStore.PeerWatermarks("peer")["remote"]; got != 4 {
+		t.Fatalf("peer watermark after merge = %d, want 4", got)
 	}
 	afterMerge := boltStore.Snapshot()
 	if len(afterMerge.Experiences) != len(beforeMerge.Experiences)+1 ||
-		len(afterMerge.Facts) != len(beforeMerge.Facts)+1 {
+		len(afterMerge.Facts) != len(beforeMerge.Facts)+1 ||
+		len(afterMerge.Dialogues) != 1 {
 		t.Fatalf("snapshot cache was not invalidated after merge: before=%+v after=%+v", beforeMerge, afterMerge)
+	}
+	localWatermark := boltStore.Watermarks()[boltStore.owner]
+	if err := boltStore.MergeSnapshotFrom(merged, "peer"); err != nil {
+		t.Fatal(err)
+	}
+	if got := boltStore.Watermarks()[boltStore.owner]; got != localWatermark {
+		t.Fatalf("idempotent merge advanced local watermark from %d to %d", localWatermark, got)
+	}
+	dialogue, err := boltStore.Dialogue("merged-dialogue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dialogue.Turns) != 1 {
+		t.Fatalf("idempotent merge changed dialogue turns: %+v", dialogue.Turns)
 	}
 	afterMerge.Experiences[0].Description = "caller mutation"
 	if got := boltStore.Snapshot().Experiences[0].Description; got != "merged run" {
@@ -107,7 +127,7 @@ func TestBoltHotCachesRefreshAfterWritesAndMerges(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed = true
-	if got := boltStore.PeerWatermarks("peer"); got["remote"] != 3 {
+	if got := boltStore.PeerWatermarks("peer"); got["remote"] != 4 {
 		t.Fatalf("peer watermark read missed cache after close: %#v", got)
 	}
 	if got := boltStore.LearnedBias("node", "model", "code"); got >= 0 {

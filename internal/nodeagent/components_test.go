@@ -213,6 +213,7 @@ func TestModelInventoryTTLAndHardwareGenerationCaches(t *testing.T) {
 	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "alpha" {
 		t.Fatalf("initial inventory = %#v, want alpha", got)
 	}
+
 	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "alpha" {
 		t.Fatalf("cached inventory = %#v, want alpha", got)
 	}
@@ -251,6 +252,47 @@ func TestModelInventoryTTLAndHardwareGenerationCaches(t *testing.T) {
 	component.enginesMu.RUnlock()
 	if gotGeneration != 1 {
 		t.Fatalf("engine snapshot hardware generation = %d, want 1", gotGeneration)
+	}
+}
+
+func TestInventoryInvalidationDoesNotWaitForEngineProbe(t *testing.T) {
+	eng := &blockingInventoryEngine{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	component := newEngineComponent(
+		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{}, newAgentState(config.NodeConfig{}),
+	)
+	refreshed := make(chan struct{})
+	go func() {
+		component.refreshReportedModels()
+		close(refreshed)
+	}()
+	select {
+	case <-eng.started:
+	case <-time.After(time.Second):
+		t.Fatal("inventory probe did not start")
+	}
+
+	invalidated := make(chan struct{})
+	go func() {
+		component.invalidateReportedModels()
+		close(invalidated)
+	}()
+	select {
+	case <-invalidated:
+	case <-time.After(100 * time.Millisecond):
+		close(eng.release)
+		<-invalidated
+		<-refreshed
+		t.Fatal("inventory invalidation waited for the engine probe")
+	}
+
+	close(eng.release)
+	select {
+	case <-refreshed:
+	case <-time.After(time.Second):
+		t.Fatal("inventory refresh did not finish after the probe was released")
 	}
 }
 
@@ -313,6 +355,24 @@ type inventoryTestEngine struct {
 	models         []engine.Model
 	err            error
 	listModelCount int
+}
+
+type blockingInventoryEngine struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*blockingInventoryEngine) Name() string    { return "blocking" }
+func (*blockingInventoryEngine) Available() bool { return true }
+func (e *blockingInventoryEngine) ListModels() ([]engine.Model, error) {
+	e.once.Do(func() { close(e.started) })
+	<-e.release
+	return []engine.Model{{Name: "model"}}, nil
+}
+func (*blockingInventoryEngine) Generate(string, string) (string, error) { return "", nil }
+func (*blockingInventoryEngine) Chat(string, []engine.ChatMessage) (string, error) {
+	return "", nil
 }
 
 func (e *inventoryTestEngine) Name() string    { return "test" }

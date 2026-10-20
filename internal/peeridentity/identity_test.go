@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestPairingPINIsSingleUse(t *testing.T) {
@@ -21,6 +22,27 @@ func TestPairingPINIsSingleUse(t *testing.T) {
 	}
 	if identity.ConsumePairingPIN(pin) {
 		t.Fatal("pairing PIN was accepted more than once")
+	}
+}
+
+func TestPairingPINExpires(t *testing.T) {
+	identity, err := Open(filepath.Join(t.TempDir(), "identity.json"), "orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := identity.NewPairingPIN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.mu.Lock()
+	identity.pairingExpires = time.Now().Add(-time.Second)
+	identity.mu.Unlock()
+
+	if identity.VerifyPairingPIN(pin) || identity.ConsumePairingPIN(pin) {
+		t.Fatal("expired pairing PIN was accepted")
+	}
+	if _, _, ok := identity.ActivePairingPIN(); ok {
+		t.Fatal("expired pairing PIN remained active")
 	}
 }
 

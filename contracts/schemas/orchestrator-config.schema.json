@@ -10,6 +10,8 @@
     "harness": {"type": "string", "enum": ["deepseek", "pi"]},
     "max_concurrent_dispatches": {"type": "integer"},
     "dispatch_timeout_seconds": {"type": "integer", "minimum": 1},
+    "sync_max_bytes": {"type": "integer", "minimum": 1, "maximum": 268435456, "default": 67108864},
+    "sync_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 600},
     "discovery_enabled": {"type": "boolean"},
     "auto_open_browser": {"type": "boolean"},
     "tray_mode": {"type": "string", "enum": ["taskbar", "hidden"]},

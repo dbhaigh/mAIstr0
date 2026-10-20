@@ -433,6 +433,7 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 		a.memorySyncClient,
 		strings.TrimRight(addr, "/")+"/api/memory/sync",
 		memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peerID)),
+		a.cfg.SyncMaxBytes,
 	)
 	if err != nil {
 		log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_failed %s peer=%s body_bytes=0 elapsed=%s stage=request error=%v",
@@ -452,7 +453,7 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 
 	snapshot := memory.SnapshotForPeer(a.mem, remoteSnapshot.SyncVersion, remoteSnapshot.Watermarks)
 	postStarted := time.Now()
-	bodies, err := marshalMemorySnapshotPages(snapshot, maxMemorySyncBodyBytes, func(page memory.Snapshot) ([]byte, error) {
+	bodies, err := marshalMemorySnapshotPages(snapshot, a.cfg.SyncMaxBytes, func(page memory.Snapshot) ([]byte, error) {
 		return json.Marshal(map[string]any{
 			"node_id":      a.cfg.NodeID,
 			"sync_version": memory.SyncProtocolVersion,

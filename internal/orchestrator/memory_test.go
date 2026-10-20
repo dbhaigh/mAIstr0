@@ -16,6 +16,17 @@ import (
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
+func TestMemorySyncRequestUsesConfiguredBodyLimit(t *testing.T) {
+	srv := newTestServer(t)
+	srv.syncMaxBytes = 4
+	request := httptest.NewRequest(http.MethodPost, "/api/memory/sync", strings.NewReader(`{"node_id":"too-large"}`))
+	response := httptest.NewRecorder()
+	srv.handleMemorySync(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("memory sync returned %d, want 413: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestMemoryAPIRoundTrip(t *testing.T) {
 	srv := newTestServer(t)
 	mux := srv.Mux()

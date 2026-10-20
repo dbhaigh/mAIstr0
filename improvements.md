@@ -6,19 +6,26 @@ assessment of implementation and remaining work, see
 The current status below is a working-tree snapshot, not a claim that all
 changes have been reviewed or merged.
 
-## Current implementation update — 2026-10-18
+## Current implementation update — 2026-10-19
 
-- Phases 2–5, 7, and 8 are implemented in the current source. Phase 0 remains
-  open pending a clean reviewed baseline and supported-platform race result.
-- The Phase 1 scenario-to-assertion audit is complete in the current worktree,
-  including task lifecycle, scheduler freshness, compatibility success/stream
-  behavior, and error envelopes. Review and merge its fixtures with the tests.
-- Phase 6 remains partial pending review of the task-manager and node-agent
-  extractions. Current non-test source files in the target packages are below
-  500 lines; split more only if review identifies a concrete ownership boundary.
-- Election authority, dispatch retry/attempt visibility, and dashboard helper
-  work are documented in their focused docs. These changes must still be
-  reviewed and merged before the branch can be treated as a clean baseline.
+- Phases 2–5 and 7–8 are implemented in the current source. Phase 1
+  characterization and contract coverage is complete in the current worktree;
+  review and merge its fixtures with the tests.
+- Phase 6 is implemented for the stated decomposition and size goals: the
+  production Go files in `internal/orchestrator`, `internal/nodeagent`, and
+  `internal/taskmgr` are all below 500 lines, with responsibilities owned by
+  focused components and lock order documented. Further splits should follow a
+  concrete review finding, not the line-count target alone.
+- Phase 0 remains open until the current worktree is reviewed and merged. The
+  Linux race suite has passed previously; native Windows still reports the
+  documented ThreadSanitizer shadow-memory allocation limitation.
+- Incremental sync now supports configurable transfer limits and timeouts with
+  the established 64 MiB and 10-minute defaults. Metrics, service examples,
+  normalized config printing, and dashboard connection status are documented
+  and covered by tests; see the README and changelog.
+- bbolt snapshot merges now batch experience/fact and dialogue/watermark updates
+  into transactions instead of writing each record separately, and unchanged
+  dialogue records are not rewritten.
 
 ## Ground rules for every phase
 
@@ -45,7 +52,7 @@ changes have been reviewed or merged.
 | 3 | Separate domain errors from HTTP | 1 | Medium | Domain services don't depend on HTTP status codes | **Implemented** |
 | 4 | Unify dispatch/worker pool | 1 | Medium | One tested concurrency primitive | **Implemented** |
 | 5 | Persistence behind interfaces | 1 | Medium | bbolt isolated behind repositories | **Implemented** |
-| 6 | Split god objects | 3, 4, 5 | High | `Server`, `Agent`, and `Manager` decomposed | **Partial** — review current extractions and lock/dependency ownership before further splits |
+| 6 | Split god objects | 3, 4, 5 | High | `Server`, `Agent`, and `Manager` decomposed | **Implemented in the current worktree** — production files in all three target packages are below 500 lines; component locks and task-manager order are documented |
 | 7 | Incremental memory sync | 5 | Medium | Sync supports watermarks with full-snapshot fallback | **Implemented** |
 | 8 | Language-neutral contracts | 1–7 | Medium | OpenAPI, schemas, fixtures, and porting guide | **Implemented** |
 

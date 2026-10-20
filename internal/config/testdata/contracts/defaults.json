@@ -10,7 +10,9 @@
     "discovery_enabled": true,
     "auto_open_browser": true,
     "tray_mode": "taskbar",
-    "memory_path": ""
+    "memory_path": "",
+    "sync_max_bytes": 67108864,
+    "sync_timeout_seconds": 600
   },
   "orchestrator": {
     "listen_addr": ":7450",
@@ -21,6 +23,8 @@
     "discovery_enabled": true,
     "auto_open_browser": true,
     "tray_mode": "taskbar",
-    "memory_path": ""
+    "memory_path": "",
+    "sync_max_bytes": 67108864,
+    "sync_timeout_seconds": 600
   }
 }

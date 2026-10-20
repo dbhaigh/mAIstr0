@@ -50,6 +50,8 @@ func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 		Harness:                " DEEPSEEK ",
 		DiscoveryEnabled:       true,
 		DispatchTimeoutSeconds: 90,
+		SyncMaxBytes:           2 << 20,
+		SyncTimeoutSeconds:     37,
 		MemoryPath:             filepath.Join(t.TempDir(), "orchestrator.db"),
 	}
 	srv, err := NewWithConfig(cfg)
@@ -69,6 +71,11 @@ func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 	}
 	if srv.dispatcher.dispatchTimeout != 90*time.Second {
 		t.Fatalf("dispatch timeout = %s, want 90s", srv.dispatcher.dispatchTimeout)
+	}
+	if srv.maxSyncBytes() != 2<<20 || srv.syncTimeout != 37*time.Second ||
+		srv.nodeClient.sync.Timeout != 37*time.Second {
+		t.Fatalf("sync config = %d bytes/%s client timeout %s, want %d bytes/37s",
+			srv.maxSyncBytes(), srv.syncTimeout, srv.nodeClient.sync.Timeout, 2<<20)
 	}
 
 	cfg.DiscoveryEnabled = false
@@ -119,6 +126,7 @@ func TestMinimalModeOmitsOptionalRoutesAndKeepsClusterRouting(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/status", "GET /api/status"},
 		{http.MethodGet, "/api/metrics", "GET /api/metrics"},
+		{http.MethodGet, "/metrics", "GET /metrics"},
 		{http.MethodGet, "/api/cluster/health", "GET /api/cluster/health"},
 		{http.MethodPost, "/router/v1/chat/completions", "POST /router/{path...}"},
 		{http.MethodGet, "/v1/models", "GET /v1/models"},
@@ -1079,8 +1087,15 @@ func TestDiscoveredNodeStatusAllowsSlowPeerResponse(t *testing.T) {
 	}
 
 	peerMux := http.NewServeMux()
-	peerMux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(2 * time.Second)
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	peerMux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		select {
+		case <-releaseResponse:
+		case <-r.Context().Done():
+			return
+		}
 		_, _ = w.Write([]byte(`{"id":"slow-node"}`))
 	})
 	peerServer := httptest.NewUnstartedServer(peer.RequireTrustedPeer(peerMux))
@@ -1088,12 +1103,37 @@ func TestDiscoveredNodeStatusAllowsSlowPeerResponse(t *testing.T) {
 	peerServer.StartTLS()
 	defer peerServer.Close()
 
-	status, err := srv.discoveredNodeStatus(peerServer.URL)
-	if err != nil {
-		t.Fatalf("fetch from a slow paired node failed: %v", err)
+	type statusResult struct {
+		id  string
+		err error
 	}
-	if status.ID != peer.ID() {
-		t.Fatalf("fetched node status = %#v, want ID %q", status, peer.ID())
+	resultCh := make(chan statusResult, 1)
+	go func() {
+		status, err := srv.discoveredNodeStatus(peerServer.URL)
+		if err != nil {
+			resultCh <- statusResult{err: err}
+			return
+		}
+		resultCh <- statusResult{id: status.ID}
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("slow paired node did not receive the status request")
+	}
+	close(releaseResponse)
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("fetch from a slow paired node failed: %v", result.err)
+		}
+		if result.id != peer.ID() {
+			t.Fatalf("fetched node status ID = %q, want %q", result.id, peer.ID())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fetch from a slow paired node did not complete")
 	}
 }
 
@@ -1796,6 +1836,42 @@ func TestDispatchRetriesWhenCompletedResponseIsLost(t *testing.T) {
 		attempt: taskmgr.DispatchAttemptID(task.ID, "lost-response", 2),
 	}); got != want {
 		t.Fatalf("retry attempt IDs = %+v, want %+v", got, want)
+	}
+}
+
+func TestDispatchRetriesWhenAssignedNodeDisappears(t *testing.T) {
+	disappeared := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	disappearedAddress := disappeared.URL
+	disappeared.Close()
+	available := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "recovered on another node"})
+	}))
+	defer available.Close()
+
+	srv := newTestServer(t)
+	model := []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}}
+	srv.registry.Upsert(cluster.NodeStatus{ID: "node-a", Address: disappearedAddress, Healthy: true, Models: model})
+	srv.registry.Upsert(cluster.NodeStatus{ID: "node-b", Address: available.URL, Healthy: true, Models: model})
+	task, err := srv.tasks.CreateChecked("Run after node loss", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "node-loss", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: disappearedAddress, Model: "general", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusCompleted {
+		t.Fatalf("node-loss retry task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if len(attempts) != 2 || attempts[0].FailureClass != "transport" ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
+		attempts[1].Status != taskmgr.DispatchAttemptSucceeded ||
+		completed.Subtasks[0].NodeID != "node-b" ||
+		completed.Subtasks[0].Output != "recovered on another node" {
+		t.Fatalf("node-loss dispatch result = task %+v, attempts %+v", completed.Subtasks[0], attempts)
 	}
 }
 

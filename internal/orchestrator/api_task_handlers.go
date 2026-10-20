@@ -116,7 +116,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			writeHistoryPage(w, pageRequest, page.Items, memory.HistoryCursor{
 				UpdatedAt: page.NextCursor.UpdatedAt,
 				Key:       page.NextCursor.ID,
-			}, page.HasMore)
+			}, page.HasMore, s.maxSyncBytes())
 			return
 		}
 	}
@@ -127,7 +127,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			cursor = make(map[string]uint64)
 			upper = currentWatermarks
 		}
-		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, maxReplicatedTaskHistoryBytes)
+		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, s.maxSyncBytes())
 		if err != nil {
 			http.Error(w, "could not page task history: "+err.Error(), http.StatusRequestEntityTooLarge)
 			return

@@ -19,6 +19,10 @@ const (
 	DefaultNodeConcurrency        = 2
 	DefaultDispatchConcurrency    = 16
 	DefaultDispatchTimeoutSeconds = 600
+	DefaultSyncMaxBytes           = int64(64 << 20)
+	DefaultSyncTimeoutSeconds     = 600
+	MaxSyncMaxBytes               = int64(256 << 20)
+	MaxSyncTimeoutSeconds         = 3600
 
 	OrchestratorModeFull    = "full"
 	OrchestratorModeMinimal = "minimal"
@@ -45,6 +49,10 @@ type NodeConfig struct {
 	TrayMode                   string         `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
 	MemoryPath                 string         `json:"memory_path"` // empty = default per-user data dir
 	explicitInvalidConcurrency bool
+	SyncMaxBytes               int64 `json:"sync_max_bytes,omitempty"`
+	SyncTimeoutSeconds         int   `json:"sync_timeout_seconds,omitempty"`
+	explicitInvalidSyncMax     bool
+	explicitInvalidSyncTimeout bool
 }
 
 func (cfg *NodeConfig) Normalize() {
@@ -54,6 +62,14 @@ func (cfg *NodeConfig) Normalize() {
 	if cfg.MaxConcurrentTasks <= 0 {
 		cfg.explicitInvalidConcurrency = cfg.explicitInvalidConcurrency || cfg.MaxConcurrentTasks < 0
 		cfg.MaxConcurrentTasks = DefaultNodeConcurrency
+	}
+	if cfg.SyncMaxBytes <= 0 {
+		cfg.explicitInvalidSyncMax = cfg.explicitInvalidSyncMax || cfg.SyncMaxBytes < 0
+		cfg.SyncMaxBytes = DefaultSyncMaxBytes
+	}
+	if cfg.SyncTimeoutSeconds <= 0 {
+		cfg.explicitInvalidSyncTimeout = cfg.explicitInvalidSyncTimeout || cfg.SyncTimeoutSeconds < 0
+		cfg.SyncTimeoutSeconds = DefaultSyncTimeoutSeconds
 	}
 	if cfg.TrayMode == "" {
 		cfg.TrayMode = "taskbar"
@@ -67,6 +83,12 @@ func (cfg NodeConfig) Validate() error {
 	}
 	if cfg.MaxConcurrentTasks <= 0 || cfg.explicitInvalidConcurrency {
 		violations = append(violations, fmt.Errorf("max_concurrent_tasks must be greater than zero"))
+	}
+	if cfg.SyncMaxBytes < 1 || cfg.SyncMaxBytes > MaxSyncMaxBytes || cfg.explicitInvalidSyncMax {
+		violations = append(violations, fmt.Errorf("sync_max_bytes must be between 1 and %d", MaxSyncMaxBytes))
+	}
+	if cfg.SyncTimeoutSeconds < 1 || cfg.SyncTimeoutSeconds > MaxSyncTimeoutSeconds || cfg.explicitInvalidSyncTimeout {
+		violations = append(violations, fmt.Errorf("sync_timeout_seconds must be between 1 and %d", MaxSyncTimeoutSeconds))
 	}
 	if cfg.TrayMode != "taskbar" && cfg.TrayMode != "hidden" {
 		violations = append(violations, fmt.Errorf("tray_mode must be \"taskbar\" or \"hidden\""))
@@ -105,6 +127,8 @@ func DefaultNodeConfig() NodeConfig {
 		DiscoveryEnabled:   true,
 		AutoOpenBrowser:    true,
 		TrayMode:           "taskbar",
+		SyncMaxBytes:       DefaultSyncMaxBytes,
+		SyncTimeoutSeconds: DefaultSyncTimeoutSeconds,
 	}
 }
 
@@ -118,8 +142,12 @@ type OrchestratorConfig struct {
 	AutoOpenBrowser                bool   `json:"auto_open_browser"`
 	TrayMode                       string `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
 	MemoryPath                     string `json:"memory_path"` // empty = default per-user data dir
+	SyncMaxBytes                   int64  `json:"sync_max_bytes,omitempty"`
+	SyncTimeoutSeconds             int    `json:"sync_timeout_seconds,omitempty"`
 	explicitInvalidConcurrency     bool
 	explicitInvalidDispatchTimeout bool
+	explicitInvalidSyncMax         bool
+	explicitInvalidSyncTimeout     bool
 }
 
 func (cfg *OrchestratorConfig) Normalize() {
@@ -141,6 +169,14 @@ func (cfg *OrchestratorConfig) Normalize() {
 	if cfg.DispatchTimeoutSeconds <= 0 {
 		cfg.explicitInvalidDispatchTimeout = cfg.explicitInvalidDispatchTimeout || cfg.DispatchTimeoutSeconds < 0
 		cfg.DispatchTimeoutSeconds = DefaultDispatchTimeoutSeconds
+	}
+	if cfg.SyncMaxBytes <= 0 {
+		cfg.explicitInvalidSyncMax = cfg.explicitInvalidSyncMax || cfg.SyncMaxBytes < 0
+		cfg.SyncMaxBytes = DefaultSyncMaxBytes
+	}
+	if cfg.SyncTimeoutSeconds <= 0 {
+		cfg.explicitInvalidSyncTimeout = cfg.explicitInvalidSyncTimeout || cfg.SyncTimeoutSeconds < 0
+		cfg.SyncTimeoutSeconds = DefaultSyncTimeoutSeconds
 	}
 	if cfg.TrayMode == "" {
 		cfg.TrayMode = "taskbar"
@@ -164,6 +200,12 @@ func (cfg OrchestratorConfig) Validate() error {
 	if cfg.DispatchTimeoutSeconds <= 0 || cfg.explicitInvalidDispatchTimeout {
 		violations = append(violations, fmt.Errorf("dispatch_timeout_seconds must be greater than zero"))
 	}
+	if cfg.SyncMaxBytes < 1 || cfg.SyncMaxBytes > MaxSyncMaxBytes || cfg.explicitInvalidSyncMax {
+		violations = append(violations, fmt.Errorf("sync_max_bytes must be between 1 and %d", MaxSyncMaxBytes))
+	}
+	if cfg.SyncTimeoutSeconds < 1 || cfg.SyncTimeoutSeconds > MaxSyncTimeoutSeconds || cfg.explicitInvalidSyncTimeout {
+		violations = append(violations, fmt.Errorf("sync_timeout_seconds must be between 1 and %d", MaxSyncTimeoutSeconds))
+	}
 	if cfg.TrayMode != "taskbar" && cfg.TrayMode != "hidden" {
 		violations = append(violations, fmt.Errorf("tray_mode must be \"taskbar\" or \"hidden\""))
 	}
@@ -186,6 +228,8 @@ func DefaultOrchestratorConfig() OrchestratorConfig {
 		DiscoveryEnabled:        true,
 		AutoOpenBrowser:         true,
 		TrayMode:                "taskbar",
+		SyncMaxBytes:            DefaultSyncMaxBytes,
+		SyncTimeoutSeconds:      DefaultSyncTimeoutSeconds,
 	}
 }
 

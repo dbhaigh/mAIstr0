@@ -22,6 +22,7 @@ type nodeClient struct {
 	dispatcher *http.Client
 	status     *http.Client
 	modelPull  *http.Client
+	sync       *http.Client
 }
 
 type nodeClientAPI interface {
@@ -43,7 +44,14 @@ func newNodeClient(client, dispatcher, status *http.Client) *nodeClient {
 	return &nodeClient{
 		client: client, dispatcher: dispatcher, status: status,
 		modelPull: &http.Client{Timeout: time.Hour},
+		sync:      &http.Client{Timeout: 10 * time.Minute},
 	}
+}
+
+func newNodeClientWithSyncTimeout(client, dispatcher, status *http.Client, timeout time.Duration) *nodeClient {
+	node := newNodeClient(client, dispatcher, status)
+	node.sync = &http.Client{Timeout: timeout}
+	return node
 }
 
 func (c *nodeClient) Do(request *http.Request) (*http.Response, error) {
@@ -75,6 +83,9 @@ func (c *nodeClient) setTransport(newTransport func() *http.Transport) {
 	c.status.Transport = newTransport()
 	if c.modelPull != nil {
 		c.modelPull.Transport = newTransport()
+	}
+	if c.sync != nil {
+		c.sync.Transport = newTransport()
 	}
 }
 

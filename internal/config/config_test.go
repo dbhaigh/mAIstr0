@@ -70,6 +70,10 @@ func TestNodeConfigNormalizeAndValidate(t *testing.T) {
 	if cfg.MaxConcurrentTasks != DefaultNodeConcurrency {
 		t.Fatalf("normalized concurrency = %d, want %d", cfg.MaxConcurrentTasks, DefaultNodeConcurrency)
 	}
+	if cfg.SyncMaxBytes != DefaultSyncMaxBytes || cfg.SyncTimeoutSeconds != DefaultSyncTimeoutSeconds {
+		t.Fatalf("normalized sync settings = %d bytes/%d seconds, want %d bytes/%d seconds",
+			cfg.SyncMaxBytes, cfg.SyncTimeoutSeconds, DefaultSyncMaxBytes, DefaultSyncTimeoutSeconds)
+	}
 	if cfg.TrayMode != "taskbar" {
 		t.Fatalf("normalized tray mode = %q, want taskbar", cfg.TrayMode)
 	}
@@ -102,6 +106,10 @@ func TestNodeConfigNormalizeAndValidate(t *testing.T) {
 		{"listen address", func(cfg *NodeConfig, _ *testing.T) { cfg.ListenAddr = "localhost" }, "listen_addr"},
 		{"empty listen port", func(cfg *NodeConfig, _ *testing.T) { cfg.ListenAddr = "localhost:" }, "listen_addr"},
 		{"concurrency", func(cfg *NodeConfig, _ *testing.T) { cfg.MaxConcurrentTasks = -1 }, "max_concurrent_tasks"},
+		{"negative sync limit", func(cfg *NodeConfig, _ *testing.T) { cfg.SyncMaxBytes = -1 }, "sync_max_bytes"},
+		{"oversized sync limit", func(cfg *NodeConfig, _ *testing.T) { cfg.SyncMaxBytes = MaxSyncMaxBytes + 1 }, "sync_max_bytes"},
+		{"negative sync timeout", func(cfg *NodeConfig, _ *testing.T) { cfg.SyncTimeoutSeconds = -1 }, "sync_timeout_seconds"},
+		{"oversized sync timeout", func(cfg *NodeConfig, _ *testing.T) { cfg.SyncTimeoutSeconds = MaxSyncTimeoutSeconds + 1 }, "sync_timeout_seconds"},
 		{"tray mode", func(cfg *NodeConfig, _ *testing.T) { cfg.TrayMode = "minimized" }, "tray_mode"},
 		{"orchestrator URL", func(cfg *NodeConfig, _ *testing.T) { cfg.OrchestratorAddr = "http://orchestrator:7450" }, "orchestrator_addr"},
 		{"advertise URL", func(cfg *NodeConfig, _ *testing.T) { cfg.AdvertiseAddr = "http://node:7451" }, "advertise_addr"},
@@ -145,6 +153,7 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 	if defaulted.ListenAddr != DefaultOrchestratorConfig().ListenAddr || defaulted.Harness != "pi" ||
 		defaulted.Mode != OrchestratorModeFull || defaulted.MaxConcurrentDispatches != DefaultDispatchConcurrency ||
 		defaulted.DispatchTimeoutSeconds != DefaultDispatchTimeoutSeconds ||
+		defaulted.SyncMaxBytes != DefaultSyncMaxBytes || defaulted.SyncTimeoutSeconds != DefaultSyncTimeoutSeconds ||
 		defaulted.TrayMode != "taskbar" {
 		t.Fatalf("normalized orchestrator defaults = %+v", defaulted)
 	}
@@ -186,6 +195,10 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 		{"harness", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Harness = "unknown" }, "harness"},
 		{"concurrency", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.MaxConcurrentDispatches = -1 }, "max_concurrent_dispatches"},
 		{"dispatch timeout", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.DispatchTimeoutSeconds = -1 }, "dispatch_timeout_seconds"},
+		{"negative sync limit", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.SyncMaxBytes = -1 }, "sync_max_bytes"},
+		{"oversized sync limit", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.SyncMaxBytes = MaxSyncMaxBytes + 1 }, "sync_max_bytes"},
+		{"negative sync timeout", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.SyncTimeoutSeconds = -1 }, "sync_timeout_seconds"},
+		{"oversized sync timeout", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.SyncTimeoutSeconds = MaxSyncTimeoutSeconds + 1 }, "sync_timeout_seconds"},
 		{"tray mode", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.TrayMode = "minimized" }, "tray_mode"},
 		{"discovery", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.DiscoveryEnabled = false }, "discovery_enabled"},
 		{"memory parent", func(cfg *OrchestratorConfig, t *testing.T) {

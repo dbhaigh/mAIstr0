@@ -87,7 +87,7 @@ func (a *Agent) handleTasksList(w http.ResponseWriter, r *http.Request) {
 			cursor = make(map[string]uint64)
 			upper = currentWatermarks
 		}
-		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, maxTaskSyncBodyBytes)
+		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, a.cfg.SyncMaxBytes)
 		if err != nil {
 			http.Error(w, "could not page task history: "+err.Error(), http.StatusRequestEntityTooLarge)
 			return

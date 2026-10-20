@@ -1,15 +1,52 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 )
 
 func TestStartupElectionWindowCoversDiscoveryLease(t *testing.T) {
 	if startupElectionWindow < 15*time.Second {
 		t.Fatalf("startup election window = %s, want at least the 15-second discovery lease", startupElectionWindow)
+	}
+}
+
+func TestPrintNormalizedConfigWritesEffectiveNodeSettings(t *testing.T) {
+	var output bytes.Buffer
+	err := printNormalizedConfig(&output, configPrintOptions{
+		role: "node", nodeListenAddr: ":7551", noBrowser: true,
+	})
+	if err != nil {
+		t.Fatalf("print normalized node config: %v", err)
+	}
+	var result struct {
+		Node config.NodeConfig `json:"node"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("decode printed config: %v", err)
+	}
+	if result.Node.ListenAddr != ":7551" || result.Node.MaxConcurrentTasks != config.DefaultNodeConcurrency ||
+		result.Node.AutoOpenBrowser || result.Node.NodeID == "" || result.Node.AdvertiseAddr == "" {
+		t.Fatalf("printed node config = %+v", result.Node)
+	}
+}
+
+func TestPrintNormalizedConfigRejectsInvalidConfiguration(t *testing.T) {
+	var output bytes.Buffer
+	err := printNormalizedConfig(&output, configPrintOptions{
+		role: "orchestrator", noDiscovery: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "discovery_enabled must be true") {
+		t.Fatalf("invalid normalized config error = %v, want discovery validation error", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("invalid configuration printed partial output: %s", output.String())
 	}
 }
 

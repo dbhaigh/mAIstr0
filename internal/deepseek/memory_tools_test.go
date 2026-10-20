@@ -2,7 +2,6 @@ package deepseek
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -11,12 +10,7 @@ import (
 
 func newMemoryHarness(t *testing.T) (*Harness, *Session) {
 	t.Helper()
-	store, err := memory.Open(filepath.Join(t.TempDir(), "deepseek.db"), "test")
-	if err != nil {
-		t.Fatalf("open memory: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
+	store := memory.NewInMemoryStore()
 	h := New(cluster.NewRegistry(), nil)
 	h.SetMemory(store)
 	return h, h.CreateSession("memory-test", SessionConfig{})

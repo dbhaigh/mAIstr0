@@ -250,6 +250,15 @@ func TestScoreFactorsTable(t *testing.T) {
 				t.Fatalf("ScorePrepared() = (%v, %+v), want Score() result (%v, %+v)",
 					preparedScore, preparedFactors, got, factors)
 			}
+			fastCandidate, ok := PrepareWithCapabilitiesForScoring(test.node, test.subtask, test.node.EffectiveCapabilities())
+			if !ok {
+				t.Fatal("eligible test candidate was rejected by PrepareWithCapabilitiesForScoring")
+			}
+			if fastScore := ScorePreparedValue(
+				test.node, test.subtask, fastCandidate, test.load, test.pending, test.exp, test.cfg, now,
+			); fastScore != got {
+				t.Fatalf("ScorePreparedValue() = %v, want Score() score %v", fastScore, got)
+			}
 		})
 	}
 }

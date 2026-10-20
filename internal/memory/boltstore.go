@@ -176,40 +176,61 @@ func (s *boltStore) MergeSnapshotFrom(snapshot Snapshot, sourceOrigin string) er
 		sourceOrigin = legacyOrigin
 	}
 	previousWatermarks := s.Watermarks()
-	for _, e := range snapshot.Experiences {
-		if err := s.mergeExperienceFrom(e, sourceOrigin); err != nil {
+	if len(snapshot.Experiences) > 0 || len(snapshot.Facts) > 0 {
+		insertedExperiences := make([]Experience, 0, len(snapshot.Experiences))
+		err := s.db.Update(func(tx *bolt.Tx) error {
+			for _, experience := range snapshot.Experiences {
+				inserted, added, err := mergeExperienceTx(tx, experience, sourceOrigin)
+				if err != nil {
+					return err
+				}
+				if added {
+					insertedExperiences = append(insertedExperiences, inserted)
+				}
+			}
+			for _, fact := range snapshot.Facts {
+				if err := mergeFactTx(tx, fact, sourceOrigin); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
 			return err
 		}
-	}
-	for _, f := range snapshot.Facts {
-		if err := s.mergeFactFrom(f, sourceOrigin); err != nil {
-			return err
+		s.invalidateWatermarksCache()
+		for _, experience := range insertedExperiences {
+			s.cacheRecentExperience(experience)
 		}
 	}
 	if err := s.mergePerformancesFrom(snapshot.Performances, sourceOrigin); err != nil {
 		return err
 	}
-	for _, d := range snapshot.Dialogues {
-		if err := s.mergeDialogueFrom(d, sourceOrigin); err != nil {
+	var peerWatermarks map[string]uint64
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		for _, dialogue := range snapshot.Dialogues {
+			if err := mergeDialogueTx(tx, dialogue, sourceOrigin, s.owner); err != nil {
+				return err
+			}
+		}
+		if err := updateSnapshotWatermarks(tx, snapshot.Watermarks); err != nil {
 			return err
 		}
-	}
-	if err := s.db.Update(func(tx *bolt.Tx) error {
-		return updateSnapshotWatermarks(tx, snapshot.Watermarks)
+		var err error
+		peerWatermarks, err = mergePeerWatermarksTx(tx, sourceOrigin, snapshot.Watermarks)
+		return err
 	}); err != nil {
 		return err
 	}
 	s.invalidateWatermarksCache()
-	if err := s.SetPeerWatermarks(sourceOrigin, snapshot.Watermarks); err != nil {
-		return err
-	}
+	s.cachePeerWatermarks(sourceOrigin, peerWatermarks)
 	if syncinterval.WatermarksAdvanced(previousWatermarks, s.Watermarks()) {
 		s.changes.Notify()
 	}
 	return nil
 }
 
-func (s *boltStore) mergeFactFrom(incoming Fact, sourceOrigin string) error {
+func mergeFactTx(tx *bolt.Tx, incoming Fact, sourceOrigin string) error {
 	if incoming.Key == "" {
 		return errors.New("memory: fact key is required")
 	}
@@ -226,49 +247,43 @@ func (s *boltStore) mergeFactFrom(incoming Fact, sourceOrigin string) error {
 		incoming.CreatedAt = incoming.UpdatedAt
 	}
 
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketFacts)
-		key := []byte(incoming.Scope + "|" + incoming.Key)
-		if incoming.Origin != "" && incoming.Sequence > 0 {
-			if err := updateRecordWatermark(tx, incoming.Origin, incoming.Sequence); err != nil {
-				return err
-			}
-		}
-		if raw := b.Get(key); raw != nil {
-			var current Fact
-			if err := json.Unmarshal(raw, &current); err != nil {
-				return err
-			}
-			if incoming.UpdatedAt.Before(current.UpdatedAt) ||
-				(incoming.UpdatedAt.Equal(current.UpdatedAt) && !factWinsTie(incoming, current)) {
-				return nil
-			}
-			if current.CreatedAt.Before(incoming.CreatedAt) {
-				incoming.CreatedAt = current.CreatedAt
-			}
-			if current.Hits > incoming.Hits {
-				incoming.Hits = current.Hits
-			}
-		}
-		if incoming.Origin == "" || incoming.Sequence == 0 {
-			sequence, err := nextOriginSequence(tx, sourceOrigin)
-			if err != nil {
-				return err
-			}
-			incoming.Origin, incoming.Sequence = sourceOrigin, sequence
-		} else if err := updateRecordWatermark(tx, incoming.Origin, incoming.Sequence); err != nil {
+	b := tx.Bucket(bucketFacts)
+	key := []byte(incoming.Scope + "|" + incoming.Key)
+	if incoming.Origin != "" && incoming.Sequence > 0 {
+		if err := updateRecordWatermark(tx, incoming.Origin, incoming.Sequence); err != nil {
 			return err
 		}
-		buf, err := json.Marshal(incoming)
+	}
+	if raw := b.Get(key); raw != nil {
+		var current Fact
+		if err := json.Unmarshal(raw, &current); err != nil {
+			return err
+		}
+		if incoming.UpdatedAt.Before(current.UpdatedAt) ||
+			(incoming.UpdatedAt.Equal(current.UpdatedAt) && !factWinsTie(incoming, current)) {
+			return nil
+		}
+		if current.CreatedAt.Before(incoming.CreatedAt) {
+			incoming.CreatedAt = current.CreatedAt
+		}
+		if current.Hits > incoming.Hits {
+			incoming.Hits = current.Hits
+		}
+	}
+	if incoming.Origin == "" || incoming.Sequence == 0 {
+		sequence, err := nextOriginSequence(tx, sourceOrigin)
 		if err != nil {
 			return err
 		}
-		return b.Put(key, buf)
-	})
-	if err == nil {
-		s.invalidateWatermarksCache()
+		incoming.Origin, incoming.Sequence = sourceOrigin, sequence
+	} else if err := updateRecordWatermark(tx, incoming.Origin, incoming.Sequence); err != nil {
+		return err
 	}
-	return err
+	buf, err := json.Marshal(incoming)
+	if err != nil {
+		return err
+	}
+	return b.Put(key, buf)
 }
 
 func factWinsTie(incoming, current Fact) bool {
@@ -313,129 +328,117 @@ func (s *boltStore) ensureExperienceFingerprintIndex() error {
 	})
 }
 
-func (s *boltStore) mergeExperienceFrom(e Experience, sourceOrigin string) error {
+func mergeExperienceTx(tx *bolt.Tx, e Experience, sourceOrigin string) (Experience, bool, error) {
 	key := experienceFingerprintKey(e)
-	inserted := false
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		meta := tx.Bucket(bucketMeta)
-		if e.Origin != "" && e.Sequence > 0 {
-			if err := updateRecordWatermark(tx, e.Origin, e.Sequence); err != nil {
-				return err
-			}
+	meta := tx.Bucket(bucketMeta)
+	if e.Origin != "" && e.Sequence > 0 {
+		if err := updateRecordWatermark(tx, e.Origin, e.Sequence); err != nil {
+			return Experience{}, false, err
 		}
-		if meta.Get(key) != nil {
-			return nil
-		}
-		if e.Origin == "" || e.Sequence == 0 {
-			sequence, err := nextOriginSequence(tx, sourceOrigin)
-			if err != nil {
-				return err
-			}
-			e.Origin, e.Sequence = sourceOrigin, sequence
-		}
-		b := tx.Bucket(bucketExperiences)
-		id, err := b.NextSequence()
+	}
+	if meta.Get(key) != nil {
+		return Experience{}, false, nil
+	}
+	if e.Origin == "" || e.Sequence == 0 {
+		sequence, err := nextOriginSequence(tx, sourceOrigin)
 		if err != nil {
-			return err
+			return Experience{}, false, err
 		}
-		e.ID = id
-		if e.CreatedAt.IsZero() {
-			e.CreatedAt = time.Now()
-		}
-		buf, err := json.Marshal(e)
-		if err != nil {
-			return err
-		}
-		if err := b.Put(itob(id), buf); err != nil {
-			return err
-		}
-		if err := meta.Put(key, []byte{1}); err != nil {
-			return err
-		}
-		inserted = true
-		return nil
-	})
+		e.Origin, e.Sequence = sourceOrigin, sequence
+	}
+	b := tx.Bucket(bucketExperiences)
+	id, err := b.NextSequence()
 	if err != nil {
-		return err
+		return Experience{}, false, err
 	}
-	s.invalidateWatermarksCache()
-	if inserted {
-		s.cacheRecentExperience(e)
+	e.ID = id
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now()
 	}
-	return nil
+	buf, err := json.Marshal(e)
+	if err != nil {
+		return Experience{}, false, err
+	}
+	if err := b.Put(itob(id), buf); err != nil {
+		return Experience{}, false, err
+	}
+	if err := meta.Put(key, []byte{1}); err != nil {
+		return Experience{}, false, err
+	}
+	return e, true, nil
 }
 
-func (s *boltStore) mergeDialogueFrom(incoming DialogueRecord, sourceOrigin string) error {
+func mergeDialogueTx(tx *bolt.Tx, incoming DialogueRecord, sourceOrigin, owner string) error {
 	if incoming.ID == "" {
 		return nil
 	}
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketDialogues)
-		if incoming.Origin != "" && incoming.Sequence > 0 {
-			if err := updateRecordWatermark(tx, incoming.Origin, incoming.Sequence); err != nil {
-				return err
-			}
+	b := tx.Bucket(bucketDialogues)
+	if incoming.Origin != "" && incoming.Sequence > 0 {
+		if err := updateRecordWatermark(tx, incoming.Origin, incoming.Sequence); err != nil {
+			return err
 		}
-		var current DialogueRecord
-		if raw := b.Get([]byte(incoming.ID)); raw != nil {
-			_ = json.Unmarshal(raw, &current)
-		}
-		if current.ID == "" {
-			current = incoming
-		} else {
-			changed := false
-			for _, turn := range incoming.Turns {
-				found := false
-				for _, existing := range current.Turns {
-					if existing.At.Equal(turn.At) && existing.Speaker == turn.Speaker && existing.Content == turn.Content {
-						found = true
-						break
-					}
-				}
-				if !found {
-					current.Turns = append(current.Turns, turn)
-					changed = true
+	}
+	var current DialogueRecord
+	raw := b.Get([]byte(incoming.ID))
+	changed := raw == nil
+	if raw != nil {
+		_ = json.Unmarshal(raw, &current)
+	}
+	if current.ID == "" {
+		current = incoming
+		changed = true
+	} else {
+		for _, turn := range incoming.Turns {
+			found := false
+			for _, existing := range current.Turns {
+				if existing.At.Equal(turn.At) && existing.Speaker == turn.Speaker && existing.Content == turn.Content {
+					found = true
+					break
 				}
 			}
-			for _, p := range incoming.Participants {
-				if !contains(current.Participants, p) {
-					current.Participants = append(current.Participants, p)
-					changed = true
-				}
-			}
-			if current.Topic == "" {
-				current.Topic = incoming.Topic
-				changed = changed || current.Topic != ""
-			}
-			if incoming.UpdatedAt.After(current.UpdatedAt) {
-				current.UpdatedAt = incoming.UpdatedAt
+			if !found {
+				current.Turns = append(current.Turns, turn)
 				changed = true
 			}
-			if changed {
-				sequence, err := nextOriginSequence(tx, s.owner)
-				if err != nil {
-					return err
-				}
-				current.Origin, current.Sequence = s.owner, sequence
+		}
+		for _, p := range incoming.Participants {
+			if !contains(current.Participants, p) {
+				current.Participants = append(current.Participants, p)
+				changed = true
 			}
 		}
-		if current.Origin == "" || current.Sequence == 0 {
-			sequence, err := nextOriginSequence(tx, sourceOrigin)
+		if current.Topic == "" {
+			current.Topic = incoming.Topic
+			changed = changed || current.Topic != ""
+		}
+		if incoming.UpdatedAt.After(current.UpdatedAt) {
+			current.UpdatedAt = incoming.UpdatedAt
+			changed = true
+		}
+		if changed {
+			sequence, err := nextOriginSequence(tx, owner)
 			if err != nil {
 				return err
 			}
-			current.Origin, current.Sequence = sourceOrigin, sequence
+			current.Origin, current.Sequence = owner, sequence
 		}
-		buf, err := json.Marshal(current)
+	}
+	if current.Origin == "" || current.Sequence == 0 {
+		sequence, err := nextOriginSequence(tx, sourceOrigin)
 		if err != nil {
 			return err
 		}
-		return b.Put([]byte(current.ID), buf)
-	})
-	if err == nil {
-		s.invalidateWatermarksCache()
+		current.Origin, current.Sequence = sourceOrigin, sequence
+		changed = true
 	}
-	return err
+	if !changed {
+		return nil
+	}
+	buf, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(current.ID), buf)
 }
 
 // Open creates or opens the memory database at path. The parent directory

@@ -86,6 +86,20 @@ func (m *Manager) All() []*Task {
 	return out
 }
 
+// ActiveCount returns the number of tasks that have not reached a terminal state.
+func (m *Manager) ActiveCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	active := 0
+	for _, task := range m.tasks {
+		switch task.Status {
+		case StatusPending, StatusRunning, StatusSynthesis, StatusAwaitingApproval:
+			active++
+		}
+	}
+	return active
+}
+
 // PendingAssignmentsByNode returns the number of waiting subtask assignments
 // per node without cloning task outputs or other history.
 func (m *Manager) PendingAssignmentsByNode() map[string]int {

@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/memory"
 )
 
 const (
-	maxMemorySyncBodyBytes int64 = 64 << 20
-	memorySyncTimeout            = 10 * time.Minute
+	maxMemorySyncBodyBytes int64 = config.DefaultSyncMaxBytes
 )
 
 type memorySyncCountingReader struct {
@@ -80,7 +80,7 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 			cursor = make(map[string]uint64)
 			upper = snapshot.Watermarks
 		}
-		page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, maxMemorySyncBodyBytes, 0)
+		page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, a.cfg.SyncMaxBytes, 0)
 		if err != nil {
 			log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s status=%d stage=page error=%v",
 				syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "page"), peerID, http.StatusRequestEntityTooLarge, err)
@@ -127,7 +127,7 @@ func (a *Agent) handlePeerMemorySyncPost(w http.ResponseWriter, r *http.Request)
 	log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_start %s peer_id=%s body_bytes_declared=%d",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "none"), peerID, r.ContentLength)
 	decodeStarted := time.Now()
-	snapshot, bodyBytes, err := decodeMemorySyncRequest(w, r)
+	snapshot, bodyBytes, err := decodeMemorySyncRequest(w, r, a.cfg.SyncMaxBytes)
 	if err != nil {
 		log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_failed %s peer_id=%s body_bytes=%d status=%d elapsed=%s stage=decode error=%v",
 			syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "decode"), peerID, bodyBytes, http.StatusBadRequest, time.Since(started), err)
@@ -147,9 +147,9 @@ func (a *Agent) handlePeerMemorySyncPost(w http.ResponseWriter, r *http.Request)
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "none"), peerID, bodyBytes, http.StatusNoContent, memorySyncRecordCount(snapshot), decodeElapsed, time.Since(mergeStarted), time.Since(started))
 }
 
-func decodeMemorySyncRequest(w http.ResponseWriter, r *http.Request) (memory.Snapshot, int64, error) {
+func decodeMemorySyncRequest(w http.ResponseWriter, r *http.Request, maxBytes int64) (memory.Snapshot, int64, error) {
 	reader := &memorySyncCountingReader{ReadCloser: r.Body}
-	body, err := io.ReadAll(http.MaxBytesReader(w, reader, maxMemorySyncBodyBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, reader, maxBytes))
 	if err != nil {
 		return memory.Snapshot{}, reader.bytesRead, err
 	}
@@ -161,12 +161,16 @@ func decodeMemorySyncRequest(w http.ResponseWriter, r *http.Request) (memory.Sna
 }
 
 func marshalMemorySnapshot(snapshot memory.Snapshot) ([]byte, error) {
+	return marshalMemorySnapshotWithLimit(snapshot, maxMemorySyncBodyBytes)
+}
+
+func marshalMemorySnapshotWithLimit(snapshot memory.Snapshot, maxBytes int64) ([]byte, error) {
 	body, err := json.Marshal(snapshot)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(body)) > maxMemorySyncBodyBytes {
-		return nil, fmt.Errorf("memory snapshot exceeds the %d-byte sync limit", maxMemorySyncBodyBytes)
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("memory snapshot exceeds the %d-byte sync limit", maxBytes)
 	}
 	return body, nil
 }
@@ -175,7 +179,7 @@ type memorySyncHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, watermarks map[string]uint64) (memory.Snapshot, int64, error) {
+func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, watermarks map[string]uint64, maxBytes int64) (memory.Snapshot, int64, error) {
 	result := memory.Snapshot{
 		Experiences:  make([]memory.Experience, 0),
 		Facts:        make([]memory.Fact, 0),
@@ -211,7 +215,7 @@ func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, water
 			response.Body.Close()
 			return memory.Snapshot{}, totalBytes, err
 		}
-		page, bodyBytes, err := decodeMemorySyncResponse(response)
+		page, bodyBytes, err := decodeMemorySyncResponse(response, maxBytes)
 		totalBytes += bodyBytes
 		if err != nil {
 			return memory.Snapshot{}, totalBytes, err
@@ -317,18 +321,18 @@ func postMemorySnapshotPages(client memorySyncHTTPClient, endpoint string, bodie
 	return totalBytes, nil
 }
 
-func decodeMemorySyncResponse(resp *http.Response) (memory.Snapshot, int64, error) {
+func decodeMemorySyncResponse(resp *http.Response, maxBytes int64) (memory.Snapshot, int64, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return memory.Snapshot{}, int64(len(body)), fmt.Errorf("peer returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMemorySyncBodyBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return memory.Snapshot{}, int64(len(body)), err
 	}
-	if int64(len(body)) > maxMemorySyncBodyBytes {
-		return memory.Snapshot{}, int64(len(body)), fmt.Errorf("peer memory snapshot exceeds the %d-byte sync limit", maxMemorySyncBodyBytes)
+	if int64(len(body)) > maxBytes {
+		return memory.Snapshot{}, int64(len(body)), fmt.Errorf("peer memory snapshot exceeds the %d-byte sync limit", maxBytes)
 	}
 	var snapshot memory.Snapshot
 	if err := json.Unmarshal(body, &snapshot); err != nil {

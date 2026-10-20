@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -44,10 +45,25 @@ func main() {
 	harness := flag.String("harness", "", `override orchestrator agent backend: "deepseek" or "pi"`)
 	memoryPath := flag.String("memory-path", "", "override the cluster memory database file (empty = per-user data dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	printConfig := flag.Bool("print-config", false, "print normalized configuration and exit")
 	flag.Parse()
 
 	if *showVersion {
 		log.Printf("maistr0 %s", buildversion.String())
+		return
+	}
+	if *printConfig {
+		err := printNormalizedConfig(os.Stdout, configPrintOptions{
+			role: *role, nodeConfigPath: *nodeConfigPath, orchConfigPath: *orchConfigPath,
+			nodeListenAddr: *nodeListenAddr, orchListenAddr: *orchListenAddr,
+			orchestratorAddr: *orchestratorAddr, pairingPIN: *pairingPIN,
+			trayMode: *trayMode, noBrowser: *noBrowser, noDiscovery: *noDiscovery,
+			harness: *harness, memoryPath: *memoryPath,
+		})
+		if err != nil {
+			printConfigValidationErrors(err)
+			os.Exit(2)
+		}
 		return
 	}
 	logFile, logFilePath, err := configureLogging()
@@ -335,6 +351,139 @@ func loadOrchestratorConfig(path, listenOverride string, noDiscovery bool) confi
 		cfg.DiscoveryEnabled = false
 	}
 	return cfg
+}
+
+type configPrintOptions struct {
+	role             string
+	nodeConfigPath   string
+	orchConfigPath   string
+	nodeListenAddr   string
+	orchListenAddr   string
+	orchestratorAddr string
+	pairingPIN       string
+	trayMode         string
+	noBrowser        bool
+	noDiscovery      bool
+	harness          string
+	memoryPath       string
+}
+
+func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
+	role := options.role
+	if role == "auto" && options.orchestratorAddr != "" {
+		role = "node"
+	}
+	if role == "node" {
+		cfg, err := config.LoadNodeConfig(options.nodeConfigPath)
+		if err != nil {
+			return fmt.Errorf("load node config: %w", err)
+		}
+		if options.nodeListenAddr != "" {
+			cfg.ListenAddr = options.nodeListenAddr
+		}
+		if options.orchestratorAddr != "" {
+			cfg.OrchestratorAddr = options.orchestratorAddr
+		}
+		if options.pairingPIN != "" {
+			cfg.PairingPIN = options.pairingPIN
+		}
+		if options.trayMode != "" {
+			cfg.TrayMode = options.trayMode
+		}
+		if options.memoryPath != "" {
+			cfg.MemoryPath = options.memoryPath
+		}
+		if options.noDiscovery {
+			cfg.DiscoveryEnabled = false
+		}
+		if options.noBrowser {
+			cfg.AutoOpenBrowser = false
+		}
+		if cfg.NodeID == "" {
+			cfg.NodeID = nodeagent.DefaultNodeID()
+		}
+		if cfg.AdvertiseAddr == "" {
+			port := ""
+			if index := strings.LastIndex(cfg.ListenAddr, ":"); index >= 0 {
+				port = cfg.ListenAddr[index:]
+			}
+			cfg.AdvertiseAddr = "https://" + discovery.OutboundIP() + port
+		}
+		cfg.Normalize()
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("node config: %w", err)
+		}
+		return writeNormalizedConfig(out, struct {
+			Node config.NodeConfig `json:"node"`
+		}{Node: cfg})
+	}
+	if role != "auto" && role != "both" && role != "orchestrator" {
+		return fmt.Errorf("unknown --role %q (want auto, orchestrator, node, or both)", role)
+	}
+
+	orchCfg, err := config.LoadOrchestratorConfig(options.orchConfigPath)
+	if err != nil {
+		return fmt.Errorf("load orchestrator config: %w", err)
+	}
+	if options.orchListenAddr != "" {
+		orchCfg.ListenAddr = options.orchListenAddr
+	}
+	if options.harness != "" {
+		orchCfg.Harness = options.harness
+	}
+	if options.memoryPath != "" {
+		orchCfg.MemoryPath = options.memoryPath
+	}
+	if options.trayMode != "" {
+		orchCfg.TrayMode = options.trayMode
+	}
+	if options.noBrowser {
+		orchCfg.AutoOpenBrowser = false
+	}
+	if options.noDiscovery {
+		orchCfg.DiscoveryEnabled = false
+	}
+	orchCfg.Normalize()
+	if err := orchCfg.Validate(); err != nil {
+		return fmt.Errorf("orchestrator config: %w", err)
+	}
+
+	nodeCfg, err := config.LoadNodeConfig(options.nodeConfigPath)
+	if err != nil {
+		return fmt.Errorf("load node config: %w", err)
+	}
+	if options.nodeListenAddr != "" {
+		nodeCfg.ListenAddr = options.nodeListenAddr
+	}
+	if options.orchestratorAddr != "" {
+		nodeCfg.OrchestratorAddr = options.orchestratorAddr
+	}
+	if options.pairingPIN != "" {
+		nodeCfg.PairingPIN = options.pairingPIN
+	}
+	if options.trayMode != "" {
+		nodeCfg.TrayMode = options.trayMode
+	}
+	if options.noBrowser {
+		nodeCfg.AutoOpenBrowser = false
+	}
+	if options.noDiscovery {
+		nodeCfg.DiscoveryEnabled = false
+	}
+	nodeCfg.Normalize()
+	if err := nodeCfg.Validate(); err != nil {
+		return fmt.Errorf("node config: %w", err)
+	}
+	return writeNormalizedConfig(out, struct {
+		Node         config.NodeConfig         `json:"node"`
+		Orchestrator config.OrchestratorConfig `json:"orchestrator"`
+	}{Node: nodeCfg, Orchestrator: orchCfg})
+}
+
+func writeNormalizedConfig(out io.Writer, value any) error {
+	encoder := json.NewEncoder(out)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
 }
 
 func loadNodeConfig(path, listenOverride, orchestratorOverride string, noDiscovery bool) config.NodeConfig {

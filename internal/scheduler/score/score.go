@@ -78,12 +78,13 @@ type ScoreFactors struct {
 // Candidate is a prepared, eligible node/model choice. Prepare creates it;
 // callers should pass it back with the same node and subtask to ScorePrepared.
 type Candidate struct {
-	model               string
-	engine              string
-	modelMatch          float64
-	modelQualityTags    int
-	modelAtLeastSevenGB bool
-	matchedCapabilities []string
+	model                  string
+	engine                 string
+	modelMatch             float64
+	modelQualityTags       int
+	modelAtLeastSevenGB    bool
+	matchedCapabilityCount int
+	matchedCapabilities    []string
 }
 
 // Model returns the selected model name.
@@ -132,6 +133,16 @@ func Prepare(node cluster.NodeStatus, subtask Subtask) (Candidate, bool) {
 // capabilities. The supplied slice is read-only, allowing assignment loops
 // to reuse a stable capability snapshot across multiple subtasks.
 func PrepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapabilities []string) (Candidate, bool) {
+	return prepareWithCapabilities(node, subtask, nodeCapabilities, true)
+}
+
+// PrepareWithCapabilitiesForScoring prepares numeric score inputs without
+// allocating matched-capability details. Use the result with ScorePreparedValue.
+func PrepareWithCapabilitiesForScoring(node cluster.NodeStatus, subtask Subtask, nodeCapabilities []string) (Candidate, bool) {
+	return prepareWithCapabilities(node, subtask, nodeCapabilities, false)
+}
+
+func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapabilities []string, includeDetails bool) (Candidate, bool) {
 	if !node.Healthy {
 		return Candidate{}, false
 	}
@@ -143,6 +154,14 @@ func PrepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 
 	best := Candidate{}
 	bestModelScore := -1.0
+	var bestTags []string
+	var normalizedPreferred []string
+	if len(subtask.PreferredCapabilities) > 0 {
+		normalizedPreferred = make([]string, len(subtask.PreferredCapabilities))
+		for i, preferred := range subtask.PreferredCapabilities {
+			normalizedPreferred[i] = strings.ToLower(strings.TrimSpace(preferred))
+		}
+	}
 	for _, model := range node.Models {
 		if !node.EngineReady(model.Engine) || !modelMatchesSubtask(subtask, model) {
 			continue
@@ -177,30 +196,40 @@ func PrepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 			}
 		}
 
-		matchedCapabilities := make([]string, 0)
-		for _, preferred := range subtask.PreferredCapabilities {
-			preferredLower := strings.ToLower(strings.TrimSpace(preferred))
-			if hasCapability(nodeCapabilities, preferredLower) || containsTag(model.Tags, preferredLower) {
-				matchedCapabilities = append(matchedCapabilities, preferred)
-			}
-		}
-
 		if modelScore > bestModelScore {
 			bestModelScore = modelScore
+			bestTags = model.Tags
 			best = Candidate{
 				model:               model.Name,
 				engine:              model.Engine,
 				modelMatch:          modelScore,
 				modelQualityTags:    qualityTags,
 				modelAtLeastSevenGB: model.SizeGB >= 7.0,
-				matchedCapabilities: matchedCapabilities,
 			}
 		}
 	}
 	if best.model == "" {
 		return Candidate{}, false
 	}
+	// Build explanation details only once, for the selected model, not for every eligible model.
+	best.matchedCapabilities, best.matchedCapabilityCount = matchedPreferredCapabilities(
+		subtask.PreferredCapabilities, normalizedPreferred, nodeCapabilities, bestTags, includeDetails,
+	)
 	return best, true
+}
+
+func matchedPreferredCapabilities(preferred, normalized, capabilities, tags []string, includeDetails bool) ([]string, int) {
+	var matched []string
+	count := 0
+	for i, value := range preferred {
+		if hasCapability(capabilities, normalized[i]) || containsTag(tags, normalized[i]) {
+			count++
+			if includeDetails {
+				matched = append(matched, value)
+			}
+		}
+	}
+	return matched, count
 }
 
 // Score returns the established additive scheduler score and its explanation.
@@ -235,6 +264,36 @@ func ScorePrepared(
 	exp Experience,
 	cfg ScoringConfig,
 	now time.Time,
+) (float64, ScoreFactors) {
+	return scorePrepared(node, subtask, candidate, load, pendingDependents, exp, cfg, now, true)
+}
+
+// ScorePreparedValue calculates only the numeric score and avoids allocating
+// explanation slices for candidates that may not win assignment.
+func ScorePreparedValue(
+	node cluster.NodeStatus,
+	subtask Subtask,
+	candidate Candidate,
+	load int,
+	pendingDependents int,
+	exp Experience,
+	cfg ScoringConfig,
+	now time.Time,
+) float64 {
+	scoreValue, _ := scorePrepared(node, subtask, candidate, load, pendingDependents, exp, cfg, now, false)
+	return scoreValue
+}
+
+func scorePrepared(
+	node cluster.NodeStatus,
+	subtask Subtask,
+	candidate Candidate,
+	load int,
+	pendingDependents int,
+	exp Experience,
+	cfg ScoringConfig,
+	now time.Time,
+	includeDetails bool,
 ) (float64, ScoreFactors) {
 	if candidate.model == "" {
 		return math.Inf(-1), ScoreFactors{}
@@ -281,7 +340,7 @@ func ScorePrepared(
 		topologyScore = float64(subtask.OutDegree) * cfg.CriticalPathBonus * (hardware.Score / 100.0)
 	}
 
-	capabilityScore := float64(len(candidate.matchedCapabilities)) * cfg.PreferredCapMatchBonus
+	capabilityScore := float64(candidate.matchedCapabilityCount) * cfg.PreferredCapMatchBonus
 	if len(subtask.RequiredCapabilities) > 0 {
 		capabilityScore += float64(len(subtask.RequiredCapabilities)) * cfg.RequiredCapMatchBonus
 	}
@@ -293,6 +352,10 @@ func ScorePrepared(
 		modelQuality += cfg.ModelQualityBonus * 0.5
 	}
 
+	var matchedCapabilities []string
+	if includeDetails {
+		matchedCapabilities = append([]string(nil), candidate.matchedCapabilities...)
+	}
 	factors := ScoreFactors{
 		ModelMatch:            candidate.modelMatch * cfg.ModelMatchWeight,
 		Hardware:              hardwareScore,
@@ -307,7 +370,7 @@ func ScorePrepared(
 		CPUUtilizationPenalty: cpuPenalty,
 		MemoryUsagePenalty:    memoryPenalty,
 		CapabilityScore:       capabilityScore,
-		MatchedCapabilities:   append([]string(nil), candidate.matchedCapabilities...),
+		MatchedCapabilities:   matchedCapabilities,
 		ModelQualityScore:     modelQuality,
 		TopologyScore:         topologyScore,
 		LearnedBias:           exp.LearnedBias * cfg.LearnedBiasWeight,

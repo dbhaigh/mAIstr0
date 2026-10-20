@@ -1,5 +1,7 @@
 // Package taskmgr tracks submitted tasks through decomposition, assignment,
 // dispatch, and completion so the GUI can stream progress and show results.
+// Durable writers acquire persistGate, per-task persistMu, then Manager.mu;
+// they never wait for persistence while holding Manager.mu.
 package taskmgr
 
 import (

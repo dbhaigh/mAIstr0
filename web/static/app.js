@@ -57,6 +57,7 @@ const statModels = document.getElementById("stat-models");
 const statLoad = document.getElementById("stat-load");
 const statMemory = document.getElementById("stat-memory");
 const statVersion = document.getElementById("stat-version");
+const connectionStatus = document.getElementById("connection-status");
 const persistenceWarning = document.getElementById("persistence-warning");
 const navTabs = document.querySelectorAll(".nav-tab");
 const tabContents = document.querySelectorAll(".tab-content");
@@ -102,6 +103,10 @@ const dashboardState = {
     setupFocused: false,
     promptShown: false,
     dialogAutoOpened: false
+  },
+  connection: {
+    connected: false,
+    lastSyncAt: null
   },
   capacity: null,
   fullTaskHistoryLoaded: false
@@ -250,7 +255,11 @@ let terminalDialogueId = null;
   function connectDashboardEvents(onSnapshot, options = {}) {
     const EventSourceImpl = options.EventSourceImpl || root.EventSource;
     const onError = options.onError || ((error) => root.console.error(error));
+    const onConnectionChange = options.onConnectionChange || (() => {
+    });
     const eventSource = new EventSourceImpl("/api/events");
+    eventSource.onopen = () => onConnectionChange(true);
+    eventSource.onerror = () => onConnectionChange(false);
     eventSource.onmessage = (event) => {
       try {
         onSnapshot(JSON.parse(event.data));
@@ -2678,6 +2687,17 @@ function escapeHtml(s) {
   div.textContent = s;
   return div.innerHTML;
 }
+function updateConnectionStatus() {
+  if (!connectionStatus) return;
+  const state = dashboardState.connection;
+  const lastSync = state.lastSyncAt ? new Date(state.lastSyncAt).toLocaleTimeString() : "not yet";
+  connectionStatus.dataset.connected = String(state.connected);
+  connectionStatus.textContent = `${state.connected ? "Connected" : "Reconnecting"} · Last sync ${lastSync}`;
+}
+function markDashboardSynced() {
+  dashboardState.connection.lastSyncAt = Date.now();
+  updateConnectionStatus();
+}
 async function refresh() {
   try {
     const [nodes, peers, build] = await Promise.all([
@@ -2687,6 +2707,7 @@ async function refresh() {
     ]);
     await refreshTaskHistory();
     applySnapshot({ nodes, tasks: dashboardState.tasks || [], discovery: peers, build_version: build.version });
+    markDashboardSynced();
   } catch (err) {
     console.error(err);
   }
@@ -2989,7 +3010,15 @@ function refreshOverviewTimes() {
 }
 setInterval(refreshOverviewTimes, 15e3);
 function connectEvents() {
-  dashboardSnapshot.connectDashboardEvents(applySnapshot);
+  dashboardSnapshot.connectDashboardEvents((snapshot) => {
+    markDashboardSynced();
+    applySnapshot(snapshot);
+  }, {
+    onConnectionChange: (connected) => {
+      dashboardState.connection.connected = connected;
+      updateConnectionStatus();
+    }
+  });
 }
 submitBtn?.addEventListener("click", async () => {
   const description = taskInput.value.trim();

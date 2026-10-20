@@ -87,6 +87,11 @@ func AssignGraph(g *TaskGraph, nodes []cluster.NodeStatus, cfg *ScoringConfig, e
 	return assignSubtaskList(sortedSubtasks, g, nodes, cfg, exp)
 }
 
+type simulatedNodeLoad struct {
+	active            int
+	pendingDependents int
+}
+
 func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.NodeStatus, cfg *ScoringConfig, exp Experience) ([]Assignment, error) {
 	if cfg == nil {
 		c := DefaultScoringConfig()
@@ -102,11 +107,10 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 		return nil, ErrNoHealthyNodes
 	}
 
-	simulatedLoad := make(map[string]int, len(healthy))
-	pendingDependents := make(map[string]int, len(healthy))
+	simulatedLoad := make(map[string]simulatedNodeLoad, len(healthy))
 	nodeCapabilities := make([][]string, len(healthy))
 	for i, n := range healthy {
-		simulatedLoad[n.ID] = n.ActiveTasks + n.QueuedTasks
+		simulatedLoad[n.ID] = simulatedNodeLoad{active: n.ActiveTasks + n.QueuedTasks}
 		nodeCapabilities[i] = n.EffectiveCapabilities()
 	}
 
@@ -120,16 +124,18 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 			outDegree = graph.OutDegree(st.ID)
 		}
 
-		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, nodeCapabilities, simulatedLoad, pendingDependents, exp, cfg, now)
+		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, nodeCapabilities, simulatedLoad, exp, cfg, now)
 		if bestNode == nil {
 			unassignable = append(unassignable, st.ID)
 			continue
 		}
 
-		simulatedLoad[bestNode.ID]++
+		load := simulatedLoad[bestNode.ID]
+		load.active++
 		if graph != nil {
-			pendingDependents[bestNode.ID] += outDegree
+			load.pendingDependents += outDegree
 		}
+		simulatedLoad[bestNode.ID] = load
 
 		log.Printf("scheduler: subtask %s (%s) assigned to node %s (model %s, engine %s, score %.2f) [match=%.1f cap=%.1f qual=%.1f hw=%.1f load=-%.1f tele_fresh=%v]",
 			st.ID, st.Role, bestNode.ID, bestModel, bestEngine, bestScore,
@@ -153,16 +159,16 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	return assignments, nil
 }
 
-func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabilities [][]string, load map[string]int, pendingDependents map[string]int, exp Experience, cfg *ScoringConfig, now time.Time) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
+func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabilities [][]string, load map[string]simulatedNodeLoad, exp Experience, cfg *ScoringConfig, now time.Time) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
 	var best *cluster.NodeStatus
-	bestModel := ""
-	bestEngine := ""
 	bestScore := math.Inf(-1)
-	var bestFactors ScoreFactors
+	bestBias := 0.0
+	bestLoad := simulatedNodeLoad{}
+	var bestCapabilities []string
 	scoringSubtask := toScoringSubtask(st, outDegree)
 
 	for i := range nodes {
-		candidate, ok := prepareScoringCandidate(&nodes[i], scoringSubtask, nodeCapabilities[i])
+		candidate, ok := prepareScoringCandidateForScore(&nodes[i], scoringSubtask, nodeCapabilities[i])
 		if !ok {
 			continue
 		}
@@ -171,19 +177,31 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabil
 		if exp != nil {
 			learnedBias = exp.LearnedBias(node.ID, candidate.prepared.Model(), st.TaskType)
 		}
-		scoreValue, factors := score.ScorePrepared(
-			*node, scoringSubtask, candidate.prepared, load[node.ID], pendingDependents[node.ID],
+		nodeLoad := load[node.ID]
+		scoreValue := score.ScorePreparedValue(
+			*node, scoringSubtask, candidate.prepared, nodeLoad.active, nodeLoad.pendingDependents,
 			score.Experience{LearnedBias: learnedBias}, *cfg, now,
 		)
 		if scoreValue > bestScore {
 			bestScore = scoreValue
 			best = node
-			bestModel = candidate.prepared.Model()
-			bestEngine = candidate.prepared.Engine()
-			bestFactors = factors
+			bestBias = learnedBias
+			bestLoad = nodeLoad
+			bestCapabilities = nodeCapabilities[i]
 		}
 	}
-	return best, bestModel, bestEngine, bestScore, bestFactors
+	if best == nil {
+		return nil, "", "", bestScore, ScoreFactors{}
+	}
+	prepared, ok := score.PrepareWithCapabilities(*best, scoringSubtask, bestCapabilities)
+	if !ok {
+		return nil, "", "", math.Inf(-1), ScoreFactors{}
+	}
+	bestScore, bestFactors := score.ScorePrepared(
+		*best, scoringSubtask, prepared, bestLoad.active, bestLoad.pendingDependents,
+		score.Experience{LearnedBias: bestBias}, *cfg, now,
+	)
+	return best, prepared.Model(), prepared.Engine(), bestScore, bestFactors
 }
 
 type scoringCandidate struct {
@@ -220,6 +238,17 @@ func prepareScoringCandidate(node *cluster.NodeStatus, subtask score.Subtask, no
 		return scoringCandidate{}, false
 	}
 	prepared, ok := score.PrepareWithCapabilities(*node, subtask, nodeCapabilities)
+	if !ok {
+		return scoringCandidate{}, false
+	}
+	return scoringCandidate{node: node, prepared: prepared}, true
+}
+
+func prepareScoringCandidateForScore(node *cluster.NodeStatus, subtask score.Subtask, nodeCapabilities []string) (scoringCandidate, bool) {
+	if !node.Healthy {
+		return scoringCandidate{}, false
+	}
+	prepared, ok := score.PrepareWithCapabilitiesForScoring(*node, subtask, nodeCapabilities)
 	if !ok {
 		return scoringCandidate{}, false
 	}

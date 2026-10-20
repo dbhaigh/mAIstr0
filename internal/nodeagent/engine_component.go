@@ -98,24 +98,41 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 // refreshDetectedEngines periodically detects engines started after the node
 // agent, even when another engine was already available.
 func (c *engineComponent) refreshDetectedEngines() {
-	c.engineScanMu.Lock()
-	defer c.engineScanMu.Unlock()
-
 	c.enginesMu.RLock()
 	needsDetection := time.Since(c.lastEngineScan) >= engineDetectionInterval
 	c.enginesMu.RUnlock()
 	if needsDetection {
-		c.scanDetectedEnginesLocked(true)
+		c.scanDetectedEngines(true)
 	}
 }
 
 func (c *engineComponent) rescanDetectedEngines() {
-	c.engineScanMu.Lock()
-	defer c.engineScanMu.Unlock()
-	c.scanDetectedEnginesLocked(false)
+	c.scanDetectedEngines(false)
 }
 
-func (c *engineComponent) scanDetectedEnginesLocked(retainMissing bool) {
+func (c *engineComponent) scanDetectedEngines(retainMissing bool) {
+	for {
+		c.engineScanMu.Lock()
+		if done := c.engineScanDone; done != nil {
+			c.engineScanMu.Unlock()
+			<-done
+			if retainMissing {
+				return
+			}
+			continue
+		}
+		done := make(chan struct{})
+		c.engineScanDone = done
+		c.engineScanMu.Unlock()
+		defer func() {
+			c.engineScanMu.Lock()
+			c.engineScanDone = nil
+			close(done)
+			c.engineScanMu.Unlock()
+		}()
+		break
+	}
+
 	detector := c.engineDetector
 	if detector == nil {
 		detector = engine.DetectAll
@@ -255,51 +272,73 @@ func (c *engineComponent) refreshReportedModelsIfStale() {
 }
 
 func (c *engineComponent) refreshReportedModelsWithForce(force bool) {
-	c.refreshMu.Lock()
-	defer c.refreshMu.Unlock()
-
-	if !force {
+	for {
+		c.refreshMu.Lock()
+		if done := c.refreshDone; done != nil {
+			c.refreshMu.Unlock()
+			<-done
+			continue
+		}
 		c.modelMu.Lock()
 		fresh := !c.reportedAt.IsZero() && time.Since(c.reportedAt) < modelInventoryCacheTTL
 		c.modelMu.Unlock()
-		if fresh {
+		if !force && fresh {
+			c.refreshMu.Unlock()
 			return
 		}
-	}
+		done := make(chan struct{})
+		c.refreshDone = done
+		generation := c.modelInventoryGeneration
+		c.refreshMu.Unlock()
 
-	models, engines := c.inspectInventory()
-	c.modelMu.Lock()
-	disabled := c.state.disabledModelSnapshot()
-	defaultModel := c.state.defaultModelName()
-	previousModels := append([]ModelState(nil), c.reportedModels...)
-	previousEngines := make(map[string]engine.Status, len(c.reportedEngines))
-	for _, status := range c.reportedEngines {
-		previousEngines[strings.ToLower(status.Name)] = status
-	}
-	for i := range engines {
-		status := &engines[i]
-		if status.InventoryState != engine.ModelInventoryError {
-			continue
+		models, engines := c.inspectInventory()
+		disabled := c.state.disabledModelSnapshot()
+		defaultModel := c.state.defaultModelName()
+		c.modelMu.Lock()
+		previousModels := append([]ModelState(nil), c.reportedModels...)
+		previousEngines := make(map[string]engine.Status, len(c.reportedEngines))
+		for _, status := range c.reportedEngines {
+			previousEngines[strings.ToLower(status.Name)] = status
 		}
-		previous, ok := previousEngines[strings.ToLower(status.Name)]
-		if !ok {
-			continue
-		}
-		status.ModelCount = previous.ModelCount
-		status.LastSuccessfulAt = previous.LastSuccessfulAt
-		for _, model := range previousModels {
-			if !strings.EqualFold(model.Engine, status.Name) {
+		c.modelMu.Unlock()
+		for i := range engines {
+			status := &engines[i]
+			if status.InventoryState != engine.ModelInventoryError {
 				continue
 			}
-			model.Enabled = !disabled[model.Name]
-			model.Default = model.Name == defaultModel
-			models = append(models, model)
+			previous, ok := previousEngines[strings.ToLower(status.Name)]
+			if !ok {
+				continue
+			}
+			status.ModelCount = previous.ModelCount
+			status.LastSuccessfulAt = previous.LastSuccessfulAt
+			for _, model := range previousModels {
+				if !strings.EqualFold(model.Engine, status.Name) {
+					continue
+				}
+				model.Enabled = !disabled[model.Name]
+				model.Default = model.Name == defaultModel
+				models = append(models, model)
+			}
 		}
+
+		c.refreshMu.Lock()
+		if generation != c.modelInventoryGeneration {
+			c.refreshDone = nil
+			close(done)
+			c.refreshMu.Unlock()
+			continue
+		}
+		c.modelMu.Lock()
+		c.reportedModels = models
+		c.reportedEngines = engines
+		c.reportedAt = time.Now()
+		c.modelMu.Unlock()
+		c.refreshDone = nil
+		close(done)
+		c.refreshMu.Unlock()
+		return
 	}
-	c.reportedModels = models
-	c.reportedEngines = engines
-	c.reportedAt = time.Now()
-	c.modelMu.Unlock()
 }
 
 func (c *engineComponent) modelRefreshLoop() {
@@ -368,20 +407,22 @@ func (c *engineComponent) replaceConfiguredEngine(eng engine.Engine) {
 
 func (c *engineComponent) invalidateReportedModels() {
 	c.refreshMu.Lock()
-	defer c.refreshMu.Unlock()
+	c.modelInventoryGeneration++
 	c.modelMu.Lock()
 	c.reportedModels = nil
 	c.reportedEngines = nil
 	c.reportedAt = time.Time{}
 	c.modelMu.Unlock()
+	c.refreshMu.Unlock()
 }
 
 func (c *engineComponent) markReportedModelsStale() {
 	c.refreshMu.Lock()
-	defer c.refreshMu.Unlock()
+	c.modelInventoryGeneration++
 	c.modelMu.Lock()
 	c.reportedAt = time.Time{}
 	c.modelMu.Unlock()
+	c.refreshMu.Unlock()
 }
 
 func (a *Agent) enabledModels() []engine.Model { return a.engineComponent.enabledModels() }

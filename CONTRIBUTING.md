@@ -5,6 +5,24 @@ architecture, lock ordering, and contract updates, see [AGENTS.md](./AGENTS.md).
 The [engineering improvement plan](./docs/engineering-improvement-plan.md)
 tracks the status of the phased work.
 
+## Contracts and concurrency
+
+- Characterization and HTTP contract coverage lives beside the implementation,
+  especially in
+  [`internal/orchestrator/api_contracts_test.go`](./internal/orchestrator/api_contracts_test.go)
+  and the package `testdata/contracts/` directories. Do not change behavior or
+  regenerate a golden just to make a failing test pass; document intentional
+  behavior changes and update the affected fixtures.
+- Keep critical sections short and do not call another component or perform
+  network, engine, or disk I/O while holding a state lock. Task-manager writes
+  follow `persistGate` → per-task `persistMu` → `Manager.mu`; see
+  [`AGENTS.md`](./AGENTS.md) for the full lock-order rules. Document any new
+  component mutex beside the owning struct.
+- For exported HTTP and scheduler fixture drift, run
+  `go generate ./contracts ./internal/scheduler`, inspect the generated files,
+  then run `go test ./contracts`. Package golden files are updated only with
+  their explicit `-args -update` test flag.
+
 ## Branches and pull requests
 
 - Start from an up-to-date `main` and use a focused short-lived branch, such as

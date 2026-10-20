@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -54,6 +55,7 @@ type taskPlanner struct {
 	tasks       taskStore
 	dispatch    taskDispatcher
 	model       plannerModel
+	metrics     *operationalMetrics
 	nodes       func() []cluster.NodeStatus
 	experience  scheduler.Experience
 	provisioner taskModelProvisioner
@@ -83,6 +85,15 @@ func newTaskPlanner(
 		scheduler: scheduler, tasks: tasks, dispatch: dispatch,
 		model: model, nodes: nodes, experience: experience,
 	}
+}
+
+func (p *taskPlanner) assign(subtasks []scheduler.Subtask, nodes []cluster.NodeStatus) ([]scheduler.Assignment, error) {
+	started := time.Now()
+	assignments, err := p.scheduler.AssignWithExperience(subtasks, nodes, p.experience)
+	if p.metrics != nil {
+		p.metrics.recordAssignment(time.Since(started))
+	}
+	return assignments, err
 }
 
 func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmgr.Task, error) {
@@ -162,7 +173,7 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 			}
 		}
 	}
-	assignments, err := p.scheduler.AssignWithExperience(subtasks, p.nodes(), p.experience)
+	assignments, err := p.assign(subtasks, p.nodes())
 	if err != nil {
 		var unassignable *scheduler.UnassignableSubtasksError
 		if p.provisioner == nil || !errors.As(err, &unassignable) {
@@ -181,7 +192,7 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 		if provisionErr := p.provisioner.provision(ctx, missing); provisionErr != nil {
 			return nil, apperr.UnavailableError(fmt.Errorf("%w; automatic model provisioning failed: %v", err, provisionErr))
 		}
-		assignments, err = p.scheduler.AssignWithExperience(subtasks, p.nodes(), p.experience)
+		assignments, err = p.assign(subtasks, p.nodes())
 		if err != nil {
 			return nil, apperr.UnavailableError(fmt.Errorf("task remained unassignable after model provisioning: %w", err))
 		}
@@ -276,7 +287,7 @@ func (p *taskPlanner) planSubtasks(ctx context.Context, description string) (*sc
 				}
 			}
 		}
-		assignments, err := p.scheduler.AssignWithExperience([]scheduler.Subtask{planning}, candidates, p.experience)
+		assignments, err := p.assign([]scheduler.Subtask{planning}, candidates)
 		if err != nil {
 			if lastModelErr != nil {
 				return nil, nil, apperr.UpstreamError(fmt.Errorf("all planning model attempts failed: %w", lastModelErr))

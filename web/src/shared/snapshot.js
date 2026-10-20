@@ -21,7 +21,10 @@
   function connectDashboardEvents(onSnapshot, options = {}) {
     const EventSourceImpl = options.EventSourceImpl || root.EventSource;
     const onError = options.onError || ((error) => root.console.error(error));
+    const onConnectionChange = options.onConnectionChange || (() => {});
     const eventSource = new EventSourceImpl("/api/events");
+    eventSource.onopen = () => onConnectionChange(true);
+    eventSource.onerror = () => onConnectionChange(false);
     eventSource.onmessage = (event) => {
       try {
         onSnapshot(JSON.parse(event.data));

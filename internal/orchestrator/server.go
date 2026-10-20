@@ -1,6 +1,7 @@
 // Package orchestrator implements the control-plane HTTP API and background
 // bookkeeping: node registry maintenance, task decomposition/assignment, and
-// dispatching subtasks out to node agents.
+// dispatching subtasks out to node agents. Sync state advances only after
+// complete snapshots, and component locks are not held across peer I/O.
 package orchestrator
 
 import (
@@ -43,6 +44,8 @@ type Server struct {
 	advertiseAddr      string
 	localNodeDashboard string
 	mode               string
+	syncMaxBytes       int64
+	syncTimeout        time.Duration
 }
 
 type SessionStore interface {
@@ -73,7 +76,8 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 		return nil, err
 	}
 	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
-		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode)
+		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
+		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second)
 }
 
 // NewWithConfig creates an orchestrator from its JSON configuration.
@@ -83,12 +87,19 @@ func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
 		return nil, err
 	}
 	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
-		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode)
+		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
+		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second)
 }
 
-func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatchLimit int, dispatchTimeout time.Duration, mode string) (*Server, error) {
+func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatchLimit int, dispatchTimeout time.Duration, mode string, syncMaxBytes int64, syncTimeout time.Duration) (*Server, error) {
 	if harnessName != "deepseek" && harnessName != "pi" {
 		return nil, fmt.Errorf("unknown agent backend %q (want deepseek or pi)", harnessName)
+	}
+	if syncMaxBytes <= 0 {
+		syncMaxBytes = config.DefaultSyncMaxBytes
+	}
+	if syncTimeout <= 0 {
+		syncTimeout = time.Duration(config.DefaultSyncTimeoutSeconds) * time.Second
 	}
 	reg := cluster.NewRegistry()
 	disp := &http.Client{Timeout: 10 * time.Minute}
@@ -115,13 +126,18 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		}
 		return nil, fmt.Errorf("orchestrator: open task history: %w", err)
 	}
-	nodeClient := newNodeClient(&http.Client{Timeout: 10 * time.Second}, disp, &http.Client{Timeout: discoveryRequestTimeout})
+	nodeClient := newNodeClientWithSyncTimeout(
+		&http.Client{Timeout: 10 * time.Second}, disp,
+		&http.Client{Timeout: discoveryRequestTimeout}, syncTimeout,
+	)
 	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit, dispatchTimeout)
 	dispatcher.metrics = metrics
 	planner := newTaskPlanner(schedulerAdapter{}, tasks, dispatcher, nodeClient, dispatcher.schedulerNodes, dispatcher.experience())
+	planner.metrics = metrics
 	planner.provisioner = newAutoModelProvisioner(reg, nodeClient)
 	election := newElectionComponent(reg, nodeClient, selfID, cluster.SelfScore(hardware.Detect()), true)
-	syncer := newSyncerComponent(reg, tasks, nodeClient, store, election.isElectedOrchestrator)
+	syncer := newSyncerComponent(reg, tasks, nodeClient.sync, store, election.isElectedOrchestrator)
+	syncer.maxBytes = syncMaxBytes
 	srv := &Server{
 		registry:          reg,
 		nodeClient:        nodeClient,
@@ -137,6 +153,8 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		identityPath:      peeridentity.DefaultPath(selfID),
 		orchestratorEpoch: strconv.FormatInt(time.Now().UnixNano(), 10),
 		mode:              mode,
+		syncMaxBytes:      syncMaxBytes,
+		syncTimeout:       syncTimeout,
 	}
 	if mode != config.OrchestratorModeMinimal {
 		deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
@@ -197,6 +215,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
 	mux.HandleFunc("GET /api/status", s.handleSystemStatus)
 	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/cluster/health", s.handleClusterHealth)
 	mux.Handle("POST /api/pairing/pin", peeridentity.LoopbackOnly(http.HandlerFunc(s.handlePairingPINRegenerate)))
 	mux.HandleFunc("POST /api/pairing/connect", s.handlePairingConnect)

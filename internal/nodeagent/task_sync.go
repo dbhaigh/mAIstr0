@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
-const maxTaskSyncBodyBytes int64 = 64 << 20
+const maxTaskSyncBodyBytes int64 = config.DefaultSyncMaxBytes
 
 func (a *Agent) handleTaskSync(w http.ResponseWriter, r *http.Request) {
 	peerID := taskSyncPeerID(r)
@@ -20,7 +21,7 @@ func (a *Agent) handleTaskSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task sync requires a paired cluster member", http.StatusForbidden)
 		return
 	}
-	tasks, err := decodeTaskSync(w, r)
+	tasks, err := decodeTaskSync(w, r, a.cfg.SyncMaxBytes)
 	if err != nil {
 		http.Error(w, "invalid task sync payload: "+err.Error(), http.StatusBadRequest)
 		return
@@ -39,7 +40,7 @@ func (a *Agent) handleTaskReplica(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task replica update requires the current coordinator", http.StatusForbidden)
 		return
 	}
-	tasks, err := decodeTaskSync(w, r)
+	tasks, err := decodeTaskSync(w, r, a.cfg.SyncMaxBytes)
 	if err != nil {
 		http.Error(w, "invalid task replica payload: "+err.Error(), http.StatusBadRequest)
 		return
@@ -92,9 +93,9 @@ func (a *Agent) isClusterMember(id string) bool {
 	return false
 }
 
-func decodeTaskSync(w http.ResponseWriter, r *http.Request) ([]*taskmgr.Task, error) {
+func decodeTaskSync(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]*taskmgr.Task, error) {
 	var tasks []*taskmgr.Task
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTaskSyncBodyBytes))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
 	if err := decoder.Decode(&tasks); err != nil {
 		return nil, err
 	}
@@ -116,7 +117,7 @@ type taskSyncSnapshot struct {
 
 func fetchTaskSnapshot(client interface {
 	Do(*http.Request) (*http.Response, error)
-}, endpoint string, requestWatermarks map[string]uint64) ([]*taskmgr.Task, int, map[string]uint64, error) {
+}, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
 	tasks := make([]*taskmgr.Task, 0)
 	var cursor, upper map[string]uint64
 	for {
@@ -136,7 +137,7 @@ func fetchTaskSnapshot(client interface {
 		if err != nil {
 			return nil, 0, nil, err
 		}
-		page, version, watermarks, nextCursor, more, err := decodeTaskSnapshot(response)
+		page, version, watermarks, nextCursor, more, err := decodeTaskSnapshot(response, maxBytes)
 		if err != nil {
 			return nil, 0, nil, err
 		}
@@ -158,7 +159,7 @@ func fetchTaskSnapshot(client interface {
 	}
 }
 
-func decodeTaskSnapshot(resp *http.Response) ([]*taskmgr.Task, int, map[string]uint64, map[string]uint64, bool, error) {
+func decodeTaskSnapshot(resp *http.Response, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, map[string]uint64, bool, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		response, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -173,12 +174,12 @@ func decodeTaskSnapshot(resp *http.Response) ([]*taskmgr.Task, int, map[string]u
 		return nil, 0, nil, nil, false, fmt.Errorf("read task sync page header: %w", err)
 	}
 	var tasks []*taskmgr.Task
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTaskSyncBodyBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, 0, nil, nil, false, err
 	}
-	if int64(len(body)) > maxTaskSyncBodyBytes {
-		return nil, 0, nil, nil, false, fmt.Errorf("peer task snapshot exceeds the %d-byte sync limit", maxTaskSyncBodyBytes)
+	if int64(len(body)) > maxBytes {
+		return nil, 0, nil, nil, false, fmt.Errorf("peer task snapshot exceeds the %d-byte sync limit", maxBytes)
 	}
 	if err := json.Unmarshal(body, &tasks); err != nil {
 		return nil, 0, nil, nil, false, err

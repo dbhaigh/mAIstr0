@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.0.16 - 2026-10-19
+
+### Added
+
+- Expose expanded Prometheus metrics at `/metrics` while retaining the
+  `/api/metrics` alias, and add `--print-config` for normalized configuration
+  output without starting services.
+- Provide example systemd user and macOS launchd service definitions.
+- Allow node and orchestrator configurations to tune sync page/request limits
+  and timeouts while keeping the existing 64 MiB and 10-minute defaults.
+
+### Changed
+
+- Add reverse-proxy and metrics-scraping guidance, including the requirement to
+  preserve mutual TLS for cluster traffic.
+- Batch bbolt memory snapshot merges by record group and skip writes for
+  unchanged dialogue records.
+
 ## 0.0.15 - 2026-10-19
 
 ### Changed

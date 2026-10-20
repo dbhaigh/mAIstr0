@@ -184,6 +184,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("orchestrator: automatically paired node %s from same subnet (%s)", request.ID, r.RemoteAddr)
 	}
+	s.metrics.recordPairingEvent()
 	writeJSON(w, http.StatusOK, pairingJoinResponse{
 		ID: s.SelfID(), Role: "orchestrator", CertificatePEM: s.identity.CertificatePEM(),
 		Peers: s.identity.TrustedPeers(),

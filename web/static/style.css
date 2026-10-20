@@ -69,6 +69,20 @@ header h1 {
   white-space: nowrap;
 }
 
+.connection-status {
+  padding: 0.3rem 1.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.connection-status[data-connected="true"] {
+  color: #80d6a5;
+}
+
+.connection-status[data-connected="false"] {
+  color: #f0bd72;
+}
+
 .persistence-warning {
   flex: 0 0 auto;
   padding: 0.65rem 1.5rem;

@@ -1,6 +1,9 @@
 package orchestrator
 
-import "github.com/maistr0/maistr0/internal/memory"
+import (
+	"github.com/maistr0/maistr0/internal/config"
+	"github.com/maistr0/maistr0/internal/memory"
+)
 
 func (s *Server) taskHistorySyncLoop() {
 	s.syncerComponent().taskHistorySyncLoop()
@@ -30,5 +33,18 @@ func (s *Server) syncerComponent() syncerAPI {
 	if s.election != nil {
 		isLeader = s.isElectedOrchestrator
 	}
-	return newSyncerComponent(s.registry, s.tasks, s.nodeClient, s.mem, isLeader)
+	var client taskHistoryClient
+	if s.nodeClient != nil {
+		client = s.nodeClient.sync
+	}
+	syncer := newSyncerComponent(s.registry, s.tasks, client, s.mem, isLeader)
+	syncer.maxBytes = s.maxSyncBytes()
+	return syncer
+}
+
+func (s *Server) maxSyncBytes() int64 {
+	if s.syncMaxBytes > 0 {
+		return s.syncMaxBytes
+	}
+	return config.DefaultSyncMaxBytes
 }

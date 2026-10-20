@@ -32,16 +32,20 @@ func TestFlushToClusterBatchesAndDeduplicatesPendingMemory(t *testing.T) {
 	}))
 	defer server.Close()
 
-	syncer := &syncerComponent{
-		nodeID: "leader",
-		memory: memory.NewInMemoryStore(),
-		memorySyncClient: func() *http.Client {
+	syncer := newSyncerComponent(
+		"leader",
+		nil,
+		memory.NewInMemoryStore(),
+		nil,
+		func() *http.Client {
 			return server.Client()
 		},
-		peers: func() []cluster.NodeStatus {
+		func() []cluster.NodeStatus {
 			return []cluster.NodeStatus{{ID: "peer", Address: server.URL, Healthy: true}}
 		},
-	}
+		0,
+		nil,
+	)
 
 	if err := syncer.FlushToCluster(); err != nil {
 		t.Fatalf("flush empty buffer: %v", err)
@@ -121,16 +125,20 @@ func TestFlushToClusterDeduplicatesUpdatesQueuedDuringSend(t *testing.T) {
 	}))
 	defer server.Close()
 
-	syncer := &syncerComponent{
-		nodeID: "leader",
-		memory: memory.NewInMemoryStore(),
-		memorySyncClient: func() *http.Client {
+	syncer := newSyncerComponent(
+		"leader",
+		nil,
+		memory.NewInMemoryStore(),
+		nil,
+		func() *http.Client {
 			return server.Client()
 		},
-		peers: func() []cluster.NodeStatus {
+		func() []cluster.NodeStatus {
 			return []cluster.NodeStatus{{ID: "peer", Address: server.URL, Healthy: true}}
 		},
-	}
+		0,
+		nil,
+	)
 	first := memory.Snapshot{Facts: []memory.Fact{{
 		Key: "shared", Scope: "cluster", Value: "same", Origin: "node-a", Sequence: 1,
 	}}}

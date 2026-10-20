@@ -16,8 +16,6 @@ import (
 	"github.com/maistr0/maistr0/internal/memory"
 )
 
-const maxMemorySyncBodyBytes int64 = 64 << 20
-
 type memorySyncCountingReader struct {
 	io.ReadCloser
 	bytesRead int64
@@ -52,7 +50,7 @@ func (s *Server) handleMemoryExperiences(w http.ResponseWriter, r *http.Request)
 	}
 	if s.mem == nil {
 		if pageRequest.Active {
-			writeHistoryPage(w, pageRequest, []memory.Experience{}, memory.HistoryCursor{}, false)
+			writeHistoryPage(w, pageRequest, []memory.Experience{}, memory.HistoryCursor{}, false, s.maxSyncBytes())
 			return
 		}
 		writeJSON(w, http.StatusOK, []memory.Experience{})
@@ -82,7 +80,7 @@ func (s *Server) handleMemoryExperiences(w http.ResponseWriter, r *http.Request)
 			SuccessOnly: successOnly == "true",
 		}, memory.PageOptions{
 			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
-			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+			MaxBytes: historyPagePayloadLimit(s.maxSyncBytes()),
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -92,7 +90,7 @@ func (s *Server) handleMemoryExperiences(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "could not read experience page: "+err.Error(), status)
 			return
 		}
-		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore, s.maxSyncBytes())
 		return
 	}
 	limit := intQuery(r, "limit", 50)
@@ -134,7 +132,7 @@ func (s *Server) handleMemoryFactsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.mem == nil {
 		if pageRequest.Active {
-			writeHistoryPage(w, pageRequest, []memory.Fact{}, memory.HistoryCursor{}, false)
+			writeHistoryPage(w, pageRequest, []memory.Fact{}, memory.HistoryCursor{}, false, s.maxSyncBytes())
 			return
 		}
 		writeJSON(w, http.StatusOK, []memory.Fact{})
@@ -152,7 +150,7 @@ func (s *Server) handleMemoryFactsGet(w http.ResponseWriter, r *http.Request) {
 		}
 		page, err := pager.FactsPage(r.URL.Query().Get("scope"), memory.PageOptions{
 			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
-			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+			MaxBytes: historyPagePayloadLimit(s.maxSyncBytes()),
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -162,7 +160,7 @@ func (s *Server) handleMemoryFactsGet(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not read fact page: "+err.Error(), status)
 			return
 		}
-		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore, s.maxSyncBytes())
 		return
 	}
 	writeJSON(w, http.StatusOK, s.mem.Facts(r.URL.Query().Get("scope")))
@@ -211,7 +209,7 @@ func (s *Server) handleMemoryDialogues(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.mem == nil {
 		if pageRequest.Active {
-			writeHistoryPage(w, pageRequest, []memory.DialogueRecord{}, memory.HistoryCursor{}, false)
+			writeHistoryPage(w, pageRequest, []memory.DialogueRecord{}, memory.HistoryCursor{}, false, s.maxSyncBytes())
 			return
 		}
 		writeJSON(w, http.StatusOK, []memory.DialogueRecord{})
@@ -229,7 +227,7 @@ func (s *Server) handleMemoryDialogues(w http.ResponseWriter, r *http.Request) {
 		}
 		page, err := pager.DialoguesPage(memory.PageOptions{
 			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
-			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+			MaxBytes: historyPagePayloadLimit(s.maxSyncBytes()),
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -239,7 +237,7 @@ func (s *Server) handleMemoryDialogues(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not read dialogue page: "+err.Error(), status)
 			return
 		}
-		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore, s.maxSyncBytes())
 		return
 	}
 	writeJSON(w, http.StatusOK, s.mem.Dialogues(intQuery(r, "limit", 30)))
@@ -282,7 +280,7 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 	}
 	var req memorySyncRequest
 	decodeStarted := time.Now()
-	if err := json.NewDecoder(http.MaxBytesReader(w, reader, maxMemorySyncBodyBytes)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, reader, s.maxSyncBytes())).Decode(&req); err != nil {
 		status := http.StatusBadRequest
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
@@ -363,7 +361,7 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 				cursor = make(map[string]uint64)
 				upper = snapshot.Watermarks
 			}
-			page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, maxMemorySyncBodyBytes, 0)
+			page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, s.maxSyncBytes(), 0)
 			if err != nil {
 				log.Printf("FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_failed %s remote=%s status=%d stage=page error=%v",
 					syncLogFields(requestID, nodeID, time.Since(started), "page"), r.RemoteAddr, http.StatusRequestEntityTooLarge, err)

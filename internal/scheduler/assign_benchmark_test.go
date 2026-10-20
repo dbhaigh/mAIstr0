@@ -50,3 +50,46 @@ func BenchmarkAssignWithConfigNodes80(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkAssignWithExperienceNodes32ManyModels(b *testing.B) {
+	logOutput := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(logOutput)
+
+	nodes := make([]cluster.NodeStatus, 32)
+	for i := range nodes {
+		models := make([]engine.Model, 8)
+		for j := range models {
+			tags := []string{"general"}
+			if j%2 == 0 {
+				tags = []string{"code", "general"}
+			}
+			models[j] = engine.Model{
+				Name:   "model-" + strconv.Itoa(i) + "-" + strconv.Itoa(j),
+				Engine: "vllm",
+				Tags:   tags,
+				SizeGB: 4 + float64(j),
+			}
+		}
+		nodes[i] = cluster.NodeStatus{
+			ID:           "node-" + strconv.Itoa(i),
+			Address:      "http://node",
+			Healthy:      true,
+			Capabilities: []string{"coder"},
+			Engines:      []engine.Status{{Name: "vllm", Ready: true}},
+			Models:       models,
+		}
+	}
+	subtasks := []Subtask{
+		{ID: "code-1", TaskType: "code", RequiredCapabilities: []string{"coder"}, PreferredCapabilities: []string{"code"}, MinModelSizeGB: 7},
+		{ID: "code-2", TaskType: "code", RequiredCapabilities: []string{"coder"}, PreferredCapabilities: []string{"code"}, MinModelSizeGB: 7},
+		{ID: "code-3", TaskType: "code", RequiredCapabilities: []string{"coder"}, PreferredCapabilities: []string{"code"}, MinModelSizeGB: 7},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := AssignWithExperience(subtasks, nodes, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

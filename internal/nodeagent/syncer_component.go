@@ -23,6 +23,7 @@ type syncerComponent struct {
 	memorySyncClient func() *http.Client
 	peers            func() []cluster.NodeStatus
 	standaloneLeader func() bool
+	maxSyncBytes     int64
 
 	memoryBufferMu  sync.Mutex
 	memoryBuffer    []memory.Payload
@@ -37,12 +38,16 @@ func newSyncerComponent(
 	peerClient func() *http.Client,
 	memorySyncClient func() *http.Client,
 	peers func() []cluster.NodeStatus,
+	maxSyncBytes int64,
 	standaloneLeader func() bool,
 ) *syncerComponent {
+	if maxSyncBytes <= 0 {
+		maxSyncBytes = maxTaskSyncBodyBytes
+	}
 	return &syncerComponent{
 		nodeID: nodeID, tasks: tasks, memory: store,
 		peerClient: peerClient, memorySyncClient: memorySyncClient,
-		peers: peers, standaloneLeader: standaloneLeader,
+		peers: peers, maxSyncBytes: maxSyncBytes, standaloneLeader: standaloneLeader,
 	}
 }
 
@@ -67,7 +72,7 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 		return
 	}
 	peers := s.peers()
-	client := s.peerClient()
+	client := s.memorySyncClient()
 	remoteSnapshots := make(map[string]taskSyncSnapshot)
 	for _, peer := range peers {
 		if !peer.Healthy || peer.ID == s.nodeID || peer.Address == "" {
@@ -81,6 +86,7 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 			client,
 			strings.TrimRight(peer.Address, "/")+"/tasks",
 			watermarks,
+			s.maxSyncBytes,
 		)
 		if err != nil {
 			log.Printf("FILE_ONLY: nodeagent: task history fetch from %s failed: %v", peer.ID, err)
@@ -115,7 +121,7 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 			strings.TrimRight(peer.Address, "/")+"/tasks/replica",
 			tasks,
 			taskmgr.SnapshotWatermarks(s.tasks.All()),
-			maxTaskSyncBodyBytes,
+			s.maxSyncBytes,
 		)
 		if err != nil {
 			log.Printf("FILE_ONLY: nodeagent: task history replication to %s failed: %v", peer.ID, err)
@@ -161,6 +167,7 @@ func (s *syncerComponent) syncPeerMemory() {
 			client,
 			strings.TrimRight(peer.Address, "/")+"/memory/sync",
 			memory.FilterMemoryWatermarks(s.memory.PeerWatermarks(peer.ID)),
+			s.maxSyncBytes,
 		)
 		if err != nil {
 			log.Printf("FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_failed %s peer_id=%s body_bytes=0 elapsed=%s stage=request error=%v",
@@ -296,7 +303,9 @@ func (s *syncerComponent) FlushToCluster() error {
 		complete()
 		return nil
 	}
-	bodies, err := marshalMemorySnapshotPages(batch.Snapshot, maxMemorySyncBodyBytes, marshalMemorySnapshot)
+	bodies, err := marshalMemorySnapshotPages(batch.Snapshot, s.maxSyncBytes, func(snapshot memory.Snapshot) ([]byte, error) {
+		return marshalMemorySnapshotWithLimit(snapshot, s.maxSyncBytes)
+	})
 	if err != nil {
 		return requeue(fmt.Errorf("encode memory sync batch: %w", err))
 	}

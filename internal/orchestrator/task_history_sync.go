@@ -10,12 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/syncinterval"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
-const maxReplicatedTaskHistoryBytes int64 = 64 << 20
+const maxReplicatedTaskHistoryBytes int64 = config.DefaultSyncMaxBytes
 
 func (s *syncerComponent) taskHistorySyncLoop() {
 	var backoff syncinterval.Backoff
@@ -42,8 +43,10 @@ func (s *syncerComponent) syncTaskHistory() {
 	if !s.shouldSync() {
 		return
 	}
-	s.syncMu.Lock()
-	defer s.syncMu.Unlock()
+	if !s.syncing.CompareAndSwap(false, true) {
+		return
+	}
+	defer s.syncing.Store(false)
 	if !s.shouldSync() {
 		return
 	}
@@ -67,6 +70,7 @@ func (s *syncerComponent) syncTaskHistory() {
 			s.client,
 			strings.TrimRight(node.Address, "/")+"/tasks",
 			watermarks,
+			s.maxBytes,
 		)
 		if err != nil {
 			log.Printf("FILE_ONLY: orchestrator: task history sync event=fetch_failed %s error=%v",
@@ -111,7 +115,7 @@ func (s *syncerComponent) syncTaskHistory() {
 			strings.TrimRight(node.Address, "/")+"/tasks/replica",
 			tasks,
 			taskmgr.SnapshotWatermarks(s.tasks.All()),
-			maxReplicatedTaskHistoryBytes,
+			s.maxBytes,
 		)
 		if err != nil {
 			log.Printf("FILE_ONLY: orchestrator: task history sync event=replicate_failed %s error=%v",
@@ -145,7 +149,7 @@ type taskSyncSnapshot struct {
 
 func fetchReplicatedTaskHistory(client interface {
 	Do(*http.Request) (*http.Response, error)
-}, endpoint string, requestWatermarks map[string]uint64) ([]*taskmgr.Task, int, map[string]uint64, error) {
+}, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
 	tasks := make([]*taskmgr.Task, 0)
 	var cursor, upper map[string]uint64
 	var responseWatermarks map[string]uint64
@@ -166,7 +170,7 @@ func fetchReplicatedTaskHistory(client interface {
 		if err != nil {
 			return nil, 0, nil, err
 		}
-		page, pageVersion, watermarks, nextCursor, more, err := decodeReplicatedTaskHistory(response)
+		page, pageVersion, watermarks, nextCursor, more, err := decodeReplicatedTaskHistory(response, maxBytes)
 		if err != nil {
 			return nil, 0, nil, err
 		}
@@ -189,7 +193,7 @@ func fetchReplicatedTaskHistory(client interface {
 	}
 }
 
-func decodeReplicatedTaskHistory(resp *http.Response) ([]*taskmgr.Task, int, map[string]uint64, map[string]uint64, bool, error) {
+func decodeReplicatedTaskHistory(resp *http.Response, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, map[string]uint64, bool, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		response, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -204,12 +208,12 @@ func decodeReplicatedTaskHistory(resp *http.Response) ([]*taskmgr.Task, int, map
 		return nil, 0, nil, nil, false, fmt.Errorf("read task sync page header: %w", err)
 	}
 	var tasks []*taskmgr.Task
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReplicatedTaskHistoryBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, 0, nil, nil, false, err
 	}
-	if int64(len(body)) > maxReplicatedTaskHistoryBytes {
-		return nil, 0, nil, nil, false, fmt.Errorf("node task snapshot exceeds the %d-byte sync limit", maxReplicatedTaskHistoryBytes)
+	if int64(len(body)) > maxBytes {
+		return nil, 0, nil, nil, false, fmt.Errorf("node task snapshot exceeds the %d-byte sync limit", maxBytes)
 	}
 	if err := json.Unmarshal(body, &tasks); err != nil {
 		return nil, 0, nil, nil, false, err
