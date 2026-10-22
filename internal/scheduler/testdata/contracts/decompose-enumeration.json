@@ -1,0 +1,46 @@
+[
+  {
+    "id": "sub-a",
+    "description": "Review these options: Alpha",
+    "role": "general",
+    "task_type": "general",
+    "tags": [
+      "general"
+    ]
+  },
+  {
+    "id": "sub-b",
+    "description": "Review these options: Beta",
+    "role": "general",
+    "task_type": "general",
+    "tags": [
+      "general"
+    ]
+  },
+  {
+    "id": "sub-c",
+    "description": "Review these options: Gamma",
+    "role": "general",
+    "task_type": "general",
+    "tags": [
+      "general"
+    ]
+  },
+  {
+    "id": "synthesis",
+    "description": "Synthesize the completed results into a coherent answer to the original task: Review these options: Alpha, Beta, and Gamma.",
+    "role": "summarizer",
+    "task_type": "summarize",
+    "tags": [
+      "summarize",
+      "general"
+    ],
+    "depends_on": [
+      "sub-a",
+      "sub-b",
+      "sub-c"
+    ],
+    "expected_output": "A concise integrated response addressing the original task.",
+    "synthesis": true
+  }
+]

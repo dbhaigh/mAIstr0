@@ -23,6 +23,10 @@ in another language.
 
 ## Wire-format conventions
 
+- Production HTTP listeners add an `X-Request-ID` response header and cap request
+  bodies at 256 MiB, while routes may enforce smaller limits. Request logs
+  contain only the request ID, method, status, and duration; they omit URLs,
+  request bodies, prompts, and model outputs.
 - JSON field names and optionality follow the schemas. Treat absent optional
   fields as unspecified, not as empty strings or zero values. Do not reject
   unknown object properties; the schemas deliberately allow additive fields.
@@ -34,6 +38,19 @@ in another language.
 - Assignment scores are explained by `score_factors`; optional factors may be
   absent when they do not apply. Do not rely on one particular score as a
   stable API guarantee.
+- Task creation accepts `plan_mode` values `auto`, `heuristic`, and
+  `heuristic_v1`; omitting the field uses the current heuristic. `auto` plans
+  are produced by a local coordinator and may be cached by normalized
+  description. `routing_preference` accepts `quality` or `latency` and applies
+  to all subtasks in the request. Completion-time score factors are heuristic
+  estimates based on model size, queue depth, and historical throughput; they
+  are explanatory values, not latency guarantees.
+- Orchestrator configuration may opt into speculative hedging with
+  `speculative_hedging_enabled`; it is disabled by default.
+  `max_concurrent_hedges` defaults to one and is capped at four and by
+  `max_concurrent_dispatches`. When enabled, a second eligible node may receive
+  a task after a model/task-type p95 delay with enough history; cancellation of
+  the losing request does not change the persisted task result.
 - `/router/{path...}` is a separate transparent inference surface; it accepts
   only the provider paths listed in the OpenAPI document and does not invoke
   workflow planning. Router events contain request/attempt metadata only, not
@@ -73,6 +90,16 @@ in another language.
   These are additive synchronization metadata. Peers that do not negotiate
   incremental sync must continue to exchange full snapshots, and missing
   record `origin` or `sequence` values must remain acceptable for legacy data.
+- Sync protocol v3 adds optional gzip and empty-exchange responses without
+  changing routes or JSON records. Clients advertise response compression with
+  `Accept-Encoding: gzip`; send compressed request bodies only after the peer
+  responds with protocol v3. Compression is used only for payloads of at least
+  1 KiB when it reduces the body size, and the configured sync limit applies to
+  both compressed and decompressed bodies. A v3 request with no changes returns
+  204 plus sync-version and watermark headers; do not POST an empty task page or
+  memory snapshot. Protocol v1/v2 peers continue to receive JSON, v2 paging
+  remains supported, and unsupported or ahead watermarks retain full-snapshot
+  fallback.
 - The node's internal queued-task count is not a wire field. Do not add it to
   `NodeStatus` payloads when porting the implementation.
 - Methodless routes and subtree patterns in the OpenAPI route manifest reflect

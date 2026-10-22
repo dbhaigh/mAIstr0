@@ -16,6 +16,7 @@ import (
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/version"
 )
@@ -126,8 +127,8 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "pairing requires HTTPS", http.StatusUpgradeRequired)
 		return
 	}
-	var request pairingJoinRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
+	request, err := httpx.DecodeJSON[pairingJoinRequest](w, r, 1<<20)
+	if err != nil {
 		writeError(w, apperr.Invalid(errors.New("invalid pairing request")))
 		return
 	}
@@ -174,12 +175,10 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pinValid {
-		nextPIN, err := s.identity.NewPairingPIN()
-		if err != nil {
+		if _, err := s.identity.NewPairingPIN(); err != nil {
 			writeError(w, apperr.InternalError(errors.New("peer paired but could not create the next pairing PIN")))
 			return
 		}
-		log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", nextPIN)
 		log.Printf("orchestrator: successfully paired peer role=%s from %s using PIN", request.Role, r.RemoteAddr)
 	} else {
 		log.Printf("orchestrator: automatically paired node %s from same subnet (%s)", request.ID, r.RemoteAddr)
@@ -215,10 +214,10 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.ConflictError(errors.New("node is already paired; use the node re-pair action")))
 		return
 	}
-	var request struct {
+	request, err := httpx.DecodeJSON[struct {
 		PIN string `json:"pin"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
+	}](w, r, 4<<10)
+	if err != nil {
 		writeError(w, apperr.Invalid(errors.New("invalid pairing invitation request")))
 		return
 	}

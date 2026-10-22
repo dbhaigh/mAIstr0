@@ -2,7 +2,6 @@ package nodeagent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,13 +10,16 @@ import (
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/memory"
 )
 
 func (a *Agent) handleExecute(w http.ResponseWriter, r *http.Request) {
-	var req executeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[executeRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), executeResponse{Error: err.Error()})
 		return
 	}
@@ -65,8 +67,10 @@ func (a *Agent) handleExecute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleGenerate(w http.ResponseWriter, r *http.Request) {
-	var req generateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[generateRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), generateResponse{Error: err.Error()})
 		return
 	}
@@ -133,7 +137,6 @@ func (a *Agent) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result generateIdempotencyResult
-	var err error
 	if idempotencyKey == "" {
 		result, err = generate()
 	} else {
@@ -159,8 +162,10 @@ func (a *Agent) handleGenerate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleChat(w http.ResponseWriter, r *http.Request) {
-	var req chatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[chatRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), chatResponse{Error: err.Error()})
 		return
 	}

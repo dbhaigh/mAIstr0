@@ -93,3 +93,40 @@ func BenchmarkAssignWithExperienceNodes32ManyModels(b *testing.B) {
 		}
 	}
 }
+
+type benchmarkExperience struct{}
+
+func (benchmarkExperience) LearnedBias(string, string, string) float64 { return 0.1 }
+
+func BenchmarkAssignWithExperienceNodeModels(b *testing.B) {
+	logOutput := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(logOutput)
+
+	for _, count := range []int{10, 100, 1_000} {
+		b.Run(strconv.Itoa(count)+"-nodes-models", func(b *testing.B) {
+			nodes := make([]cluster.NodeStatus, count)
+			for i := range nodes {
+				nodes[i] = cluster.NodeStatus{
+					ID: "node-" + strconv.Itoa(i), Address: "http://node", Healthy: true,
+					Engines: []engine.Status{{Name: "simulated", Ready: true}},
+					Models: []engine.Model{{
+						Name: "simulated-general", Engine: "simulated", Tags: []string{"general"},
+					}},
+				}
+			}
+			subtasks := []Subtask{{ID: "benchmark", Description: "baseline assignment", TaskType: "general"}}
+			experience := benchmarkExperience{}
+
+			b.ReportAllocs()
+			b.ReportMetric(float64(count), "nodes/op")
+			b.ReportMetric(float64(count), "models/op")
+			b.ResetTimer()
+			for range b.N {
+				if _, err := AssignWithExperience(subtasks, nodes, experience); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

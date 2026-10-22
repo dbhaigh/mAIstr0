@@ -1,11 +1,36 @@
 package cluster
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
 )
+
+func TestAppendEffectiveCapabilitiesPreservesPrefixAndDeduplicates(t *testing.T) {
+	status := NodeStatus{
+		Capabilities: []string{" GPU ", "custom", "custom"},
+		Models: []engine.Model{{
+			Name: "Qwen2.5-Coder", SizeGB: 8,
+			Tags: []string{"Code", "math", "reasoning", "FAST"},
+		}},
+		Hardware: hardware.Info{HasGPU: true, HasNPU: true, TotalRAMMB: 16 * 1024},
+	}
+
+	got := status.AppendEffectiveCapabilities([]string{"prefix"})
+	want := []string{
+		"prefix", "analyst", "code", "coder", "custom", "fast", "gpu",
+		"high-quality", "long-context", "math", "npu", "reasoning",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AppendEffectiveCapabilities() = %v, want %v", got, want)
+	}
+
+	if got := (NodeStatus{}).EffectiveCapabilities(); !reflect.DeepEqual(got, []string{"general"}) {
+		t.Fatalf("empty node capabilities = %v, want [general]", got)
+	}
+}
 
 func node(id string, score, fastScore float64) NodeStatus {
 	return NodeStatus{

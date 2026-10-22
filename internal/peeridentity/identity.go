@@ -1,6 +1,7 @@
 package peeridentity
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -54,6 +55,25 @@ type Identity struct {
 	pairingPIN      string
 	pairingExpires  time.Time
 	pairingAttempts int
+	clientTransport *http.Transport
+	clientConns     map[*identityConn]struct{}
+}
+
+type identityConn struct {
+	net.Conn
+	identity *Identity
+	once     sync.Once
+}
+
+func (c *identityConn) Close() error {
+	var err error
+	c.once.Do(func() {
+		c.identity.mu.Lock()
+		delete(c.identity.clientConns, c)
+		c.identity.mu.Unlock()
+		err = c.Conn.Close()
+	})
+	return err
 }
 
 // Open loads or creates a persistent certificate for id.
@@ -97,6 +117,20 @@ func Open(path, id string) (*Identity, error) {
 	}
 	if leaf.Subject.CommonName != id {
 		return nil, fmt.Errorf("peeridentity: certificate belongs to %q, not %q", leaf.Subject.CommonName, id)
+	}
+	now := time.Now()
+	if now.Before(leaf.NotBefore) {
+		return nil, errors.New("peeridentity: identity certificate is not valid yet")
+	}
+	if !now.Before(leaf.NotAfter) {
+		if err := identity.createCertificate(); err != nil {
+			return nil, fmt.Errorf("peeridentity: rotate expired identity certificate: %w", err)
+		}
+		certificate = identity.certificate
+		leaf, err = x509.ParseCertificate(certificate.Certificate[0])
+		if err != nil {
+			return nil, fmt.Errorf("peeridentity: parse rotated TLS certificate: %w", err)
+		}
 	}
 	certificate.Leaf = leaf
 	identity.certificate = certificate
@@ -173,29 +207,148 @@ func (i *Identity) CertificatePEM() string {
 // by the trusted-peer middleware after the TLS handshake.
 func (i *Identity) ServerTLSConfig() *tls.Config {
 	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return &tls.Config{
+	config := &tls.Config{
 		Certificates: []tls.Certificate{i.certificate},
 		ClientAuth:   tls.RequestClientCert,
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}
+	i.mu.RUnlock()
+	config.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		certificate, err := i.currentIdentityCertificate()
+		if err != nil {
+			return nil, err
+		}
+		current := config.Clone()
+		current.GetConfigForClient = nil
+		current.Certificates = []tls.Certificate{*certificate}
+		return current, nil
+	}
+	return config
 }
 
 // ClientTransport returns a transport that presents this identity and accepts
 // only server certificates pinned by a completed pairing.
 func (i *Identity) ClientTransport() *http.Transport {
-	return &http.Transport{
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.clientTransport != nil {
+		return i.clientTransport
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport := &http.Transport{
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 64,
+		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   true,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			tracked := &identityConn{Conn: conn, identity: i}
+			i.mu.Lock()
+			if i.clientConns == nil {
+				i.clientConns = make(map[*identityConn]struct{})
+			}
+			i.clientConns[tracked] = struct{}{}
+			i.mu.Unlock()
+			return tracked, nil
+		},
 		TLSClientConfig: &tls.Config{
 			Certificates:       []tls.Certificate{i.certificate},
 			InsecureSkipVerify: true,
-			MinVersion:         tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS13,
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return i.currentIdentityCertificate()
+			},
 			VerifyConnection: func(state tls.ConnectionState) error {
-				if len(state.PeerCertificates) == 0 || !i.IsTrustedCertificate(state.PeerCertificates[0]) {
+				if len(state.PeerCertificates) == 0 {
+					return errors.New("peeridentity: server certificate is not pinned to a paired cluster member")
+				}
+				if !certificateCurrentlyValid(state.PeerCertificates[0], time.Now()) {
+					return errors.New("peeridentity: server certificate is outside its validity period")
+				}
+				if !i.IsTrustedCertificate(state.PeerCertificates[0]) {
 					return errors.New("peeridentity: server certificate is not pinned to a paired cluster member")
 				}
 				return nil
 			},
 		},
+	}
+	i.clientTransport = transport
+	return transport
+}
+
+func (i *Identity) currentIdentityCertificate() (*tls.Certificate, error) {
+	i.mu.Lock()
+	leaf := i.certificate.Leaf
+	if leaf == nil {
+		if len(i.certificate.Certificate) == 0 {
+			i.mu.Unlock()
+			return nil, errors.New("peeridentity: identity certificate is unavailable")
+		}
+		var err error
+		leaf, err = x509.ParseCertificate(i.certificate.Certificate[0])
+		if err != nil {
+			i.mu.Unlock()
+			return nil, fmt.Errorf("peeridentity: parse identity certificate: %w", err)
+		}
+	}
+	now := time.Now()
+	if now.Before(leaf.NotBefore) {
+		i.mu.Unlock()
+		return nil, errors.New("peeridentity: identity certificate is not valid yet")
+	}
+	rotated := false
+	if !now.Before(leaf.NotAfter) {
+		previousCertificate := i.certificate
+		previousPEM := i.certificatePEM
+		previousKey := i.privateKeyPEM
+		if err := i.createCertificate(); err != nil {
+			i.mu.Unlock()
+			return nil, fmt.Errorf("peeridentity: rotate expired identity certificate: %w", err)
+		}
+		leaf, err := x509.ParseCertificate(i.certificate.Certificate[0])
+		if err != nil {
+			i.certificate = previousCertificate
+			i.certificatePEM = previousPEM
+			i.privateKeyPEM = previousKey
+			i.mu.Unlock()
+			return nil, fmt.Errorf("peeridentity: parse rotated identity certificate: %w", err)
+		}
+		i.certificate.Leaf = leaf
+		if err := i.persistLocked(); err != nil {
+			i.certificate = previousCertificate
+			i.certificatePEM = previousPEM
+			i.privateKeyPEM = previousKey
+			i.mu.Unlock()
+			return nil, fmt.Errorf("peeridentity: persist rotated identity certificate: %w", err)
+		}
+		rotated = true
+	}
+	certificate := i.certificate
+	transport := i.clientTransport
+	i.mu.Unlock()
+	if rotated && transport != nil {
+		transport.CloseIdleConnections()
+	}
+	return &certificate, nil
+}
+
+func (i *Identity) invalidateClientConnections() {
+	i.mu.Lock()
+	transport := i.clientTransport
+	connections := make([]*identityConn, 0, len(i.clientConns))
+	for connection := range i.clientConns {
+		connections = append(connections, connection)
+	}
+	i.mu.Unlock()
+
+	if transport != nil {
+		transport.CloseIdleConnections()
+	}
+	for _, connection := range connections {
+		_ = connection.Close()
 	}
 }
 
@@ -218,15 +371,20 @@ func (i *Identity) bootstrapTransport(expectedID string) *http.Transport {
 	config := &tls.Config{
 		Certificates:       []tls.Certificate{i.certificate},
 		InsecureSkipVerify: true,
-		MinVersion:         tls.VersionTLS12,
+		MinVersion:         tls.VersionTLS13,
 	}
-	if expectedID != "" {
-		config.VerifyConnection = func(state tls.ConnectionState) error {
-			if len(state.PeerCertificates) == 0 || state.PeerCertificates[0].Subject.CommonName != expectedID {
-				return fmt.Errorf("peeridentity: bootstrap server identity does not match expected peer %q", expectedID)
-			}
-			return nil
+	config.VerifyConnection = func(state tls.ConnectionState) error {
+		if len(state.PeerCertificates) == 0 {
+			return errors.New("peeridentity: bootstrap server did not present a certificate")
 		}
+		certificate := state.PeerCertificates[0]
+		if !certificateCurrentlyValid(certificate, time.Now()) {
+			return errors.New("peeridentity: bootstrap server certificate is outside its validity period")
+		}
+		if expectedID != "" && certificate.Subject.CommonName != expectedID {
+			return fmt.Errorf("peeridentity: bootstrap server identity does not match expected peer %q", expectedID)
+		}
+		return nil
 	}
 	return &http.Transport{TLSClientConfig: config}
 }
@@ -296,12 +454,17 @@ func (i *Identity) TrustPeer(id, certificatePEM string) error {
 	}
 	fingerprint := certificateFingerprint(cert)
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	peer := i.trusted[id]
+	changed := peer.Fingerprint != fingerprint
 	peer.Fingerprint = fingerprint
 	peer.Certificate = certificatePEM
 	i.trusted[id] = peer
-	return i.persistLocked()
+	err = i.persistLocked()
+	i.mu.Unlock()
+	if changed {
+		i.invalidateClientConnections()
+	}
+	return err
 }
 
 // TrustPeerDetails pins a peer certificate and stores its role and optional
@@ -323,9 +486,10 @@ func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) er
 		return err
 	}
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	peer := i.trusted[id]
-	peer.Fingerprint = certificateFingerprint(cert)
+	fingerprint := certificateFingerprint(cert)
+	changed := peer.Fingerprint != fingerprint
+	peer.Fingerprint = fingerprint
 	peer.Certificate = certificatePEM
 	if role != "" {
 		peer.Role = role
@@ -334,14 +498,18 @@ func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) er
 		peer.Address = address
 	}
 	i.trusted[id] = peer
-	return i.persistLocked()
+	err = i.persistLocked()
+	i.mu.Unlock()
+	if changed {
+		i.invalidateClientConnections()
+	}
+	return err
 }
 
 // RemovePairedOrchestrators removes federation-era orchestrator pins so
 // upgraded instances only retain ordinary node identities in their roster.
 func (i *Identity) RemovePairedOrchestrators() error {
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	changed := false
 	for id, peer := range i.trusted {
 		if peer.Role == "orchestrator" {
@@ -349,10 +517,15 @@ func (i *Identity) RemovePairedOrchestrators() error {
 			changed = true
 		}
 	}
+	var err error
 	if changed {
-		return i.persistLocked()
+		err = i.persistLocked()
 	}
-	return nil
+	i.mu.Unlock()
+	if changed {
+		i.invalidateClientConnections()
+	}
+	return err
 }
 
 func (i *Identity) ValidatePeer(id, certificatePEM string) error {
@@ -368,7 +541,14 @@ func validatePeerCertificate(id, certificatePEM string) (*x509.Certificate, erro
 	if cert.Subject.CommonName != id {
 		return nil, fmt.Errorf("peeridentity: certificate identity %q does not match %q", cert.Subject.CommonName, id)
 	}
+	if !certificateCurrentlyValid(cert, time.Now()) {
+		return nil, errors.New("peeridentity: peer certificate is outside its validity period")
+	}
 	return cert, nil
+}
+
+func certificateCurrentlyValid(cert *x509.Certificate, now time.Time) bool {
+	return cert != nil && !now.Before(cert.NotBefore) && now.Before(cert.NotAfter)
 }
 
 // IsTrustedID reports whether the identity was explicitly paired.
@@ -401,14 +581,19 @@ func (i *Identity) TrustedIDs() []string {
 // RemovePeer revokes a paired member's certificate pin.
 func (i *Identity) RemovePeer(id string) error {
 	i.mu.Lock()
-	defer i.mu.Unlock()
+	_, exists := i.trusted[id]
 	delete(i.trusted, id)
-	return i.persistLocked()
+	err := i.persistLocked()
+	i.mu.Unlock()
+	if exists {
+		i.invalidateClientConnections()
+	}
+	return err
 }
 
 // IsTrustedCertificate validates a peer against the persisted certificate pin.
 func (i *Identity) IsTrustedCertificate(cert *x509.Certificate) bool {
-	if cert == nil {
+	if !certificateCurrentlyValid(cert, time.Now()) {
 		return false
 	}
 	i.mu.RLock()
@@ -442,8 +627,84 @@ func LoopbackOnly(next http.Handler) http.Handler {
 			http.Error(w, "plaintext HTTP is available only on loopback; pair the node and use mutual TLS", http.StatusForbidden)
 			return
 		}
+		if !isLoopbackHost(r.Host) {
+			http.Error(w, "loopback dashboard requires a localhost or loopback Host", http.StatusForbidden)
+			return
+		}
+		if !sameLocalOrigin(r) {
+			http.Error(w, "cross-origin dashboard requests are not allowed", http.StatusForbidden)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isLoopbackHost(hostHeader string) bool {
+	if hostHeader == "" || strings.HasSuffix(hostHeader, ":") {
+		return false
+	}
+	parsed, err := url.Parse("//" + hostHeader)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	hostname := parsed.Hostname()
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	return ip != nil && ip.IsLoopback()
+}
+
+func sameLocalOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin != "" && !sameOriginHost(origin, r.Host, true) {
+		return false
+	}
+	fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
+	if fetchSite != "" && fetchSite != "same-origin" {
+		if fetchSite != "none" || (r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions) {
+			return false
+		}
+	}
+	if origin == "" && fetchSite == "" {
+		referer := r.Header.Get("Referer")
+		if referer != "" && !sameOriginHost(referer, r.Host, false) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameOriginHost(value, requestHost string, originOnly bool) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || parsed.User != nil ||
+		parsed.Scheme != "http" {
+		return false
+	}
+	if originOnly && (parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "") {
+		return false
+	}
+	requestURL, err := url.Parse("//" + requestHost)
+	if err != nil || requestURL.Hostname() == "" || requestURL.User != nil {
+		return false
+	}
+	originIP, requestIP := net.ParseIP(parsed.Hostname()), net.ParseIP(requestURL.Hostname())
+	hostMatches := strings.EqualFold(parsed.Hostname(), requestURL.Hostname())
+	if originIP != nil || requestIP != nil {
+		hostMatches = originIP != nil && requestIP != nil && originIP.Equal(requestIP)
+	}
+	if !hostMatches {
+		return false
+	}
+	originPort, requestPort := parsed.Port(), requestURL.Port()
+	if originPort == "" {
+		originPort = "80"
+	}
+	if requestPort == "" {
+		requestPort = "80"
+	}
+	return originPort == requestPort
 }
 
 // TrustedPeers returns a copy of the public paired-member certificate roster.

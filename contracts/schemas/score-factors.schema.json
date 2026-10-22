@@ -21,6 +21,10 @@
     "matched_capabilities": {"type": "array", "items": {"type": "string"}},
     "model_quality_score": {"type": "number"},
     "topology_score": {"type": "number"},
+    "estimated_completion_seconds": {"type": "number", "minimum": 0},
+    "estimated_tokens_per_second": {"type": "number", "minimum": 0},
+    "model_size_gb": {"type": "number", "minimum": 0},
+    "latency_score": {"type": "number"},
     "learned_bias": {"type": "number"},
     "telemetry_fresh": {"type": "boolean"},
     "telemetry_age_ms": {"type": "integer"}

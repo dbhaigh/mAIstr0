@@ -207,7 +207,12 @@ paths:
       responses: {"200": {description: Submit work to the orchestrator}}
   /tasks:
     get:
-      responses: {"200": {description: List tasks}}
+      description: >
+        Protocol v3 sync requests may receive 204 with watermarks when no task
+        changes are available. Gzip is negotiated with Accept-Encoding.
+      responses:
+        "200": {description: List tasks or task-sync data}
+        "204": {description: No task changes for a protocol v3 sync request}
     post:
       responses: {"200": {description: Create a task}}
   /tasks/{id}:
@@ -222,15 +227,20 @@ paths:
       responses: {"200": {description: Cancel a task}}
   /tasks/sync:
     post:
-      responses: {"200": {description: Synchronize task history}}
+      responses: {"204": {description: Synchronize task history}}
   /tasks/replica:
     post:
-      responses: {"200": {description: Apply a task replica}}
+      responses: {"204": {description: Apply a task replica}}
   /memory/sync:
     get:
-      responses: {"200": {description: Get peer memory sync data}}
+      description: >
+        Protocol v3 sync requests may receive 204 with watermarks when no
+        memory changes are available. Gzip is negotiated with Accept-Encoding.
+      responses:
+        "200": {description: Get peer memory sync data}
+        "204": {description: No memory changes for a protocol v3 sync request}
     post:
-      responses: {"200": {description: Apply peer memory sync data}}
+      responses: {"204": {description: Apply peer memory sync data}}
   /peer/message:
     post:
       responses: {"200": {description: Handle a peer message}}
@@ -433,7 +443,8 @@ paths:
             cluster_health using the same view model as GET /api/cluster/health,
             model_inventory entries identifying whole and sharded models, and
             pipeline_plans with stage health and live transfer/utilization data
-            as described by DashboardPipelineSnapshot.
+            as described by DashboardPipelineSnapshot. Router events and
+            per-node/model circuit-breaker states are also included.
   /api/pipelines/{model_id}/reshard:
     parameters:
       - name: model_id
@@ -459,9 +470,17 @@ paths:
         "503": {description: No complete placement or capacity is available}
   /api/router/requests:
     get:
-      responses: {"200": {description: List recent prompt-free inference routing events}}
+      responses:
+        "200":
+          description: List recent prompt-free routing events and per-node/model circuit-breaker states
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RouterRequests"}
   /api/tasks:
     get:
+      description: >
+        Protocol v3 sync requests may receive 204 with watermarks when no task
+        changes are available. Gzip is negotiated with Accept-Encoding.
       parameters:
         - $ref: "#/components/parameters/PageSize"
         - $ref: "#/components/parameters/Cursor"
@@ -483,6 +502,7 @@ paths:
                   - $ref: "#/components/schemas/TaskHistoryPage"
         "400": {description: Invalid page size or cursor}
         "413": {description: One task exceeds the 64 MiB page response limit}
+        "204": {description: No task changes for a protocol v3 sync request}
     post:
       requestBody:
         required: true
@@ -497,7 +517,14 @@ paths:
                   type: array
                   items: {$ref: "#/components/schemas/Subtask"}
                 graph: {$ref: "#/components/schemas/TaskGraph"}
-                plan_mode: {type: string}
+                plan_mode:
+                  type: string
+                  enum: [auto, heuristic, heuristic_v1]
+                  description: "auto asks a local coordinator model for a plan; heuristic uses local decomposition; heuristic_v1 preserves the legacy heuristic"
+                routing_preference:
+                  type: string
+                  enum: [quality, latency]
+                  description: "Candidate scoring preference applied to all subtasks; defaults to quality"
                 require_review: {type: boolean}
                 require_approval: {type: boolean}
               additionalProperties: true
@@ -678,7 +705,12 @@ paths:
       responses: {"200": {description: Get a memory dialogue}}
   /api/memory/sync:
     get:
-      responses: {"200": {description: Get memory synchronization data}}
+      description: >
+        Protocol v3 sync requests may receive 204 with watermarks when no
+        memory changes are available. Gzip is negotiated with Accept-Encoding.
+      responses:
+        "200": {description: Get memory synchronization data}
+        "204": {description: No memory changes for a protocol v3 sync request}
     post:
       responses: {"200": {description: Apply memory synchronization data}}
   /api/memory/prune:
@@ -880,6 +912,10 @@ components:
       $ref: "./schemas/pipeline-stage-message.schema.json"
     RouterRequestEvent:
       $ref: "./schemas/router-request-event.schema.json"
+    RouterCircuitBreaker:
+      $ref: "./schemas/router-circuit-breaker.schema.json"
+    RouterRequests:
+      $ref: "./schemas/router-requests.schema.json"
     TaskHistoryPage:
       type: object
       required: [items, has_more]

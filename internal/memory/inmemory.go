@@ -477,11 +477,21 @@ func (s *memoryStore) SaveDialogue(dialogue DialogueRecord) error {
 }
 
 func (s *memoryStore) AppendDialogueTurn(id string, participants []string, topic string, turn Turn) error {
+	return s.AppendDialogueTurns(id, participants, topic, []Turn{turn})
+}
+
+func (s *memoryStore) AppendDialogueTurns(id string, participants []string, topic string, turns []Turn) error {
 	if id == "" {
 		return errors.New("memory: dialogue id is required")
 	}
-	if turn.At.IsZero() {
-		turn.At = time.Now()
+	if len(turns) == 0 {
+		return nil
+	}
+	turns = append([]Turn(nil), turns...)
+	for i := range turns {
+		if turns[i].At.IsZero() {
+			turns[i].At = time.Now()
+		}
 	}
 	s.mu.Lock()
 	dialogue := s.dialogues[id]
@@ -496,10 +506,12 @@ func (s *memoryStore) AppendDialogueTurn(id string, participants []string, topic
 			dialogue.Participants = append(dialogue.Participants, participant)
 		}
 	}
-	dialogue.Turns = append(dialogue.Turns, turn)
+	dialogue.Turns = append(dialogue.Turns, turns...)
 	dialogue.UpdatedAt = time.Now()
-	dialogue.Origin = s.origin
-	dialogue.Sequence = s.nextSequenceLocked(s.origin)
+	for range turns {
+		dialogue.Origin = s.origin
+		dialogue.Sequence = s.nextSequenceLocked(s.origin)
+	}
 	s.dialogues[id] = dialogue
 	s.mu.Unlock()
 	return nil

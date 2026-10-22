@@ -60,6 +60,23 @@ func (s *memoryStore) SaveCheckpoint(checkpoint *Checkpoint) error {
 	return nil
 }
 
+func (s *memoryStore) SaveTaskAndCheckpoint(task *Task, checkpoint *Checkpoint) error {
+	if task == nil || task.ID == "" {
+		return fmt.Errorf("taskmgr: task id is required")
+	}
+	if checkpoint == nil || checkpoint.ID == "" || checkpoint.TaskID != task.ID {
+		return fmt.Errorf("taskmgr: checkpoint id and matching task id are required")
+	}
+	taskCopy := cloneTask(task)
+	checkpointCopy := cloneCheckpoint(checkpoint)
+	s.mu.Lock()
+	s.tasks[task.ID] = taskCopy
+	s.checkpoints[checkpoint.ID] = checkpointCopy
+	s.latest[task.ID] = cloneCheckpoint(checkpoint)
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *memoryStore) Checkpoints(taskID string) ([]Checkpoint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

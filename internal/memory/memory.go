@@ -111,6 +111,11 @@ type Store interface {
 	ContextBrief(query, taskType string, limit int) string
 }
 
+// DialogueBatchAppender atomically appends multiple turns when supported.
+type DialogueBatchAppender interface {
+	AppendDialogueTurns(id string, participants []string, topic string, turns []Turn) error
+}
+
 // ChangeSource is optionally implemented by stores that can wake sync loops
 // when locally visible memory changes warrant an immediate sync pass.
 type ChangeSource interface {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/version"
 	"github.com/maistr0/maistr0/web"
@@ -187,10 +188,17 @@ func (a *Agent) Run() error {
 		}
 		trustedHandler.ServeHTTP(w, r)
 	})
+	bodyLimit, err := httpx.LimitBodyBytes(httpx.DefaultMaxRequestBodyBytes)
+	if err != nil {
+		return fmt.Errorf("nodeagent: configure HTTP request limit: %w", err)
+	}
+	withMiddleware := func(next http.Handler) http.Handler {
+		return httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit)
+	}
 	return peeridentity.ServeDual(
 		cfg.ListenAddr,
-		peeridentity.LoopbackOnly(mux),
-		secureHandler,
+		withMiddleware(peeridentity.LoopbackOnly(mux)),
+		withMiddleware(secureHandler),
 		a.identityComponent.serverTLSConfig(),
 	)
 }

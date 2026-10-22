@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -497,7 +498,8 @@ func (s *boltStore) FactsPage(scope string, options PageOptions) (HistoryPage[Fa
 	var page HistoryPage[Fact]
 	err := s.db.View(func(tx *bolt.Tx) error {
 		index := make([]factPageIndex, 0)
-		if err := tx.Bucket(bucketFacts).ForEach(func(key, value []byte) error {
+		bucket := tx.Bucket(bucketFacts)
+		appendMetadata := func(key, value []byte) error {
 			var metadata struct {
 				Scope     string    `json:"scope"`
 				UpdatedAt time.Time `json:"updated_at"`
@@ -509,13 +511,23 @@ func (s *boltStore) FactsPage(scope string, options PageOptions) (HistoryPage[Fa
 				index = append(index, factPageIndex{Key: string(key), UpdatedAt: metadata.UpdatedAt})
 			}
 			return nil
-		}); err != nil {
-			return err
+		}
+		if scope == "" {
+			if err := bucket.ForEach(appendMetadata); err != nil {
+				return err
+			}
+		} else {
+			prefix := []byte(scope + "|")
+			cursor := bucket.Cursor()
+			for key, value := cursor.Seek(prefix); key != nil && bytes.HasPrefix(key, prefix); key, value = cursor.Next() {
+				if err := appendMetadata(key, value); err != nil {
+					return err
+				}
+			}
 		}
 		sortFactPageIndex(index)
 		page = HistoryPage[Fact]{Items: make([]Fact, 0, options.Limit)}
 		var used int64
-		bucket := tx.Bucket(bucketFacts)
 		for _, item := range index {
 			if options.Cursor.Key != "" && !factFollowsCursor(item, options.Cursor) {
 				continue

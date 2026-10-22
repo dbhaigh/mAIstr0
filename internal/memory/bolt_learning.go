@@ -62,20 +62,9 @@ func (s *boltStore) loadPerfCache() {
 	s.publishPerformanceSnapshot()
 }
 
-// updatePerformance folds one experience into the rolling per node+model
-// aggregate. This is the cluster's learning signal: repeated successes make
-// a pairing more attractive, failures and slow runs make it less so.
-func (s *boltStore) updatePerformance(e Experience) {
-	if e.NodeID == "" || e.Model == "" {
-		return
-	}
-	key := perfKey(e.NodeID, e.Model, e.TaskType)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.perfCache[key]
+func performanceAfterExperience(current *Performance, e Experience) Performance {
 	var snapshot Performance
-	if !ok {
+	if current == nil {
 		taskType := e.TaskType
 		if taskType == "" {
 			taskType = "general"
@@ -96,25 +85,7 @@ func (s *boltStore) updatePerformance(e Experience) {
 	snapshot.RatingSum += e.Rating
 
 	snapshot.LastUsed = e.CreatedAt
-
-	if err := s.db.Update(func(tx *bolt.Tx) error {
-		sequence, err := nextOriginSequence(tx, s.owner)
-		if err != nil {
-			return err
-		}
-		snapshot.Origin, snapshot.Sequence = s.owner, sequence
-		buf, err := json.Marshal(snapshot)
-		if err != nil {
-			return err
-		}
-		return tx.Bucket(bucketPerf).Put([]byte(key), buf)
-	}); err != nil {
-		log.Printf("memory: persist performance for %s: %v", key, err)
-		return
-	}
-	s.perfCache[key] = &snapshot
-	s.publishPerformanceSnapshot()
-	s.invalidateWatermarksCacheLocked()
+	return snapshot
 }
 
 // Performances returns every learned node+model+taskType aggregate,

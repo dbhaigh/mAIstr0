@@ -1,11 +1,11 @@
 package nodeagent
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"net/http"
 	"sort"
 	"strings"
@@ -17,8 +17,10 @@ func (a *Agent) handleProperties(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.propertiesSnapshot())
 		return
 	}
-	var req nodeProperties
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[nodeProperties](
+		w, r, httpx.ControlJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -118,11 +120,12 @@ func (a *Agent) handleEngineInfo(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) handleModelPull(w http.ResponseWriter, r *http.Request) {
 	a.refreshDetectedEngines()
-	var req struct {
+	type modelPullRequest struct {
 		Model  string `json:"model"`
 		Engine string `json:"engine,omitempty"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[modelPullRequest](w, r, 1<<20)
+	if err != nil {
 		writeError(w, apperr.Invalid(fmt.Errorf("invalid model pull request: %w", err)))
 		return
 	}
@@ -181,8 +184,10 @@ func (a *Agent) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleModelsPatch(w http.ResponseWriter, r *http.Request) {
-	var req modelsPatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[modelsPatchRequest](
+		w, r, httpx.ControlJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}

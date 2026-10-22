@@ -153,6 +153,10 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 	if defaulted.ListenAddr != DefaultOrchestratorConfig().ListenAddr || defaulted.Harness != "pi" ||
 		defaulted.Mode != OrchestratorModeFull || defaulted.MaxConcurrentDispatches != DefaultDispatchConcurrency ||
 		defaulted.DispatchTimeoutSeconds != DefaultDispatchTimeoutSeconds ||
+		defaulted.SpeculativeHedgingEnabled || defaulted.MaxConcurrentHedges != DefaultMaxConcurrentHedges ||
+		defaulted.RouterTimeToFirstByteTimeoutSeconds != DefaultRouterTTFBTimeoutSeconds ||
+		defaulted.RouterIdleStreamTimeoutSeconds != DefaultRouterIdleStreamTimeoutSeconds ||
+		defaulted.RouterRequestsPerMinute != 0 || defaulted.RouterMaxConcurrentPerClient != 0 ||
 		defaulted.SyncMaxBytes != DefaultSyncMaxBytes || defaulted.SyncTimeoutSeconds != DefaultSyncTimeoutSeconds ||
 		defaulted.TrayMode != "taskbar" {
 		t.Fatalf("normalized orchestrator defaults = %+v", defaulted)
@@ -196,6 +200,35 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 		{"harness", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Harness = "unknown" }, "harness"},
 		{"concurrency", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.MaxConcurrentDispatches = -1 }, "max_concurrent_dispatches"},
 		{"dispatch timeout", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.DispatchTimeoutSeconds = -1 }, "dispatch_timeout_seconds"},
+		{"negative hedge cap", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.MaxConcurrentHedges = -1 }, "max_concurrent_hedges"},
+		{"hedge cap exceeds maximum", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.MaxConcurrentHedges = MaxAllowedConcurrentHedges + 1
+		}, "max_concurrent_hedges"},
+		{"hedge cap exceeds dispatch concurrency", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.MaxConcurrentDispatches = 2
+			cfg.MaxConcurrentHedges = 3
+		}, "max_concurrent_hedges"},
+		{"negative router first-byte timeout", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.RouterTimeToFirstByteTimeoutSeconds = -1
+		}, "router_time_to_first_byte_timeout_seconds"},
+		{"router first-byte timeout exceeds total", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.RouterTimeToFirstByteTimeoutSeconds = DefaultRouterRequestTimeoutSeconds + 1
+		}, "router_time_to_first_byte_timeout_seconds"},
+		{"negative router idle timeout", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.RouterIdleStreamTimeoutSeconds = -1
+		}, "router_idle_stream_timeout_seconds"},
+		{"negative router rate limit", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.RouterRequestsPerMinute = -1
+		}, "router_requests_per_minute"},
+		{"oversized router rate limit", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.RouterRequestsPerMinute = MaxRouterRequestsPerMinute + 1
+		}, "router_requests_per_minute"},
+		{"negative per-client router concurrency", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.RouterMaxConcurrentPerClient = -1
+		}, "router_max_concurrent_per_client"},
+		{"oversized per-client router concurrency", func(cfg *OrchestratorConfig, _ *testing.T) {
+			cfg.RouterMaxConcurrentPerClient = MaxRouterConcurrentPerClient + 1
+		}, "router_max_concurrent_per_client"},
 		{"negative sync limit", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.SyncMaxBytes = -1 }, "sync_max_bytes"},
 		{"oversized sync limit", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.SyncMaxBytes = MaxSyncMaxBytes + 1 }, "sync_max_bytes"},
 		{"negative sync timeout", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.SyncTimeoutSeconds = -1 }, "sync_timeout_seconds"},

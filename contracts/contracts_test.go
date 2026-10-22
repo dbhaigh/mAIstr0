@@ -208,6 +208,17 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 				map[string]any{"model_id": "whole-model", "kind": "whole", "nodes": []string{"worker-1"}},
 				map[string]any{"model_id": "large-model", "kind": "sharded"},
 			},
+			"router_events": []any{
+				map[string]any{
+					"request_id": "request-1", "phase": "attempt_failed",
+					"timestamp": "2025-01-02T03:04:05Z", "failure_class": "upstream_5xx",
+				},
+			},
+			"router_circuit_breakers": []any{
+				map[string]any{
+					"node_id": "worker-1", "model": "demo", "state": "closed", "recent_failures": 0,
+				},
+			},
 			"pipeline_plans": []any{map[string]any{
 				"model_id": "large-model", "status": "ready",
 				"plan": config.PipelinePlan{
@@ -397,6 +408,37 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 	}
 }
 
+func TestDashboardRouterPropertiesAreTopLevel(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("schemas", "dashboard-pipeline.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"router_events", "router_circuit_breakers"} {
+		if _, ok := schema.Properties[name]; !ok {
+			t.Errorf("dashboard snapshot schema is missing top-level property %q", name)
+		}
+	}
+	var pipelinePlans struct {
+		Items struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(schema.Properties["pipeline_plans"], &pipelinePlans); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"router_events", "router_circuit_breakers"} {
+		if _, ok := pipelinePlans.Items.Properties[name]; ok {
+			t.Errorf("dashboard property %q is incorrectly nested under pipeline plans", name)
+		}
+	}
+}
+
 func TestSchemaSetIsComplete(t *testing.T) {
 	expected := []string{
 		"announcement.schema.json", "assignment-explanation.schema.json", "assignment.schema.json", "cluster-health.schema.json", "dashboard-pipeline.schema.json", "dialogue-record.schema.json",
@@ -405,7 +447,8 @@ func TestSchemaSetIsComplete(t *testing.T) {
 		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json", "pipeline-plan.schema.json",
 		"pipeline-stage-capabilities.schema.json", "pipeline-stage-control.schema.json", "pipeline-stage-message.schema.json",
 		"pipeline-stage-output.schema.json", "pipeline-stage-request.schema.json",
-		"router-request-event.schema.json", "score-factors.schema.json", "snapshot.schema.json",
+		"router-circuit-breaker.schema.json", "router-request-event.schema.json", "router-requests.schema.json",
+		"score-factors.schema.json", "snapshot.schema.json",
 		"stage-assignment.schema.json", "stage-forward-frame.schema.json",
 		"sharded-model-config.schema.json", "stage-spec.schema.json", "subtask-result.schema.json", "subtask.schema.json", "task-dependencies.schema.json",
 		"task-graph.schema.json", "task.schema.json",

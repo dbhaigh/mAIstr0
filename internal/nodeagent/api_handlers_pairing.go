@@ -1,11 +1,11 @@
 package nodeagent
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"net/http"
 	"time"
 )
@@ -49,16 +49,15 @@ func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *Agent) handlePairingConnect(w http.ResponseWriter, r *http.Request) {
-	var request struct {
+	request, err := httpx.DecodeJSON[struct {
 		Address        string `json:"address"`
 		PIN            string `json:"pin"`
 		OrchestratorID string `json:"orchestrator_id,omitempty"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
+	}](w, r, 4<<10)
+	if err != nil {
 		writeError(w, apperr.Invalid(errors.New("invalid pairing request")))
 		return
 	}
-	var err error
 	if request.OrchestratorID != "" {
 		err = a.orchestratorLink.pairWithDiscoveredOrchestrator(request.OrchestratorID, request.Address, request.PIN)
 	} else {
@@ -87,8 +86,8 @@ func (a *Agent) handlePairingInvitation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "pairing invitation must include an orchestrator identity", http.StatusForbidden)
 		return
 	}
-	var request pairingInvitationRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil {
+	request, err := httpx.DecodeJSON[pairingInvitationRequest](w, r, 4<<10)
+	if err != nil {
 		writeError(w, apperr.Invalid(errors.New("invalid pairing invitation")))
 		return
 	}

@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -187,6 +189,66 @@ func TestMemorySyncGetReturnsIncrementalSnapshotForCurrentPeer(t *testing.T) {
 	}
 	if got := srv.metrics.snapshot().syncPages; got != 1 {
 		t.Fatalf("legacy request changed served sync page count to %d", got)
+	}
+}
+
+func TestMemorySyncGetNegotiatesEmptyAndGzip(t *testing.T) {
+	srv := newTestServer(t)
+	for _, test := range []struct {
+		version int
+		status  int
+	}{
+		{version: memory.SyncPageProtocolVersion, status: http.StatusOK},
+		{version: memory.SyncProtocolVersion, status: http.StatusNoContent},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/api/memory/sync", nil)
+		if err := memory.SetSyncHeadersVersion(request.Header, nil, test.version); err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		srv.Mux().ServeHTTP(response, request)
+		if response.Code != test.status {
+			t.Fatalf("protocol %d empty memory status = %d, want %d", test.version, response.Code, test.status)
+		}
+		version, _, err := memory.ReadSyncHeaders(response.Header())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version != test.version {
+			t.Fatalf("protocol %d response version = %d", test.version, version)
+		}
+	}
+
+	if _, err := srv.mem.Record(memory.Experience{Description: strings.Repeat("memory-data ", 200)}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/memory/sync", nil)
+	if err := memory.SetSyncHeadersVersion(request.Header, nil, memory.SyncProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept-Encoding", "gzip")
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if got := response.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("memory sync Content-Encoding = %q, want gzip", got)
+	}
+	reader, err := gzip.NewReader(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot memory.Snapshot
+	if err := json.Unmarshal(body, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Experiences) != 1 {
+		t.Fatalf("decoded memory experience count = %d, want 1", len(snapshot.Experiences))
 	}
 }
 

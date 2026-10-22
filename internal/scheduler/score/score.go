@@ -9,6 +9,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -17,6 +18,9 @@ import (
 // Subtask contains the fields that affect model eligibility and score.
 type Subtask struct {
 	TaskType              string
+	Description           string
+	ExpectedOutput        string
+	RoutingPreference     string
 	PreferredModel        string
 	RequiredCapabilities  []string
 	PreferredCapabilities []string
@@ -27,7 +31,8 @@ type Subtask struct {
 // Experience is the already-resolved, unweighted learned bias for the chosen
 // node/model/task pairing. Resolving it before scoring keeps Score lock-free.
 type Experience struct {
-	LearnedBias float64
+	LearnedBias     float64
+	TokensPerSecond float64
 }
 
 // ScoringConfig configures each additive score contribution. Suggested tuning
@@ -35,44 +40,49 @@ type Experience struct {
 // utilization multipliers, and 0–2 for learned-bias weighting. These ranges
 // are guidance only and are not enforced, preserving custom configurations.
 type ScoringConfig struct {
-	ModelMatchWeight       float64 `json:"model_match_weight"`        // Model/task-tag multiplier (default 10; suggested 0–15).
-	HardwareWeight         float64 `json:"hardware_weight"`           // Hardware-score multiplier (default 0.3; suggested 0–1).
-	LoadPenaltyWeight      float64 `json:"load_penalty_weight"`       // Per active/queued task and capacity-overage penalty (default 8; suggested 0–15).
-	GPUCompatibilityBonus  float64 `json:"gpu_compatibility_bonus"`   // Bonus for GPU-equipped nodes (default 10; suggested 0–15).
-	DependentPenaltyWeight float64 `json:"dependent_penalty_weight"`  // Per pending dependent task penalty (default 2; suggested 0–15).
-	GPUUtilizationWeight   float64 `json:"gpu_utilization_weight"`    // Fresh GPU-utilization multiplier (default 0.1; suggested 0–1).
-	NPUUtilizationWeight   float64 `json:"npu_utilization_weight"`    // Fresh NPU-utilization multiplier (default 0.1; suggested 0–1).
-	CPUUtilizationWeight   float64 `json:"cpu_utilization_weight"`    // Fresh CPU-utilization multiplier (default 0.05; suggested 0–1).
-	MemoryUsageWeight      float64 `json:"memory_usage_weight"`       // Fresh memory-use multiplier (default 0.05; suggested 0–1).
-	RequiredCapMatchBonus  float64 `json:"required_cap_match_bonus"`  // Per required-capability bonus (default 15; suggested 0–15).
-	PreferredCapMatchBonus float64 `json:"preferred_cap_match_bonus"` // Per preferred-capability bonus (default 5; suggested 0–15).
-	ModelQualityBonus      float64 `json:"model_quality_bonus"`       // Quality-tag / large-model bonus (default 3; suggested 0–15).
-	CriticalPathBonus      float64 `json:"critical_path_bonus"`       // Per dependent-edge bonus, scaled by hardware (default 2; suggested 0–15).
-	LearnedBiasWeight      float64 `json:"learned_bias_weight"`       // Resolved learned-bias multiplier (default 1; suggested 0–2).
+	ModelMatchWeight        float64 `json:"model_match_weight"`        // Model/task-tag multiplier (default 10; suggested 0–15).
+	HardwareWeight          float64 `json:"hardware_weight"`           // Hardware-score multiplier (default 0.3; suggested 0–1).
+	LoadPenaltyWeight       float64 `json:"load_penalty_weight"`       // Per active/queued task and capacity-overage penalty (default 8; suggested 0–15).
+	GPUCompatibilityBonus   float64 `json:"gpu_compatibility_bonus"`   // Bonus for GPU-equipped nodes (default 10; suggested 0–15).
+	DependentPenaltyWeight  float64 `json:"dependent_penalty_weight"`  // Per pending dependent task penalty (default 2; suggested 0–15).
+	GPUUtilizationWeight    float64 `json:"gpu_utilization_weight"`    // Fresh GPU-utilization multiplier (default 0.1; suggested 0–1).
+	NPUUtilizationWeight    float64 `json:"npu_utilization_weight"`    // Fresh NPU-utilization multiplier (default 0.1; suggested 0–1).
+	CPUUtilizationWeight    float64 `json:"cpu_utilization_weight"`    // Fresh CPU-utilization multiplier (default 0.05; suggested 0–1).
+	MemoryUsageWeight       float64 `json:"memory_usage_weight"`       // Fresh memory-use multiplier (default 0.05; suggested 0–1).
+	RequiredCapMatchBonus   float64 `json:"required_cap_match_bonus"`  // Per required-capability bonus (default 15; suggested 0–15).
+	PreferredCapMatchBonus  float64 `json:"preferred_cap_match_bonus"` // Per preferred-capability bonus (default 5; suggested 0–15).
+	ModelQualityBonus       float64 `json:"model_quality_bonus"`       // Quality-tag / large-model bonus (default 3; suggested 0–15).
+	CriticalPathBonus       float64 `json:"critical_path_bonus"`       // Per dependent-edge bonus, scaled by hardware (default 2; suggested 0–15).
+	LearnedBiasWeight       float64 `json:"learned_bias_weight"`       // Resolved learned-bias multiplier (default 1; suggested 0–2).
+	LatencyPreferenceWeight float64 `json:"latency_preference_weight"` // Maximum latency preference bonus (default 30).
 }
 
 // ScoreFactors contains the additive score terms and explanatory measurements.
 // Positive score factors are bonuses; penalties are subtracted from the total.
 type ScoreFactors struct {
-	ModelMatch            float64  `json:"model_match"`                       // Model default, preference, and task-tag contribution.
-	Hardware              float64  `json:"hardware"`                          // Weighted hardware score.
-	ActiveTasks           int      `json:"active_tasks"`                      // Reported active task count.
-	QueuedTasks           int      `json:"queued_tasks"`                      // Effective load minus reported active tasks.
-	PendingDependents     int      `json:"pending_dependents,omitempty"`      // Topology-dependent work already placed on this node.
-	CapacityPenalty       float64  `json:"capacity_penalty,omitempty"`        // Penalty for simulated load at or above the node limit.
-	LoadPenalty           float64  `json:"load_penalty"`                      // Weighted active, queued, and dependent load.
-	GPUCompatibilityScore float64  `json:"gpu_compatibility_score,omitempty"` // GPU availability bonus.
-	GPUUtilizationPenalty float64  `json:"gpu_utilization_penalty"`           // Fresh GPU utilization penalty.
-	NPUUtilizationPenalty float64  `json:"npu_utilization_penalty"`           // Fresh NPU utilization penalty.
-	CPUUtilizationPenalty float64  `json:"cpu_utilization_penalty,omitempty"` // Fresh CPU utilization penalty.
-	MemoryUsagePenalty    float64  `json:"memory_usage_penalty,omitempty"`    // Fresh memory utilization penalty.
-	CapabilityScore       float64  `json:"capability_score,omitempty"`        // Required and preferred capability bonuses.
-	MatchedCapabilities   []string `json:"matched_capabilities,omitempty"`    // Preferred capabilities found on the node or model.
-	ModelQualityScore     float64  `json:"model_quality_score,omitempty"`     // Quality-tag and model-size bonus.
-	TopologyScore         float64  `json:"topology_score,omitempty"`          // Critical-path bonus.
-	LearnedBias           float64  `json:"learned_bias"`                      // Weighted learned experience contribution.
-	TelemetryFresh        bool     `json:"telemetry_fresh"`                   // Whether utilization telemetry was included.
-	TelemetryAgeMs        int64    `json:"telemetry_age_ms,omitempty"`        // Age of telemetry, even when stale.
+	ModelMatch                 float64  `json:"model_match"`                            // Model default, preference, and task-tag contribution.
+	Hardware                   float64  `json:"hardware"`                               // Weighted hardware score.
+	ActiveTasks                int      `json:"active_tasks"`                           // Reported active task count.
+	QueuedTasks                int      `json:"queued_tasks"`                           // Effective load minus reported active tasks.
+	PendingDependents          int      `json:"pending_dependents,omitempty"`           // Topology-dependent work already placed on this node.
+	CapacityPenalty            float64  `json:"capacity_penalty,omitempty"`             // Penalty for simulated load at or above the node limit.
+	LoadPenalty                float64  `json:"load_penalty"`                           // Weighted active, queued, and dependent load.
+	GPUCompatibilityScore      float64  `json:"gpu_compatibility_score,omitempty"`      // GPU availability bonus.
+	GPUUtilizationPenalty      float64  `json:"gpu_utilization_penalty"`                // Fresh GPU utilization penalty.
+	NPUUtilizationPenalty      float64  `json:"npu_utilization_penalty"`                // Fresh NPU utilization penalty.
+	CPUUtilizationPenalty      float64  `json:"cpu_utilization_penalty,omitempty"`      // Fresh CPU utilization penalty.
+	MemoryUsagePenalty         float64  `json:"memory_usage_penalty,omitempty"`         // Fresh memory utilization penalty.
+	CapabilityScore            float64  `json:"capability_score,omitempty"`             // Required and preferred capability bonuses.
+	MatchedCapabilities        []string `json:"matched_capabilities,omitempty"`         // Preferred capabilities found on the node or model.
+	ModelQualityScore          float64  `json:"model_quality_score,omitempty"`          // Quality-tag and model-size bonus.
+	TopologyScore              float64  `json:"topology_score,omitempty"`               // Critical-path bonus.
+	EstimatedCompletionSeconds float64  `json:"estimated_completion_seconds,omitempty"` // Heuristic completion estimate including queued work.
+	EstimatedTokensPerSecond   float64  `json:"estimated_tokens_per_second,omitempty"`  // Historical throughput or model-size fallback.
+	ModelSizeGB                float64  `json:"model_size_gb,omitempty"`                // Selected model size used by the estimate.
+	LatencyScore               float64  `json:"latency_score,omitempty"`                // Preference-adjusted latency bonus.
+	LearnedBias                float64  `json:"learned_bias"`                           // Weighted learned experience contribution.
+	TelemetryFresh             bool     `json:"telemetry_fresh"`                        // Whether utilization telemetry was included.
+	TelemetryAgeMs             int64    `json:"telemetry_age_ms,omitempty"`             // Age of telemetry, even when stale.
 }
 
 // Candidate is a prepared, eligible node/model choice. Prepare creates it;
@@ -80,6 +90,7 @@ type ScoreFactors struct {
 type Candidate struct {
 	model                  string
 	engine                 string
+	modelSizeGB            float64
 	modelMatch             float64
 	modelQualityTags       int
 	modelAtLeastSevenGB    bool
@@ -102,20 +113,21 @@ const (
 // DefaultScoringConfig returns the established scheduler defaults.
 func DefaultScoringConfig() ScoringConfig {
 	return ScoringConfig{
-		ModelMatchWeight:       10.0,
-		HardwareWeight:         0.3,
-		LoadPenaltyWeight:      8.0,
-		GPUCompatibilityBonus:  10.0,
-		DependentPenaltyWeight: 2.0,
-		GPUUtilizationWeight:   0.1,
-		NPUUtilizationWeight:   0.1,
-		CPUUtilizationWeight:   0.05,
-		MemoryUsageWeight:      0.05,
-		RequiredCapMatchBonus:  15.0,
-		PreferredCapMatchBonus: 5.0,
-		ModelQualityBonus:      3.0,
-		CriticalPathBonus:      2.0,
-		LearnedBiasWeight:      1.0,
+		ModelMatchWeight:        10.0,
+		HardwareWeight:          0.3,
+		LoadPenaltyWeight:       8.0,
+		GPUCompatibilityBonus:   10.0,
+		DependentPenaltyWeight:  2.0,
+		GPUUtilizationWeight:    0.1,
+		NPUUtilizationWeight:    0.1,
+		CPUUtilizationWeight:    0.05,
+		MemoryUsageWeight:       0.05,
+		RequiredCapMatchBonus:   15.0,
+		PreferredCapMatchBonus:  5.0,
+		ModelQualityBonus:       3.0,
+		CriticalPathBonus:       2.0,
+		LearnedBiasWeight:       1.0,
+		LatencyPreferenceWeight: 30.0,
 	}
 }
 
@@ -202,6 +214,7 @@ func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 			best = Candidate{
 				model:               model.Name,
 				engine:              model.Engine,
+				modelSizeGB:         model.SizeGB,
 				modelMatch:          modelScore,
 				modelQualityTags:    qualityTags,
 				modelAtLeastSevenGB: model.SizeGB >= 7.0,
@@ -351,37 +364,66 @@ func scorePrepared(
 	if candidate.modelAtLeastSevenGB {
 		modelQuality += cfg.ModelQualityBonus * 0.5
 	}
+	if subtask.RoutingPreference == "latency" {
+		modelQuality *= 0.5
+	}
+
+	tokensPerSecond := exp.TokensPerSecond
+	if tokensPerSecond <= 0 {
+		tokensPerSecond = fallbackTokensPerSecond(candidate.modelSizeGB)
+	}
+	queueDepth := max(0, load-node.ActiveTasks)
+	workTokens := max(32.0, float64(utf8.RuneCountInString(subtask.Description)+
+		utf8.RuneCountInString(subtask.ExpectedOutput))/4.0)
+	modelLoadSeconds := max(0, candidate.modelSizeGB) * 0.05
+	estimatedCompletionSeconds := (workTokens/tokensPerSecond)*float64(queueDepth+1) + modelLoadSeconds
+	latencyScore := 0.0
+	if subtask.RoutingPreference == "latency" {
+		latencyScore = cfg.LatencyPreferenceWeight / (1 + estimatedCompletionSeconds)
+	}
 
 	var matchedCapabilities []string
 	if includeDetails {
 		matchedCapabilities = append([]string(nil), candidate.matchedCapabilities...)
 	}
 	factors := ScoreFactors{
-		ModelMatch:            candidate.modelMatch * cfg.ModelMatchWeight,
-		Hardware:              hardwareScore,
-		ActiveTasks:           node.ActiveTasks,
-		QueuedTasks:           load - node.ActiveTasks,
-		PendingDependents:     pendingDependents,
-		CapacityPenalty:       capacityPenalty,
-		LoadPenalty:           loadPenalty,
-		GPUCompatibilityScore: gpuCompatibilityScore,
-		GPUUtilizationPenalty: gpuPenalty,
-		NPUUtilizationPenalty: npuPenalty,
-		CPUUtilizationPenalty: cpuPenalty,
-		MemoryUsagePenalty:    memoryPenalty,
-		CapabilityScore:       capabilityScore,
-		MatchedCapabilities:   matchedCapabilities,
-		ModelQualityScore:     modelQuality,
-		TopologyScore:         topologyScore,
-		LearnedBias:           exp.LearnedBias * cfg.LearnedBiasWeight,
-		TelemetryFresh:        telemetryFresh,
-		TelemetryAgeMs:        telemetryAge.Milliseconds(),
+		ModelMatch:                 candidate.modelMatch * cfg.ModelMatchWeight,
+		Hardware:                   hardwareScore,
+		ActiveTasks:                node.ActiveTasks,
+		QueuedTasks:                load - node.ActiveTasks,
+		PendingDependents:          pendingDependents,
+		CapacityPenalty:            capacityPenalty,
+		LoadPenalty:                loadPenalty,
+		GPUCompatibilityScore:      gpuCompatibilityScore,
+		GPUUtilizationPenalty:      gpuPenalty,
+		NPUUtilizationPenalty:      npuPenalty,
+		CPUUtilizationPenalty:      cpuPenalty,
+		MemoryUsagePenalty:         memoryPenalty,
+		CapabilityScore:            capabilityScore,
+		MatchedCapabilities:        matchedCapabilities,
+		ModelQualityScore:          modelQuality,
+		TopologyScore:              topologyScore,
+		EstimatedCompletionSeconds: estimatedCompletionSeconds,
+		EstimatedTokensPerSecond:   tokensPerSecond,
+		ModelSizeGB:                candidate.modelSizeGB,
+		LatencyScore:               latencyScore,
+		LearnedBias:                exp.LearnedBias * cfg.LearnedBiasWeight,
+		TelemetryFresh:             telemetryFresh,
+		TelemetryAgeMs:             telemetryAge.Milliseconds(),
 	}
 	score := factors.ModelMatch + factors.Hardware + factors.GPUCompatibilityScore + factors.CapabilityScore +
-		factors.ModelQualityScore + factors.TopologyScore - factors.LoadPenalty - factors.CapacityPenalty -
+		factors.ModelQualityScore + factors.TopologyScore + factors.LatencyScore -
+		factors.LoadPenalty - factors.CapacityPenalty -
 		factors.GPUUtilizationPenalty - factors.NPUUtilizationPenalty -
 		factors.CPUUtilizationPenalty - factors.MemoryUsagePenalty + factors.LearnedBias
 	return score, factors
+}
+
+func fallbackTokensPerSecond(modelSizeGB float64) float64 {
+	if modelSizeGB <= 0 {
+		modelSizeGB = 7
+	}
+	return max(1.0, 24/math.Sqrt(modelSizeGB))
 }
 
 func modelMatchesSubtask(subtask Subtask, model engine.Model) bool {

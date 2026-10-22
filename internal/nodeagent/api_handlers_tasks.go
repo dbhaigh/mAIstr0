@@ -1,13 +1,14 @@
 package nodeagent
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"log"
 	"net/http"
 	"net/url"
 )
@@ -17,8 +18,10 @@ import (
 // each subtask straight to the chosen peer's /execute endpoint rather than
 // routing everything back through the orchestrator.
 func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	var req submitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[submitRequest](
+		w, r, httpx.ControlJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -101,11 +104,17 @@ func (a *Agent) handleTasksList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := memory.SetSyncResponseHeaders(w, currentWatermarks); err != nil {
+	if err := memory.SetSyncResponseHeadersForPeer(w, currentWatermarks, version); err != nil {
 		http.Error(w, "could not encode task sync watermarks: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	if memory.SupportsEmptySync(version) && r.Header.Get(memory.SyncPageCursorHeader) == "" && len(tasks) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if _, err := memory.WriteSyncJSON(w, http.StatusOK, tasks, version, memory.AcceptsSyncCompression(r)); err != nil {
+		log.Printf("FILE_ONLY: nodeagent: task sync response encoding failed: %v", err)
+	}
 }
 
 func (a *Agent) handleTaskGet(w http.ResponseWriter, r *http.Request) {

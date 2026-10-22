@@ -3,6 +3,7 @@ package scheduler
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,52 @@ func TestAssignAllowsGeneralCapableModelForSpecificTask(t *testing.T) {
 	}
 	if len(assignments) != 1 || assignments[0].Model != "general-model" {
 		t.Fatalf("unexpected assignments: %+v", assignments)
+	}
+}
+
+func TestAssignUsesLatencyPreferenceAndMeasuredThroughput(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "fast", Address: "http://fast", Healthy: true,
+			Models: []engine.Model{{Name: "small-model", Tags: []string{"general"}, SizeGB: 7}},
+		},
+		{
+			ID: "quality", Address: "http://quality", Healthy: true,
+			Models: []engine.Model{{
+				Name: "large-model", Tags: []string{"general", "high-quality", "reasoning"}, SizeGB: 70,
+			}},
+		},
+	}
+	experience := routingHistoryFixture{"fast": 100, "quality": 10}
+	subtask := Subtask{
+		ID: "work", TaskType: "general", Description: strings.Repeat("d", 1000),
+		ExpectedOutput: strings.Repeat("o", 1000),
+	}
+	qualityAssignments, err := AssignWithExperience(
+		[]Subtask{subtask}, nodes, experience,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qualityAssignments[0].NodeID != "quality" {
+		t.Fatalf("quality preference selected %s, want quality candidate", qualityAssignments[0].NodeID)
+	}
+
+	subtask.RoutingPreference = RoutingPreferenceLatency
+	latencyAssignments, err := AssignWithExperience(
+		[]Subtask{subtask}, nodes, experience,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latencyAssignments[0].NodeID != "fast" {
+		t.Fatalf("latency preference selected %s, want faster candidate", latencyAssignments[0].NodeID)
+	}
+	factors := latencyAssignments[0].Factors
+	if factors.EstimatedTokensPerSecond != 100 || factors.ModelSizeGB != 7 ||
+		factors.EstimatedCompletionSeconds >= qualityAssignments[0].Factors.EstimatedCompletionSeconds {
+		t.Fatalf("selected latency score factors = %+v; quality candidate factors = %+v",
+			factors, qualityAssignments[0].Factors)
 	}
 }
 
@@ -327,4 +374,14 @@ func TestAssignExcludesFailedNodes(t *testing.T) {
 	if len(assignments) != 1 || assignments[0].NodeID != "healthy" {
 		t.Fatalf("failed node was assigned work: %+v", assignments)
 	}
+}
+
+type routingHistoryFixture map[string]float64
+
+func (routingHistoryFixture) LearnedBias(string, string, string) float64 {
+	return 0
+}
+
+func (history routingHistoryFixture) TokensPerSecond(nodeID, _, _ string) float64 {
+	return history[nodeID]
 }

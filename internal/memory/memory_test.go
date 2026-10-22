@@ -131,6 +131,9 @@ func TestSnapshotForPeerNegotiatesIncrementalAndFullFallback(t *testing.T) {
 	if len(incremental.Experiences) != 1 {
 		t.Fatalf("incremental experiences = %d, want 1", len(incremental.Experiences))
 	}
+	if versionTwo := SnapshotForPeer(store, SyncPageProtocolVersion, map[string]uint64{origin: 2}); len(versionTwo.Experiences) != 1 {
+		t.Fatalf("version 2 peer got %d experiences, want 1", len(versionTwo.Experiences))
+	}
 	if legacyIncremental := SnapshotForPeer(store, FirstSyncProtocolVersion, map[string]uint64{origin: 2}); len(legacyIncremental.Experiences) != 1 {
 		t.Fatalf("version 1 peer got %d experiences, want the incremental record", len(legacyIncremental.Experiences))
 	}
@@ -139,6 +142,9 @@ func TestSnapshotForPeerNegotiatesIncrementalAndFullFallback(t *testing.T) {
 	}
 	if reset := SnapshotForPeer(store, SyncProtocolVersion, map[string]uint64{origin: 99}); len(reset.Experiences) != 3 {
 		t.Fatalf("peer with ahead watermark got %d experiences, want full fallback", len(reset.Experiences))
+	}
+	if future := SnapshotForPeer(store, SyncProtocolVersion+1, map[string]uint64{origin: 2}); len(future.Experiences) != 3 {
+		t.Fatalf("unsupported future peer got %d experiences, want full fallback", len(future.Experiences))
 	}
 
 	request, err := http.NewRequest(http.MethodGet, "https://example.test/memory/sync", nil)
@@ -470,6 +476,23 @@ func TestFactsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFactsScopeUsesExactPrefix(t *testing.T) {
+	s := newTestStore(t)
+	for _, fact := range []Fact{
+		{Scope: "team", Key: "one", Value: "included"},
+		{Scope: "team-archive", Key: "one", Value: "excluded"},
+	} {
+		if _, err := s.PutFact(fact); err != nil {
+			t.Fatalf("put fact in scope %q: %v", fact.Scope, err)
+		}
+	}
+
+	got := s.Facts("team")
+	if len(got) != 1 || got[0].Scope != "team" || got[0].Value != "included" {
+		t.Fatalf("facts in exact scope = %+v", got)
+	}
+}
+
 func TestMergeSnapshotDoesNotReplaceNewerFactWithStaleReplica(t *testing.T) {
 	s := newTestStore(t)
 	newerAt := time.Now()
@@ -511,6 +534,44 @@ func TestDialoguePersistence(t *testing.T) {
 	}
 	if list := s.Dialogues(10); len(list) != 1 {
 		t.Errorf("expected 1 stored dialogue, got %d", len(list))
+	}
+}
+
+func TestAppendDialogueTurnsPersistsTogether(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dialogues.db")
+	store, err := Open(path, "test-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	turns := []Turn{
+		{Speaker: "user", Content: "question", At: time.Unix(1, 0).UTC()},
+		{Speaker: "node", Content: "answer", At: time.Unix(2, 0).UTC()},
+	}
+	appender, ok := store.(DialogueBatchAppender)
+	if !ok {
+		t.Fatal("store does not support atomic dialogue appends")
+	}
+	if err := appender.AppendDialogueTurns("dialogue", []string{"user", "node"}, "topic", turns); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path, "test-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	dialogue, err := reopened.Dialogue("dialogue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dialogue.Turns) != 2 ||
+		dialogue.Turns[0].Speaker != "user" || dialogue.Turns[0].Content != "question" ||
+		dialogue.Turns[1].Speaker != "node" || dialogue.Turns[1].Content != "answer" {
+		t.Fatalf("persisted dialogue turns = %+v", dialogue.Turns)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -21,6 +20,7 @@ import (
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/maistr0/maistr0/internal/testutil"
 )
 
 var updateOrchestratorContracts = flag.Bool("update", false, "update orchestrator contract golden files")
@@ -753,27 +753,8 @@ func assertOrchestratorGolden(t *testing.T, name string, response *httptest.Resp
 	}{
 		Status: response.Code, ContentType: response.Header().Get("Content-Type"), Body: body,
 	}
-	actual, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	actual = append(actual, '\n')
 	path := filepath.Join("testdata", "contracts", name)
-	if *updateOrchestratorContracts {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, actual, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	expected, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read orchestrator contract %s (use -update to create it): %v", path, err)
-	}
-	if !bytes.Equal(actual, expected) {
-		t.Errorf("orchestrator contract %s changed\n--- got ---\n%s\n--- want ---\n%s", name, actual, expected)
-	}
+	testutil.AssertJSONGolden(t, path, value, *updateOrchestratorContracts)
 }
 
 func normalizeOrchestratorContractValue(value any, key string) any {
@@ -794,7 +775,7 @@ func normalizeOrchestratorContractValue(value any, key string) any {
 			case "sequence":
 				typed[field] = json.Number("0")
 			case "score_factors":
-				// Scheduler goldens lock down exact scoring; API values vary with load and learned history.
+				// Scheduler goldens assert exact scores; API estimates vary with load and learned history.
 				typed[field] = normalizeOrchestratorContractValue(nested, field)
 			default:
 				typed[field] = normalizeOrchestratorContractValue(nested, field)
@@ -824,7 +805,8 @@ func normalizeOrchestratorContractValue(value any, key string) any {
 		}
 		if strings.Contains(key, "score") || key == "active_tasks" || key == "queued_tasks" ||
 			key == "pending_dependents" || key == "capacity_penalty" || key == "load_penalty" ||
-			key == "learned_bias" {
+			key == "learned_bias" || key == "estimated_completion_seconds" ||
+			key == "estimated_tokens_per_second" || key == "model_size_gb" {
 			return json.Number("0")
 		}
 		return typed

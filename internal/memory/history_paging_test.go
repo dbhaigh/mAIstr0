@@ -128,6 +128,30 @@ func TestInMemoryFactsAndDialoguePages(t *testing.T) {
 	}
 }
 
+func TestBoltFactsPageUsesExactScopePrefix(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "facts.db"), "facts-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, fact := range []Fact{
+		{Scope: "team", Key: "one", Value: "included"},
+		{Scope: "team-archive", Key: "one", Value: "excluded"},
+	} {
+		if _, err := store.PutFact(fact); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := store.(HistoryPager).FactsPage("team", PageOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Scope != "team" || page.Items[0].Value != "included" {
+		t.Fatalf("facts in exact scope = %+v", page.Items)
+	}
+}
+
 func TestBoltHistoryPagesUsePersistedCursorPositions(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "history.db"), "history-test")
 	if err != nil {

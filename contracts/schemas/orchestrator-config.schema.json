@@ -10,6 +10,12 @@
     "harness": {"type": "string", "enum": ["deepseek", "pi"]},
     "max_concurrent_dispatches": {"type": "integer"},
     "dispatch_timeout_seconds": {"type": "integer", "minimum": 1},
+    "speculative_hedging_enabled": {"type": "boolean", "default": false},
+    "max_concurrent_hedges": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
+    "router_time_to_first_byte_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120, "default": 60},
+    "router_idle_stream_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120, "default": 30},
+    "router_requests_per_minute": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
+    "router_max_concurrent_per_client": {"type": "integer", "minimum": 0, "maximum": 1024, "default": 0},
     "sharded_models": {
       "type": "array",
       "items": {"$ref": "sharded-model-config.schema.json"}

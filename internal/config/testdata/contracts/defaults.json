@@ -25,6 +25,9 @@
     "tray_mode": "taskbar",
     "memory_path": "",
     "sync_max_bytes": 67108864,
-    "sync_timeout_seconds": 600
+    "sync_timeout_seconds": 600,
+    "max_concurrent_hedges": 1,
+    "router_time_to_first_byte_timeout_seconds": 60,
+    "router_idle_stream_timeout_seconds": 30
   }
 }

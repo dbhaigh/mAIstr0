@@ -16,6 +16,20 @@ func (s *Server) synthesizeTask(ctx context.Context, task *taskmgr.Task) (string
 	if len(task.Subtasks) == 1 {
 		return task.Subtasks[0].Output, nil
 	}
+	hasReview := false
+	for _, subtask := range task.Subtasks {
+		if subtask.Subtask.Role == "reviewer" {
+			hasReview = true
+			break
+		}
+	}
+	if !hasReview {
+		for _, subtask := range task.Subtasks {
+			if subtask.Subtask.Synthesis && subtask.Status == taskmgr.StatusCompleted {
+				return subtask.Output, nil
+			}
+		}
+	}
 
 	var prompt strings.Builder
 	fmt.Fprintf(&prompt, "Produce one clear, cohesive answer to the user's task using the completed subtask outputs below. Preserve important details, resolve overlap, and do not invent facts that are not supported by the outputs.\n\nUser task:\n%s\n\n", task.Description)

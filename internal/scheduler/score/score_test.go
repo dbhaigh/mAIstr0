@@ -3,6 +3,7 @@ package score
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,7 +237,12 @@ func TestScoreFactorsTable(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, factors := Score(test.node, test.subtask, test.load, test.pending, test.exp, test.cfg, now)
-			if got != test.want || !reflect.DeepEqual(factors, test.factors) {
+			legacyFactors := factors
+			legacyFactors.EstimatedCompletionSeconds = 0
+			legacyFactors.EstimatedTokensPerSecond = 0
+			legacyFactors.ModelSizeGB = 0
+			legacyFactors.LatencyScore = 0
+			if got != test.want || !reflect.DeepEqual(legacyFactors, test.factors) {
 				t.Fatalf("Score() = (%v, %+v), want (%v, %+v)", got, factors, test.want, test.factors)
 			}
 			candidate, ok := Prepare(test.node, test.subtask)
@@ -260,6 +266,39 @@ func TestScoreFactorsTable(t *testing.T) {
 				t.Fatalf("ScorePreparedValue() = %v, want Score() score %v", fastScore, got)
 			}
 		})
+	}
+}
+
+func TestScoreReportsCompletionEstimateAndRoutingPreference(t *testing.T) {
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	node := scoreNode(engine.Model{Name: "m", Tags: []string{"general", "high-quality"}, SizeGB: 8})
+	node.ActiveTasks = 1
+	subtask := Subtask{
+		TaskType: "general", Description: strings.Repeat("d", 160),
+		ExpectedOutput: strings.Repeat("o", 80), RoutingPreference: "latency",
+	}
+	scoreValue, factors := Score(
+		node, subtask, 3, 0, Experience{TokensPerSecond: 4}, DefaultScoringConfig(), now,
+	)
+	if math.Abs(factors.EstimatedCompletionSeconds-45.4) > 1e-9 {
+		t.Fatalf("estimated completion = %v, want 45.4 seconds", factors.EstimatedCompletionSeconds)
+	}
+	if factors.EstimatedTokensPerSecond != 4 || factors.ModelSizeGB != 8 {
+		t.Fatalf("cost factors = %+v, want measured throughput 4 tokens/s and model size 8 GB", factors)
+	}
+	if math.Abs(factors.LatencyScore-30.0/46.4) > 1e-9 {
+		t.Fatalf("latency score = %v, want %v", factors.LatencyScore, 30.0/46.4)
+	}
+
+	subtask.RoutingPreference = "quality"
+	qualityScore, qualityFactors := Score(
+		node, subtask, 3, 0, Experience{TokensPerSecond: 4}, DefaultScoringConfig(), now,
+	)
+	if qualityFactors.LatencyScore != 0 || qualityFactors.ModelQualityScore != 2*factors.ModelQualityScore {
+		t.Fatalf("quality preference factors = %+v, latency factors = %+v", qualityFactors, factors)
+	}
+	if scoreValue == qualityScore {
+		t.Fatal("routing preference did not affect the candidate score")
 	}
 }
 

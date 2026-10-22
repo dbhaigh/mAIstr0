@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/syncinterval"
@@ -74,8 +75,10 @@ type peerMessageResponse struct {
 // model sees who it is talking to, so the two LLMs hold a real dialogue
 // rather than exchanging isolated one-shot prompts.
 func (a *Agent) handlePeerMessage(w http.ResponseWriter, r *http.Request) {
-	var req peerMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[peerMessageRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, peerMessageResponse{Error: err.Error()})
 		return
 	}
@@ -165,8 +168,10 @@ type peerConverseResponse struct {
 // and a peer node's LLM: the local model speaks, the remote model answers,
 // and the local model then reacts to that answer for the next round.
 func (a *Agent) handlePeerConverse(w http.ResponseWriter, r *http.Request) {
-	var req peerConverseRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[peerConverseRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, peerConverseResponse{Error: err.Error()})
 		return
 	}
@@ -363,8 +368,10 @@ func (a *Agent) handleMemoryFacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPost {
-		var f memory.Fact
-		if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+		f, err := httpx.DecodeJSON[memory.Fact](
+			w, r, httpx.SmallJSONBodyBytes,
+		)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -410,7 +417,12 @@ func (a *Agent) syncMemoryToOrchestrator() {
 			}
 		}
 		backoff.Observe(syncinterval.WatermarksAdvanced(before, a.mem.Watermarks()))
-		if syncinterval.Wait(backoff.Current(), changes) {
+		if syncinterval.WaitDebounced(
+			syncinterval.Jitter(backoff.Current()),
+			syncinterval.DebounceInterval,
+			changes,
+			func() <-chan struct{} { return memorySyncChanges(a.mem) },
+		) {
 			backoff.Reset()
 		}
 	}
@@ -429,7 +441,7 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 	requestID := syncLogRequestID(nil)
 	log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_start %s peer=%s body_bytes=unknown",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(fetchStarted), "none"), addr)
-	remoteSnapshot, bodyBytes, err := fetchMemorySyncSnapshot(
+	remoteSnapshot, bodyBytes, status, err := fetchMemorySyncSnapshot(
 		a.memorySyncClient,
 		strings.TrimRight(addr, "/")+"/api/memory/sync",
 		memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peerID)),
@@ -441,7 +453,7 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 		return fmt.Errorf("fetch merged snapshot: %w", err)
 	}
 	log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_complete %s peer=%s status=%d body_bytes=%d records=%d elapsed=%s",
-		syncLogFields(requestID, a.cfg.NodeID, time.Since(fetchStarted), "none"), addr, http.StatusOK, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(fetchStarted))
+		syncLogFields(requestID, a.cfg.NodeID, time.Since(fetchStarted), "none"), addr, status, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(fetchStarted))
 	mergeStarted := time.Now()
 	if err := a.mem.MergeSnapshotFrom(remoteSnapshot, peerID); err != nil {
 		log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=merge_failed %s peer=%s body_bytes=%d elapsed=%s error=%v",
@@ -452,6 +464,14 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(mergeStarted), "none"), addr, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(mergeStarted))
 
 	snapshot := memory.SnapshotForPeer(a.mem, remoteSnapshot.SyncVersion, remoteSnapshot.Watermarks)
+	if memorySyncRecordCount(snapshot) == 0 {
+		if memory.SupportsIncrementalSync(remoteSnapshot.SyncVersion) {
+			if err := a.mem.SetPeerWatermarks(peerID, snapshot.Watermarks); err != nil {
+				return fmt.Errorf("persist orchestrator watermarks: %w", err)
+			}
+		}
+		return nil
+	}
 	postStarted := time.Now()
 	bodies, err := marshalMemorySnapshotPages(snapshot, a.cfg.SyncMaxBytes, func(page memory.Snapshot) ([]byte, error) {
 		return json.Marshal(map[string]any{
@@ -476,6 +496,7 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 		strings.TrimRight(addr, "/")+"/api/memory/sync",
 		bodies,
 		a.mem.Watermarks(),
+		remoteSnapshot.SyncVersion,
 	)
 	if err != nil {
 		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_failed %s peer=%s body_bytes=%d elapsed=%s error=%v",

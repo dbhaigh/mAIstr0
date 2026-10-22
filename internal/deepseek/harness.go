@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hub"
@@ -29,9 +30,8 @@ import (
 type Harness struct {
 	registry   *cluster.Registry
 	dispatcher *http.Client
-	tools      map[string]Tool
-	// toolsMu protects the tool registry; it is released before invoking tools.
-	toolsMu sync.RWMutex
+	tools      *ToolRegistry
+	loop       *agent.AgentLoop[deepSeekRequest]
 
 	sessions map[string]*Session
 	// sessionsMu protects the session map. Stats may nest session.mu beneath
@@ -42,11 +42,6 @@ type Harness struct {
 	mem              memory.Store
 	style            string
 	workflowExecutor func(context.Context, string, []scheduler.Subtask, bool) (string, error)
-
-	activeCancels map[string]context.CancelFunc
-	// cancelsMu protects cancellation handles only; callbacks run after unlock
-	// and this lock is not nested with sessionsMu or session.mu.
-	cancelsMu sync.Mutex
 }
 
 // SetWorkflowExecutor installs the shared durable workflow execution path.
@@ -63,27 +58,24 @@ func newWithStyle(registry *cluster.Registry, dispatcher *http.Client, style str
 		dispatcher = &http.Client{Timeout: 10 * time.Minute}
 	}
 	h := &Harness{
-		registry:      registry,
-		dispatcher:    dispatcher,
-		tools:         make(map[string]Tool),
-		sessions:      make(map[string]*Session),
-		events:        hub.New(),
-		style:         style,
-		activeCancels: make(map[string]context.CancelFunc),
+		registry:   registry,
+		dispatcher: dispatcher,
+		tools:      NewToolRegistry(),
+		sessions:   make(map[string]*Session),
+		events:     hub.New(),
+		style:      style,
 	}
 
-	for _, t := range DefaultTools() {
-		h.RegisterTool(t)
+	for _, registration := range defaultToolRegistrations() {
+		h.tools.register(registration.tool, registration.argumentType)
 	}
-
+	h.loop = h.newAgentLoop()
 	return h
 }
 
 // RegisterTool adds a tool to the harness catalog.
 func (h *Harness) RegisterTool(t Tool) {
-	h.toolsMu.Lock()
-	defer h.toolsMu.Unlock()
-	h.tools[t.Def().Name] = t
+	h.tools.Register(t)
 }
 
 // SetEventsHub attaches an SSE hub to broadcast agent events cluster-wide.
@@ -96,10 +88,10 @@ func (h *Harness) SetEventsHub(events *hub.Hub) {
 func (h *Harness) SetMemory(store memory.Store) {
 	h.mem = store
 	if store != nil {
-		h.RegisterTool(&RecallMemoryTool{})
-		h.RegisterTool(&RememberFactTool{})
-		h.RegisterTool(&MemoryInsightsTool{})
-		h.RegisterTool(&NodeToNodeConversationTool{})
+		registerTypedTool[recallMemoryArgs](h.tools, &RecallMemoryTool{})
+		registerTypedTool[rememberFactArgs](h.tools, &RememberFactTool{})
+		registerTypedTool[memoryInsightsArgs](h.tools, &MemoryInsightsTool{})
+		registerTypedTool[nodeToNodeConversationArgs](h.tools, &NodeToNodeConversationTool{})
 	}
 }
 
@@ -119,14 +111,7 @@ func (h *Harness) remember(e memory.Experience) {
 
 // ListTools returns definitions for all available tools in the harness.
 func (h *Harness) ListTools() []ToolDef {
-	h.toolsMu.RLock()
-	defer h.toolsMu.RUnlock()
-	defs := make([]ToolDef, 0, len(h.tools))
-	for _, t := range h.tools {
-		defs = append(defs, t.Def())
-	}
-	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
-	return defs
+	return h.tools.List()
 }
 
 // ExecuteTool runs a registered tool outside the harness-owned agent loop.
@@ -138,9 +123,7 @@ func (h *Harness) ExecuteTool(ctx context.Context, sessionID, name string, args 
 	}
 	s.toolMu.Lock()
 	defer s.toolMu.Unlock()
-	h.toolsMu.RLock()
-	tool, ok := h.tools[name]
-	h.toolsMu.RUnlock()
+	tool, ok := h.tools.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -296,22 +279,7 @@ func (h *Harness) DeleteSession(id string) bool {
 
 // InterruptSession aborts in-flight reasoning and tools for a session.
 func (h *Harness) InterruptSession(sessionID string) bool {
-	h.cancelsMu.Lock()
-	cancel, ok := h.activeCancels[sessionID]
-	h.cancelsMu.Unlock()
-	if ok {
-		cancel()
-	}
-	s, found := h.GetSession(sessionID)
-	if found {
-		s.mu.Lock()
-		wasActive := s.Active
-		s.Active = false
-		s.UpdatedAt = time.Now()
-		s.mu.Unlock()
-		return wasActive || ok
-	}
-	return ok
+	return h.loop.InterruptSession(sessionID)
 }
 
 // Stats returns runtime statistics for the interactive agent harness.
@@ -355,291 +323,32 @@ func (h *Harness) SendMessage(ctx context.Context, sessionID string, userText st
 	if !ok {
 		return nil, errors.New("session not found: " + sessionID)
 	}
-
-	s.mu.Lock()
-	if s.Active {
-		s.mu.Unlock()
-		return nil, errors.New("session is currently processing another request")
-	}
-	s.Active = true
-	s.UpdatedAt = time.Now()
-	sessionStart := time.Now()
-
-	userMsg := Message{
-		ID:        generateID("msg_"),
-		Role:      RoleUser,
-		Content:   userText,
-		Timestamp: time.Now(),
-	}
-	s.Messages = append(s.Messages, userMsg)
-	s.mu.Unlock()
-
-	turnCtx, turnCancel := context.WithCancel(ctx)
-	h.cancelsMu.Lock()
-	h.activeCancels[sessionID] = turnCancel
-	h.cancelsMu.Unlock()
-
-	defer func() {
-		h.cancelsMu.Lock()
-		delete(h.activeCancels, sessionID)
-		h.cancelsMu.Unlock()
-		turnCancel()
-		s.mu.Lock()
-		s.Active = false
-		s.UpdatedAt = time.Now()
-		s.mu.Unlock()
-	}()
-
-	sendEvent := func(evt StreamEvent) {
-		evt.SessionID = sessionID
-		if streamChan != nil {
-			select {
-			case streamChan <- evt:
-			default:
+	var agentEvents chan agent.StreamEvent
+	var relayDone chan struct{}
+	if streamChan != nil {
+		agentEvents = make(chan agent.StreamEvent, cap(streamChan))
+		relayDone = make(chan struct{})
+		go func() {
+			defer close(relayDone)
+			for event := range agentEvents {
 				select {
-				case streamChan <- evt:
-				case <-time.After(50 * time.Millisecond):
+				case streamChan <- FromAgentStreamEvent(event):
+				case <-ctx.Done():
+					return
 				}
 			}
-		}
+		}()
 	}
-
-	recordInterrupted := func() *Message {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		for i := len(s.Messages) - 1; i >= 0; i-- {
-			if s.Messages[i].Role == RoleAssistant && strings.Contains(s.Messages[i].Content, "interrupted") {
-				return &s.Messages[i]
-			}
-		}
-		interruptedMsg := Message{
-			ID:          generateID("msg_"),
-			Role:        RoleAssistant,
-			Content:     "⚠️ Session interrupted by user.",
-			Coordinator: "orchestrator",
-			Timestamp:   time.Now(),
-			DurationMs:  time.Since(sessionStart).Milliseconds(),
-		}
-		s.Messages = append(s.Messages, interruptedMsg)
-		return &interruptedMsg
+	message, err := h.loop.Run(ctx, deepSeekConversation{session: s}, userText, agentEvents)
+	if agentEvents != nil {
+		close(agentEvents)
+		<-relayDone
 	}
-
-	maxSteps := s.Config.MaxSteps
-	if maxSteps <= 0 {
-		maxSteps = 8
+	if message == nil {
+		return nil, err
 	}
-
-	var finalAssistantMsg *Message
-
-	for step := 1; step <= maxSteps; step++ {
-		select {
-		case <-turnCtx.Done():
-			sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
-			return recordInterrupted(), turnCtx.Err()
-		default:
-		}
-
-		sendEvent(StreamEvent{Type: EventStepStarted, Step: step})
-
-		// Select coordinator node and model to drive this step's reasoning
-		coordNode, coordModel, err := h.selectCoordinator(s)
-		if err != nil {
-			if turnCtx.Err() != nil {
-				sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
-				return recordInterrupted(), turnCtx.Err()
-			}
-			sendEvent(StreamEvent{Type: EventError, Error: "failed to select coordinator LLM: " + err.Error()})
-			return nil, err
-		}
-
-		// Construct the DeepSeek coordinator prompt.
-		prompt := h.buildPrompt(s)
-
-		stepStart := time.Now()
-		h.registry.IncrementLoad(coordNode.ID, 1)
-		rawResp, err := h.dispatchToNode(turnCtx, coordNode.Address, coordModel, prompt)
-		h.registry.IncrementLoad(coordNode.ID, -1)
-		stepDuration := time.Since(stepStart).Milliseconds()
-
-		if err != nil {
-			if turnCtx.Err() != nil {
-				sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
-				return recordInterrupted(), turnCtx.Err()
-			}
-			errText := fmt.Sprintf("coordinator error from %s (%s): %v", coordNode.ID, coordModel, err)
-			sendEvent(StreamEvent{Type: EventError, Error: errText})
-			return nil, errors.New(errText)
-		}
-
-		// Parse output for thoughts, direct content, or tool calls.
-		parsed := ParseResponse(rawResp)
-		sendEvent(StreamEvent{
-			Type:        EventNodeOutput,
-			Step:        step,
-			NodeID:      coordNode.ID,
-			NodeAddr:    coordNode.Address,
-			Model:       coordModel,
-			Output:      rawResp,
-			Coordinator: "orchestrator",
-		})
-
-		if parsed.Thought != "" {
-			sendEvent(StreamEvent{Type: EventThought, Step: step, Content: parsed.Thought})
-		}
-
-		// If tool calls were generated, execute them across the cluster
-		if len(parsed.ToolCalls) > 0 {
-			// Record assistant message with tool calls in history
-			asstMsg := Message{
-				ID:          generateID("msg_"),
-				Role:        RoleAssistant,
-				Content:     parsed.Content,
-				RawOutput:   rawResp,
-				Thought:     parsed.Thought,
-				ToolCalls:   parsed.ToolCalls,
-				NodeID:      coordNode.ID,
-				Model:       coordModel,
-				Coordinator: "orchestrator",
-				Timestamp:   time.Now(),
-				DurationMs:  stepDuration,
-			}
-			s.mu.Lock()
-			s.Messages = append(s.Messages, asstMsg)
-			s.mu.Unlock()
-
-			for _, tc := range parsed.ToolCalls {
-				select {
-				case <-turnCtx.Done():
-					sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
-					return recordInterrupted(), turnCtx.Err()
-				default:
-				}
-
-				sendEvent(StreamEvent{Type: EventToolCall, Step: step, ToolCall: &tc})
-
-				h.toolsMu.RLock()
-				toolImpl, exists := h.tools[tc.Name]
-				h.toolsMu.RUnlock()
-
-				var toolResp ToolResponse
-				toolStart := time.Now()
-
-				if !exists {
-					toolResp = ToolResponse{
-						ToolCallID: tc.ID,
-						Name:       tc.Name,
-						Error:      fmt.Sprintf("unknown tool: %s", tc.Name),
-						DurationMs: time.Since(toolStart).Milliseconds(),
-					}
-				} else {
-					out, nID, nAddr, mod, execErr := toolImpl.Execute(turnCtx, h, s, tc.Arguments)
-					toolElapsed := time.Since(toolStart).Milliseconds()
-					if turnCtx.Err() != nil {
-						sendEvent(StreamEvent{Type: EventInterrupted, Content: "Session interrupted."})
-						return recordInterrupted(), turnCtx.Err()
-					}
-					toolResp = ToolResponse{
-						ToolCallID: tc.ID,
-						Name:       tc.Name,
-						Output:     out,
-						NodeID:     nID,
-						NodeAddr:   nAddr,
-						Model:      mod,
-						DurationMs: toolElapsed,
-					}
-					if execErr != nil {
-						toolResp.Error = execErr.Error()
-					}
-				}
-
-				h.remember(memory.Experience{
-					Kind:        "tool_call",
-					TaskType:    toolTaskType(tc),
-					Description: describeToolCall(tc),
-					Prompt:      tc.RawArgs,
-					Output:      renderToolOutput(toolResp.Output),
-					NodeID:      toolResp.NodeID,
-					Model:       toolResp.Model,
-					Tool:        tc.Name,
-					SessionID:   sessionID,
-					Success:     toolResp.Error == "",
-					Error:       toolResp.Error,
-					DurationMs:  toolResp.DurationMs,
-					Tags:        []string{"agent", tc.Name},
-				})
-
-				sendEvent(StreamEvent{Type: EventToolResponse, Step: step, ToolResp: &toolResp})
-
-				// Append tool response to message history so next turn has context
-				toolMsg := Message{
-					ID:           generateID("msg_"),
-					Role:         RoleTool,
-					ToolResponse: &toolResp,
-					NodeID:       toolResp.NodeID,
-					Model:        toolResp.Model,
-					Timestamp:    time.Now(),
-					DurationMs:   toolResp.DurationMs,
-				}
-				s.mu.Lock()
-				s.Messages = append(s.Messages, toolMsg)
-				s.mu.Unlock()
-			}
-
-			// Continue ReAct loop to next step
-			continue
-		}
-
-		// No tool calls: final assistant response produced
-		finalMsg := Message{
-			ID:          generateID("msg_"),
-			Role:        RoleAssistant,
-			Content:     parsed.Content,
-			RawOutput:   rawResp,
-			Thought:     parsed.Thought,
-			NodeID:      coordNode.ID,
-			Model:       coordModel,
-			Coordinator: "orchestrator",
-			Timestamp:   time.Now(),
-			DurationMs:  stepDuration,
-		}
-		s.mu.Lock()
-		s.Messages = append(s.Messages, finalMsg)
-		s.mu.Unlock()
-
-		finalAssistantMsg = &finalMsg
-		sendEvent(StreamEvent{Type: EventFinalMessage, Step: step, Message: &finalMsg, Content: parsed.Content})
-		break
-	}
-
-	if finalAssistantMsg == nil {
-		// Reached max steps without terminating
-		fallbackMsg := Message{
-			ID:        generateID("msg_"),
-			Role:      RoleAssistant,
-			Content:   "Reached maximum reasoning steps without a final conclusion. You may ask me to continue or narrow the task.",
-			Timestamp: time.Now(),
-		}
-		s.mu.Lock()
-		s.Messages = append(s.Messages, fallbackMsg)
-		s.mu.Unlock()
-		finalAssistantMsg = &fallbackMsg
-		sendEvent(StreamEvent{Type: EventFinalMessage, Message: &fallbackMsg, Content: fallbackMsg.Content})
-	}
-
-	h.remember(memory.Experience{
-		Kind:        "agent_session",
-		Description: userText,
-		Output:      finalAssistantMsg.Content,
-		NodeID:      finalAssistantMsg.NodeID,
-		Model:       finalAssistantMsg.Model,
-		SessionID:   sessionID,
-		Success:     finalAssistantMsg.Content != "",
-		DurationMs:  time.Since(sessionStart).Milliseconds(),
-		Tags:        []string{"agent", "session"},
-	})
-
-	sendEvent(StreamEvent{Type: EventDone})
-	return finalAssistantMsg, nil
+	converted := FromAgentMessage(*message)
+	return &converted, err
 }
 
 func toolTaskType(tc ToolCall) string {
@@ -781,6 +490,10 @@ func pickBestCoordinatorModel(models []engine.Model, defaultModel string) string
 
 // buildPrompt constructs the selected harness prompt incorporating tools and history.
 func (h *Harness) buildPrompt(s *Session) string {
+	return h.buildPromptWithTools(s, h.ListTools())
+}
+
+func (h *Harness) buildPromptWithTools(s *Session, tools []ToolDef) string {
 	var sb strings.Builder
 
 	// System prompt
@@ -796,7 +509,6 @@ func (h *Harness) buildPrompt(s *Session) string {
 	}
 
 	// Tools schema
-	tools := h.ListTools()
 	toolsJSON, _ := json.MarshalIndent(tools, "", "  ")
 	sb.WriteString("You have access to the following tools:\n<tools>\n")
 	sb.Write(toolsJSON)

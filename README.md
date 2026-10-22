@@ -62,12 +62,13 @@ updates, and both the orchestrator and node enforce that limit. These settings
 only affect new in-memory scheduling; they do not change task or memory storage
 formats.
 
-Cluster traffic uses mutual TLS with persistent per-instance certificates.
-The orchestrator displays and logs a six-digit, one-use pairing PIN that
+Cluster traffic uses mutual TLS 1.3 or later with persistent per-instance
+certificates. The orchestrator displays a six-digit, one-use pairing PIN that
 expires after 30 minutes; after each successful pairing it creates the next
-PIN. Use **Generate new PIN** in the Setup panel to replace an expired or
-consumed PIN. The dashboard provides a direct node pairing form and can send
-TLS-identified invitations to LAN-discovered nodes; a node must confirm locally
+PIN. PIN values are not written to logs. Use **Generate new PIN** in the Setup
+panel to replace an expired or consumed PIN. The dashboard provides a direct
+node pairing form and can send TLS-identified invitations to LAN-discovered
+nodes; a node must confirm locally
 before the invitation's PIN is used to join. Alternatively, pass the PIN to a
 new node with `--pairing-pin` or the node config's `pairing_pin`
 setting. Paired nodes exchange certificate pins over the authenticated
@@ -78,6 +79,12 @@ orchestrator and local worker are paired automatically. A machine that loses
 the election joins as a node; provide the elected orchestrator's one-use PIN
 with `--pairing-pin` for automatic secure enrollment, or pair it later from
 the node dashboard's Setup panel.
+Local HTTP dashboard requests are restricted to localhost/loopback Host values
+and same-origin browser requests. Expired local certificates rotate
+automatically, but fingerprint pinning means peers must be paired again after
+an identity certificate changes. See the [security model](./docs/security.md)
+for the trust boundary, certificate lifecycle, request limits, and operational
+guidance.
 If a running orchestrator yields, its local dashboard redirects to the worker
 dashboard so pairing and invitation acceptance remain available. Existing
 trust in the old orchestrator does not authorize joining the new one; use the
@@ -140,14 +147,15 @@ always cancels running work.
 ## Orchestrator agent backends
 
 The interactive orchestrator uses [Pi](https://github.com/earendil-works/pi)
-by default, with a native Go implementation of the agent loop. Pi selects
-coordinator models from healthy nodes in the local mAIstr0 cluster, and does
-not send prompts to OpenAI or another cloud provider. No API key, Node.js, or
-Pi CLI installation is required. Choose a specific local coordinator model in
-the dashboard or leave it on Auto for cluster routing. It does not include
-Pi's standalone coding CLI/TUI, filesystem or shell tools, or extension
-compatibility. Pi and the built-in DeepSeek harness share mAIstr0's cluster,
-model, task, web, math, and persistent-memory tools. To use DeepSeek instead,
+by default. Pi and the built-in DeepSeek harness share the Go agent-loop
+control flow while retaining their own model adapters and message formats.
+Pi selects coordinator models from healthy nodes in the local mAIstr0 cluster,
+and does not send prompts to OpenAI or another cloud provider. No API key,
+Node.js, or Pi CLI installation is required. Choose a specific local
+coordinator model in the dashboard or leave it on Auto for cluster routing.
+It does not include Pi's standalone coding CLI/TUI, filesystem or shell tools,
+or extension compatibility. Both harnesses share mAIstr0's cluster, model,
+task, web, math, and persistent-memory tools. To use DeepSeek instead,
 start mAIstr0
 with `--harness deepseek`. The Interactive Orchestrator sidebar can switch the
 default harness at runtime; this applies to new conversations, while existing
@@ -233,9 +241,11 @@ future assignments.
 `GET /metrics` exposes dependency-free Prometheus text metrics for active tasks,
 dispatch queue depth, reserved capacity, per-peer sync watermark lag, engine
 inventory freshness, successful pairing events, scheduler assignment latency,
-dispatch attempts/retries, and sync pages. `GET /api/metrics` remains as a
-compatible alias. The endpoint uses the existing HTTP mux, so it follows the
-same loopback-only plaintext and trusted-peer mTLS rules as the rest of the API.
+dispatch attempts/retries, sync pages, transparent-router queue depth, attempts,
+failures by bounded class, request and time-to-first-byte histograms, and active
+router streams. `GET /api/metrics` remains as a compatible alias. The endpoint
+uses the existing HTTP mux, so it follows the same loopback-only plaintext and
+trusted-peer mTLS rules as the rest of the API.
 Sync lag is the maximum missing source-sequence count for a paired peer; `-1`
 means the value is unavailable. Inventory age is the age of the oldest
 successful report; `-1` means no successful inventory has been reported.
@@ -514,14 +524,18 @@ including when its console is hidden. Local third-party programs can use
 cluster identity (mutual TLS); plain HTTP is restricted to loopback.
 
 Submit work through `POST /api/tasks` with a JSON body such as
-`{"description":"Summarize this report"}`. By default, mAIstr0 preserves its
-heuristic decomposition. Set `"plan_mode":"auto"` to have a local coordinator
-model produce a structured plan with agent roles and dependencies; invalid
-plans are rejected rather than silently run. If the selected coordinator
-model fails, the planner retries with another advertised node/model; if no
-candidate succeeds, the failure is returned. Work is rejected with a service
-unavailable response if any planned subtask has no compatible model, rather
-than accepting only part of the request. Query task status and results through
+`{"description":"Summarize this report"}`. The recommended path is
+`"plan_mode":"auto"`, which asks a local coordinator model for a structured
+plan with agent roles and dependencies. Successful plans are cached in a
+bounded in-memory cache keyed by normalized task description, so repeated
+requests can reuse the plan without another planner call. Invalid plans are
+rejected rather than silently run. If the selected coordinator model fails,
+the planner retries with another advertised node/model; if no candidate
+succeeds, the failure is returned. Omitting `plan_mode` uses the improved
+local heuristic; `"plan_mode":"heuristic_v1"` explicitly selects the legacy
+heuristic. Work is rejected with a service unavailable response if any planned
+subtask has no compatible model, rather than accepting only part of the
+request. Query task status and results through
 `GET /api/tasks` or `GET /api/tasks/{id}`. Cancel a running task with
 `POST /api/tasks/{id}/cancel`. Retrieve a task's workflow nodes and dependency
 edges for visualization through `GET /api/tasks/{id}/dependencies`.
@@ -553,9 +567,25 @@ their outputs as context:
 ```
 
 Plans are checked for missing dependencies and cycles. Heuristic decomposition
-also recognizes clear sequential cues such as “then” and “after that”; other
-subtasks remain parallel. Supported roles include researcher, analyst, coder,
-writer, reviewer, summarizer, translator, and general. Subtasks may specify
+recognizes enumerations, “compare A and B”, “for each” lists, and clear
+sequential cues such as “then” and “after that”. Fan-out plans include a final
+synthesis subtask that depends on their leaf tasks. Other independent subtasks
+remain parallel. Set `"routing_preference":"latency"` to favor faster candidate
+estimates for all subtasks; the default `"quality"` preference retains model
+quality bonuses. Completion estimates use model size, queued work, and measured
+historical throughput when available; throughput itself is an estimate based
+on stored output length, not tokenizer-specific telemetry.
+
+Speculative hedging is disabled by default. When enabled with
+`"speculative_hedging_enabled":true` in orchestrator configuration, a second
+eligible node may receive the same subtask after the model/task-type historical
+p95 delay is reached. The first successful result is persisted and the losing
+request is cancelled. Only one extra concurrent hedge is allowed by default;
+`"max_concurrent_hedges"` may be raised up to four, subject to dispatch
+concurrency. P95 hedging waits for at least five successful history samples.
+
+Supported roles include researcher, analyst, coder, writer, reviewer,
+summarizer, translator, and general. Subtasks may specify
 `expected_output`, `output_format:"json"`, `required_fields`, and
 `max_retries` (0–2); JSON contracts are checked before dependent work starts.
 Set `"require_review":true` to add a reviewer task that must return
@@ -580,7 +610,25 @@ request protocol, preserves provider fields and headers, and supplies a model
 when the request omits one. It retries only bounded transient failures, and
 streaming failover is allowed only before the first response byte is sent.
 Responses include an `X-Request-ID`; recent prompt-free request/attempt events
-are available through `GET /api/router/requests` and the SSE cluster snapshots.
+and per-node/model circuit-breaker states are available through
+`GET /api/router/requests` and SSE cluster snapshots. A breaker opens after
+three transient failures within 30 seconds, admits one half-open probe after an
+exponentially backed-off delay with jitter, and resets after a healthy response.
+The default first-byte timeout is 60 seconds and the idle-stream timeout is 30
+seconds; both are bounded by the existing 120-second total router deadline.
+Configure `router_time_to_first_byte_timeout_seconds` and
+`router_idle_stream_timeout_seconds` in the orchestrator JSON to override those
+defaults.
+
+Per-client limits are opt-in: set `router_requests_per_minute` and/or
+`router_max_concurrent_per_client` in the orchestrator JSON; zero leaves each
+limit disabled. Client identity uses a hash of `X-API-Key` or `Authorization`
+when present, otherwise the direct remote IP address. Forwarded-address headers
+are not trusted. Credentials and prompt content are not included in router
+events, circuit-breaker state, or metrics.
+Production HTTP listeners cap request bodies at 256 MiB in addition to any
+smaller route-specific limits. Their request logs contain only the request ID,
+method, status, and duration; they omit URLs, request bodies, and model content.
 The Anthropic-compatible route is accepted only when a ready node engine
 advertises Anthropic protocol support; the current built-in engines advertise
 OpenAI and/or Ollama protocols.
@@ -610,7 +658,8 @@ node's operating system.
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for branch, review, and contract-change
 guidance, and [AGENTS.md](./AGENTS.md) for repository architecture and coding
-conventions.
+conventions. Current cluster sync flows and their idle traffic baseline are
+documented in [docs/sync-traffic.md](./docs/sync-traffic.md).
 
 Run the test suite with:
 

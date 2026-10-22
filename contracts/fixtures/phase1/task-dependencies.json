@@ -76,6 +76,8 @@
           "score": 0,
           "score_factors": {
             "active_tasks": 0,
+            "estimated_completion_seconds": 0,
+            "estimated_tokens_per_second": 0,
             "gpu_utilization_penalty": 0,
             "hardware": 0,
             "learned_bias": 0,
@@ -122,6 +124,8 @@
           "score": 0,
           "score_factors": {
             "active_tasks": 0,
+            "estimated_completion_seconds": 0,
+            "estimated_tokens_per_second": 0,
             "gpu_utilization_penalty": 0,
             "hardware": 0,
             "learned_bias": 0,

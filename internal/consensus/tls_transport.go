@@ -72,8 +72,8 @@ func NewTLSStreamLayer(cfg TLSStreamConfig) (*TLSStreamLayer, error) {
 	if serverID != cfg.LocalID {
 		return nil, fmt.Errorf("consensus: TLS server certificate belongs to %q, not %q", serverID, cfg.LocalID)
 	}
-	if serverTLS.MinVersion == 0 || serverTLS.MinVersion < tls.VersionTLS12 {
-		serverTLS.MinVersion = tls.VersionTLS12
+	if serverTLS.MinVersion == 0 || serverTLS.MinVersion < tls.VersionTLS13 {
+		serverTLS.MinVersion = tls.VersionTLS13
 	}
 	serverTLS.ClientAuth = tls.RequireAnyClientCert
 	return &TLSStreamLayer{
@@ -152,8 +152,8 @@ func (l *TLSStreamLayer) Dial(address raft.ServerAddress, timeout time.Duration)
 		return nil, errors.New("consensus: TLS stream client certificate is required")
 	}
 	clientTLS = clientTLS.Clone()
-	if clientTLS.MinVersion == 0 || clientTLS.MinVersion < tls.VersionTLS12 {
-		clientTLS.MinVersion = tls.VersionTLS12
+	if clientTLS.MinVersion == 0 || clientTLS.MinVersion < tls.VersionTLS13 {
+		clientTLS.MinVersion = tls.VersionTLS13
 	}
 	if clientTLS.InsecureSkipVerify && clientTLS.VerifyConnection == nil && clientTLS.VerifyPeerCertificate == nil {
 		return nil, errors.New("consensus: insecure TLS client must verify the pinned peer certificate")

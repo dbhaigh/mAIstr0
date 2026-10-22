@@ -1,23 +1,32 @@
 package memory
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 )
 
 const (
-	SyncProtocolVersion      = 2
-	FirstSyncProtocolVersion = 1
-	SyncPageCursorHeader     = "X-Maistr0-Sync-Cursor"
-	SyncPageUpperHeader      = "X-Maistr0-Sync-Upper-Watermarks"
+	SyncProtocolVersion            = 3
+	FirstSyncProtocolVersion       = 1
+	SyncPageProtocolVersion        = 2
+	SyncCompressionProtocolVersion = 3
+	SyncCompressionThreshold       = 1024
+	SyncPageCursorHeader           = "X-Maistr0-Sync-Cursor"
+	SyncPageUpperHeader            = "X-Maistr0-Sync-Upper-Watermarks"
 )
 
 const legacyOrigin = "legacy"
+
+var ErrSyncBodyTooLarge = errors.New("sync body exceeds configured limit")
 
 const (
 	SyncVersionHeader    = "X-Maistr0-Sync-Version"
@@ -29,7 +38,124 @@ func SupportsIncrementalSync(version int) bool {
 }
 
 func SupportsSyncPages(version int) bool {
-	return version == SyncProtocolVersion
+	return version >= SyncPageProtocolVersion && version <= SyncProtocolVersion
+}
+
+func SupportsSyncCompression(version int) bool {
+	return version >= SyncCompressionProtocolVersion && version <= SyncProtocolVersion
+}
+
+func SupportsEmptySync(version int) bool {
+	return SupportsSyncCompression(version)
+}
+
+func SetSyncCompressionRequestHeader(request *http.Request) {
+	request.Header.Set("Accept-Encoding", "gzip")
+}
+
+func AcceptsSyncCompression(request *http.Request) bool {
+	for _, value := range strings.Split(request.Header.Get("Accept-Encoding"), ",") {
+		parts := strings.SplitN(strings.TrimSpace(value), ";", 2)
+		if !strings.EqualFold(strings.TrimSpace(parts[0]), "gzip") {
+			continue
+		}
+		if len(parts) == 1 {
+			return true
+		}
+		parameter := strings.TrimSpace(parts[1])
+		if strings.HasPrefix(strings.ToLower(parameter), "q=") {
+			quality, err := strconv.ParseFloat(strings.TrimSpace(parameter[2:]), 64)
+			if err == nil && quality > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func EncodeSyncBody(body []byte, peerVersion int, accepted bool) ([]byte, bool, error) {
+	if !accepted || !SupportsSyncCompression(peerVersion) || len(body) < SyncCompressionThreshold {
+		return body, false, nil
+	}
+	var compressed bytes.Buffer
+	writer, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	if err != nil {
+		return nil, false, fmt.Errorf("create gzip sync body: %w", err)
+	}
+	if _, err := writer.Write(body); err != nil {
+		return nil, false, fmt.Errorf("compress sync body: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, false, fmt.Errorf("finish gzip sync body: %w", err)
+	}
+	if compressed.Len() >= len(body) {
+		return body, false, nil
+	}
+	return compressed.Bytes(), true, nil
+}
+
+func DecodeSyncBody(reader io.Reader, contentEncoding string, protocolVersion int, maxBytes int64) ([]byte, error) {
+	if maxBytes < 0 {
+		return nil, fmt.Errorf("sync body limit must not be negative")
+	}
+	encoded, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read sync body: %w", err)
+	}
+	if int64(len(encoded)) > maxBytes {
+		return nil, fmt.Errorf("%w: limit is %d bytes", ErrSyncBodyTooLarge, maxBytes)
+	}
+	switch strings.ToLower(strings.TrimSpace(contentEncoding)) {
+	case "":
+		return encoded, nil
+	case "gzip":
+		if !SupportsSyncCompression(protocolVersion) {
+			return nil, fmt.Errorf("gzip sync body requires protocol version %d", SyncCompressionProtocolVersion)
+		}
+		reader, err := gzip.NewReader(bytes.NewReader(encoded))
+		if err != nil {
+			return nil, fmt.Errorf("open gzip sync body: %w", err)
+		}
+		decoded, readErr := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+		closeErr := reader.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("decompress sync body: %w", readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close gzip sync body: %w", closeErr)
+		}
+		if int64(len(decoded)) > maxBytes {
+			return nil, fmt.Errorf("%w after decompression: limit is %d bytes", ErrSyncBodyTooLarge, maxBytes)
+		}
+		return decoded, nil
+	default:
+		return nil, fmt.Errorf("unsupported sync content encoding %q", contentEncoding)
+	}
+}
+
+func WriteSyncJSON(w http.ResponseWriter, status int, value any, peerVersion int, acceptsCompression bool) (int, error) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		wrapped := fmt.Errorf("marshal sync response: %w", err)
+		http.Error(w, "could not encode sync response", http.StatusInternalServerError)
+		return 0, wrapped
+	}
+	body, compressed, err := EncodeSyncBody(body, peerVersion, acceptsCompression)
+	if err != nil {
+		http.Error(w, "could not encode sync response", http.StatusInternalServerError)
+		return 0, err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if compressed {
+		w.Header().Set("Content-Encoding", "gzip")
+	}
+	w.WriteHeader(status)
+	written, err := w.Write(body)
+	if err != nil {
+		return written, fmt.Errorf("write sync response: %w", err)
+	}
+	return written, nil
 }
 
 func SetSyncRequestHeaders(request *http.Request, watermarks map[string]uint64) error {
@@ -40,12 +166,27 @@ func SetSyncResponseHeaders(response http.ResponseWriter, watermarks map[string]
 	return SetSyncHeaders(response.Header(), watermarks)
 }
 
+func SetSyncResponseHeadersForPeer(response http.ResponseWriter, watermarks map[string]uint64, peerVersion int) error {
+	version := SyncProtocolVersion
+	switch {
+	case peerVersion <= 0:
+		version = FirstSyncProtocolVersion
+	case peerVersion < SyncProtocolVersion:
+		version = peerVersion
+	}
+	return SetSyncHeadersVersion(response.Header(), watermarks, version)
+}
+
 func SetSyncHeaders(headers http.Header, watermarks map[string]uint64) error {
+	return SetSyncHeadersVersion(headers, watermarks, SyncProtocolVersion)
+}
+
+func SetSyncHeadersVersion(headers http.Header, watermarks map[string]uint64, version int) error {
 	encoded, err := json.Marshal(watermarks)
 	if err != nil {
 		return err
 	}
-	headers.Set(SyncVersionHeader, strconv.Itoa(SyncProtocolVersion))
+	headers.Set(SyncVersionHeader, strconv.Itoa(version))
 	headers.Set(SyncWatermarksHeader, base64.RawURLEncoding.EncodeToString(encoded))
 	return nil
 }

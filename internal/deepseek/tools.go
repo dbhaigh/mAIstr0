@@ -34,23 +34,32 @@ type Tool interface {
 
 // DefaultTools returns the suite of distributed cluster tools registered in the harness.
 func DefaultTools() []Tool {
-	return []Tool{
-		&ClusterStatusTool{},
-		&ListNodeModelsTool{},
-		&NodeConverseTool{},
-		&NodeCollaborateTool{},
-		&ClusterConverseTool{},
-		&NodeLLMQueryTool{},
-		&ClusterLLMQueryTool{},
-		&ClusterParallelDispatchTool{},
-		&CreateSubAgentTool{},
-		&ExecuteWorkflowTool{},
-		&TestNodeModelTool{},
-		&ListNodeDialoguesTool{},
-		&GetNodeDialogueTool{},
-		&EvalExpressionTool{},
-		&FetchWebTool{},
-		&SessionMemoryTool{},
+	registrations := defaultToolRegistrations()
+	tools := make([]Tool, 0, len(registrations))
+	for _, registration := range registrations {
+		tools = append(tools, registration.tool)
+	}
+	return tools
+}
+
+func defaultToolRegistrations() []toolRegistration {
+	return []toolRegistration{
+		typedToolRegistration[clusterStatusArgs](&ClusterStatusTool{}),
+		typedToolRegistration[listNodeModelsArgs](&ListNodeModelsTool{}),
+		typedToolRegistration[nodeConverseArgs](&NodeConverseTool{}),
+		typedToolRegistration[nodeCollaborateArgs](&NodeCollaborateTool{}),
+		typedToolRegistration[clusterConverseArgs](&ClusterConverseTool{}),
+		typedToolRegistration[nodeLLMQueryArgs](&NodeLLMQueryTool{}),
+		typedToolRegistration[clusterLLMQueryArgs](&ClusterLLMQueryTool{}),
+		typedToolRegistration[clusterParallelDispatchArgs](&ClusterParallelDispatchTool{}),
+		typedToolRegistration[createSubAgentArgs](&CreateSubAgentTool{}),
+		typedToolRegistration[workflowArgs](&ExecuteWorkflowTool{}),
+		typedToolRegistration[testNodeModelArgs](&TestNodeModelTool{}),
+		typedToolRegistration[listNodeDialoguesArgs](&ListNodeDialoguesTool{}),
+		typedToolRegistration[getNodeDialogueArgs](&GetNodeDialogueTool{}),
+		typedToolRegistration[evalExpressionArgs](&EvalExpressionTool{}),
+		typedToolRegistration[fetchWebArgs](&FetchWebTool{}),
+		typedToolRegistration[sessionMemoryArgs](&SessionMemoryTool{}),
 	}
 }
 
@@ -59,37 +68,10 @@ func DefaultTools() []Tool {
 type ExecuteWorkflowTool struct{}
 
 func (t *ExecuteWorkflowTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "execute_workflow",
-		Description: "Execute a multi-step task using mAIstr0's persistent cluster workflow engine. For complex work, provide an explicit dependency-aware task plan; if omitted, the coordinator creates and validates a structured plan. Set require_review when a separate reviewer must approve the results. Returns only after the workflow completes.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"description": map[string]any{"type": "string", "description": "The overall task to complete."},
-				"subtasks": map[string]any{
-					"type": "array",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"id":              map[string]any{"type": "string"},
-							"description":     map[string]any{"type": "string"},
-							"role":            map[string]any{"type": "string", "enum": []string{"researcher", "analyst", "coder", "writer", "reviewer", "summarizer", "translator", "general"}},
-							"task_type":       map[string]any{"type": "string", "enum": []string{"code", "summarize", "translate", "math", "vision", "creative", "general"}},
-							"depends_on":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-							"expected_output": map[string]any{"type": "string"},
-							"output_format":   map[string]any{"type": "string", "enum": []string{"text", "json"}},
-							"required_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-							"max_retries":     map[string]any{"type": "integer", "minimum": 0, "maximum": 2},
-						},
-						"required": []string{"description"},
-					},
-					"description": "Optional tasks with id, description, role, task_type, depends_on, expected_output, output_format, required_fields, and max_retries.",
-				},
-				"require_review": map[string]any{"type": "boolean", "description": "Add a reviewer task that must approve the completed work before synthesis."},
-			},
-			"required": []string{"description"},
-		},
-	}
+	return toolDefinition[workflowArgs](
+		"execute_workflow",
+		"Execute a multi-step task using mAIstr0's persistent cluster workflow engine. For complex work, provide an explicit dependency-aware task plan; if omitted, the coordinator creates and validates a structured plan. Set require_review when a separate reviewer must approve the results. Returns only after the workflow completes.",
+	)
 }
 
 func (t *ExecuteWorkflowTool) Execute(ctx context.Context, h *Harness, _ *Session, args map[string]any) (any, string, string, string, error) {
@@ -136,14 +118,10 @@ func (t *ExecuteWorkflowTool) Execute(ctx context.Context, h *Harness, _ *Sessio
 type ClusterStatusTool struct{}
 
 func (t *ClusterStatusTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "cluster_status",
-		Description: "Inspect the current cluster status: all registered compute nodes, hardware capabilities (CPUs, RAM, GPUs), loaded models, active task workloads, health, and elected cluster leader.",
-		Parameters: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	}
+	return toolDefinition[clusterStatusArgs](
+		"cluster_status",
+		"Inspect the current cluster status: all registered compute nodes, hardware capabilities (CPUs, RAM, GPUs), loaded models, active task workloads, health, and elected cluster leader.",
+	)
 }
 
 func (t *ClusterStatusTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -208,36 +186,10 @@ func (t *ClusterStatusTool) Execute(ctx context.Context, h *Harness, s *Session,
 type NodeConverseTool struct{}
 
 func (t *NodeConverseTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "node_converse",
-		Description: "Hold an interactive multi-turn conversation with an LLM on a specific worker node. Maintains full dialogue context across turns using dialogue_id so you can send instructions, receive answers, ask follow-up questions, request revisions, and converse naturally with the node's model.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"node_id": map[string]any{
-					"type":        "string",
-					"description": "The target compute node ID (e.g. 'node-1', 'orchestrator-...').",
-				},
-				"message": map[string]any{
-					"type":        "string",
-					"description": "The message, instruction, or follow-up question to send to the node's model.",
-				},
-				"dialogue_id": map[string]any{
-					"type":        "string",
-					"description": "Optional dialogue/conversation ID to continue an ongoing conversation with this node. If omitted, a new dialogue is started.",
-				},
-				"model": map[string]any{
-					"type":        "string",
-					"description": "Optional specific model name to converse with on that node.",
-				},
-				"system_prompt": map[string]any{
-					"type":        "string",
-					"description": "Optional system prompt setting the persona/role of the worker node model.",
-				},
-			},
-			"required": []string{"node_id", "message"},
-		},
-	}
+	return toolDefinition[nodeConverseArgs](
+		"node_converse",
+		"Hold an interactive multi-turn conversation with an LLM on a specific worker node. Maintains full dialogue context across turns using dialogue_id so you can send instructions, receive answers, ask follow-up questions, request revisions, and converse naturally with the node's model.",
+	)
 }
 
 func (t *NodeConverseTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -299,36 +251,10 @@ func (t *NodeConverseTool) Execute(ctx context.Context, h *Harness, s *Session, 
 type NodeCollaborateTool struct{}
 
 func (t *NodeCollaborateTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "node_collaborate",
-		Description: "Conduct an interactive multi-round conversation between the orchestrator coordinator and a worker node LLM. Iteratively proposes, critiques, refines, and perfects a complex task across multiple turns until finished.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"node_id": map[string]any{
-					"type":        "string",
-					"description": "The target compute node ID to collaborate with.",
-				},
-				"task": map[string]any{
-					"type":        "string",
-					"description": "The complex task or problem for the node to solve.",
-				},
-				"model": map[string]any{
-					"type":        "string",
-					"description": "Optional model name on that node.",
-				},
-				"collaboration_goal": map[string]any{
-					"type":        "string",
-					"description": "Optional specific quality criteria or review guidelines.",
-				},
-				"rounds": map[string]any{
-					"type":        "number",
-					"description": "Number of interactive feedback iterations (1 to 4, default 2).",
-				},
-			},
-			"required": []string{"node_id", "task"},
-		},
-	}
+	return toolDefinition[nodeCollaborateArgs](
+		"node_collaborate",
+		"Conduct an interactive multi-round conversation between the orchestrator coordinator and a worker node LLM. Iteratively proposes, critiques, refines, and perfects a complex task across multiple turns until finished.",
+	)
 }
 
 func (t *NodeCollaborateTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -427,32 +353,10 @@ func (t *NodeCollaborateTool) Execute(ctx context.Context, h *Harness, s *Sessio
 type ClusterConverseTool struct{}
 
 func (t *ClusterConverseTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "cluster_converse",
-		Description: "Start or continue a multi-turn conversation with the best suited, least-loaded node in the cluster. Routes work automatically across nodes while preserving conversation history.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"message": map[string]any{
-					"type":        "string",
-					"description": "The message or task instruction for the cluster node.",
-				},
-				"dialogue_id": map[string]any{
-					"type":        "string",
-					"description": "Optional dialogue ID to continue a conversation across turns.",
-				},
-				"task_type": map[string]any{
-					"type":        "string",
-					"description": "Optional category tag (e.g. 'code', 'math', 'reasoning', 'chat', 'general').",
-				},
-				"model_preference": map[string]any{
-					"type":        "string",
-					"description": "Optional model preference.",
-				},
-			},
-			"required": []string{"message"},
-		},
-	}
+	return toolDefinition[clusterConverseArgs](
+		"cluster_converse",
+		"Start or continue a multi-turn conversation with the best suited, least-loaded node in the cluster. Routes work automatically across nodes while preserving conversation history.",
+	)
 }
 
 func (t *ClusterConverseTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -503,19 +407,10 @@ func (t *ClusterConverseTool) Execute(ctx context.Context, h *Harness, s *Sessio
 type ListNodeDialoguesTool struct{}
 
 func (t *ListNodeDialoguesTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "list_node_dialogues",
-		Description: "List all ongoing or recent conversations with models across cluster nodes.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"node_id": map[string]any{
-					"type":        "string",
-					"description": "Optional node ID to filter dialogues for a specific node.",
-				},
-			},
-		},
-	}
+	return toolDefinition[listNodeDialoguesArgs](
+		"list_node_dialogues",
+		"List all ongoing or recent conversations with models across cluster nodes.",
+	)
 }
 
 func (t *ListNodeDialoguesTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -549,24 +444,10 @@ func (t *ListNodeDialoguesTool) Execute(ctx context.Context, h *Harness, s *Sess
 type GetNodeDialogueTool struct{}
 
 func (t *GetNodeDialogueTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "get_node_dialogue",
-		Description: "Fetch the complete conversation transcript of a specific dialogue from a node.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"node_id": map[string]any{
-					"type":        "string",
-					"description": "The node ID where the dialogue is hosted.",
-				},
-				"dialogue_id": map[string]any{
-					"type":        "string",
-					"description": "The unique dialogue ID.",
-				},
-			},
-			"required": []string{"node_id", "dialogue_id"},
-		},
-	}
+	return toolDefinition[getNodeDialogueArgs](
+		"get_node_dialogue",
+		"Fetch the complete conversation transcript of a specific dialogue from a node.",
+	)
 }
 
 func (t *GetNodeDialogueTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -602,19 +483,10 @@ func (t *GetNodeDialogueTool) Execute(ctx context.Context, h *Harness, s *Sessio
 type ListNodeModelsTool struct{}
 
 func (t *ListNodeModelsTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "list_node_models",
-		Description: "Discover all LLM models currently loaded or available on each node in the cluster, including their tags (code, chat, reasoning, math, vision), engine, size, and node health.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"node_id": map[string]any{
-					"type":        "string",
-					"description": "Optional node ID to filter models by a specific node. Omit to list models across all nodes.",
-				},
-			},
-		},
-	}
+	return toolDefinition[listNodeModelsArgs](
+		"list_node_models",
+		"Discover all LLM models currently loaded or available on each node in the cluster, including their tags (code, chat, reasoning, math, vision), engine, size, and node health.",
+	)
 }
 
 func (t *ListNodeModelsTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -662,32 +534,10 @@ func (t *ListNodeModelsTool) Execute(ctx context.Context, h *Harness, s *Session
 type NodeLLMQueryTool struct{}
 
 func (t *NodeLLMQueryTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "node_llm_query",
-		Description: "Directly invoke an LLM model on a specific compute node by node_id. Allows targeted generation requests to a particular node's LLM engine.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"node_id": map[string]any{
-					"type":        "string",
-					"description": "The unique ID of the target compute node (e.g. 'node-1', 'orchestrator-...').",
-				},
-				"model": map[string]any{
-					"type":        "string",
-					"description": "Optional model name on that node. If omitted, uses the node's default model or first installed model.",
-				},
-				"prompt": map[string]any{
-					"type":        "string",
-					"description": "The prompt or task instruction to send to the node's LLM.",
-				},
-				"system": map[string]any{
-					"type":        "string",
-					"description": "Optional system prompt instruction for the LLM on that node.",
-				},
-			},
-			"required": []string{"node_id", "prompt"},
-		},
-	}
+	return toolDefinition[nodeLLMQueryArgs](
+		"node_llm_query",
+		"Directly invoke an LLM model on a specific compute node by node_id. Allows targeted generation requests to a particular node's LLM engine.",
+	)
 }
 
 func (t *NodeLLMQueryTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -748,28 +598,10 @@ func (t *NodeLLMQueryTool) Execute(ctx context.Context, h *Harness, s *Session, 
 type TestNodeModelTool struct{}
 
 func (t *TestNodeModelTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "test_node_model",
-		Description: "Perform a health check / ping generation test against a specific model on a specific node to verify connectivity and measure latency.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"node_id": map[string]any{
-					"type":        "string",
-					"description": "The node ID where the model is hosted.",
-				},
-				"model": map[string]any{
-					"type":        "string",
-					"description": "The name of the model to test on that node.",
-				},
-				"prompt": map[string]any{
-					"type":        "string",
-					"description": "Optional test prompt (defaults to 'Respond with OK in 3 words.').",
-				},
-			},
-			"required": []string{"node_id", "model"},
-		},
-	}
+	return toolDefinition[testNodeModelArgs](
+		"test_node_model",
+		"Perform a health check / ping generation test against a specific model on a specific node to verify connectivity and measure latency.",
+	)
 }
 
 func (t *TestNodeModelTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -820,28 +652,10 @@ func (t *TestNodeModelTool) Execute(ctx context.Context, h *Harness, s *Session,
 type ClusterLLMQueryTool struct{}
 
 func (t *ClusterLLMQueryTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "cluster_llm_query",
-		Description: "Dispatch an LLM generation query to the most capable and least-loaded node in the cluster. Distributes workload across nodes based on matching model tags, hardware capacity, and current active task load.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"prompt": map[string]any{
-					"type":        "string",
-					"description": "The prompt or instruction to execute on the cluster node.",
-				},
-				"task_type": map[string]any{
-					"type":        "string",
-					"description": "Optional category to match specialized models (e.g. 'code', 'math', 'reasoning', 'summarize', 'vision', 'fast', 'general').",
-				},
-				"model_preference": map[string]any{
-					"type":        "string",
-					"description": "Optional specific model name to target if present on a cluster node.",
-				},
-			},
-			"required": []string{"prompt"},
-		},
-	}
+	return toolDefinition[clusterLLMQueryArgs](
+		"cluster_llm_query",
+		"Dispatch an LLM generation query to the most capable and least-loaded node in the cluster. Distributes workload across nodes based on matching model tags, hardware capacity, and current active task load.",
+	)
 }
 
 func (t *ClusterLLMQueryTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -889,38 +703,10 @@ func (t *ClusterLLMQueryTool) Execute(ctx context.Context, h *Harness, s *Sessio
 type ClusterParallelDispatchTool struct{}
 
 func (t *ClusterParallelDispatchTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "cluster_parallel_dispatch",
-		Description: "Concurrently distribute multiple subtasks across different nodes in the cluster. Spreads the parallel workload evenly across available hardware, executing simultaneously and returning all aggregated results.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"subtasks": map[string]any{
-					"type": "array",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"description": map[string]any{
-								"type":        "string",
-								"description": "Instruction or prompt for this subtask.",
-							},
-							"task_type": map[string]any{
-								"type":        "string",
-								"description": "Optional category (e.g. 'code', 'math', 'reasoning', 'summarize', 'general').",
-							},
-							"model_preference": map[string]any{
-								"type":        "string",
-								"description": "Optional specific model name preference.",
-							},
-						},
-						"required": []string{"description"},
-					},
-					"description": "List of subtasks to fan out in parallel across cluster nodes.",
-				},
-			},
-			"required": []string{"subtasks"},
-		},
-	}
+	return toolDefinition[clusterParallelDispatchArgs](
+		"cluster_parallel_dispatch",
+		"Concurrently distribute multiple subtasks across different nodes in the cluster. Spreads the parallel workload evenly across available hardware, executing simultaneously and returning all aggregated results.",
+	)
 }
 
 type parallelResult struct {
@@ -1074,20 +860,10 @@ func (t *ClusterParallelDispatchTool) Execute(ctx context.Context, h *Harness, s
 type EvalExpressionTool struct{}
 
 func (t *EvalExpressionTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "eval_expression",
-		Description: "Perform direct, deterministic arithmetic calculations, math functions (sqrt, pow, sin, cos, round, abs), or data transformations safely.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"expression": map[string]any{
-					"type":        "string",
-					"description": "The mathematical or statistical expression to evaluate (e.g. '144 * 28 + 195', 'sqrt(256)', 'mean(12, 18, 25, 40)', 'sum(100, 250, 450)').",
-				},
-			},
-			"required": []string{"expression"},
-		},
-	}
+	return toolDefinition[evalExpressionArgs](
+		"eval_expression",
+		"Perform direct, deterministic arithmetic calculations, math functions (sqrt, pow, sin, cos, round, abs), or data transformations safely.",
+	)
 }
 
 func (t *EvalExpressionTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -1200,20 +976,10 @@ func evaluateMathExpression(expr string) (any, error) {
 type FetchWebTool struct{}
 
 func (t *FetchWebTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "fetch_web",
-		Description: "Perform an HTTP GET request to fetch text, documentation, or JSON data from a URL.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"url": map[string]any{
-					"type":        "string",
-					"description": "The URL to fetch (HTTP or HTTPS).",
-				},
-			},
-			"required": []string{"url"},
-		},
-	}
+	return toolDefinition[fetchWebArgs](
+		"fetch_web",
+		"Perform an HTTP GET request to fetch text, documentation, or JSON data from a URL.",
+	)
 }
 
 func (t *FetchWebTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -1252,29 +1018,10 @@ func (t *FetchWebTool) Execute(ctx context.Context, h *Harness, s *Session, args
 type SessionMemoryTool struct{}
 
 func (t *SessionMemoryTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "session_memory",
-		Description: "Persist or recall working notes, findings, and context across turns in the interactive session scratchpad.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"action": map[string]any{
-					"type":        "string",
-					"enum":        []string{"get", "set", "list", "delete"},
-					"description": "The operation to perform on session memory.",
-				},
-				"key": map[string]any{
-					"type":        "string",
-					"description": "Key identifier for the stored item.",
-				},
-				"value": map[string]any{
-					"type":        "string",
-					"description": "Value to store when action is 'set'.",
-				},
-			},
-			"required": []string{"action"},
-		},
-	}
+	return toolDefinition[sessionMemoryArgs](
+		"session_memory",
+		"Persist or recall working notes, findings, and context across turns in the interactive session scratchpad.",
+	)
 }
 
 func (t *SessionMemoryTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -1319,51 +1066,10 @@ func (t *SessionMemoryTool) Execute(ctx context.Context, h *Harness, s *Session,
 type CreateSubAgentTool struct{}
 
 func (t *CreateSubAgentTool) Def() ToolDef {
-	return ToolDef{
-		Name:        "create_subagent",
-		Description: "Create a specialized virtual worker (sub-agent) at runtime from a 4-tuple specification: instruction/persona, required tools, required/preferred model capabilities, and context. Dynamically selects the best compute node and model, registers the virtual worker profile for scheduling, and optionally executes an initial task.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"name": map[string]any{
-					"type":        "string",
-					"description": "Identifier or title for the specialized sub-agent (e.g. 'sql-expert', 'patent-analyst').",
-				},
-				"role": map[string]any{
-					"type":        "string",
-					"description": "Optional role name for the worker profile (defaults to name).",
-				},
-				"instructions": map[string]any{
-					"type":        "string",
-					"description": "System prompt / persona instructions guiding how the worker behaves.",
-				},
-				"required_tools": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"description": "Optional list of tool names the sub-agent needs access to.",
-				},
-				"required_capabilities": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"description": "Capabilities the worker's node/model must support (e.g. 'coder', 'researcher', 'vision', 'math', 'long-context', 'fast', 'high-quality').",
-				},
-				"preferred_capabilities": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"description": "Optional bonus capabilities preferred for this sub-agent.",
-				},
-				"context": map[string]any{
-					"type":        "string",
-					"description": "Domain knowledge or background context for this sub-agent.",
-				},
-				"task": map[string]any{
-					"type":        "string",
-					"description": "Optional prompt/task to immediately execute with the created sub-agent.",
-				},
-			},
-			"required": []string{"name", "instructions"},
-		},
-	}
+	return toolDefinition[createSubAgentArgs](
+		"create_subagent",
+		"Create a specialized virtual worker (sub-agent) at runtime from a 4-tuple specification: instruction/persona, required tools, required/preferred model capabilities, and context. Dynamically selects the best compute node and model, registers the virtual worker profile for scheduling, and optionally executes an initial task.",
+	)
 }
 
 func (t *CreateSubAgentTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {

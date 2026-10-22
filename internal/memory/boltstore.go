@@ -458,6 +458,7 @@ func Open(path, owner string) (Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: open %s: %w", path, err)
 	}
+	db.MaxBatchDelay = 250 * time.Microsecond // Bound coalescing delay for synchronous memory writes.
 
 	err = db.Update(func(tx *bolt.Tx) error {
 		for _, b := range [][]byte{bucketExperiences, bucketFacts, bucketPerf, bucketDialogues, bucketMeta, bucketAgentSessions} {
@@ -555,7 +556,14 @@ func (s *boltStore) Record(e Experience) (Experience, error) {
 	e.Prompt = truncate(e.Prompt, 8*1024)
 	e.Output = truncate(e.Output, 32*1024)
 
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	performanceKey := ""
+	trackPerformance := e.NodeID != "" && e.Model != ""
+	if trackPerformance {
+		performanceKey = perfKey(e.NodeID, e.Model, e.TaskType)
+		s.mu.Lock()
+	}
+	var performance Performance
+	err := s.db.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketExperiences)
 		id, err := b.NextSequence()
 		if err != nil {
@@ -574,15 +582,39 @@ func (s *boltStore) Record(e Experience) (Experience, error) {
 		if err := b.Put(itob(id), buf); err != nil {
 			return err
 		}
-		return tx.Bucket(bucketMeta).Put(experienceFingerprintKey(e), []byte{1})
+		if err := tx.Bucket(bucketMeta).Put(experienceFingerprintKey(e), []byte{1}); err != nil {
+			return err
+		}
+		if !trackPerformance {
+			return nil
+		}
+		performance = performanceAfterExperience(s.perfCache[performanceKey], e)
+		sequence, err = nextOriginSequence(tx, s.owner)
+		if err != nil {
+			return err
+		}
+		performance.Origin, performance.Sequence = s.owner, sequence
+		encodedPerformance, err := json.Marshal(performance)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketPerf).Put([]byte(performanceKey), encodedPerformance)
 	})
+	if trackPerformance {
+		if err == nil {
+			s.perfCache[performanceKey] = &performance
+			s.publishPerformanceSnapshot()
+			s.invalidateWatermarksCacheLocked()
+		}
+		s.mu.Unlock()
+	} else if err == nil {
+		s.invalidateWatermarksCache()
+	}
 	if err != nil {
 		return Experience{}, err
 	}
 
 	s.cacheRecentExperience(e)
-	s.invalidateWatermarksCache()
-	s.updatePerformance(e)
 	s.changes.Notify()
 	return e, nil
 }
@@ -723,7 +755,7 @@ func (s *boltStore) PutFact(f Fact) (Fact, error) {
 		f.Scope = "cluster"
 	}
 	now := time.Now()
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketFacts)
 		key := []byte(f.Scope + "|" + f.Key)
 		if existing := b.Get(key); existing != nil {
@@ -761,7 +793,7 @@ func (s *boltStore) GetFact(scope, key string) (Fact, error) {
 		scope = "cluster"
 	}
 	var f Fact
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketFacts)
 		k := []byte(scope + "|" + key)
 		raw := b.Get(k)
@@ -794,7 +826,8 @@ func (s *boltStore) GetFact(scope, key string) (Fact, error) {
 func (s *boltStore) Facts(scope string) []Fact {
 	var out []Fact
 	_ = s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketFacts).ForEach(func(k, v []byte) error {
+		bucket := tx.Bucket(bucketFacts)
+		appendFact := func(v []byte) error {
 			var f Fact
 			if json.Unmarshal(v, &f) != nil {
 				return nil
@@ -804,7 +837,20 @@ func (s *boltStore) Facts(scope string) []Fact {
 			}
 			out = append(out, f)
 			return nil
-		})
+		}
+		if scope == "" {
+			return bucket.ForEach(func(_, value []byte) error {
+				return appendFact(value)
+			})
+		}
+		prefix := []byte(scope + "|")
+		cursor := bucket.Cursor()
+		for key, value := cursor.Seek(prefix); key != nil && bytes.HasPrefix(key, prefix); key, value = cursor.Next() {
+			if err := appendFact(value); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
 	return out
@@ -815,7 +861,7 @@ func (s *boltStore) DeleteFact(scope, key string) error {
 	if scope == "" {
 		scope = "cluster"
 	}
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Batch(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketFacts).Delete([]byte(scope + "|" + key))
 	})
 	if err == nil {
@@ -835,7 +881,7 @@ func (s *boltStore) SaveAgentSession(harness, id string, session []byte) error {
 	}
 	key := []byte(harness + "\x00" + id)
 	value := append([]byte(nil), session...)
-	return s.db.Update(func(tx *bolt.Tx) error {
+	return s.db.Batch(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketAgentSessions).Put(key, value)
 	})
 }
@@ -858,7 +904,7 @@ func (s *boltStore) DeleteAgentSession(harness, id string) error {
 		return errors.New("memory: agent session harness and id are required")
 	}
 	key := []byte(harness + "\x00" + id)
-	return s.db.Update(func(tx *bolt.Tx) error {
+	return s.db.Batch(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketAgentSessions).Delete(key)
 	})
 }
@@ -875,7 +921,7 @@ func (s *boltStore) SaveDialogue(d DialogueRecord) error {
 		d.CreatedAt = now
 	}
 	d.UpdatedAt = now
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Batch(func(tx *bolt.Tx) error {
 		sequence, err := nextOriginSequence(tx, s.owner)
 		if err != nil {
 			return err
@@ -896,13 +942,24 @@ func (s *boltStore) SaveDialogue(d DialogueRecord) error {
 
 // AppendDialogueTurn adds one utterance to a dialogue, creating it if new.
 func (s *boltStore) AppendDialogueTurn(id string, participants []string, topic string, t Turn) error {
+	return s.AppendDialogueTurns(id, participants, topic, []Turn{t})
+}
+
+// AppendDialogueTurns persists one or more utterances in a single transaction.
+func (s *boltStore) AppendDialogueTurns(id string, participants []string, topic string, turns []Turn) error {
 	if id == "" {
 		return errors.New("memory: dialogue id is required")
 	}
-	if t.At.IsZero() {
-		t.At = time.Now()
+	if len(turns) == 0 {
+		return nil
 	}
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	turns = append([]Turn(nil), turns...)
+	for i := range turns {
+		if turns[i].At.IsZero() {
+			turns[i].At = time.Now()
+		}
+	}
+	err := s.db.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketDialogues)
 		var d DialogueRecord
 		if raw := b.Get([]byte(id)); raw != nil {
@@ -911,7 +968,7 @@ func (s *boltStore) AppendDialogueTurn(id string, participants []string, topic s
 		if d.ID == "" {
 			d.ID = id
 			d.CreatedAt = time.Now()
-			d.Participants = participants
+			d.Participants = append([]string(nil), participants...)
 			d.Topic = topic
 		}
 		for _, p := range participants {
@@ -919,13 +976,15 @@ func (s *boltStore) AppendDialogueTurn(id string, participants []string, topic s
 				d.Participants = append(d.Participants, p)
 			}
 		}
-		d.Turns = append(d.Turns, t)
+		d.Turns = append(d.Turns, turns...)
 		d.UpdatedAt = time.Now()
-		sequence, err := nextOriginSequence(tx, s.owner)
-		if err != nil {
-			return err
+		for range turns {
+			sequence, err := nextOriginSequence(tx, s.owner)
+			if err != nil {
+				return err
+			}
+			d.Origin, d.Sequence = s.owner, sequence
 		}
-		d.Origin, d.Sequence = s.owner, sequence
 		buf, err := json.Marshal(d)
 		if err != nil {
 			return err
@@ -968,17 +1027,34 @@ func (s *boltStore) Dialogues(limit int) []DialogueRecord {
 	}
 	var out []DialogueRecord
 	_ = s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketDialogues).ForEach(func(k, v []byte) error {
-			var d DialogueRecord
-			if json.Unmarshal(v, &d) == nil {
-				out = append(out, d)
+		bucket := tx.Bucket(bucketDialogues)
+		index := make([]dialoguePageIndex, 0)
+		if err := bucket.ForEach(func(key, value []byte) error {
+			var metadata struct {
+				UpdatedAt time.Time `json:"updated_at"`
+			}
+			if json.Unmarshal(value, &metadata) == nil {
+				index = append(index, dialoguePageIndex{ID: string(key), UpdatedAt: metadata.UpdatedAt})
 			}
 			return nil
+		}); err != nil {
+			return err
+		}
+		sort.Slice(index, func(i, j int) bool {
+			return index[i].UpdatedAt.After(index[j].UpdatedAt)
 		})
+		for _, item := range index {
+			if len(out) == limit {
+				break
+			}
+			raw := bucket.Get([]byte(item.ID))
+			var dialogue DialogueRecord
+			if raw == nil || json.Unmarshal(raw, &dialogue) != nil {
+				continue
+			}
+			out = append(out, dialogue)
+		}
+		return nil
 	})
-	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return out
 }

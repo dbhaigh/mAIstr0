@@ -1,0 +1,36 @@
+[
+  {
+    "id": "sub-a",
+    "description": "Analyze Alpha to compare it with Beta for the original request: Compare Alpha and Beta.",
+    "role": "general",
+    "task_type": "general",
+    "tags": [
+      "general"
+    ]
+  },
+  {
+    "id": "sub-b",
+    "description": "Analyze Beta to compare it with Alpha for the original request: Compare Alpha and Beta.",
+    "role": "general",
+    "task_type": "general",
+    "tags": [
+      "general"
+    ]
+  },
+  {
+    "id": "synthesis",
+    "description": "Synthesize the completed results into a coherent answer to the original task: Compare Alpha and Beta.",
+    "role": "summarizer",
+    "task_type": "summarize",
+    "tags": [
+      "summarize",
+      "general"
+    ],
+    "depends_on": [
+      "sub-a",
+      "sub-b"
+    ],
+    "expected_output": "A concise integrated response addressing the original task.",
+    "synthesis": true
+  }
+]

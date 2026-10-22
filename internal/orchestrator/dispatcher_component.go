@@ -4,15 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"runtime"
+	"sync/atomic"
+	"time"
+
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/workpool"
-	"net/http"
-	"runtime"
-	"sync/atomic"
-	"time"
 )
 
 type dispatchJob struct {
@@ -35,6 +36,8 @@ type dispatcherComponent struct {
 	retryPolicy     dispatchRetryPolicy
 	limit           int
 	dispatchTimeout time.Duration
+	hedgingEnabled  bool
+	hedgeSlots      chan struct{}
 	// These atomics are independent live metrics; they are not guarded by a
 	// mutex and never impose lock ordering on dispatch paths.
 	dependencyWaiters   atomic.Int64
@@ -82,6 +85,14 @@ func newDispatcherComponent(
 		workpool.Options{PropagateSubmitterContext: false},
 	)
 	return dispatcher
+}
+
+func (d *dispatcherComponent) configureSpeculativeHedging(enabled bool, maxConcurrent int) {
+	d.hedgingEnabled = enabled
+	d.hedgeSlots = nil
+	if enabled && maxConcurrent > 0 {
+		d.hedgeSlots = make(chan struct{}, min(maxConcurrent, 4))
+	}
 }
 
 func (d *dispatcherComponent) close() {

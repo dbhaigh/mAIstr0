@@ -22,6 +22,20 @@ type fallbackPlannerModel struct {
 	models []string
 }
 
+type invalidPlanModel struct {
+	calls int
+}
+
+func (m *invalidPlanModel) callNodeGenerateWithOptionsContext(
+	_ context.Context,
+	_, _, _ string,
+	_ float64,
+	_ int,
+) (string, error) {
+	m.calls++
+	return `{"subtasks":[{"id":"work","description":"","task_type":"general"}]}`, nil
+}
+
 func (m *fallbackPlannerModel) callNodeGenerateWithOptionsContext(_ context.Context, _ string, model, _ string, _ float64, _ int) (string, error) {
 	m.models = append(m.models, model)
 	if model == "llava-v1.5-7b-llamafile" {
@@ -77,8 +91,10 @@ func TestAutoPlanRunsRoleTasksWithValidationAndReview(t *testing.T) {
 	})
 
 	task, err := srv.createTask(context.Background(), createTaskRequest{
-		Description: "Implement and review the requested change",
-		PlanMode:    "auto", RequireReview: true,
+		Description:       "Implement and review the requested change",
+		PlanMode:          "auto",
+		RoutingPreference: scheduler.RoutingPreferenceLatency,
+		RequireReview:     true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +110,10 @@ func TestAutoPlanRunsRoleTasksWithValidationAndReview(t *testing.T) {
 	}
 	if completed.Subtasks[0].Subtask.Role != "coder" || completed.Subtasks[0].Subtask.ExpectedOutput == "" {
 		t.Fatalf("planner role/output contract was not preserved: %+v", completed.Subtasks[0].Subtask)
+	}
+	if completed.Subtasks[0].Subtask.RoutingPreference != scheduler.RoutingPreferenceLatency {
+		t.Fatalf("routing preference = %q, want %q",
+			completed.Subtasks[0].Subtask.RoutingPreference, scheduler.RoutingPreferenceLatency)
 	}
 	reviewer := completed.Subtasks[1]
 	if reviewer.Subtask.Role != "reviewer" || len(reviewer.Subtask.DependsOn) != 1 || reviewer.Status != taskmgr.StatusCompleted {
@@ -136,6 +156,58 @@ func TestAutoPlanRetriesWithAnotherModelAfterModelLoadFailure(t *testing.T) {
 	}
 }
 
+func TestAutoPlanCacheNormalizesDescriptionsAndReturnsCopies(t *testing.T) {
+	model := &fallbackPlannerModel{}
+	nodes := []cluster.NodeStatus{{
+		ID: "planner", Address: "http://planner", Healthy: true,
+		Models: []engine.Model{{Name: "general-model", Tags: []string{"general"}}},
+	}}
+	planner := newTaskPlanner(schedulerAdapter{}, nil, nil, model, func() []cluster.NodeStatus {
+		return nodes
+	}, nil)
+
+	firstGraph, firstSubtasks, err := planner.planSubtasks(context.Background(), "Do a task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstGraph.Nodes["work"] = scheduler.Subtask{ID: "work", Description: "mutated"}
+	firstSubtasks[0].Description = "mutated"
+
+	secondGraph, secondSubtasks, err := planner.planSubtasks(context.Background(), "  DO   A TASK  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.models) != 1 {
+		t.Fatalf("planner calls = %d, want one cached call", len(model.models))
+	}
+	if got := secondSubtasks[0].Description; got != "Do the work" {
+		t.Fatalf("cached subtask was mutated: %q", got)
+	}
+	if got := secondGraph.Nodes["work"].Description; got != "Do the work" {
+		t.Fatalf("cached graph was mutated: %q", got)
+	}
+}
+
+func TestAutoPlanCacheDoesNotStoreInvalidPlans(t *testing.T) {
+	model := &invalidPlanModel{}
+	nodes := []cluster.NodeStatus{{
+		ID: "planner", Address: "http://planner", Healthy: true,
+		Models: []engine.Model{{Name: "general-model", Tags: []string{"general"}}},
+	}}
+	planner := newTaskPlanner(schedulerAdapter{}, nil, nil, model, func() []cluster.NodeStatus {
+		return nodes
+	}, nil)
+
+	for i := 0; i < 2; i++ {
+		if _, _, err := planner.planSubtasks(context.Background(), "Do a task"); err == nil {
+			t.Fatal("invalid planner output was accepted")
+		}
+	}
+	if model.calls != 2 {
+		t.Fatalf("planner calls = %d, want retry after both invalid plans", model.calls)
+	}
+}
+
 func TestTaskApprovalEndpointResumesSynthesis(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"output": "worker output"})
@@ -146,7 +218,7 @@ func TestTaskApprovalEndpointResumesSynthesis(t *testing.T) {
 		ID: "approval-worker", Address: worker.URL, Healthy: true,
 		Models: []engine.Model{{Name: "general", Tags: []string{"general"}}},
 	})
-	requestBody := bytes.NewBufferString(`{"description":"Review this task","require_approval":true,"subtasks":[{"id":"work","description":"Do the work"}]}`)
+	requestBody := bytes.NewBufferString(`{"description":"Review this task","require_approval":true,"subtasks":[{"id":"work","description":"Do the work","routing_preference":"latency"}]}`)
 	createdResponse := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(createdResponse, httptest.NewRequest(http.MethodPost, "/api/tasks", requestBody))
 	if createdResponse.Code != http.StatusAccepted {
@@ -155,6 +227,10 @@ func TestTaskApprovalEndpointResumesSynthesis(t *testing.T) {
 	var created taskmgr.Task
 	if err := json.Unmarshal(createdResponse.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
+	}
+	if created.Subtasks[0].Subtask.RoutingPreference != scheduler.RoutingPreferenceLatency {
+		t.Fatalf("explicit subtask routing preference = %q, want %q",
+			created.Subtasks[0].Subtask.RoutingPreference, scheduler.RoutingPreferenceLatency)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -197,11 +197,8 @@ func (m *Manager) load() error {
 	}
 	for _, task := range tasks {
 		if interrupted[task.ID] {
-			if err := m.store.Save(task); err != nil {
-				return err
-			}
 			checkpoint := checkpointForTask(task)
-			if err := m.store.SaveCheckpoint(checkpoint); err != nil {
+			if err := saveTaskAndCheckpoint(m.store, task, checkpoint); err != nil {
 				return err
 			}
 		} else if metadataChanged[task.ID] {

@@ -1,6 +1,6 @@
 module github.com/maistr0/maistr0
 
-go 1.27.0
+go 1.27.3
 
 require (
 	github.com/getlantern/systray v1.2.2

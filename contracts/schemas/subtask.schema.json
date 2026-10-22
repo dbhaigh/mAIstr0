@@ -18,7 +18,9 @@
     "required_capabilities": {"type": "array", "items": {"type": "string"}},
     "preferred_capabilities": {"type": "array", "items": {"type": "string"}},
     "min_model_size_gb": {"type": "number"},
-    "preferred_model": {"type": "string"}
+    "preferred_model": {"type": "string"},
+    "routing_preference": {"type": "string", "enum": ["quality", "latency"]},
+    "synthesis": {"type": "boolean"}
   },
   "additionalProperties": true
 }

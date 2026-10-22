@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
@@ -49,8 +49,10 @@ type taskDependencyEdge struct {
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
-	var req createTaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[createTaskRequest](
+		w, r, httpx.ControlJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -65,6 +67,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.recoverTaskHistory()
+	hadCursor := r.Header.Get(memory.SyncPageCursorHeader) != ""
 	version, watermarks, err := memory.ReadSyncRequestHeaders(r)
 	if err != nil {
 		http.Error(w, "invalid task sync headers: "+err.Error(), http.StatusBadRequest)
@@ -144,11 +147,17 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		log.Printf("FILE_ONLY: orchestrator: task history sync event=page_served %s records=%d more=%t",
 			syncLogFields(syncLogRequestID(r), syncLogNodeID(r), time.Since(pageStarted), "none"), len(tasks), more)
 	}
-	if err := memory.SetSyncResponseHeaders(w, currentWatermarks); err != nil {
+	if err := memory.SetSyncResponseHeadersForPeer(w, currentWatermarks, version); err != nil {
 		http.Error(w, "could not encode task sync watermarks: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	if memory.SupportsEmptySync(version) && !hadCursor && len(tasks) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if _, err := memory.WriteSyncJSON(w, http.StatusOK, tasks, version, memory.AcceptsSyncCompression(r)); err != nil {
+		log.Printf("FILE_ONLY: orchestrator: task sync response encoding failed: %v", err)
+	}
 }
 
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {

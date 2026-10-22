@@ -106,7 +106,7 @@ func TestOrchestratorProcessAPI(t *testing.T) {
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
-			MinVersion:         tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS13,
 		}},
 	}
 	response, err := unauthenticated.Get("https://" + address + "/api/agent/stats")

@@ -3,6 +3,8 @@ package taskmgr
 import (
 	"net/http"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,6 +97,79 @@ func TestSuccessfulAttemptAndSubtaskOutputPersistTogether(t *testing.T) {
 		restored.Subtasks[0].Attempts[0].Status != DispatchAttemptSucceeded ||
 		restored.Subtasks[0].Attempts[0].RequestID != DispatchRequestID(task.ID, "work") {
 		t.Fatalf("successful dispatch result was not durably restored: %+v", restored)
+	}
+}
+
+func TestConcurrentSuccessfulAttemptsChooseOneWinner(t *testing.T) {
+	manager := NewManager()
+	t.Cleanup(func() { _ = manager.Close() })
+	primary := scheduler.Assignment{
+		Subtask: scheduler.Subtask{ID: "work", TaskType: "general"},
+		NodeID:  "node-a", Model: "model-a",
+	}
+	hedge := primary
+	hedge.NodeID = "node-b"
+	hedge.Model = "model-b"
+	task, err := manager.CreateChecked("hedged inference", []scheduler.Assignment{primary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+		t.Fatal(err)
+	}
+	attempts := make([]int, 2)
+	for i, assignment := range []scheduler.Assignment{primary, hedge} {
+		attempts[i], err = manager.BeginDispatchAttemptChecked(task.ID, "work", assignment)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var callbackCalls atomic.Int32
+	results := make(chan bool, len(attempts))
+	errorsFound := make(chan error, len(attempts))
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	done.Add(len(attempts))
+	for i, assignment := range []scheduler.Assignment{primary, hedge} {
+		go func(attempt int, candidate scheduler.Assignment) {
+			defer done.Done()
+			start.Wait()
+			won, completeErr := manager.CompleteDispatchAttemptWithAssignmentChecked(
+				task.ID, "work", attempts[attempt], &candidate, "none",
+				http.StatusOK, 10*time.Millisecond, candidate.NodeID+" output",
+				func() { callbackCalls.Add(1) },
+			)
+			results <- won
+			errorsFound <- completeErr
+		}(i, assignment)
+	}
+	start.Done()
+	done.Wait()
+	close(results)
+	close(errorsFound)
+	winnerCount := 0
+	for won := range results {
+		if won {
+			winnerCount++
+		}
+	}
+	for completeErr := range errorsFound {
+		if completeErr != nil {
+			t.Fatalf("complete concurrent attempt: %v", completeErr)
+		}
+	}
+	if winnerCount != 1 || callbackCalls.Load() != 1 {
+		t.Fatalf("winner count/callbacks = %d/%d, want 1/1", winnerCount, callbackCalls.Load())
+	}
+	completed, ok := manager.Get(task.ID)
+	if !ok || completed.Status != StatusCompleted || len(completed.Subtasks[0].Attempts) != 2 {
+		t.Fatalf("completed task = %+v", completed)
+	}
+	if completed.Subtasks[0].Output != completed.Subtasks[0].Assignment.NodeID+" output" {
+		t.Fatalf("subtask output %q does not match winning assignment %+v",
+			completed.Subtasks[0].Output, completed.Subtasks[0].Assignment)
 	}
 }
 

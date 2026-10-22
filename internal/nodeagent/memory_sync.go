@@ -98,11 +98,18 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
-	if err := memory.SetSyncResponseHeaders(w, responseWatermarks); err != nil {
+	if err := memory.SetSyncResponseHeadersForPeer(w, responseWatermarks, peerVersion); err != nil {
 		http.Error(w, "could not encode memory sync watermarks: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(response, http.StatusOK, snapshot)
+	if memory.SupportsEmptySync(peerVersion) && r.Header.Get(memory.SyncPageCursorHeader) == "" && memorySyncRecordCount(snapshot) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_complete %s peer_id=%s status=%d body_bytes=0 records=0 elapsed=%s",
+			syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "none"), peerID, http.StatusNoContent, time.Since(started))
+		return
+	}
+	_, writeErr := memory.WriteSyncJSON(response, http.StatusOK, snapshot, peerVersion, memory.AcceptsSyncCompression(r))
+	response.writeErr = writeErr
 	failureClass := "none"
 	if response.writeErr != nil {
 		failureClass = "response_write"
@@ -148,8 +155,17 @@ func (a *Agent) handlePeerMemorySyncPost(w http.ResponseWriter, r *http.Request)
 }
 
 func decodeMemorySyncRequest(w http.ResponseWriter, r *http.Request, maxBytes int64) (memory.Snapshot, int64, error) {
+	version, _, err := memory.ReadSyncRequestHeaders(r)
+	if err != nil {
+		return memory.Snapshot{}, 0, err
+	}
 	reader := &memorySyncCountingReader{ReadCloser: r.Body}
-	body, err := io.ReadAll(http.MaxBytesReader(w, reader, maxBytes))
+	body, err := memory.DecodeSyncBody(
+		http.MaxBytesReader(w, reader, maxBytes),
+		r.Header.Get("Content-Encoding"),
+		version,
+		maxBytes,
+	)
 	if err != nil {
 		return memory.Snapshot{}, reader.bytesRead, err
 	}
@@ -179,7 +195,7 @@ type memorySyncHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, watermarks map[string]uint64, maxBytes int64) (memory.Snapshot, int64, error) {
+func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, watermarks map[string]uint64, maxBytes int64) (memory.Snapshot, int64, int, error) {
 	result := memory.Snapshot{
 		Experiences:  make([]memory.Experience, 0),
 		Facts:        make([]memory.Fact, 0),
@@ -188,46 +204,49 @@ func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, water
 	}
 	var cursor, upper map[string]uint64
 	var totalBytes int64
+	var lastStatus int
 	for {
 		request, err := http.NewRequest(http.MethodGet, endpoint, nil)
 		if err != nil {
-			return memory.Snapshot{}, totalBytes, err
+			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
 		if err := memory.SetSyncRequestHeaders(request, watermarks); err != nil {
-			return memory.Snapshot{}, totalBytes, err
+			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
+		memory.SetSyncCompressionRequestHeader(request)
 		if cursor != nil {
 			if err := memory.SetSyncPageRequestHeaders(request, cursor, upper); err != nil {
-				return memory.Snapshot{}, totalBytes, err
+				return memory.Snapshot{}, totalBytes, lastStatus, err
 			}
 		}
 		response, err := client.Do(request)
 		if err != nil {
-			return memory.Snapshot{}, totalBytes, err
+			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
+		lastStatus = response.StatusCode
 		version, responseWatermarks, err := memory.ReadSyncResponseHeaders(response)
 		if err != nil {
 			response.Body.Close()
-			return memory.Snapshot{}, totalBytes, err
+			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
 		nextCursor, more, err := memory.ReadSyncPageResponseHeader(response)
 		if err != nil {
 			response.Body.Close()
-			return memory.Snapshot{}, totalBytes, err
+			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
-		page, bodyBytes, err := decodeMemorySyncResponse(response, maxBytes)
+		page, bodyBytes, err := decodeMemorySyncResponse(response, maxBytes, version)
 		totalBytes += bodyBytes
 		if err != nil {
-			return memory.Snapshot{}, totalBytes, err
+			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
 		if version == 0 {
 			version = page.SyncVersion
 		}
 		if more && !memory.SupportsSyncPages(version) {
-			return memory.Snapshot{}, totalBytes, fmt.Errorf("peer paginated a memory snapshot without protocol version 2")
+			return memory.Snapshot{}, totalBytes, lastStatus, fmt.Errorf("peer paginated a memory snapshot without protocol version 2")
 		}
 		if more && len(nextCursor) == 0 {
-			return memory.Snapshot{}, totalBytes, fmt.Errorf("peer returned an empty memory sync page cursor")
+			return memory.Snapshot{}, totalBytes, lastStatus, fmt.Errorf("peer returned an empty memory sync page cursor")
 		}
 		result.Experiences = append(result.Experiences, page.Experiences...)
 		result.Facts = append(result.Facts, page.Facts...)
@@ -239,10 +258,10 @@ func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, water
 			if result.Watermarks == nil {
 				result.Watermarks = responseWatermarks
 			}
-			return result, totalBytes, nil
+			return result, totalBytes, lastStatus, nil
 		}
 		if len(responseWatermarks) == 0 {
-			return memory.Snapshot{}, totalBytes, fmt.Errorf("peer omitted memory sync watermarks during pagination")
+			return memory.Snapshot{}, totalBytes, lastStatus, fmt.Errorf("peer omitted memory sync watermarks during pagination")
 		}
 		cursor = nextCursor
 		upper = responseWatermarks
@@ -288,14 +307,21 @@ func marshalMemorySnapshotPages(snapshot memory.Snapshot, maxBytes int64, wrap f
 	return bodies, nil
 }
 
-func postMemorySnapshotPages(client memorySyncHTTPClient, endpoint string, bodies [][]byte, watermarks map[string]uint64) (int64, error) {
+func postMemorySnapshotPages(client memorySyncHTTPClient, endpoint string, bodies [][]byte, watermarks map[string]uint64, peerVersion int) (int64, error) {
 	var totalBytes int64
 	for _, body := range bodies {
+		body, compressed, err := memory.EncodeSyncBody(body, peerVersion, true)
+		if err != nil {
+			return totalBytes, err
+		}
 		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return totalBytes, err
 		}
 		request.Header.Set("Content-Type", "application/json")
+		if compressed {
+			request.Header.Set("Content-Encoding", "gzip")
+		}
 		if err := memory.SetSyncRequestHeaders(request, watermarks); err != nil {
 			return totalBytes, err
 		}
@@ -321,18 +347,26 @@ func postMemorySnapshotPages(client memorySyncHTTPClient, endpoint string, bodie
 	return totalBytes, nil
 }
 
-func decodeMemorySyncResponse(resp *http.Response, maxBytes int64) (memory.Snapshot, int64, error) {
+func decodeMemorySyncResponse(resp *http.Response, maxBytes int64, version int) (memory.Snapshot, int64, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return memory.Snapshot{}, int64(len(body)), fmt.Errorf("peer returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return memory.Snapshot{}, int64(len(body)), err
+	if resp.StatusCode == http.StatusNoContent {
+		if !memory.SupportsEmptySync(version) {
+			return memory.Snapshot{}, 0, fmt.Errorf("peer returned an empty sync response without protocol version %d", memory.SyncCompressionProtocolVersion)
+		}
+		return memory.Snapshot{
+			Experiences:  []memory.Experience{},
+			Facts:        []memory.Fact{},
+			Performances: []memory.Performance{},
+			Dialogues:    []memory.DialogueRecord{},
+		}, 0, nil
 	}
-	if int64(len(body)) > maxBytes {
-		return memory.Snapshot{}, int64(len(body)), fmt.Errorf("peer memory snapshot exceeds the %d-byte sync limit", maxBytes)
+	body, err := memory.DecodeSyncBody(resp.Body, resp.Header.Get("Content-Encoding"), version, maxBytes)
+	if err != nil {
+		return memory.Snapshot{}, 0, err
 	}
 	var snapshot memory.Snapshot
 	if err := json.Unmarshal(body, &snapshot); err != nil {

@@ -53,6 +53,10 @@ type Experience interface {
 	LearnedBias(nodeID, model, taskType string) float64
 }
 
+type CostExperience interface {
+	TokensPerSecond(nodeID, model, taskType string) float64
+}
+
 // Assign picks the best node+model for each subtask.
 func Assign(subtasks []Subtask, nodes []cluster.NodeStatus) ([]Assignment, error) {
 	return AssignWithExperience(subtasks, nodes, nil)
@@ -108,10 +112,17 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	}
 
 	simulatedLoad := make(map[string]simulatedNodeLoad, len(healthy))
+	capabilityRanges := make([][2]int, len(healthy))
+	capabilities := make([]string, 0, len(healthy))
+	for i, n := range healthy {
+		start := len(capabilities)
+		capabilities = n.AppendEffectiveCapabilities(capabilities)
+		capabilityRanges[i] = [2]int{start, len(capabilities)}
+	}
 	nodeCapabilities := make([][]string, len(healthy))
 	for i, n := range healthy {
 		simulatedLoad[n.ID] = simulatedNodeLoad{active: n.ActiveTasks + n.QueuedTasks}
-		nodeCapabilities[i] = n.EffectiveCapabilities()
+		nodeCapabilities[i] = capabilities[capabilityRanges[i][0]:capabilityRanges[i][1]]
 	}
 
 	assignments := make([]Assignment, 0, len(subtasks))
@@ -163,6 +174,7 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabil
 	var best *cluster.NodeStatus
 	bestScore := math.Inf(-1)
 	bestBias := 0.0
+	bestThroughput := 0.0
 	bestLoad := simulatedNodeLoad{}
 	var bestCapabilities []string
 	scoringSubtask := toScoringSubtask(st, outDegree)
@@ -177,15 +189,20 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabil
 		if exp != nil {
 			learnedBias = exp.LearnedBias(node.ID, candidate.prepared.Model(), st.TaskType)
 		}
+		tokensPerSecond := 0.0
+		if history, ok := exp.(CostExperience); ok {
+			tokensPerSecond = history.TokensPerSecond(node.ID, candidate.prepared.Model(), st.TaskType)
+		}
 		nodeLoad := load[node.ID]
 		scoreValue := score.ScorePreparedValue(
 			*node, scoringSubtask, candidate.prepared, nodeLoad.active, nodeLoad.pendingDependents,
-			score.Experience{LearnedBias: learnedBias}, *cfg, now,
+			score.Experience{LearnedBias: learnedBias, TokensPerSecond: tokensPerSecond}, *cfg, now,
 		)
 		if scoreValue > bestScore {
 			bestScore = scoreValue
 			best = node
 			bestBias = learnedBias
+			bestThroughput = tokensPerSecond
 			bestLoad = nodeLoad
 			bestCapabilities = nodeCapabilities[i]
 		}
@@ -199,7 +216,7 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabil
 	}
 	bestScore, bestFactors := score.ScorePrepared(
 		*best, scoringSubtask, prepared, bestLoad.active, bestLoad.pendingDependents,
-		score.Experience{LearnedBias: bestBias}, *cfg, now,
+		score.Experience{LearnedBias: bestBias, TokensPerSecond: bestThroughput}, *cfg, now,
 	)
 	return best, prepared.Model(), prepared.Engine(), bestScore, bestFactors
 }
@@ -257,6 +274,9 @@ func prepareScoringCandidateForScore(node *cluster.NodeStatus, subtask score.Sub
 
 func toScoringSubtask(st Subtask, outDegree int) score.Subtask {
 	return score.Subtask{
+		Description:           st.Description,
+		ExpectedOutput:        st.ExpectedOutput,
+		RoutingPreference:     st.RoutingPreference,
 		TaskType:              st.TaskType,
 		PreferredModel:        st.PreferredModel,
 		RequiredCapabilities:  st.RequiredCapabilities,

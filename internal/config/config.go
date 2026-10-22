@@ -16,13 +16,20 @@ import (
 )
 
 const (
-	DefaultNodeConcurrency        = 2
-	DefaultDispatchConcurrency    = 16
-	DefaultDispatchTimeoutSeconds = 600
-	DefaultSyncMaxBytes           = int64(64 << 20)
-	DefaultSyncTimeoutSeconds     = 600
-	MaxSyncMaxBytes               = int64(256 << 20)
-	MaxSyncTimeoutSeconds         = 3600
+	DefaultNodeConcurrency                = 2
+	DefaultDispatchConcurrency            = 16
+	DefaultDispatchTimeoutSeconds         = 600
+	DefaultMaxConcurrentHedges            = 1
+	MaxAllowedConcurrentHedges            = 4
+	DefaultRouterRequestTimeoutSeconds    = 120
+	DefaultRouterTTFBTimeoutSeconds       = 60
+	DefaultRouterIdleStreamTimeoutSeconds = 30
+	MaxRouterRequestsPerMinute            = 100000
+	MaxRouterConcurrentPerClient          = 1024
+	DefaultSyncMaxBytes                   = int64(64 << 20)
+	DefaultSyncTimeoutSeconds             = 600
+	MaxSyncMaxBytes                       = int64(256 << 20)
+	MaxSyncTimeoutSeconds                 = 3600
 
 	OrchestratorModeFull    = "full"
 	OrchestratorModeMinimal = "minimal"
@@ -156,22 +163,31 @@ func DefaultNodeConfig() NodeConfig {
 }
 
 type OrchestratorConfig struct {
-	ListenAddr                     string               `json:"listen_addr"`
-	Mode                           string               `json:"mode,omitempty"` // "full" or "minimal"
-	Harness                        string               `json:"harness"`        // "deepseek" or "pi"
-	MaxConcurrentDispatches        int                  `json:"max_concurrent_dispatches"`
-	DispatchTimeoutSeconds         int                  `json:"dispatch_timeout_seconds"`
-	ShardedModels                  []ShardedModelConfig `json:"sharded_models,omitempty"`
-	DiscoveryEnabled               bool                 `json:"discovery_enabled"`
-	AutoOpenBrowser                bool                 `json:"auto_open_browser"`
-	TrayMode                       string               `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
-	MemoryPath                     string               `json:"memory_path"` // empty = default per-user data dir
-	SyncMaxBytes                   int64                `json:"sync_max_bytes,omitempty"`
-	SyncTimeoutSeconds             int                  `json:"sync_timeout_seconds,omitempty"`
-	explicitInvalidConcurrency     bool
-	explicitInvalidDispatchTimeout bool
-	explicitInvalidSyncMax         bool
-	explicitInvalidSyncTimeout     bool
+	ListenAddr                          string               `json:"listen_addr"`
+	Mode                                string               `json:"mode,omitempty"` // "full" or "minimal"
+	Harness                             string               `json:"harness"`        // "deepseek" or "pi"
+	MaxConcurrentDispatches             int                  `json:"max_concurrent_dispatches"`
+	DispatchTimeoutSeconds              int                  `json:"dispatch_timeout_seconds"`
+	ShardedModels                       []ShardedModelConfig `json:"sharded_models,omitempty"`
+	DiscoveryEnabled                    bool                 `json:"discovery_enabled"`
+	AutoOpenBrowser                     bool                 `json:"auto_open_browser"`
+	TrayMode                            string               `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
+	MemoryPath                          string               `json:"memory_path"` // empty = default per-user data dir
+	SyncMaxBytes                        int64                `json:"sync_max_bytes,omitempty"`
+	SyncTimeoutSeconds                  int                  `json:"sync_timeout_seconds,omitempty"`
+	SpeculativeHedgingEnabled           bool                 `json:"speculative_hedging_enabled,omitempty"`
+	MaxConcurrentHedges                 int                  `json:"max_concurrent_hedges,omitempty"`
+	RouterTimeToFirstByteTimeoutSeconds int                  `json:"router_time_to_first_byte_timeout_seconds"`
+	RouterIdleStreamTimeoutSeconds      int                  `json:"router_idle_stream_timeout_seconds"`
+	RouterRequestsPerMinute             int                  `json:"router_requests_per_minute,omitempty"`
+	RouterMaxConcurrentPerClient        int                  `json:"router_max_concurrent_per_client,omitempty"`
+	explicitInvalidConcurrency          bool
+	explicitInvalidDispatchTimeout      bool
+	explicitInvalidHedgeCap             bool
+	explicitInvalidRouterTTFBTimeout    bool
+	explicitInvalidRouterIdleTimeout    bool
+	explicitInvalidSyncMax              bool
+	explicitInvalidSyncTimeout          bool
 }
 
 func (cfg *OrchestratorConfig) Normalize() {
@@ -193,6 +209,18 @@ func (cfg *OrchestratorConfig) Normalize() {
 	if cfg.DispatchTimeoutSeconds <= 0 {
 		cfg.explicitInvalidDispatchTimeout = cfg.explicitInvalidDispatchTimeout || cfg.DispatchTimeoutSeconds < 0
 		cfg.DispatchTimeoutSeconds = DefaultDispatchTimeoutSeconds
+	}
+	if cfg.MaxConcurrentHedges <= 0 {
+		cfg.explicitInvalidHedgeCap = cfg.explicitInvalidHedgeCap || cfg.MaxConcurrentHedges < 0
+		cfg.MaxConcurrentHedges = DefaultMaxConcurrentHedges
+	}
+	if cfg.RouterTimeToFirstByteTimeoutSeconds <= 0 {
+		cfg.explicitInvalidRouterTTFBTimeout = cfg.explicitInvalidRouterTTFBTimeout || cfg.RouterTimeToFirstByteTimeoutSeconds < 0
+		cfg.RouterTimeToFirstByteTimeoutSeconds = DefaultRouterTTFBTimeoutSeconds
+	}
+	if cfg.RouterIdleStreamTimeoutSeconds <= 0 {
+		cfg.explicitInvalidRouterIdleTimeout = cfg.explicitInvalidRouterIdleTimeout || cfg.RouterIdleStreamTimeoutSeconds < 0
+		cfg.RouterIdleStreamTimeoutSeconds = DefaultRouterIdleStreamTimeoutSeconds
 	}
 	if cfg.SyncMaxBytes <= 0 {
 		cfg.explicitInvalidSyncMax = cfg.explicitInvalidSyncMax || cfg.SyncMaxBytes < 0
@@ -227,6 +255,42 @@ func (cfg OrchestratorConfig) Validate() error {
 	if cfg.DispatchTimeoutSeconds <= 0 || cfg.explicitInvalidDispatchTimeout {
 		violations = append(violations, fmt.Errorf("dispatch_timeout_seconds must be greater than zero"))
 	}
+	if cfg.MaxConcurrentHedges < 1 || cfg.MaxConcurrentHedges > MaxAllowedConcurrentHedges ||
+		cfg.MaxConcurrentHedges > cfg.MaxConcurrentDispatches || cfg.explicitInvalidHedgeCap {
+		violations = append(violations, fmt.Errorf(
+			"max_concurrent_hedges must be between 1 and min(%d, max_concurrent_dispatches)",
+			MaxAllowedConcurrentHedges,
+		))
+	}
+	if cfg.RouterTimeToFirstByteTimeoutSeconds < 1 ||
+		cfg.RouterTimeToFirstByteTimeoutSeconds > DefaultRouterRequestTimeoutSeconds ||
+		cfg.explicitInvalidRouterTTFBTimeout {
+		violations = append(violations, fmt.Errorf(
+			"router_time_to_first_byte_timeout_seconds must be between 1 and %d",
+			DefaultRouterRequestTimeoutSeconds,
+		))
+	}
+	if cfg.RouterIdleStreamTimeoutSeconds < 1 ||
+		cfg.RouterIdleStreamTimeoutSeconds > DefaultRouterRequestTimeoutSeconds ||
+		cfg.explicitInvalidRouterIdleTimeout {
+		violations = append(violations, fmt.Errorf(
+			"router_idle_stream_timeout_seconds must be between 1 and %d",
+			DefaultRouterRequestTimeoutSeconds,
+		))
+	}
+	if cfg.RouterRequestsPerMinute < 0 || cfg.RouterRequestsPerMinute > MaxRouterRequestsPerMinute {
+		violations = append(violations, fmt.Errorf(
+			"router_requests_per_minute must be between 0 and %d",
+			MaxRouterRequestsPerMinute,
+		))
+	}
+	if cfg.RouterMaxConcurrentPerClient < 0 ||
+		cfg.RouterMaxConcurrentPerClient > MaxRouterConcurrentPerClient {
+		violations = append(violations, fmt.Errorf(
+			"router_max_concurrent_per_client must be between 0 and %d",
+			MaxRouterConcurrentPerClient,
+		))
+	}
 	if cfg.SyncMaxBytes < 1 || cfg.SyncMaxBytes > MaxSyncMaxBytes || cfg.explicitInvalidSyncMax {
 		violations = append(violations, fmt.Errorf("sync_max_bytes must be between 1 and %d", MaxSyncMaxBytes))
 	}
@@ -259,16 +323,19 @@ func (cfg OrchestratorConfig) Validate() error {
 
 func DefaultOrchestratorConfig() OrchestratorConfig {
 	return OrchestratorConfig{
-		ListenAddr:              ":7450",
-		Mode:                    OrchestratorModeFull,
-		Harness:                 "pi",
-		MaxConcurrentDispatches: DefaultDispatchConcurrency,
-		DispatchTimeoutSeconds:  DefaultDispatchTimeoutSeconds,
-		DiscoveryEnabled:        true,
-		AutoOpenBrowser:         true,
-		TrayMode:                "taskbar",
-		SyncMaxBytes:            DefaultSyncMaxBytes,
-		SyncTimeoutSeconds:      DefaultSyncTimeoutSeconds,
+		ListenAddr:                          ":7450",
+		Mode:                                OrchestratorModeFull,
+		Harness:                             "pi",
+		MaxConcurrentDispatches:             DefaultDispatchConcurrency,
+		DispatchTimeoutSeconds:              DefaultDispatchTimeoutSeconds,
+		MaxConcurrentHedges:                 DefaultMaxConcurrentHedges,
+		RouterTimeToFirstByteTimeoutSeconds: DefaultRouterTTFBTimeoutSeconds,
+		RouterIdleStreamTimeoutSeconds:      DefaultRouterIdleStreamTimeoutSeconds,
+		DiscoveryEnabled:                    true,
+		AutoOpenBrowser:                     true,
+		TrayMode:                            "taskbar",
+		SyncMaxBytes:                        DefaultSyncMaxBytes,
+		SyncTimeoutSeconds:                  DefaultSyncTimeoutSeconds,
 	}
 }
 

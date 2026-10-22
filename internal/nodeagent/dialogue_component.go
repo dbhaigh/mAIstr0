@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -188,13 +189,24 @@ func (c *dialogueComponent) turnContext(ctx context.Context, id, model, system, 
 
 	if c.mem != nil {
 		participants := []string{"node:" + c.nodeID}
-		_ = c.mem.AppendDialogueTurn(id, participants, "", memory.Turn{
-			Speaker: role, Content: content, At: time.Now(),
-		})
-		_ = c.mem.AppendDialogueTurn(id, participants, "", memory.Turn{
-			Speaker: "node:" + c.nodeID, NodeID: c.nodeID, Model: modelName,
-			Content: reply, DurationMs: duration, At: time.Now(),
-		})
+		turns := []memory.Turn{
+			{Speaker: role, Content: content, At: time.Now()},
+			{
+				Speaker: "node:" + c.nodeID, NodeID: c.nodeID, Model: modelName,
+				Content: reply, DurationMs: duration, At: time.Now(),
+			},
+		}
+		if appender, ok := c.mem.(memory.DialogueBatchAppender); ok {
+			if err := appender.AppendDialogueTurns(id, participants, "", turns); err != nil {
+				log.Printf("nodeagent: persist dialogue %s: %v", id, err)
+			}
+		} else {
+			for _, turn := range turns {
+				if err := c.mem.AppendDialogueTurn(id, participants, "", turn); err != nil {
+					log.Printf("nodeagent: persist dialogue %s turn: %v", id, err)
+				}
+			}
+		}
 	}
 
 	return dialogueMessageResponse{

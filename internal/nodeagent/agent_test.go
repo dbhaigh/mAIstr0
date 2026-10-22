@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -64,6 +65,34 @@ func TestNodeSyncConfigControlsPageLimitAndTimeout(t *testing.T) {
 	}
 	if agent.memorySyncClient.Timeout != 37*time.Second {
 		t.Fatalf("memory sync timeout = %s, want 37s", agent.memorySyncClient.Timeout)
+	}
+}
+
+func TestMemorySyncProxyUsesConfiguredBodyLimit(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "sync-proxy-body-limit-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+		SyncMaxBytes: 4,
+	})
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+	upstreamReached := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamReached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/memory/sync", strings.NewReader("12345"))
+	response := httptest.NewRecorder()
+	agent.peerComponent.proxy(response, request, upstream.URL, "/api/memory/sync")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized sync proxy returned %d, want 400", response.Code)
+	}
+	if upstreamReached {
+		t.Fatal("oversized sync request reached the upstream server")
 	}
 }
 
@@ -412,6 +441,42 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	}
 	if !agent.identity.IsTrustedID(orchestrator.ID()) || agent.getOrchestratorAddr() != server.URL {
 		t.Fatal("node did not trust and select the auto-joined orchestrator")
+	}
+}
+
+func TestPairingFailureDoesNotLogOrReturnReflectedPIN(t *testing.T) {
+	const pin = "654321"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "invalid PIN "+pin, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "pairing-error-redaction-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousOutput)
+
+	err := agent.orchestratorLink.pairWithAddress(server.URL, "", pin)
+	if err == nil {
+		t.Fatal("pairing unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), pin) {
+		t.Fatalf("pairing error leaked PIN %q: %v", pin, err)
+	}
+	if strings.Contains(logs.String(), pin) {
+		t.Fatalf("pairing log leaked PIN %q: %s", pin, logs.String())
 	}
 }
 
@@ -1290,6 +1355,7 @@ func TestNodeChatAndDialogueEndpoints(t *testing.T) {
 		ListenAddr: ":0",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	}
+
 	agent := mustNewTestAgent(t, cfg)
 	t.Cleanup(func() { _ = agent.Memory().Close() })
 	// Ensure simulated engine is present for deterministic unit testing
@@ -1388,6 +1454,27 @@ func TestNodeChatAndDialogueEndpoints(t *testing.T) {
 	}
 	if len(fetchedDlg.Messages) != 5 {
 		t.Errorf("expected 5 messages in fetched dialogue, got %d", len(fetchedDlg.Messages))
+	}
+}
+
+func TestDialogueCreateRejectsMalformedAndOversizedBodies(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "dialogue-body-limit-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+
+	for _, body := range []string{`{"model":`, strings.Repeat(" ", 64<<10+1)} {
+		request := httptest.NewRequest(http.MethodPost, "/dialogues", strings.NewReader(body))
+		response := httptest.NewRecorder()
+		agent.handleDialogueCreate(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("dialogue create with %d-byte body returned %d, want 400",
+				len(body), response.Code)
+		}
 	}
 }
 

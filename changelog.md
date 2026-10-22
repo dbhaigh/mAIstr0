@@ -1,11 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add per-node/model transparent-router circuit breakers, separate first-byte
+  and idle-stream timeouts, opt-in per-client request/concurrency limits, and
+  prompt-free router metrics for attempts, failures, queue depth, latency, and
+  active streams. Expose breaker states through router request events and SSE.
+- Document the peer trust model and harden local dashboard access, pairing
+  secret handling, certificate pin changes, inbound request limits, and TLS
+  transport requirements.
+- Require Go 1.27.3, which includes fixes for standard-library vulnerabilities
+  reported by `govulncheck`.
+
 ## 0.0.19 - 2026-10-21
 
 ### Changed
 
+- Recommend local model-assisted task planning, cache successful normalized
+  plans in memory, improve heuristic fan-out and synthesis, add quality/latency
+  routing estimates, and support disabled-by-default p95 speculative hedging.
 - Document how to verify release artifact versions and clarify that distributed
   pipeline inference remains simulated until production stage backends are added.
+- Add request IDs and prompt-free request logging to production HTTP listeners,
+  with a 256 MiB request-body cap layered over route-specific limits.
 
 ## 0.0.18 - 2026-10-21
 

@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/config"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
@@ -180,7 +183,19 @@ func (c *peerComponent) peerAddress(id string) (string, bool) {
 // proxy forwards the incoming request's method/body to addr+path and
 // copies the response straight back to the caller.
 func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path string) {
-	body, err := io.ReadAll(r.Body)
+	bodyLimit := httpx.ControlJSONBodyBytes
+	if path == "/api/memory/sync" {
+		bodyLimit = c.state.configSnapshot().SyncMaxBytes
+		if bodyLimit <= 0 {
+			bodyLimit = config.DefaultSyncMaxBytes
+		}
+	} else if strings.Contains(path, "/chat") ||
+		strings.Contains(path, "/dialogues") ||
+		strings.Contains(path, "/peer/converse") ||
+		strings.HasSuffix(path, "/execute") {
+		bodyLimit = httpx.InferenceJSONBodyBytes
+	}
+	body, err := httpx.ReadBody(w, r, bodyLimit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -219,22 +234,9 @@ func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	if flusher, ok := w.(http.Flusher); ok {
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := resp.Body.Read(buf)
-			if n > 0 {
-				_, _ = w.Write(buf[:n])
-				flusher.Flush()
-			}
-			if readErr != nil {
-				break
-			}
-		}
-		return
+	if err := httpx.NewStreamWriter(w).Copy(resp.Body, nil); err != nil {
+		log.Printf("nodeagent: peer proxy response stream failed: %v", err)
 	}
-
-	_, _ = io.Copy(w, resp.Body)
 }
 
 func (s *agentState) peersSnapshot() []cluster.NodeStatus {

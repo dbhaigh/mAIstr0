@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,12 +13,15 @@ import (
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/version"
 )
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var status cluster.NodeStatus
-	if err := json.NewDecoder(r.Body).Decode(&status); err != nil {
+	status, err := httpx.DecodeJSON[cluster.NodeStatus](
+		w, r, httpx.NodeStatusJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -108,7 +110,13 @@ func (s *Server) handleNodeModelsGet(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
+}
+
+func copyNodeResponse(w http.ResponseWriter, body io.Reader) {
+	if err := httpx.NewStreamWriter(w).Copy(body, nil); err != nil {
+		log.Printf("orchestrator: stream node response: %v", err)
+	}
 }
 
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +130,7 @@ func (s *Server) handleNodeModelsPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("node not found")))
 		return
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.ControlJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
@@ -141,7 +149,7 @@ func (s *Server) handleNodeModelsPatch(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
 }
 
 func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +171,7 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/pairing/connect") {
 		path = "/api/pairing/connect"
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.ControlJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
@@ -190,7 +198,7 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
 }
 
 // handleNodeChat proxies a multi-turn chat request directly to a node's /chat endpoint.
@@ -201,7 +209,7 @@ func (s *Server) handleNodeChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("node not found or offline")))
 		return
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.InferenceJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
@@ -220,7 +228,7 @@ func (s *Server) handleNodeChat(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
 }
 
 // handleNodeDialoguesProxy proxies dialogue interactions directly to a node's dialogue endpoints.
@@ -242,7 +250,7 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 		destURL += "?" + r.URL.RawQuery
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.InferenceJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
@@ -269,5 +277,5 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
 }

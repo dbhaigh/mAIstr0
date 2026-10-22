@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/router-requests.schema.json",
+  "title": "RouterRequests",
+  "type": "object",
+  "required": ["events", "circuit_breakers"],
+  "properties": {
+    "events": {
+      "type": ["array", "null"],
+      "items": {"$ref": "router-request-event.schema.json"}
+    },
+    "circuit_breakers": {
+      "type": "array",
+      "items": {"$ref": "router-circuit-breaker.schema.json"}
+    }
+  },
+  "additionalProperties": false
+}

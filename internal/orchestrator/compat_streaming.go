@@ -2,24 +2,26 @@ package orchestrator
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 type ollamaStreamWriter struct {
-	target  http.ResponseWriter
-	model   string
-	chat    bool
-	status  int
-	buffer  strings.Builder
-	flusher http.Flusher
+	target http.ResponseWriter
+	model  string
+	chat   bool
+	status int
+	buffer strings.Builder
+	stream *httpx.StreamWriter
 }
 
 func newOllamaStreamWriter(target http.ResponseWriter, model string, chat bool) *ollamaStreamWriter {
-	flusher, _ := target.(http.Flusher)
-	return &ollamaStreamWriter{target: target, model: model, chat: chat, flusher: flusher}
+	return &ollamaStreamWriter{
+		target: target, model: model, chat: chat, stream: httpx.NewStreamWriter(target),
+	}
 }
 
 func (w *ollamaStreamWriter) Header() http.Header { return w.target.Header() }
@@ -88,13 +90,7 @@ func (w *ollamaStreamWriter) consume(payload string) error {
 }
 
 func (w *ollamaStreamWriter) write(value any) error {
-	if err := json.NewEncoder(w.target).Encode(value); err != nil {
-		return err
-	}
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
-	return nil
+	return w.stream.WriteJSONLine(value)
 }
 
 func (w *ollamaStreamWriter) finish() {
@@ -118,13 +114,14 @@ type anthropicStreamWriter struct {
 	model   string
 	status  int
 	buffer  strings.Builder
-	flusher http.Flusher
+	stream  *httpx.StreamWriter
 	started bool
 }
 
 func newAnthropicStreamWriter(target http.ResponseWriter, model string) *anthropicStreamWriter {
-	flusher, _ := target.(http.Flusher)
-	return &anthropicStreamWriter{target: target, model: model, flusher: flusher}
+	return &anthropicStreamWriter{
+		target: target, model: model, stream: httpx.NewStreamWriter(target),
+	}
 }
 
 func (w *anthropicStreamWriter) Header() http.Header { return w.target.Header() }
@@ -211,13 +208,7 @@ func (w *anthropicStreamWriter) writeEvent(name string, value any) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w.target, "event: %s\ndata: %s\n\n", name, raw); err != nil {
-		return err
-	}
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
-	return nil
+	return w.stream.WriteSSEEvent(name, raw)
 }
 
 func (w *anthropicStreamWriter) finish() {
@@ -249,13 +240,9 @@ func (w *anthropicStreamWriter) finish() {
 }
 
 func (w *anthropicStreamWriter) Flush() {
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
+	w.stream.Flush()
 }
 
 func (w *ollamaStreamWriter) Flush() {
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
+	w.stream.Flush()
 }

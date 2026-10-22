@@ -19,12 +19,13 @@ import (
 )
 
 type createTaskRequest struct {
-	Description     string               `json:"description"`
-	Subtasks        []scheduler.Subtask  `json:"subtasks,omitempty"`
-	Graph           *scheduler.TaskGraph `json:"graph,omitempty"`
-	PlanMode        string               `json:"plan_mode,omitempty"`
-	RequireReview   bool                 `json:"require_review,omitempty"`
-	RequireApproval bool                 `json:"require_approval,omitempty"`
+	Description       string               `json:"description"`
+	Subtasks          []scheduler.Subtask  `json:"subtasks,omitempty"`
+	Graph             *scheduler.TaskGraph `json:"graph,omitempty"`
+	PlanMode          string               `json:"plan_mode,omitempty"`
+	RoutingPreference string               `json:"routing_preference,omitempty"`
+	RequireReview     bool                 `json:"require_review,omitempty"`
+	RequireApproval   bool                 `json:"require_approval,omitempty"`
 }
 
 type taskScheduler interface {
@@ -59,6 +60,7 @@ type taskPlanner struct {
 	nodes       func() []cluster.NodeStatus
 	experience  scheduler.Experience
 	provisioner taskModelProvisioner
+	planCache   taskPlanCache
 }
 
 type taskPlannerAPI interface {
@@ -108,13 +110,18 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 	if strings.TrimSpace(req.Description) == "" {
 		return nil, apperr.Invalid(errors.New("description is required"))
 	}
+	routingPreference, err := normalizeRoutingPreference(req.RoutingPreference)
+	if err != nil {
+		return nil, apperr.Invalid(err)
+	}
 	subtasks := req.Subtasks
 	graph := req.Graph
 	planMode := strings.ToLower(strings.TrimSpace(req.PlanMode))
 	modelPlanned := planMode == "auto"
+	heuristicGenerated := false
 
 	switch planMode {
-	case "", "heuristic":
+	case "", "heuristic", "heuristic_v1":
 		if graph != nil {
 			if err := graph.Validate(); err != nil {
 				return nil, apperr.Invalid(fmt.Errorf("invalid task graph: %w", err))
@@ -125,7 +132,12 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 			}
 			subtasks = sorted
 		} else if len(subtasks) == 0 {
-			subtasks = scheduler.Decompose(req.Description)
+			if planMode == "heuristic_v1" {
+				subtasks = scheduler.DecomposeV1(req.Description)
+			} else {
+				subtasks = scheduler.Decompose(req.Description)
+			}
+			heuristicGenerated = true
 			var err error
 			graph, err = scheduler.TaskGraphFromSubtasks(subtasks)
 			if err != nil {
@@ -149,10 +161,10 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 		graph = plannedGraph
 		subtasks = plannedSubtasks
 	default:
-		return nil, apperr.Invalid(errors.New("plan_mode must be heuristic or auto"))
+		return nil, apperr.Invalid(errors.New("plan_mode must be auto, heuristic, or heuristic_v1"))
 	}
 
-	subtasks, err := scheduler.ValidatePlan(subtasks)
+	subtasks, err = scheduler.ValidatePlan(subtasks)
 	if err != nil {
 		if modelPlanned {
 			return nil, apperr.UpstreamError(err)
@@ -170,6 +182,21 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 			_ = graph.AddNode(reviewerNode)
 			for _, dep := range reviewerNode.DependsOn {
 				_ = graph.AddEdge(dep, reviewerNode.ID)
+			}
+		}
+	}
+	for i := range subtasks {
+		if !heuristicGenerated {
+			subtasks[i].Synthesis = false
+		}
+		if routingPreference != "" {
+			subtasks[i].RoutingPreference = routingPreference
+		}
+		if graph != nil {
+			if node, exists := graph.Nodes[subtasks[i].ID]; exists {
+				node.Synthesis = subtasks[i].Synthesis
+				node.RoutingPreference = subtasks[i].RoutingPreference
+				graph.Nodes[subtasks[i].ID] = node
 			}
 		}
 	}
@@ -268,6 +295,28 @@ func addReviewerSubtask(subtasks []scheduler.Subtask) []scheduler.Subtask {
 }
 
 func (p *taskPlanner) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
+	key := normalizedPlanCacheKey(description)
+	if graph, subtasks, ok := p.planCache.get(key); ok {
+		return graph, subtasks, nil
+	}
+	graph, subtasks, err := p.planSubtasksUncached(ctx, description)
+	if err != nil {
+		return nil, nil, err
+	}
+	subtasks, err = scheduler.ValidatePlan(subtasks)
+	if err != nil {
+		return nil, nil, apperr.UpstreamError(fmt.Errorf("planner task validation: %w", err))
+	}
+	for _, subtask := range subtasks {
+		if _, exists := graph.Nodes[subtask.ID]; exists {
+			graph.Nodes[subtask.ID] = subtask.Clone()
+		}
+	}
+	p.planCache.put(key, graph, subtasks)
+	return graph, subtasks, nil
+}
+
+func (p *taskPlanner) planSubtasksUncached(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
 	planning := scheduler.Subtask{ID: "plan", Description: "Create a workflow plan", TaskType: "general"}
 	nodes := p.nodes()
 	failedModels := make(map[string]map[string]struct{})
@@ -373,6 +422,15 @@ User request:
 		return nil, nil, apperr.UpstreamError(fmt.Errorf("planner graph sort: %w", err))
 	}
 	return graph, sorted, nil
+}
+
+func normalizeRoutingPreference(value string) (string, error) {
+	preference := strings.ToLower(strings.TrimSpace(value))
+	if preference == "" || preference == scheduler.RoutingPreferenceQuality ||
+		preference == scheduler.RoutingPreferenceLatency {
+		return preference, nil
+	}
+	return "", errors.New("routing_preference must be quality or latency")
 }
 
 func extractJSONObject(output string) ([]byte, error) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 )
 
@@ -78,14 +79,15 @@ func (c *nodeClient) PostDispatch(url, contentType string, body io.Reader) (*htt
 }
 
 func (c *nodeClient) setTransport(newTransport func() *http.Transport) {
-	c.client.Transport = newTransport()
-	c.dispatcher.Transport = newTransport()
-	c.status.Transport = newTransport()
+	transport := newTransport()
+	c.client.Transport = transport
+	c.dispatcher.Transport = transport
+	c.status.Transport = transport
 	if c.modelPull != nil {
-		c.modelPull.Transport = newTransport()
+		c.modelPull.Transport = transport
 	}
 	if c.sync != nil {
-		c.sync.Transport = newTransport()
+		c.sync.Transport = transport
 	}
 }
 
@@ -156,13 +158,15 @@ func (c *nodeClient) streamNodeGenerate(w http.ResponseWriter, r *http.Request, 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		stream := httpx.NewStreamWriter(w)
+		if err := stream.WriteSSEData(data); err != nil {
+			return
+		}
 		if out.Error != "" {
 			errData, _ := json.Marshal(map[string]string{"error": out.Error})
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", errData)
-		}
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
+			if err := stream.WriteSSEData(errData); err != nil {
+				return
+			}
 		}
 		return
 	}
@@ -170,15 +174,12 @@ func (c *nodeClient) streamNodeGenerate(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
+	stream := httpx.NewStreamWriter(w)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 	for scanner.Scan() {
-		if _, err := fmt.Fprintln(w, scanner.Text()); err != nil {
+		if err := stream.WriteLine(scanner.Text()); err != nil {
 			return
-		}
-		if flusher != nil {
-			flusher.Flush()
 		}
 	}
 	if err := scanner.Err(); err != nil {

@@ -12,24 +12,35 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/workpool"
 )
 
 const (
-	routerRequestTimeout  = 2 * time.Minute
+	routerRequestTimeout  = time.Duration(config.DefaultRouterRequestTimeoutSeconds) * time.Second
 	routerMaxAttempts     = 5
 	routerMaxErrorBytes   = 1 << 20
 	maxRouterRequestBytes = 20 << 20
 )
 
+var routerStreamBufferPool = sync.Pool{
+	New: func() any { return make([]byte, 32*1024) },
+}
+
 func (s *Server) handleRouterEvents(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"events": s.routerEvents.snapshot()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events":           s.routerEvents.snapshot(),
+		"circuit_breakers": s.routerCircuitBreakerSnapshots(),
+	})
 }
 
 func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +58,32 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("X-Request-ID", requestID)
 	startedAt := time.Now()
+	defer func() {
+		s.metrics.observeRouterRequest(time.Since(startedAt))
+	}()
+
+	limit := s.routerClients.acquire(r)
+	if limit.Reason != "" {
+		status := http.StatusTooManyRequests
+		failureClass := "client_rate_limit"
+		message := "per-client request rate limit exceeded"
+		if limit.Reason == "concurrency" {
+			failureClass = "client_concurrency_limit"
+			message = "per-client concurrency limit exceeded"
+		} else if limit.Reason == "capacity" {
+			status = http.StatusServiceUnavailable
+			failureClass = "client_limit_capacity"
+			message = "client limit capacity is temporarily unavailable"
+		}
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", limit.RetryAfter))
+		s.recordRouterEvent(routerRequestEvent{
+			RequestID: requestID, Phase: "rejected", Timestamp: time.Now(),
+			Status: status, FailureClass: failureClass,
+		})
+		writeRouterError(w, status, message)
+		return
+	}
+	defer limit.Release()
 
 	requestBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRouterRequestBytes))
 	if err != nil {
@@ -74,6 +111,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 	tried := make(map[string]bool)
 	backoff := 100 * time.Millisecond
 	dispatchedAttempts := 0
+	lastAttemptFailureClass := ""
 	for attemptNumber := 1; attemptNumber <= routerMaxAttempts; attemptNumber++ {
 		if err := ctx.Err(); err != nil {
 			failureClass := "timeout"
@@ -91,16 +129,26 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			if attemptNumber > 1 {
 				failureClass = "attempts_exhausted"
 				status = http.StatusBadGateway
+				if lastAttemptFailureClass == "time_to_first_byte_timeout" {
+					failureClass = lastAttemptFailureClass
+					status = http.StatusGatewayTimeout
+				}
 			}
 			s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: failureClass})
 			writeRouterError(w, status, "no additional compatible inference node is available")
 			return
 		}
 		pairKey := routerPairKey(assignment.NodeID, assignment.Model)
+		if !s.routerBreakers.acquire(assignment.NodeID, assignment.Model) {
+			tried[pairKey] = true
+			continue
+		}
 		tried[pairKey] = true
 		attemptID := fmt.Sprintf("%s:%d", requestID, attemptNumber)
 		node, exists := s.registry.Get(assignment.NodeID)
 		if !exists || !node.Healthy || node.Address != assignment.Address {
+			s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+			lastAttemptFailureClass = "node_unavailable"
 			s.recordRouterEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
@@ -111,10 +159,13 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		s.metrics.changeRouterQueueDepth(1)
 		reservation, err := s.dispatcherPort().reservations().Reserve(ctx, []workpool.CapacityTarget{{
 			NodeID: assignment.NodeID, Address: assignment.Address,
 		}})
+		s.metrics.changeRouterQueueDepth(-1)
 		if err != nil {
+			s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
 			if ctx.Err() != nil {
 				continue
 			}
@@ -125,6 +176,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				DurationMs:   time.Since(startedAt).Milliseconds(),
 				FailureClass: "reservation",
 			})
+			lastAttemptFailureClass = "reservation"
 			continue
 		}
 		reservedNodeID := reservation.Target().NodeID
@@ -142,6 +194,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			payload["model"], _ = json.Marshal(assignment.Model)
 			body, err = json.Marshal(payload)
 			if err != nil {
+				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
 				s.releaseRouterReservation(reservedNodeID, reservation)
 				writeRouterError(w, http.StatusInternalServerError, "could not prepare inference request")
 				return
@@ -151,8 +204,11 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RawQuery != "" {
 			upstreamURL += "?" + r.URL.RawQuery
 		}
-		upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		upstreamReq, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 		if err != nil {
+			attemptCancel()
+			s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
 			s.releaseRouterReservation(reservedNodeID, reservation)
 			writeRouterError(w, http.StatusInternalServerError, "could not prepare inference request")
 			return
@@ -168,16 +224,33 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		dispatchedAttempts++
 		s.metrics.recordDispatch()
+		s.metrics.recordRouterAttempt()
+		var ttfbExpired atomic.Bool
+		ttfbTimer := time.AfterFunc(s.routerTTFBTimeout, func() {
+			ttfbExpired.Store(true)
+			attemptCancel()
+		})
 		resp, requestErr := s.nodeClientPort().DoDispatch(upstreamReq)
 
 		if requestErr != nil {
+			ttfbTimer.Stop()
+			attemptCancel()
+			s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
 			s.releaseRouterReservation(reservedNodeID, reservation)
 			failureClass := "transport"
-			if errors.Is(requestErr, context.DeadlineExceeded) {
+			if ctx.Err() != nil {
+				failureClass = "timeout"
+				if errors.Is(ctx.Err(), context.Canceled) {
+					failureClass = "cancelled"
+				}
+			} else if ttfbExpired.Load() {
+				failureClass = "time_to_first_byte_timeout"
+			} else if errors.Is(requestErr, context.DeadlineExceeded) {
 				failureClass = "timeout"
 			} else if errors.Is(requestErr, context.Canceled) {
 				failureClass = "cancelled"
 			}
+			lastAttemptFailureClass = failureClass
 			s.recordRouterEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
@@ -197,8 +270,10 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			ttfbTimer.Stop()
 			responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, routerMaxErrorBytes+1))
 			resp.Body.Close()
+			attemptCancel()
 			s.releaseRouterReservation(reservedNodeID, reservation)
 			if ctx.Err() != nil {
 				s.recordRouterEvent(routerRequestEvent{
@@ -219,6 +294,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			if readErr != nil && retryable {
 				failureClass = "upstream_read"
 			}
+			lastAttemptFailureClass = failureClass
 			s.recordRouterEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
@@ -244,18 +320,39 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		s.metrics.changeRouterActiveStreams(1)
+		activeStream := true
+		finishStream := func() {
+			if activeStream {
+				s.metrics.changeRouterActiveStreams(-1)
+				activeStream = false
+			}
+		}
 		firstByte := make([]byte, 1)
-		n, readErr := resp.Body.Read(firstByte)
+		n, readErr := io.ReadFull(resp.Body, firstByte)
 		firstByteMs := time.Since(attemptStarted).Milliseconds()
-		if n == 0 && readErr != nil && !errors.Is(readErr, io.EOF) {
+		ttfbTimer.Stop()
+		if ttfbExpired.Load() || (n == 0 && readErr != nil && !errors.Is(readErr, io.EOF)) {
 			resp.Body.Close()
+			attemptCancel()
+			finishStream()
 			s.releaseRouterReservation(reservedNodeID, reservation)
+			failureClass := "upstream_read"
+			if ctx.Err() != nil {
+				failureClass = "timeout"
+				if errors.Is(ctx.Err(), context.Canceled) {
+					failureClass = "cancelled"
+				}
+			} else if ttfbExpired.Load() {
+				failureClass = "time_to_first_byte_timeout"
+			}
+			lastAttemptFailureClass = failureClass
 			s.recordRouterEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
 				TimeToFirstByteMs: firstByteMs, DurationMs: time.Since(attemptStarted).Milliseconds(),
-				FailureClass: "upstream_read",
+				FailureClass: failureClass,
 			})
 			if ctx.Err() != nil {
 				writeRouterContextError(w, r, ctx)
@@ -269,8 +366,15 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				backoff = min(backoff*2, 800*time.Millisecond)
 				continue
 			}
+			if failureClass == "time_to_first_byte_timeout" {
+				writeRouterError(w, http.StatusGatewayTimeout, "inference upstream did not send content before the first-byte timeout")
+				return
+			}
 			writeRouterError(w, http.StatusBadGateway, "inference upstream failed before sending content")
 			return
+		}
+		if n > 0 {
+			s.metrics.observeRouterTTFB(time.Since(attemptStarted))
 		}
 
 		copyRouterHeaders(w.Header(), resp.Header)
@@ -279,7 +383,20 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		if n > 0 {
 			if _, err := w.Write(firstByte[:n]); err != nil {
 				resp.Body.Close()
+				attemptCancel()
+				finishStream()
 				s.releaseRouterReservation(reservedNodeID, reservation)
+				failureClass := "client_write"
+				if r.Context().Err() != nil {
+					failureClass = "cancelled"
+				}
+				s.recordRouterEvent(routerRequestEvent{
+					RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
+					Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
+					Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
+					TimeToFirstByteMs: firstByteMs, DurationMs: time.Since(attemptStarted).Milliseconds(),
+					FailureClass: failureClass,
+				})
 				return
 			}
 			if flusher, ok := w.(http.Flusher); ok {
@@ -290,9 +407,13 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			streamErr = readErr
 		} else if readErr == nil {
-			streamErr = streamRouterResponse(w, resp.Body)
+			idleReader := newRouterIdleTimeoutReader(resp.Body, s.routerIdleTimeout, attemptCancel)
+			streamErr = streamRouterResponse(w, idleReader)
+			_ = idleReader.Close()
 		}
 		resp.Body.Close()
+		attemptCancel()
+		finishStream()
 		s.releaseRouterReservation(reservedNodeID, reservation)
 		event := routerRequestEvent{
 			RequestID: requestID, AttemptID: attemptID, Phase: "attempt_succeeded",
@@ -306,14 +427,25 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			event.FailureClass = "stream_interrupted"
 			if r.Context().Err() != nil {
 				event.FailureClass = "cancelled"
+			} else if errors.Is(streamErr, errRouterIdleStreamTimeout) {
+				event.FailureClass = "idle_stream_timeout"
+			} else if ctx.Err() != nil {
+				event.FailureClass = "timeout"
 			}
-			log.Printf("orchestrator: router stream ended after response commit request_id=%s node=%s: %v", requestID, assignment.NodeID, streamErr)
+			log.Printf("orchestrator: router stream ended after response commit request_id=%s node=%s failure_class=%s",
+				requestID, assignment.NodeID, event.FailureClass)
 		}
 		s.recordRouterEvent(event)
 		return
 	}
-	s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: "attempts_exhausted"})
-	writeRouterError(w, http.StatusBadGateway, "inference could not be completed on a compatible node")
+	failureClass := "attempts_exhausted"
+	status := http.StatusBadGateway
+	if lastAttemptFailureClass == "time_to_first_byte_timeout" {
+		failureClass = lastAttemptFailureClass
+		status = http.StatusGatewayTimeout
+	}
+	s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: failureClass})
+	writeRouterError(w, status, "inference could not be completed on a compatible node")
 }
 
 func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol, tried map[string]bool) (scheduler.Assignment, error) {
@@ -340,6 +472,9 @@ func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol,
 				compatible = engine.SupportsProtocol(engineName, string(protocol))
 			}
 			if !compatible || tried[routerPairKey(node.ID, candidate.Name)] {
+				continue
+			}
+			if !s.routerBreakers.eligible(node.ID, candidate.Name) {
 				continue
 			}
 			models = append(models, candidate)
@@ -371,6 +506,21 @@ func (s *Server) releaseRouterReservation(nodeID string, reservation workpool.Ca
 func (s *Server) recordRouterEvent(event routerRequestEvent) {
 	event.Timestamp = event.Timestamp.UTC()
 	s.routerEvents.append(event)
+	switch event.Phase {
+	case "rejected":
+		s.metrics.recordRouterFailure(event.FailureClass)
+	case "finished":
+		s.metrics.recordRouterFailure(event.FailureClass)
+	case "attempt_failed":
+		s.metrics.recordRouterFailure(event.FailureClass)
+		if isTransientRouterFailure(event.FailureClass) {
+			s.routerBreakers.recordFailure(event.NodeID, event.Model)
+		} else if event.Status >= http.StatusOK {
+			s.routerBreakers.recordHealthyResponse(event.NodeID, event.Model)
+		}
+	case "attempt_succeeded":
+		s.routerBreakers.recordSuccess(event.NodeID, event.Model)
+	}
 	if event.Phase == "attempt_failed" || event.Phase == "attempt_succeeded" {
 		failureClass := event.FailureClass
 		if failureClass == "" {
@@ -475,23 +625,7 @@ func copyRouterHeaders(dst, src http.Header) {
 }
 
 func streamRouterResponse(w http.ResponseWriter, body io.Reader) error {
-	buf := make([]byte, 32*1024)
-	flusher, canFlush := w.(http.Flusher)
-	for {
-		n, err := body.Read(buf)
-		if n > 0 {
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-			if canFlush {
-				flusher.Flush()
-			}
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				return err
-			}
-			return nil
-		}
-	}
+	buf := routerStreamBufferPool.Get().([]byte)
+	defer routerStreamBufferPool.Put(buf)
+	return httpx.NewStreamWriter(w).Copy(body, buf)
 }

@@ -2,7 +2,6 @@ package taskmgr
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -83,8 +82,7 @@ func (m *Manager) CreateWithGraphAndOptionsChecked(description string, graph *sc
 		t.Error = "task has no assigned subtasks"
 		t.Resumable = false
 	}
-	_, _ = m.saveCheckpointLocked(t)
-	if err := m.persistLocked(t); err != nil {
+	if _, err := m.persistTaskAndCheckpointLocked(t); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -133,11 +131,7 @@ func (m *Manager) CancelAndSnapshotChecked(id string) (*Task, bool, error) {
 	t.Resumable = hasCompleted
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
-	checkpointErr := error(nil)
-	if _, err := m.saveCheckpointLocked(t); err != nil {
-		checkpointErr = fmt.Errorf("taskmgr: checkpoint cancelled task %s: %w", t.ID, err)
-	}
-	persistErr := errors.Join(checkpointErr, m.persistLocked(t))
+	_, persistErr := m.persistTaskAndCheckpointLocked(t)
 	return cloneTask(t), true, persistErr
 }
 
@@ -284,8 +278,7 @@ func (m *Manager) completeSubtaskLocked(t *Task, subtaskID, output string, taskE
 	}
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
-	_, checkpointErr := m.saveCheckpointLocked(t)
-	persistErr := errors.Join(checkpointErr, m.persistLocked(t))
+	_, persistErr := m.persistTaskAndCheckpointLocked(t)
 	return subtaskCompletion{
 		finalize: finalize, snapshot: snapshot, taskCtx: t.ctx, persistErr: persistErr,
 	}, nil
@@ -315,18 +308,16 @@ func (m *Manager) ApproveChecked(taskID string) error {
 		t.Resumable = false
 		t.UpdatedAt = time.Now()
 		signalChanged(t)
-		_, checkpointErr := m.saveCheckpointLocked(t)
-		err := errors.Join(checkpointErr, m.persistLocked(t))
+		_, err := m.persistTaskAndCheckpointLocked(t)
 		m.unlockTaskForUpdate(t)
 		return err
 	}
 	t.Status = StatusSynthesis
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
-	_, checkpointErr := m.saveCheckpointLocked(t)
-	snapshot := cloneTask(t)
 	taskCtx := t.ctx
-	persistErr := errors.Join(checkpointErr, m.persistLocked(t))
+	_, persistErr := m.persistTaskAndCheckpointLocked(t)
+	snapshot := cloneTask(t)
 	m.unlockTaskForUpdate(t)
 	return m.finishSynthesis(taskID, taskCtx, snapshot, finalize, persistErr)
 }
@@ -358,10 +349,33 @@ func (m *Manager) finishSynthesis(taskID string, taskCtx context.Context, snapsh
 	}
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
-	_, checkpointErr := m.saveCheckpointLocked(t)
-	persistErr = errors.Join(checkpointErr, m.persistLocked(t))
+	_, persistErr = m.persistTaskAndCheckpointLocked(t)
 	m.unlockTaskForUpdate(t)
 	return persistErr
+}
+
+func (m *Manager) persistTaskAndCheckpointLocked(task *Task) (*Checkpoint, error) {
+	task.Origin = m.syncOrigin
+	task.Sequence = m.nextSyncSequenceLocked(task.Origin)
+	m.invalidateRecentTasksLocked()
+	return m.saveTaskAndCheckpointLocked(task)
+}
+
+func (m *Manager) saveTaskAndCheckpointLocked(task *Task) (*Checkpoint, error) {
+	if m.store == nil {
+		return nil, nil
+	}
+	snapshot := cloneTask(task)
+	checkpoint := checkpointForTask(snapshot)
+	m.mu.Unlock()
+	err := saveTaskAndCheckpoint(m.store, snapshot, checkpoint)
+	m.mu.Lock()
+	if err != nil {
+		return nil, fmt.Errorf("taskmgr: persist task and checkpoint %s: %w", task.ID, err)
+	}
+	task.LastCheckpoint = snapshot.LastCheckpoint
+	task.Resumable = snapshot.Resumable
+	return checkpoint, nil
 }
 
 // persistLocked snapshots under the manager lock, then releases it for BoltDB

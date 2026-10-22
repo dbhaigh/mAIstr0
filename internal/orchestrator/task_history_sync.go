@@ -20,20 +20,35 @@ const maxReplicatedTaskHistoryBytes int64 = config.DefaultSyncMaxBytes
 
 func (s *syncerComponent) taskHistorySyncLoop() {
 	var backoff syncinterval.Backoff
-	if syncinterval.Wait(3*time.Second, s.tasks.Changes()) {
+	if syncinterval.WaitDebounced(
+		syncinterval.Jitter(3*time.Second),
+		syncinterval.DebounceInterval,
+		s.tasks.Changes(),
+		s.tasks.Changes,
+	) {
 		backoff.Reset()
 	}
 	for {
 		changes := s.tasks.Changes()
 		if !s.shouldSync() {
 			backoff.Reset()
-			syncinterval.Wait(5*time.Second, changes)
+			syncinterval.WaitDebounced(
+				syncinterval.Jitter(5*time.Second),
+				syncinterval.DebounceInterval,
+				changes,
+				s.tasks.Changes,
+			)
 			continue
 		}
 		before := s.tasks.Watermarks()
 		s.syncTaskHistory()
 		backoff.Observe(syncinterval.WatermarksAdvanced(before, s.tasks.Watermarks()))
-		if syncinterval.Wait(backoff.Current(), changes) {
+		if syncinterval.WaitDebounced(
+			syncinterval.Jitter(backoff.Current()),
+			syncinterval.DebounceInterval,
+			changes,
+			s.tasks.Changes,
+		) {
 			backoff.Reset()
 		}
 	}
@@ -116,6 +131,7 @@ func (s *syncerComponent) syncTaskHistory() {
 			tasks,
 			taskmgr.SnapshotWatermarks(s.tasks.All()),
 			s.maxBytes,
+			version,
 		)
 		if err != nil {
 			log.Printf("FILE_ONLY: orchestrator: task history sync event=replicate_failed %s error=%v",
@@ -125,7 +141,7 @@ func (s *syncerComponent) syncTaskHistory() {
 		log.Printf("FILE_ONLY: orchestrator: task history sync event=replicate_complete %s records=%d",
 			syncLogFields(requestID, node.ID, time.Since(started), "none"), len(tasks))
 		if s.memory != nil && fetched && memory.SupportsIncrementalSync(version) {
-			if err := s.memory.SetPeerWatermarks(node.ID, taskmgr.SnapshotWatermarks(tasks)); err != nil {
+			if err := s.memory.SetPeerWatermarks(node.ID, taskmgr.SnapshotWatermarks(s.tasks.All())); err != nil {
 				log.Printf("FILE_ONLY: orchestrator: task history sync event=watermark_persist_failed %s error=%v",
 					syncLogFields(requestID, node.ID, time.Since(started), "persistence"), err)
 			}
@@ -161,6 +177,7 @@ func fetchReplicatedTaskHistory(client interface {
 		if err := memory.SetSyncRequestHeaders(request, requestWatermarks); err != nil {
 			return nil, 0, nil, err
 		}
+		memory.SetSyncCompressionRequestHeader(request)
 		if cursor != nil {
 			if err := memory.SetSyncPageRequestHeaders(request, cursor, upper); err != nil {
 				return nil, 0, nil, err
@@ -207,13 +224,16 @@ func decodeReplicatedTaskHistory(resp *http.Response, maxBytes int64) ([]*taskmg
 	if err != nil {
 		return nil, 0, nil, nil, false, fmt.Errorf("read task sync page header: %w", err)
 	}
+	if resp.StatusCode == http.StatusNoContent {
+		if !memory.SupportsEmptySync(version) {
+			return nil, 0, nil, nil, false, fmt.Errorf("node returned an empty task response without protocol version %d", memory.SyncCompressionProtocolVersion)
+		}
+		return []*taskmgr.Task{}, version, watermarks, cursor, false, nil
+	}
 	var tasks []*taskmgr.Task
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	body, err := memory.DecodeSyncBody(resp.Body, resp.Header.Get("Content-Encoding"), version, maxBytes)
 	if err != nil {
 		return nil, 0, nil, nil, false, err
-	}
-	if int64(len(body)) > maxBytes {
-		return nil, 0, nil, nil, false, fmt.Errorf("node task snapshot exceeds the %d-byte sync limit", maxBytes)
 	}
 	if err := json.Unmarshal(body, &tasks); err != nil {
 		return nil, 0, nil, nil, false, err
@@ -223,7 +243,10 @@ func decodeReplicatedTaskHistory(resp *http.Response, maxBytes int64) ([]*taskmg
 
 func postTaskHistoryPages(client interface {
 	Do(*http.Request) (*http.Response, error)
-}, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64) error {
+}, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64, peerVersion int) error {
+	if len(tasks) == 0 {
+		return nil
+	}
 	pages, err := taskmgr.SplitTasks(tasks, maxBytes)
 	if err != nil {
 		return err
@@ -236,11 +259,18 @@ func postTaskHistoryPages(client interface {
 		if int64(len(body)) > maxBytes {
 			return fmt.Errorf("task history page exceeds the %d-byte sync limit", maxBytes)
 		}
+		body, compressed, err := memory.EncodeSyncBody(body, peerVersion, true)
+		if err != nil {
+			return err
+		}
 		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
 		request.Header.Set("Content-Type", "application/json")
+		if compressed {
+			request.Header.Set("Content-Encoding", "gzip")
+		}
 		if err := memory.SetSyncRequestHeaders(request, watermarks); err != nil {
 			return err
 		}

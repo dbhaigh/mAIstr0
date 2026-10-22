@@ -45,8 +45,7 @@ func (s *Server) InitializeIdentity() error {
 	if err != nil {
 		return err
 	}
-	pin, err := identity.NewPairingPIN()
-	if err != nil {
+	if _, err := identity.NewPairingPIN(); err != nil {
 		return err
 	}
 	if err := identity.RemovePairedOrchestrators(); err != nil {
@@ -55,7 +54,7 @@ func (s *Server) InitializeIdentity() error {
 	s.identity = identity
 	s.electionPort().setIdentity(identity)
 	s.nodeClientPort().setTransport(identity.ClientTransport)
-	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", pin)
+	log.Print("orchestrator: secure pairing PIN generated (valid for 30 minutes)")
 	return nil
 }
 
@@ -68,15 +67,14 @@ func (s *Server) UseIdentity(identity *peeridentity.Identity) error {
 	if s.identity != nil {
 		return errors.New("orchestrator identity is already initialized")
 	}
-	pin, err := identity.NewPairingPIN()
-	if err != nil {
+	if _, err := identity.NewPairingPIN(); err != nil {
 		return fmt.Errorf("create promoted orchestrator pairing PIN: %w", err)
 	}
 	s.identity = identity
 	s.electionPort().setSelfID(identity.ID())
 	s.electionPort().setIdentity(identity)
 	s.nodeClientPort().setTransport(identity.ClientTransport)
-	log.Printf("orchestrator: secure pairing PIN (valid for 30 minutes): %s", pin)
+	log.Print("orchestrator: secure pairing PIN generated (valid for 30 minutes)")
 	return nil
 }
 

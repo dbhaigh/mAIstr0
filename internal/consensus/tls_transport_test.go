@@ -126,6 +126,76 @@ func TestTLSStreamLayerRejectsDifferentCluster(t *testing.T) {
 	}
 }
 
+func TestTLSStreamLayerRaisesMinimumVersionToTLS13(t *testing.T) {
+	serverIdentity, err := peeridentity.Open(filepath.Join(t.TempDir(), "server.json"), "tls-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientIdentity, err := peeridentity.Open(filepath.Join(t.TempDir(), "client.json"), "tls-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tls12Listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tls12Listener.Close() })
+	serverTLS := clientIdentity.ServerTLSConfig()
+	serverTLS.MinVersion = tls.VersionTLS12
+	clientTransport := clientIdentity.ClientTransport()
+	clientTLS := clientTransport.TLSClientConfig.Clone()
+	clientTLS.MinVersion = tls.VersionTLS12
+	clientTransport.CloseIdleConnections()
+	layer, err := NewTLSStreamLayer(TLSStreamConfig{
+		Listener: listener, ClusterID: "tls-version-test", LocalID: clientIdentity.ID(),
+		ServerTLS: serverTLS,
+		ClientTLS: func(raft.ServerAddress) (*tls.Config, error) {
+			return clientTLS.Clone(), nil
+		},
+		ResolvePeerID: func(raft.ServerAddress) (string, bool) { return serverIdentity.ID(), true },
+		ValidatePeer:  func(string, *x509.Certificate) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = layer.Close() })
+	if layer.serverTLS.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("server minimum TLS version = %d, want TLS 1.3", layer.serverTLS.MinVersion)
+	}
+	tls12Server := tls.NewListener(tls12Listener, &tls.Config{
+		Certificates: []tls.Certificate{serverIdentity.ServerTLSConfig().Certificates[0]},
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS12,
+	})
+	serverHandshake := make(chan error, 1)
+	go func() {
+		conn, err := tls12Server.Accept()
+		if err != nil {
+			serverHandshake <- err
+			return
+		}
+		defer conn.Close()
+		serverHandshake <- conn.(*tls.Conn).Handshake()
+	}()
+	if conn, err := layer.Dial(raft.ServerAddress(tls12Listener.Addr().String()), time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatal("TLS 1.2-only peer was accepted")
+	}
+	select {
+	case err := <-serverHandshake:
+		if err == nil {
+			t.Fatal("TLS 1.2-only peer completed a TLS handshake")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("TLS 1.2-only peer did not finish its handshake")
+	}
+}
+
 func newIdentityTLSLayer(
 	t *testing.T,
 	listener net.Listener,

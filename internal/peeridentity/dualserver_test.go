@@ -124,3 +124,64 @@ func TestLoopbackOnlyRejectsRemotePlaintext(t *testing.T) {
 		t.Fatalf("remote plaintext status = %d, want 403", response.Code)
 	}
 }
+
+func TestLoopbackOnlyValidatesHostAndBrowserOrigin(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		host       string
+		origin     string
+		referer    string
+		fetchSite  string
+		wantStatus int
+	}{
+		{name: "localhost API", method: http.MethodGet, host: "localhost:7450", wantStatus: http.StatusNoContent},
+		{name: "loopback IP API", method: http.MethodPost, host: "127.0.0.1:7450", wantStatus: http.StatusNoContent},
+		{name: "non-browser API", method: http.MethodPost, host: "localhost:7450", wantStatus: http.StatusNoContent},
+		{name: "same-origin browser request", method: http.MethodPost, host: "localhost:7450", origin: "http://localhost:7450", fetchSite: "same-origin", wantStatus: http.StatusNoContent},
+		{name: "same-origin default port", method: http.MethodPost, host: "localhost:80", origin: "http://localhost", wantStatus: http.StatusNoContent},
+		{name: "top-level local navigation", method: http.MethodGet, host: "localhost:7450", fetchSite: "none", wantStatus: http.StatusNoContent},
+		{name: "rebound DNS host", method: http.MethodGet, host: "attacker.example", wantStatus: http.StatusForbidden},
+		{name: "lookalike localhost host", method: http.MethodGet, host: "localhost.attacker.example", wantStatus: http.StatusForbidden},
+		{name: "non-loopback IP host", method: http.MethodGet, host: "192.0.2.10:7450", wantStatus: http.StatusForbidden},
+		{name: "cross-origin read", method: http.MethodGet, host: "localhost:7450", origin: "http://attacker.example", wantStatus: http.StatusForbidden},
+		{name: "cross-scheme read", method: http.MethodGet, host: "localhost:7450", origin: "https://localhost:7450", wantStatus: http.StatusForbidden},
+		{name: "cross-site mutation", method: http.MethodPost, host: "localhost:7450", fetchSite: "cross-site", wantStatus: http.StatusForbidden},
+		{name: "cross-origin referrer", method: http.MethodGet, host: "localhost:7450", referer: "http://attacker.example/page", wantStatus: http.StatusForbidden},
+		{name: "unsafe no-origin navigation", method: http.MethodPost, host: "localhost:7450", fetchSite: "none", wantStatus: http.StatusForbidden},
+	}
+	handler := LoopbackOnly(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, "http://"+test.host+"/", nil)
+			request.Host = test.host
+			request.RemoteAddr = "127.0.0.1:1234"
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if test.referer != "" {
+				request.Header.Set("Referer", test.referer)
+			}
+			if test.fetchSite != "" {
+				request.Header.Set("Sec-Fetch-Site", test.fetchSite)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("request returned %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestDualServersHaveHeaderAndIdleTimeouts(t *testing.T) {
+	server := newHTTPServer(http.NotFoundHandler(), nil)
+	if server.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 5s", server.ReadHeaderTimeout)
+	}
+	if server.IdleTimeout != 90*time.Second {
+		t.Fatalf("IdleTimeout = %s, want 90s", server.IdleTimeout)
+	}
+}

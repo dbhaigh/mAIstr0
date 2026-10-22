@@ -6,15 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/inferroute"
-	"github.com/maistr0/maistr0/internal/memory"
-	"github.com/maistr0/maistr0/internal/scheduler"
-	"github.com/maistr0/maistr0/internal/taskmgr"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/inferroute"
+	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
 func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID string, assignment scheduler.Assignment) {
@@ -149,70 +149,14 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 			return
 		}
 		reservation.Start()
-		attemptPrompt := prompt
-		var output string
-		var attemptErr error
-		retryable := true
-		for validationAttempt := 0; ; validationAttempt++ {
-			started := time.Now()
-			attemptNumber, beginErr := d.tasks.BeginDispatchAttemptChecked(taskID, assignment.Subtask.ID, current)
-			if beginErr != nil {
-				attemptErr = beginErr
-				retryable = false
-				break
-			}
-			attemptID := taskmgr.DispatchAttemptID(taskID, assignment.Subtask.ID, attemptNumber)
-			requestID := taskmgr.DispatchRequestID(taskID, assignment.Subtask.ID)
-			outcome := d.executeSubtaskWithIDs(dispatchCtx, current, attemptPrompt, requestID, attemptID)
-			output, attemptErr, retryable = outcome.output, outcome.err, outcome.retryable
-			failureClass, httpStatus := outcome.failureClass, outcome.httpStatus
-			if contextFailure := dispatchContextFailure(dispatchCtx); contextFailure != nil {
-				attemptErr = contextFailure
-				retryable = false
-				if errors.Is(context.Cause(dispatchCtx), context.DeadlineExceeded) ||
-					errors.Is(dispatchCtx.Err(), context.DeadlineExceeded) {
-					failureClass = "timeout"
-				} else {
-					failureClass = "cancelled"
-				}
-			} else if attemptErr == nil {
-				assembled := (dispatchResultAssembler{}).assemble(current.Subtask, output)
-				output, attemptErr = assembled.output, assembled.err
-				if attemptErr != nil {
-					retryable = false
-					failureClass = assembled.failureClass
-				}
-			}
-			var persistErr error
-			if attemptErr == nil {
-				failureClass = "none"
-				_, persistErr = d.tasks.CompleteDispatchAttemptChecked(
-					taskID, assignment.Subtask.ID, attemptNumber,
-					failureClass, httpStatus, time.Since(started), output,
-				)
-			} else {
-				persistErr = d.tasks.FinishDispatchAttemptChecked(
-					taskID, assignment.Subtask.ID, attemptNumber, taskmgr.DispatchAttemptFailed,
-					failureClass, httpStatus, attemptErr, time.Since(started),
-				)
-			}
-			if persistErr != nil {
-				attemptErr = fmt.Errorf("persist dispatch attempt: %w", persistErr)
-				retryable = false
-				failureClass = "persistence"
-			}
-			if attemptErr != nil && failureClass == "" {
-				failureClass = "dispatch_error"
-			}
-			d.recordDispatchWithAttemptID(current, requestID, attemptID, output, attemptErr, time.Since(started), failureClass, httpStatus)
-			if attemptErr == nil || retryable || validationAttempt >= current.Subtask.MaxRetries || dispatchCtx.Err() != nil {
-				break
-			}
-			attemptPrompt = validationRetryPrompt(prompt, attemptErr, output)
-		}
+		candidateResult := d.executeCandidateWithHedge(dispatchCtx, taskID, current, prompt, attempt, alreadyTried)
 		reservation.Release()
+		for _, attempted := range candidateResult.attempted {
+			alreadyTried[routerPairKey(attempted.NodeID, attempted.Model)] = true
+		}
+		attemptErr, retryable := candidateResult.err, candidateResult.retryable
 
-		if attemptErr == nil {
+		if attemptErr == nil || candidateResult.won {
 			return
 		}
 		if !d.retryPolicy.canRetry(retryable, attempt+1, dispatchCtx) {
@@ -292,12 +236,15 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 	requestID string,
 	attemptID string,
 ) dispatchOutcome {
-	body, err := json.Marshal(map[string]string{
-		"subtask_id": assignment.Subtask.ID,
-		"model":      assignment.Model,
-		"engine":     assignment.Engine,
-		"prompt":     prompt,
-		"task_type":  assignment.Subtask.TaskType,
+	body, err := json.Marshal(struct {
+		Engine    string `json:"engine"`
+		Model     string `json:"model"`
+		Prompt    string `json:"prompt"`
+		SubtaskID string `json:"subtask_id"`
+		TaskType  string `json:"task_type"`
+	}{
+		Engine: assignment.Engine, Model: assignment.Model, Prompt: prompt,
+		SubtaskID: assignment.Subtask.ID, TaskType: assignment.Subtask.TaskType,
 	})
 	if err != nil {
 		return dispatchOutcome{err: err, failureClass: "request_encoding"}
@@ -386,7 +333,7 @@ func (d *dispatcherComponent) recordDispatchWithAttemptID(
 	log.Printf("orchestrator: dispatch request_id=%s attempt_id=%s task_type=%s subtask=%s node_id=%s model=%s engine=%s duration_ms=%d status=%d failure_class=%s success=%t",
 		requestID, attemptID, assignment.Subtask.TaskType, assignment.Subtask.ID, assignment.NodeID,
 		assignment.Model, assignment.Engine, elapsed.Milliseconds(), httpStatus, failureClass, dispatchErr == nil)
-	if d.memory == nil {
+	if d.memory == nil || failureClass == "hedge_loser" {
 		return
 	}
 	errMsg := ""

@@ -13,6 +13,7 @@ import (
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
@@ -34,11 +35,17 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err, generateAPIResponse{Error: err.Error()})
 		return
 	}
-	var req generateAPIRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[generateAPIRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
 		return
 	}
+	s.handleGenerateRequest(w, r, req, streaming, idempotencyKey)
+}
+
+func (s *Server) handleGenerateRequest(w http.ResponseWriter, r *http.Request, req generateAPIRequest, streaming bool, idempotencyKey string) {
 	if strings.TrimSpace(req.Prompt) == "" {
 		err := apperr.Invalid(errors.New("prompt is required"))
 		writeJSONError(w, err, generateAPIResponse{Error: err.Error()})
@@ -172,8 +179,10 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNodeGenerate(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
-	var req generateAPIRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[generateAPIRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
 		return
 	}
@@ -186,8 +195,10 @@ func (s *Server) handleNodeGenerate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodeModelGenerate(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
 	model := r.PathValue("model")
-	var req generateAPIRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[generateAPIRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
 		return
 	}
@@ -275,8 +286,10 @@ func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var req openAIChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[openAIChatRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -318,20 +331,14 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	genBody, _ := json.Marshal(genReq)
-	generateURL := "/api/generate"
-	if req.Stream {
-		generateURL += "?stream=true"
-	}
-	fakeReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, generateURL, bytes.NewReader(genBody))
 	if req.Stream {
 		streamWriter := newOpenAIStreamWriter(w, req.Model)
-		s.handleGenerate(streamWriter, fakeReq)
+		s.handleGenerateRequest(streamWriter, r, genReq, true, "")
 		streamWriter.finish()
 		return
 	}
 	rec := &responseCapture{header: make(http.Header), body: new(bytes.Buffer)}
-	s.handleGenerate(rec, fakeReq)
+	s.handleGenerateRequest(rec, r, genReq, false, "")
 
 	if rec.status >= 400 {
 		w.Header().Set("Content-Type", "application/json")
@@ -349,8 +356,10 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request) {
-	var req openAICompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[openAICompletionRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -362,10 +371,8 @@ func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request)
 		MaxTokens:   req.MaxTokens,
 	}
 
-	genBody, _ := json.Marshal(genReq)
-	fakeReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, "/api/generate", bytes.NewReader(genBody))
 	rec := &responseCapture{header: make(http.Header), body: new(bytes.Buffer)}
-	s.handleGenerate(rec, fakeReq)
+	s.handleGenerateRequest(rec, r, genReq, false, "")
 
 	if rec.status >= 400 {
 		w.Header().Set("Content-Type", "application/json")

@@ -57,14 +57,24 @@ func (n NodeStatus) EngineReady(name string) bool {
 // EffectiveCapabilities returns the node's advertised capabilities, deriving them
 // from models and hardware if not explicitly declared.
 func (n NodeStatus) EffectiveCapabilities() []string {
-	seen := make(map[string]bool)
-	var caps []string
+	return n.AppendEffectiveCapabilities(nil)
+}
+
+// AppendEffectiveCapabilities appends the node's effective capabilities to dst
+// without changing its existing prefix.
+func (n NodeStatus) AppendEffectiveCapabilities(dst []string) []string {
+	start := len(dst)
 	add := func(c string) {
 		c = strings.ToLower(strings.TrimSpace(c))
-		if c != "" && !seen[c] {
-			seen[c] = true
-			caps = append(caps, c)
+		if c == "" {
+			return
 		}
+		for _, existing := range dst[start:] {
+			if existing == c {
+				return
+			}
+		}
+		dst = append(dst, c)
 	}
 	for _, c := range n.Capabilities {
 		add(c)
@@ -115,11 +125,11 @@ func (n NodeStatus) EffectiveCapabilities() []string {
 	if n.Hardware.TotalRAMMB >= 16*1024 {
 		add("long-context")
 	}
-	if len(caps) == 0 {
+	if len(dst) == start {
 		add("general")
 	}
-	sort.Strings(caps)
-	return caps
+	sort.Strings(dst[start:])
+	return dst
 }
 
 // Registry is a thread-safe store of known nodes.

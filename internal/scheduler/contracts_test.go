@@ -1,11 +1,8 @@
 package scheduler
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"flag"
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -14,6 +11,7 @@ import (
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/testutil"
 )
 
 var updateSchedulerContracts = flag.Bool("update", false, "update scheduler contract golden files")
@@ -113,25 +111,6 @@ func TestGraphTopologicalOrderContract(t *testing.T) {
 
 func assertSchedulerGolden(t *testing.T, name string, value any) {
 	t.Helper()
-	actual, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	actual = append(actual, '\n')
 	path := filepath.Join("testdata", "contracts", name)
-	if *updateSchedulerContracts {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, actual, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	expected, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read scheduler contract %s (use -update to create it): %v", path, err)
-	}
-	if !bytes.Equal(actual, expected) {
-		t.Errorf("scheduler contract %s changed\n--- got ---\n%s\n--- want ---\n%s", name, actual, expected)
-	}
+	testutil.AssertJSONGolden(t, path, value, *updateSchedulerContracts)
 }

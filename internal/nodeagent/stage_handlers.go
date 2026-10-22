@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"mime"
 	"net/http"
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 const (
@@ -71,8 +71,10 @@ func (a *Agent) handleStageUnload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleStageOpen(w http.ResponseWriter, r *http.Request) {
-	var request engine.PipelineStageControlRequest
-	if err := decodeStageJSON(w, r, &request); err != nil {
+	request, err := httpx.DecodeJSONStrict[engine.PipelineStageControlRequest](
+		w, r, maxStageControlRequestBytes,
+	)
+	if err != nil {
 		writeStageError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -179,8 +181,10 @@ func (a *Agent) handleStageStep(w http.ResponseWriter, r *http.Request, prefill 
 }
 
 func (a *Agent) handleStageClose(w http.ResponseWriter, r *http.Request) {
-	var request engine.PipelineStageControlRequest
-	if err := decodeStageJSON(w, r, &request); err != nil {
+	request, err := httpx.DecodeJSONStrict[engine.PipelineStageControlRequest](
+		w, r, maxStageControlRequestBytes,
+	)
+	if err != nil {
 		writeStageError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -301,34 +305,11 @@ func (a *Agent) handleStageForward(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func decodeStageJSON(w http.ResponseWriter, r *http.Request, target any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxStageControlRequestBytes)
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("request must contain one JSON object")
-		}
-		return err
-	}
-	return nil
-}
-
 func decodeStageAssignment(w http.ResponseWriter, r *http.Request) (engine.StageAssignment, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxStageControlRequestBytes)
-	decoder := json.NewDecoder(r.Body)
-	var assignment engine.StageAssignment
-	if err := decoder.Decode(&assignment); err != nil {
-		return engine.StageAssignment{}, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return engine.StageAssignment{}, errors.New("request must contain one JSON object")
-		}
+	assignment, err := httpx.DecodeJSONStrict[engine.StageAssignment](
+		w, r, maxStageControlRequestBytes,
+	)
+	if err != nil {
 		return engine.StageAssignment{}, err
 	}
 	assignment.Normalize()
@@ -339,11 +320,8 @@ func decodeStageAssignment(w http.ResponseWriter, r *http.Request) (engine.Stage
 }
 
 func writeStageFrame(w http.ResponseWriter, r *http.Request, frame engine.StageForwardFrame) error {
-	if err := json.NewEncoder(w).Encode(frame); err != nil {
+	if err := httpx.NewStreamWriter(w).WriteJSONLine(frame); err != nil {
 		return fmt.Errorf("write stage frame: %w", err)
-	}
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
 	}
 	if err := r.Context().Err(); err != nil {
 		return err

@@ -2,6 +2,7 @@ package taskmgr
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -15,6 +16,7 @@ type blockingCheckpointStore struct {
 	Store
 	entered     chan struct{}
 	release     chan struct{}
+	enteredOnce sync.Once
 	releaseOnce sync.Once
 }
 
@@ -24,10 +26,48 @@ func (s *blockingCheckpointStore) unblock() {
 
 func (s *blockingCheckpointStore) SaveCheckpoint(checkpoint *Checkpoint) error {
 	if checkpoint.Status == StatusCompleted {
-		close(s.entered)
+		s.enteredOnce.Do(func() { close(s.entered) })
 		<-s.release
 	}
 	return s.Store.SaveCheckpoint(checkpoint)
+}
+
+func (s *blockingCheckpointStore) SaveTaskAndCheckpoint(task *Task, checkpoint *Checkpoint) error {
+	if checkpoint.Status == StatusCompleted {
+		s.enteredOnce.Do(func() { close(s.entered) })
+		<-s.release
+	}
+	return saveTaskAndCheckpoint(s.Store, task, checkpoint)
+}
+
+type failingTaskStateStore struct {
+	Store
+	err error
+}
+
+func (s *failingTaskStateStore) SaveTaskAndCheckpoint(*Task, *Checkpoint) error {
+	return s.err
+}
+
+func TestCreateFailsWhenInitialTaskStateCannotBePersisted(t *testing.T) {
+	persistErr := errors.New("disk write failed")
+	store := &failingTaskStateStore{Store: NewMemoryStore(), err: persistErr}
+	manager, err := NewManagerWithStore(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	task, err := manager.CreateChecked("durable task", nil)
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("create error = %v, want %v", err, persistErr)
+	}
+	if task != nil {
+		t.Fatalf("created task despite persistence failure: %+v", task)
+	}
+	if _, exists := manager.Get("task-1"); exists {
+		t.Fatal("task became visible after failed persistence")
+	}
 }
 
 func TestCheckpointSaveAndRetrieve(t *testing.T) {

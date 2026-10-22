@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 )
 
@@ -82,8 +83,8 @@ func (s *Server) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
-	var request ollamaChatRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&request); err != nil {
+	request, err := httpx.DecodeJSON[ollamaChatRequest](w, r, 4<<20)
+	if err != nil {
 		writeCompatError(w, apperr.Invalid(err), compatOllamaChat)
 		return
 	}
@@ -104,9 +105,9 @@ func (s *Server) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 	prompt.WriteString("<|im_start|>assistant\n")
 	temperature, maxTokens := ollamaGenerationOptions(request.Options)
 	stream := request.Stream == nil || *request.Stream
-	generateCompat(w, r, generateAPIRequest{
+	s.generateCompat(w, r, generateAPIRequest{
 		Model: request.Model, Prompt: prompt.String(), Temperature: temperature, MaxTokens: maxTokens,
-	}, stream, compatOllamaChat, s.handleGenerate)
+	}, stream, compatOllamaChat)
 }
 
 func (s *Server) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
@@ -142,10 +143,10 @@ func (s *Server) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	temperature, maxTokens := ollamaGenerationOptions(request.Options)
 	stream := request.Stream == nil || *request.Stream
-	generateCompat(w, r, generateAPIRequest{
+	s.generateCompat(w, r, generateAPIRequest{
 		Model: request.Model, Prompt: request.Prompt, System: request.System,
 		Temperature: temperature, MaxTokens: maxTokens,
-	}, stream, compatOllamaGenerate, s.handleGenerate)
+	}, stream, compatOllamaGenerate)
 }
 
 func ollamaGenerationOptions(options ollamaOptions) (float64, int) {
@@ -161,8 +162,8 @@ func ollamaGenerationOptions(options ollamaOptions) (float64, int) {
 }
 
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
-	var request anthropicRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&request); err != nil {
+	request, err := httpx.DecodeJSON[anthropicRequest](w, r, 4<<20)
+	if err != nil {
 		writeCompatError(w, apperr.Invalid(err), compatAnthropic)
 		return
 	}
@@ -196,9 +197,9 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		fmt.Fprintf(&prompt, "<|im_start|>%s\n%s<|im_end|>\n", message.Role, content)
 	}
 	prompt.WriteString("<|im_start|>assistant\n")
-	generateCompat(w, r, generateAPIRequest{
+	s.generateCompat(w, r, generateAPIRequest{
 		Model: request.Model, Prompt: prompt.String(), MaxTokens: request.MaxTokens, Temperature: request.Temperature,
-	}, request.Stream, compatAnthropic, s.handleGenerate)
+	}, request.Stream, compatAnthropic)
 }
 
 func anthropicText(raw json.RawMessage) (string, error) {
@@ -234,7 +235,7 @@ const (
 	compatAnthropic
 )
 
-func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIRequest, stream bool, mode compatMode, handler http.HandlerFunc) {
+func (s *Server) generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIRequest, stream bool, mode compatMode) {
 	idempotencyKey := r.Header.Get(inferroute.HeaderIdempotencyKey)
 	if err := inferroute.ValidateIdempotencyKey(idempotencyKey); err != nil {
 		writeCompatError(w, apperr.Invalid(err), mode)
@@ -243,23 +244,6 @@ func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIR
 	if idempotencyKey != "" && stream {
 		writeCompatError(w, apperr.Invalid(errors.New("Idempotency-Key is supported only for non-streaming generate requests")), mode)
 		return
-	}
-	body, err := json.Marshal(request)
-	if err != nil {
-		writeCompatError(w, apperr.InternalError(err), mode)
-		return
-	}
-	path := "/api/generate"
-	if stream {
-		path += "?stream=true"
-	}
-	fakeRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, path, bytes.NewReader(body))
-	if err != nil {
-		writeCompatError(w, apperr.InternalError(err), mode)
-		return
-	}
-	if idempotencyKey != "" {
-		fakeRequest.Header.Set(inferroute.HeaderIdempotencyKey, idempotencyKey)
 	}
 	if stream {
 		var target http.ResponseWriter
@@ -271,18 +255,18 @@ func generateCompat(w http.ResponseWriter, r *http.Request, request generateAPIR
 		}
 		if mode == compatAnthropic {
 			adapter := target.(*anthropicStreamWriter)
-			handler(adapter, fakeRequest)
+			s.handleGenerateRequest(adapter, r, request, true, idempotencyKey)
 			adapter.finish()
 			return
 		}
 		adapter := target.(*ollamaStreamWriter)
-		handler(adapter, fakeRequest)
+		s.handleGenerateRequest(adapter, r, request, true, idempotencyKey)
 		adapter.finish()
 		return
 	}
 
 	recorder := &responseCapture{header: make(http.Header), body: new(bytes.Buffer)}
-	handler(recorder, fakeRequest)
+	s.handleGenerateRequest(recorder, r, request, false, idempotencyKey)
 	var result generateAPIResponse
 	if err := json.Unmarshal(recorder.body.Bytes(), &result); err != nil {
 		writeCompatError(w, apperr.UpstreamError(errors.New("invalid response from generation backend")), mode)

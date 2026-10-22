@@ -94,9 +94,21 @@ func (a *Agent) isClusterMember(id string) bool {
 }
 
 func decodeTaskSync(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]*taskmgr.Task, error) {
+	version, _, err := memory.ReadSyncRequestHeaders(r)
+	if err != nil {
+		return nil, err
+	}
+	body, err := memory.DecodeSyncBody(
+		http.MaxBytesReader(w, r.Body, maxBytes),
+		r.Header.Get("Content-Encoding"),
+		version,
+		maxBytes,
+	)
+	if err != nil {
+		return nil, err
+	}
 	var tasks []*taskmgr.Task
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
-	if err := decoder.Decode(&tasks); err != nil {
+	if err := json.Unmarshal(body, &tasks); err != nil {
 		return nil, err
 	}
 	return tasks, nil
@@ -128,6 +140,7 @@ func fetchTaskSnapshot(client interface {
 		if err := memory.SetSyncRequestHeaders(request, requestWatermarks); err != nil {
 			return nil, 0, nil, err
 		}
+		memory.SetSyncCompressionRequestHeader(request)
 		if cursor != nil {
 			if err := memory.SetSyncPageRequestHeaders(request, cursor, upper); err != nil {
 				return nil, 0, nil, err
@@ -173,13 +186,16 @@ func decodeTaskSnapshot(resp *http.Response, maxBytes int64) ([]*taskmgr.Task, i
 	if err != nil {
 		return nil, 0, nil, nil, false, fmt.Errorf("read task sync page header: %w", err)
 	}
+	if resp.StatusCode == http.StatusNoContent {
+		if !memory.SupportsEmptySync(version) {
+			return nil, 0, nil, nil, false, fmt.Errorf("peer returned an empty task response without protocol version %d", memory.SyncCompressionProtocolVersion)
+		}
+		return []*taskmgr.Task{}, version, watermarks, cursor, false, nil
+	}
 	var tasks []*taskmgr.Task
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	body, err := memory.DecodeSyncBody(resp.Body, resp.Header.Get("Content-Encoding"), version, maxBytes)
 	if err != nil {
 		return nil, 0, nil, nil, false, err
-	}
-	if int64(len(body)) > maxBytes {
-		return nil, 0, nil, nil, false, fmt.Errorf("peer task snapshot exceeds the %d-byte sync limit", maxBytes)
 	}
 	if err := json.Unmarshal(body, &tasks); err != nil {
 		return nil, 0, nil, nil, false, err
@@ -189,7 +205,10 @@ func decodeTaskSnapshot(resp *http.Response, maxBytes int64) ([]*taskmgr.Task, i
 
 func postTaskSnapshotPages(client interface {
 	Do(*http.Request) (*http.Response, error)
-}, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64) error {
+}, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64, peerVersion int) error {
+	if len(tasks) == 0 {
+		return nil
+	}
 	pages, err := taskmgr.SplitTasks(tasks, maxBytes)
 	if err != nil {
 		return err
@@ -202,11 +221,18 @@ func postTaskSnapshotPages(client interface {
 		if int64(len(body)) > maxBytes {
 			return fmt.Errorf("task history page exceeds the %d-byte sync limit", maxBytes)
 		}
+		body, compressed, err := memory.EncodeSyncBody(body, peerVersion, true)
+		if err != nil {
+			return err
+		}
 		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
 		request.Header.Set("Content-Type", "application/json")
+		if compressed {
+			request.Header.Set("Content-Encoding", "gzip")
+		}
 		if err := memory.SetSyncRequestHeaders(request, watermarks); err != nil {
 			return err
 		}

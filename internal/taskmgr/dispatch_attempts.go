@@ -98,17 +98,37 @@ func (m *Manager) CompleteDispatchAttemptChecked(
 	duration time.Duration,
 	output string,
 ) (bool, error) {
+	return m.CompleteDispatchAttemptWithAssignmentChecked(
+		taskID, subtaskID, number, nil, failureClass, httpStatus, duration, output, nil,
+	)
+}
+
+// CompleteDispatchAttemptWithAssignmentChecked records the first successful
+// concurrent attempt as the subtask winner, then cancels losing work after the
+// task lock has been released.
+func (m *Manager) CompleteDispatchAttemptWithAssignmentChecked(
+	taskID, subtaskID string,
+	number int,
+	assignment *scheduler.Assignment,
+	failureClass string,
+	httpStatus int,
+	duration time.Duration,
+	output string,
+	onWinner func(),
+) (bool, error) {
 	t, ok := m.lockTaskForUpdate(taskID)
 	if !ok {
 		return false, fmt.Errorf("taskmgr: task %s not found", taskID)
 	}
 	var attempt *DispatchAttempt
+	var subtaskResult *SubtaskResult
 	foundSubtask := false
 	for i := range t.Subtasks {
 		result := &t.Subtasks[i]
 		if result.Subtask.ID != subtaskID {
 			continue
 		}
+		subtaskResult = result
 		foundSubtask = true
 		for j := range result.Attempts {
 			if result.Attempts[j].Number != number {
@@ -144,6 +164,16 @@ func (m *Manager) CompleteDispatchAttemptChecked(
 		m.unlockTaskForUpdate(t)
 		return false, err
 	}
+	if subtaskResult.Status != StatusRunning {
+		signalChanged(t)
+		err := m.persistLocked(t)
+		m.unlockTaskForUpdate(t)
+		return false, err
+	}
+	if assignment != nil {
+		assignment.Subtask = cloneSubtask(assignment.Subtask)
+		subtaskResult.Assignment = *assignment
+	}
 
 	completion, err := m.completeSubtaskLocked(t, subtaskID, output, nil)
 	if err != nil {
@@ -151,5 +181,8 @@ func (m *Manager) CompleteDispatchAttemptChecked(
 		return false, err
 	}
 	m.unlockTaskForUpdate(t)
+	if onWinner != nil {
+		onWinner()
+	}
 	return true, m.finishSubtaskCompletion(taskID, completion)
 }

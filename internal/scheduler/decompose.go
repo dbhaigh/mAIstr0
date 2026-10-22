@@ -4,9 +4,16 @@ package scheduler
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+)
+
+const (
+	RoutingPreferenceQuality = "quality"
+	RoutingPreferenceLatency = "latency"
+	maxHeuristicPlanSubtasks = 64
 )
 
 // Subtask is one unit of work produced by decomposing a submitted task.
@@ -25,6 +32,8 @@ type Subtask struct {
 	PreferredCapabilities []string `json:"preferred_capabilities,omitempty"`
 	MinModelSizeGB        float64  `json:"min_model_size_gb,omitempty"`
 	PreferredModel        string   `json:"preferred_model,omitempty"`
+	RoutingPreference     string   `json:"routing_preference,omitempty"`
+	Synthesis             bool     `json:"synthesis,omitempty"`
 }
 
 // Clone creates a deep copy of the Subtask.
@@ -40,13 +49,41 @@ func (s Subtask) Clone() Subtask {
 
 var listItemPattern = regexp.MustCompile(`(?m)^\s*(?:[-*]|\d+[.)])\s+`)
 var dependencyPrefix = regexp.MustCompile(`(?i)^(?:then\b|after(?:wards| that)?\b|once\b|using (?:the )?(?:previous|prior|above|result)\b|based on (?:the )?(?:previous|prior|above|result)\b)`)
+var comparisonPattern = regexp.MustCompile(`(?i)^\s*compare\s+(.+?)\s+and\s+(.+?)[.!?;]*\s*$`)
+var forEachPattern = regexp.MustCompile(`(?is)\bfor each(?: of)?\s+(.+?)\s*[,;:]\s*((?:analy[sz]e|assess|check|compare|contrast|evaluate|explain|inspect|measure|review|run|summari[sz]e|test|translate|verify|write|do)\b.*)$`)
+var enumerationIntroPattern = regexp.MustCompile(`(?i)\b(?:these|following|items|options|models|nodes|tasks|steps|cases|files|engines|approaches|alternatives|points|issues|questions)\s*:\s*`)
+var listConjunctionPattern = regexp.MustCompile(`(?i)\s*,?\s+(?:and|or)\s+`)
+var finalPunctuationPattern = regexp.MustCompile(`[.!?;:]+\s*$`)
 
-// Decompose splits a free-form task description into an ordered list of
-// subtasks. It recognises explicit numbered/bulleted lists first; failing
-// that, it falls back to splitting on sentence boundaries when the task
-// reads as multiple distinct instructions, otherwise it returns the whole
-// description as a single subtask.
+// Decompose creates an improved heuristic plan. Fan-out work receives a final
+// synthesis subtask that depends on every leaf in the generated graph.
 func Decompose(description string) []Subtask {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return nil
+	}
+
+	if subtasks := decomposeForEach(description); len(subtasks) > 0 {
+		return subtasks
+	}
+	if subtasks := decomposeComparison(description); len(subtasks) > 0 {
+		return subtasks
+	}
+	if subtasks := decomposeEnumeration(description); len(subtasks) > 0 {
+		return subtasks
+	}
+
+	subtasks := DecomposeV1(description)
+	if len(subtasks) > 1 {
+		subtasks = compactPlanForSynthesis(subtasks)
+		return addSynthesisSubtask(subtasks, description)
+	}
+	return subtasks
+}
+
+// DecomposeV1 preserves the original sentence/list heuristic for callers that
+// need the legacy plan shape.
+func DecomposeV1(description string) []Subtask {
 	description = strings.TrimSpace(description)
 	if description == "" {
 		return nil
@@ -90,6 +127,176 @@ func Decompose(description string) []Subtask {
 	return subtasks
 }
 
+func decomposeForEach(description string) []Subtask {
+	match := forEachPattern.FindStringSubmatch(description)
+	if len(match) != 3 {
+		return nil
+	}
+	subjects := strings.TrimSpace(match[1])
+	subjects = regexp.MustCompile(`(?i)^(?:of|the following)\s+`).ReplaceAllString(subjects, "")
+	items := splitEnumerationItems(subjects)
+	if len(items) < 2 {
+		return nil
+	}
+	action := strings.TrimSpace(finalPunctuationPattern.ReplaceAllString(match[2], ""))
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, fmt.Sprintf("%s for %s", action, item))
+	}
+	return fanOutPlan(parts, description)
+}
+
+func decomposeComparison(description string) []Subtask {
+	match := comparisonPattern.FindStringSubmatch(description)
+	if len(match) != 3 {
+		return nil
+	}
+	first := strings.TrimSpace(match[1])
+	second := strings.TrimSpace(match[2])
+	if first == "" || second == "" {
+		return nil
+	}
+	return fanOutPlan([]string{
+		fmt.Sprintf("Analyze %s to compare it with %s for the original request: %s", first, second, description),
+		fmt.Sprintf("Analyze %s to compare it with %s for the original request: %s", second, first, description),
+	}, description)
+}
+
+func decomposeEnumeration(description string) []Subtask {
+	if match := listItemPattern.FindStringIndex(description); match != nil {
+		matches := listItemPattern.FindAllStringIndex(description, -1)
+		if len(matches) >= 2 {
+			prefix := strings.TrimSpace(description[:matches[0][0]])
+			items := make([]string, 0, len(matches))
+			for i, marker := range matches {
+				end := len(description)
+				if i+1 < len(matches) {
+					end = matches[i+1][0]
+				}
+				item := strings.TrimSpace(description[marker[1]:end])
+				if item != "" {
+					items = append(items, item)
+				}
+			}
+			return enumerationPlan(prefix, items, description)
+		}
+	}
+
+	match := enumerationIntroPattern.FindStringIndex(description)
+	if match == nil {
+		return nil
+	}
+	prefix := strings.TrimSpace(description[:match[1]])
+	items := splitEnumerationItems(description[match[1]:])
+	return enumerationPlan(prefix, items, description)
+}
+
+func enumerationPlan(prefix string, items []string, original string) []Subtask {
+	if len(items) < 2 {
+		return nil
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if prefix != "" {
+			parts = append(parts, prefix+" "+item)
+		} else {
+			parts = append(parts, item)
+		}
+	}
+	return fanOutPlan(parts, original)
+}
+
+func splitEnumerationItems(value string) []string {
+	value = strings.TrimSpace(finalPunctuationPattern.ReplaceAllString(value, ""))
+	value = listConjunctionPattern.ReplaceAllString(value, ",")
+	parts := strings.Split(value, ",")
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(strings.Trim(part, " \t\r\n,"))
+		if part != "" {
+			items = append(items, part)
+		}
+	}
+	return items
+}
+
+func fanOutPlan(parts []string, description string) []Subtask {
+	subtasks := make([]Subtask, 0, len(parts)+1)
+	for i, part := range parts {
+		taskType := classify(part)
+		subtasks = append(subtasks, Subtask{
+			ID: idFor(i), Description: part, Role: roleForTaskType(taskType),
+			TaskType: taskType, Tags: tagsFor(taskType),
+		})
+	}
+	subtasks = compactPlanForSynthesis(subtasks)
+	return addSynthesisSubtask(subtasks, description)
+}
+
+func compactPlanForSynthesis(subtasks []Subtask) []Subtask {
+	if len(subtasks) < maxHeuristicPlanSubtasks {
+		return subtasks
+	}
+	keepCount := maxHeuristicPlanSubtasks - 2
+	keptIDs := make(map[string]bool, keepCount)
+	for _, subtask := range subtasks[:keepCount] {
+		keptIDs[subtask.ID] = true
+	}
+	descriptions := make([]string, 0, len(subtasks)-keepCount)
+	dependencies := make([]string, 0, keepCount)
+	dependencySet := make(map[string]bool, keepCount)
+	for _, subtask := range subtasks[keepCount:] {
+		descriptions = append(descriptions, subtask.Description)
+		for _, dependency := range subtask.DependsOn {
+			if keptIDs[dependency] && !dependencySet[dependency] {
+				dependencySet[dependency] = true
+				dependencies = append(dependencies, dependency)
+			}
+		}
+	}
+	description := "Complete these remaining steps in order:\n- " + strings.Join(descriptions, "\n- ")
+	taskType := classify(description)
+	merged := Subtask{
+		ID: subtasks[keepCount].ID, Description: description, Role: roleForTaskType(taskType),
+		TaskType: taskType, Tags: tagsFor(taskType), DependsOn: dependencies,
+	}
+	compacted := make([]Subtask, 0, maxHeuristicPlanSubtasks-1)
+	compacted = append(compacted, subtasks[:keepCount]...)
+	return append(compacted, merged)
+}
+
+func addSynthesisSubtask(subtasks []Subtask, description string) []Subtask {
+	if len(subtasks) == 0 || len(subtasks) >= maxHeuristicPlanSubtasks {
+		return subtasks
+	}
+	dependedOn := make(map[string]bool, len(subtasks))
+	for _, subtask := range subtasks {
+		for _, dependency := range subtask.DependsOn {
+			dependedOn[dependency] = true
+		}
+	}
+	dependencies := make([]string, 0, len(subtasks))
+	for _, subtask := range subtasks {
+		if !dependedOn[subtask.ID] {
+			dependencies = append(dependencies, subtask.ID)
+		}
+	}
+	id := "synthesis"
+	usedIDs := make(map[string]bool, len(subtasks))
+	for _, subtask := range subtasks {
+		usedIDs[subtask.ID] = true
+	}
+	for suffix := 2; usedIDs[id]; suffix++ {
+		id = fmt.Sprintf("synthesis-%d", suffix)
+	}
+	return append(subtasks, Subtask{
+		ID: id, Description: "Synthesize the completed results into a coherent answer to the original task: " + strings.TrimSpace(description),
+		Role: "summarizer", TaskType: "summarize", Tags: tagsFor("summarize"),
+		DependsOn: dependencies, ExpectedOutput: "A concise integrated response addressing the original task.",
+		Synthesis: true,
+	})
+}
+
 // ValidatePlan normalizes caller-provided subtasks and verifies that their
 // dependency graph refers only to known subtasks and contains no cycles.
 func ValidatePlan(subtasks []Subtask) ([]Subtask, error) {
@@ -115,6 +322,11 @@ func ValidatePlan(subtasks []Subtask) ([]Subtask, error) {
 			return nil, errors.New("scheduler: subtask " + subtask.ID + " has no description")
 		}
 		subtask.TaskType = strings.ToLower(strings.TrimSpace(subtask.TaskType))
+		subtask.RoutingPreference = strings.ToLower(strings.TrimSpace(subtask.RoutingPreference))
+		if subtask.RoutingPreference != "" && subtask.RoutingPreference != RoutingPreferenceQuality &&
+			subtask.RoutingPreference != RoutingPreferenceLatency {
+			return nil, errors.New("scheduler: routing_preference must be quality or latency")
+		}
 		if subtask.TaskType == "" {
 			subtask.TaskType = classify(subtask.Description)
 		}
@@ -187,6 +399,9 @@ func idFor(i int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyz"
 	if i < len(letters) {
 		return "sub-" + string(letters[i])
+	}
+	if i < 36 {
+		return "sub-0" + strconv.FormatInt(int64(i-len(letters)), 36)
 	}
 	return "sub-" + strconv.FormatInt(int64(i), 36)
 }

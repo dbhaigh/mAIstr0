@@ -3,10 +3,11 @@ package orchestrator
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 type openAIModelObj struct {
@@ -52,17 +53,19 @@ func (r *responseCapture) Write(b []byte) (int, error) {
 func (r *responseCapture) WriteHeader(status int) { r.status = status }
 
 type openAIStreamWriter struct {
-	target  http.ResponseWriter
-	header  http.Header
-	model   string
-	status  int
-	buffer  strings.Builder
-	flusher http.Flusher
+	target http.ResponseWriter
+	header http.Header
+	model  string
+	status int
+	buffer strings.Builder
+	stream *httpx.StreamWriter
 }
 
 func newOpenAIStreamWriter(target http.ResponseWriter, model string) *openAIStreamWriter {
-	flusher, _ := target.(http.Flusher)
-	return &openAIStreamWriter{target: target, header: make(http.Header), model: model, flusher: flusher}
+	return &openAIStreamWriter{
+		target: target, header: make(http.Header), model: model,
+		stream: httpx.NewStreamWriter(target),
+	}
 }
 
 func (w *openAIStreamWriter) Header() http.Header { return w.header }
@@ -138,13 +141,7 @@ func (w *openAIStreamWriter) writeChunk(chunk any) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w.target, "data: %s\n\n", data); err != nil {
-		return err
-	}
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
-	return nil
+	return w.stream.WriteSSEData(data)
 }
 
 func (w *openAIStreamWriter) finish() {
@@ -156,8 +153,5 @@ func (w *openAIStreamWriter) finish() {
 		"created": time.Now().Unix(), "model": w.model,
 		"choices": []map[string]any{{"index": 0, "delta": map[string]string{}, "finish_reason": "stop"}},
 	})
-	_, _ = fmt.Fprint(w.target, "data: [DONE]\n\n")
-	if w.flusher != nil {
-		w.flusher.Flush()
-	}
+	_ = w.stream.WriteSSEData([]byte("[DONE]"))
 }

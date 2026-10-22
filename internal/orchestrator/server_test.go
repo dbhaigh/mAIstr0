@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -47,12 +48,16 @@ func newTestServer(t *testing.T) *Server {
 
 func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 	cfg := config.OrchestratorConfig{
-		Harness:                " DEEPSEEK ",
-		DiscoveryEnabled:       true,
-		DispatchTimeoutSeconds: 90,
-		SyncMaxBytes:           2 << 20,
-		SyncTimeoutSeconds:     37,
-		MemoryPath:             filepath.Join(t.TempDir(), "orchestrator.db"),
+		Harness:                             " DEEPSEEK ",
+		DiscoveryEnabled:                    true,
+		DispatchTimeoutSeconds:              90,
+		SyncMaxBytes:                        2 << 20,
+		SyncTimeoutSeconds:                  37,
+		RouterTimeToFirstByteTimeoutSeconds: 17,
+		RouterIdleStreamTimeoutSeconds:      8,
+		RouterRequestsPerMinute:             12,
+		RouterMaxConcurrentPerClient:        3,
+		MemoryPath:                          filepath.Join(t.TempDir(), "orchestrator.db"),
 	}
 	srv, err := NewWithConfig(cfg)
 	if err != nil {
@@ -76,6 +81,12 @@ func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 		srv.nodeClient.sync.Timeout != 37*time.Second {
 		t.Fatalf("sync config = %d bytes/%s client timeout %s, want %d bytes/37s",
 			srv.maxSyncBytes(), srv.syncTimeout, srv.nodeClient.sync.Timeout, 2<<20)
+	}
+	if srv.routerTTFBTimeout != 17*time.Second || srv.routerIdleTimeout != 8*time.Second ||
+		srv.routerClients.requestsPerMinute != 12 || srv.routerClients.maxConcurrent != 3 {
+		t.Fatalf("router config = %s TTFB/%s idle/%d requests/min/%d concurrent",
+			srv.routerTTFBTimeout, srv.routerIdleTimeout,
+			srv.routerClients.requestsPerMinute, srv.routerClients.maxConcurrent)
 	}
 
 	cfg.DiscoveryEnabled = false
@@ -172,6 +183,7 @@ func TestYieldedDashboardPreservesLocalPairingAccess(t *testing.T) {
 	} {
 		t.Run(test.method+test.path+test.remote, func(t *testing.T) {
 			request := httptest.NewRequest(test.method, test.path, nil)
+			request.Host = "localhost"
 			request.RemoteAddr = test.remote
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
@@ -979,12 +991,46 @@ func TestPairingFromDifferentSubnetRequiresPIN(t *testing.T) {
 	reqWithPIN.TLS = &tls.ConnectionState{}
 	reqWithPIN.RemoteAddr = "192.0.2.1:54321"
 	respWithPIN := httptest.NewRecorder()
+	var pairingLogs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&pairingLogs)
+	defer log.SetOutput(previousOutput)
 	srv.Mux().ServeHTTP(respWithPIN, reqWithPIN)
 	if respWithPIN.Code != http.StatusOK {
 		t.Fatalf("remote subnet join with valid PIN returned %d: %s", respWithPIN.Code, respWithPIN.Body.String())
 	}
+	if strings.Contains(pairingLogs.String(), pin) {
+		t.Fatalf("pairing log leaked PIN %q: %s", pin, pairingLogs.String())
+	}
 	if !identity.IsTrustedID(node.ID()) {
 		t.Fatal("node certificate was not pinned after valid PIN pairing")
+	}
+}
+
+func TestSnapshotAndIdentityLogsDoNotExposePairingPIN(t *testing.T) {
+	srv := newTestServer(t)
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousOutput)
+
+	if err := srv.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	pin, _, active := srv.identity.ActivePairingPIN()
+	if !active || pin == "" {
+		t.Fatal("identity did not create an active pairing PIN")
+	}
+	if strings.Contains(logs.String(), pin) {
+		t.Fatalf("identity initialization log leaked PIN %q: %s", pin, logs.String())
+	}
+
+	snapshot, err := json.Marshal(srv.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(snapshot), pin) {
+		t.Fatalf("cluster snapshot leaked pairing PIN %q: %s", pin, snapshot)
 	}
 }
 
@@ -1004,6 +1050,7 @@ func TestPairingPINCanBeRegeneratedFromLoopback(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/pin", nil)
+	request.Host = "localhost"
 	request.RemoteAddr = "127.0.0.1:1234"
 	response := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(response, request)
@@ -1022,6 +1069,7 @@ func TestPairingPINCanBeRegeneratedFromLoopback(t *testing.T) {
 	}
 
 	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/pairing/pin", nil)
+	remoteRequest.Host = "localhost"
 	remoteRequest.RemoteAddr = "192.0.2.10:1234"
 	remoteResponse := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(remoteResponse, remoteRequest)

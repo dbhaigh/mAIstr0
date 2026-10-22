@@ -17,6 +17,14 @@
         "additionalProperties": false
       }
     },
+    "router_events": {
+      "type": ["array", "null"],
+      "items": {"$ref": "router-request-event.schema.json"}
+    },
+    "router_circuit_breakers": {
+      "type": "array",
+      "items": {"$ref": "router-circuit-breaker.schema.json"}
+    },
     "pipeline_plans": {
       "type": "array",
       "items": {

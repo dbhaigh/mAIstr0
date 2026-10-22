@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/memory"
 )
 
 func TestMergeReplicaTaskSlices(t *testing.T) {
@@ -136,6 +138,9 @@ func TestIncrementalTaskSnapshotsAndOutOfOrderMerge(t *testing.T) {
 	}
 	if incremental := replica.SnapshotForPeer(1, map[string]uint64{"task:leader": older.Sequence}); len(incremental) != 1 {
 		t.Fatalf("version 1 peer received %d tasks, want the incremental update", len(incremental))
+	}
+	if versionTwo := replica.SnapshotForPeer(memory.SyncPageProtocolVersion, map[string]uint64{"task:leader": older.Sequence}); len(versionTwo) != 1 {
+		t.Fatalf("version 2 peer received %d tasks, want the incremental update", len(versionTwo))
 	}
 	if marks := replica.Watermarks(); marks["task:leader"] != newer.Sequence {
 		t.Fatalf("task watermarks = %v, want task:leader=%d", marks, newer.Sequence)

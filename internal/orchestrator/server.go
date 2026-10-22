@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/agent/deepseekadapter"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/peeridentity"
@@ -42,6 +44,8 @@ type Server struct {
 	harness            *harnessManager
 	syncer             syncerAPI
 	metrics            *operationalMetrics
+	routerBreakers     *routerCircuitBreakers
+	routerClients      *routerClientLimiter
 	mem                memory.Store
 	identityPath       string
 	identity           *peeridentity.Identity
@@ -51,6 +55,8 @@ type Server struct {
 	mode               string
 	syncMaxBytes       int64
 	syncTimeout        time.Duration
+	routerTTFBTimeout  time.Duration
+	routerIdleTimeout  time.Duration
 }
 
 type SessionStore interface {
@@ -80,9 +86,14 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
+	srv, err := newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
 		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
 		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second, cfg.ShardedModels)
+	if err != nil {
+		return nil, err
+	}
+	srv.configureRouter(cfg)
+	return srv, nil
 }
 
 // NewWithConfig creates an orchestrator from its JSON configuration.
@@ -91,9 +102,21 @@ func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
+	srv, err := newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
 		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
 		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second, cfg.ShardedModels)
+	if err != nil {
+		return nil, err
+	}
+	srv.dispatcher.configureSpeculativeHedging(cfg.SpeculativeHedgingEnabled, cfg.MaxConcurrentHedges)
+	srv.configureRouter(cfg)
+	return srv, nil
+}
+
+func (s *Server) configureRouter(cfg config.OrchestratorConfig) {
+	s.routerTTFBTimeout = time.Duration(cfg.RouterTimeToFirstByteTimeoutSeconds) * time.Second
+	s.routerIdleTimeout = time.Duration(cfg.RouterIdleStreamTimeoutSeconds) * time.Second
+	s.routerClients = newRouterClientLimiter(cfg.RouterRequestsPerMinute, cfg.RouterMaxConcurrentPerClient)
 }
 
 func newWithMemoryHarnessAndConcurrency(
@@ -172,6 +195,7 @@ func newWithMemoryHarnessAndConcurrency(
 		election:          election,
 		events:            events,
 		routerEvents:      newRouterEventLog(200),
+		routerBreakers:    newRouterCircuitBreakers(),
 		syncer:            syncer,
 		metrics:           metrics,
 		tasks:             tasks,
@@ -181,13 +205,16 @@ func newWithMemoryHarnessAndConcurrency(
 		mode:              mode,
 		syncMaxBytes:      syncMaxBytes,
 		syncTimeout:       syncTimeout,
+		routerTTFBTimeout: time.Duration(config.DefaultRouterTTFBTimeoutSeconds) * time.Second,
+		routerIdleTimeout: time.Duration(config.DefaultRouterIdleStreamTimeoutSeconds) * time.Second,
 	}
+	srv.routerClients = newRouterClientLimiter(0, 0)
 	for _, model := range shardedModels {
 		model.Normalize()
 		srv.shardedModels[model.LogicalID] = model
 	}
 	if mode != config.OrchestratorModeMinimal {
-		deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
+		deepseekBackend := deepseekadapter.NewDeepSeek(reg, disp, store, events)
 		harness := newHarnessManager(map[string]agent.Backend{"deepseek": deepseekBackend}, harnessName, store)
 		srv.harness = harness
 		harness.registerBackend("pi", piagent.New(&localPiProvider{generate: srv}, deepseekBackend))
@@ -367,10 +394,17 @@ func (s *Server) Run(listenAddr string) error {
 	loopback := peeridentity.LoopbackOnly(requireElectedOrchestrator(
 		s.isElectedOrchestrator, mux, http.HandlerFunc(s.handleYieldedDashboard),
 	))
+	bodyLimit, err := httpx.LimitBodyBytes(httpx.DefaultMaxRequestBodyBytes)
+	if err != nil {
+		return fmt.Errorf("orchestrator: configure HTTP request limit: %w", err)
+	}
+	withMiddleware := func(next http.Handler) http.Handler {
+		return httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit)
+	}
 	return peeridentity.ServeDual(
 		listenAddr,
-		loopback,
-		secure,
+		withMiddleware(loopback),
+		withMiddleware(secure),
 		s.identity.ServerTLSConfig(),
 	)
 }
