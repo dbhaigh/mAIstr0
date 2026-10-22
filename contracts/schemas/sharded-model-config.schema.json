@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/sharded-model-config.schema.json",
+  "title": "ShardedModelConfig",
+  "type": "object",
+  "required": ["logical_id", "source_model_id", "revision", "tokenizer_id", "model_config_id", "total_layers"],
+  "properties": {
+    "logical_id": {"type": "string", "minLength": 1},
+    "source_model_id": {"type": "string", "minLength": 1},
+    "revision": {"type": "string", "minLength": 1},
+    "tokenizer_id": {"type": "string", "minLength": 1},
+    "model_config_id": {"type": "string", "minLength": 1},
+    "total_layers": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": true
+}

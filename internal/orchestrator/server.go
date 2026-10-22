@@ -30,6 +30,11 @@ type Server struct {
 	tasks              *taskmgr.Manager
 	nodeClient         *nodeClient
 	dispatcher         *dispatcherComponent
+	shardedModels      map[string]config.ShardedModelConfig
+	pipelinePlans      *pipelinePlanStore
+	pipelineLocker     *pipelinePlanLocker
+	pipelineMetrics    *pipelineStageMetrics
+	pipelineRequests   *pipelineRequestGate
 	planner            *taskPlanner
 	election           *electionComponent
 	events             *hub.Hub
@@ -77,7 +82,7 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 	}
 	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
 		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
-		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second)
+		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second, cfg.ShardedModels)
 }
 
 // NewWithConfig creates an orchestrator from its JSON configuration.
@@ -88,10 +93,18 @@ func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
 	}
 	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
 		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
-		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second)
+		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second, cfg.ShardedModels)
 }
 
-func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatchLimit int, dispatchTimeout time.Duration, mode string, syncMaxBytes int64, syncTimeout time.Duration) (*Server, error) {
+func newWithMemoryHarnessAndConcurrency(
+	memoryPath, harnessName string,
+	dispatchLimit int,
+	dispatchTimeout time.Duration,
+	mode string,
+	syncMaxBytes int64,
+	syncTimeout time.Duration,
+	shardedModels []config.ShardedModelConfig,
+) (*Server, error) {
 	if harnessName != "deepseek" && harnessName != "pi" {
 		return nil, fmt.Errorf("unknown agent backend %q (want deepseek or pi)", harnessName)
 	}
@@ -104,6 +117,14 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 	reg := cluster.NewRegistry()
 	disp := &http.Client{Timeout: 10 * time.Minute}
 	selfID := "orchestrator-" + discovery.OutboundIP()
+	pipelineDataPath := memoryPath
+	if pipelineDataPath == "" {
+		pipelineDataPath = memory.DefaultPath(selfID)
+	}
+	pipelinePlans, err := openPipelinePlanStore(pipelineDataPath + ".pipelines.json")
+	if err != nil {
+		return nil, err
+	}
 	events := hub.New()
 	metrics := &operationalMetrics{}
 	var store memory.Store
@@ -142,6 +163,11 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		registry:          reg,
 		nodeClient:        nodeClient,
 		dispatcher:        dispatcher,
+		shardedModels:     make(map[string]config.ShardedModelConfig, len(shardedModels)),
+		pipelinePlans:     pipelinePlans,
+		pipelineLocker:    newPipelinePlanLocker(),
+		pipelineMetrics:   newPipelineStageMetrics(),
+		pipelineRequests:  newPipelineRequestGate(),
 		planner:           planner,
 		election:          election,
 		events:            events,
@@ -155,6 +181,10 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		mode:              mode,
 		syncMaxBytes:      syncMaxBytes,
 		syncTimeout:       syncTimeout,
+	}
+	for _, model := range shardedModels {
+		model.Normalize()
+		srv.shardedModels[model.LogicalID] = model
 	}
 	if mode != config.OrchestratorModeMinimal {
 		deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
@@ -238,6 +268,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", s.handlePairingInvite)
 	mux.HandleFunc("GET /api/events", s.events.ServeHTTP)
 	mux.HandleFunc("GET /api/router/requests", s.handleRouterEvents)
+	mux.HandleFunc("POST /api/pipelines/{model_id}/reshard", s.handlePipelineReshard)
 	mux.HandleFunc("POST /router/{path...}", s.handleRouterRequest)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)

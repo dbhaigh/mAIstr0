@@ -21,6 +21,116 @@ paths:
   /execute:
     post:
       responses: {"200": {description: Execute a subtask}}
+  /stage/load:
+    post:
+      description: Load a contiguous model stage on this node; cluster requests require the existing trusted mTLS identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/StageAssignment"}
+      responses:
+        "200": {description: Stage loaded}
+        "400": {description: Invalid stage assignment}
+        "404": {description: Model is unavailable on this node}
+        "409": {description: Conflicting stage assignment}
+        "501": {description: Selected engine does not support stages}
+        "502": {description: Local stage engine failed to load the stage}
+  /stage/open:
+    post:
+      description: Open request-local state (including stage-local KV cache) for a protocol-v2 pipeline request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PipelineStageControlRequest"}
+      responses:
+        "200": {description: Stage request opened}
+        "400": {description: Invalid control request}
+        "404": {description: Stage is not loaded}
+        "409": {description: Stage capacity is unavailable or request conflicts}
+        "501": {description: Engine does not support protocol-v2 stages}
+  /stage/prefill:
+    post:
+      description: Prefill a protocol-v2 stage. Request metadata is encoded in a length-prefixed binary envelope; activation tensor bytes follow its JSON header.
+      requestBody:
+        required: true
+        content:
+          application/vnd.maistr0.pipeline-stage-v2:
+            schema: {type: string, format: binary}
+            x-maistr0-header-schema: {$ref: "#/components/schemas/PipelineStageMessage"}
+      responses:
+        "200":
+          description: Prefill result in the same binary envelope format
+          content:
+            application/vnd.maistr0.pipeline-stage-v2:
+              schema: {type: string, format: binary}
+              x-maistr0-header-schema: {$ref: "#/components/schemas/PipelineStageMessage"}
+        "400": {description: Invalid prefill message}
+        "404": {description: Stage request is not open}
+        "502": {description: Stage inference failed}
+  /stage/decode:
+    post:
+      description: Execute one token decode step using request-local KV state and the previous stage activation.
+      requestBody:
+        required: true
+        content:
+          application/vnd.maistr0.pipeline-stage-v2:
+            schema: {type: string, format: binary}
+            x-maistr0-header-schema: {$ref: "#/components/schemas/PipelineStageMessage"}
+      responses:
+        "200":
+          description: Decode result in the same binary envelope format
+          content:
+            application/vnd.maistr0.pipeline-stage-v2:
+              schema: {type: string, format: binary}
+              x-maistr0-header-schema: {$ref: "#/components/schemas/PipelineStageMessage"}
+        "400": {description: Invalid decode message}
+        "404": {description: Stage request is not open}
+        "502": {description: Stage inference failed}
+  /stage/close:
+    post:
+      description: Release request-local KV state and the stage capacity slot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PipelineStageControlRequest"}
+      responses:
+        "200": {description: Stage request closed}
+        "400": {description: Invalid control request}
+        "404": {description: Stage request is not open}
+  /stage/forward:
+    post:
+      description: Stream a prompt or activation through a loaded stage. Non-final stages return activation frames; final stages return text-token frames. Cluster requests require the existing trusted mTLS identity.
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema: {$ref: "#/components/schemas/StageForwardFrame"}
+      responses:
+        "200":
+          description: Newline-delimited activation or token frames followed by completion or error
+          content:
+            application/x-ndjson:
+              schema: {$ref: "#/components/schemas/StageForwardFrame"}
+        "400": {description: Invalid forward stream}
+        "404": {description: Stage is not loaded}
+        "409": {description: Stage is unavailable or assignment conflicts}
+  /stage/unload:
+    post:
+      description: Unload a contiguous model stage from this node; cluster requests require the existing trusted mTLS identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/StageAssignment"}
+      responses:
+        "200": {description: Stage unloaded}
+        "400": {description: Invalid stage assignment}
+        "404": {description: Stage is not loaded}
+        "409": {description: Stage is currently unavailable}
+        "502": {description: Local stage engine failed to unload the stage}
   /generate:
     post:
       responses: {"200": {description: Generate text on the node}}
@@ -320,7 +430,33 @@ paths:
         "200":
           description: >-
             Subscribe to server events. Each JSON snapshot additively includes
-            cluster_health using the same view model as GET /api/cluster/health.
+            cluster_health using the same view model as GET /api/cluster/health,
+            model_inventory entries identifying whole and sharded models, and
+            pipeline_plans with stage health and live transfer/utilization data
+            as described by DashboardPipelineSnapshot.
+  /api/pipelines/{model_id}/reshard:
+    parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      summary: Recompute a sharded-model placement and load its stages
+      responses:
+        "200":
+          description: Placement and stage loading completed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plan]
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/PipelinePlan"
+        "404": {description: No sharded model is registered with this logical ID}
+        "500": {description: Pipeline plan persistence failed}
+        "502": {description: A stage failed to load}
+        "503": {description: No complete placement or capacity is available}
   /api/router/requests:
     get:
       responses: {"200": {description: List recent prompt-free inference routing events}}
@@ -700,6 +836,18 @@ components:
       $ref: "./schemas/assignment-explanation.schema.json"
     NodeStatus:
       $ref: "./schemas/node-status.schema.json"
+    StageAssignment:
+      $ref: "./schemas/stage-assignment.schema.json"
+    StageForwardFrame:
+      $ref: "./schemas/stage-forward-frame.schema.json"
+    ShardedModelConfig:
+      $ref: "./schemas/sharded-model-config.schema.json"
+    StageSpec:
+      $ref: "./schemas/stage-spec.schema.json"
+    PipelinePlan:
+      $ref: "./schemas/pipeline-plan.schema.json"
+    DashboardPipelineSnapshot:
+      $ref: "./schemas/dashboard-pipeline.schema.json"
     Announcement:
       $ref: "./schemas/announcement.schema.json"
     Experience:
@@ -718,6 +866,18 @@ components:
       $ref: "./schemas/dispatch-attempt.schema.json"
     EngineStatus:
       $ref: "./schemas/engine-status.schema.json"
+    PipelineStageCapabilities:
+      $ref: "./schemas/pipeline-stage-capabilities.schema.json"
+    PipelineStageControlRequest:
+      $ref: "./schemas/pipeline-stage-control.schema.json"
+    PipelineStageRequest:
+      $ref: "./schemas/pipeline-stage-request.schema.json"
+    PipelineStageOutput:
+      $ref: "./schemas/pipeline-stage-output.schema.json"
+    ActivationTensor:
+      $ref: "./schemas/activation-tensor.schema.json"
+    PipelineStageMessage:
+      $ref: "./schemas/pipeline-stage-message.schema.json"
     RouterRequestEvent:
       $ref: "./schemas/router-request-event.schema.json"
     TaskHistoryPage:
@@ -787,6 +947,7 @@ x-maistr0-registered-routes:
   - "orchestrator|GET /api/discovery"
   - "orchestrator|POST /api/discovery/{id}/pairing/invite"
   - "orchestrator|GET /api/events"
+  - "orchestrator|POST /api/pipelines/{model_id}/reshard"
   - "orchestrator|GET /api/router/requests"
   - "orchestrator|POST /router/{path...}"
   - "orchestrator|POST /api/tasks"
@@ -850,6 +1011,13 @@ x-maistr0-registered-routes:
   - "node|POST /api/pairing/invitation/accept"
   - "node|POST /api/pairing/invitation/reject"
   - "node|/execute"
+  - "node|POST /stage/load"
+  - "node|POST /stage/open"
+  - "node|POST /stage/prefill"
+  - "node|POST /stage/decode"
+  - "node|POST /stage/close"
+  - "node|POST /stage/forward"
+  - "node|POST /stage/unload"
   - "node|POST /generate"
   - "node|POST /chat"
   - "node|POST /proxy/{path...}"

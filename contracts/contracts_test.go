@@ -180,9 +180,10 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 	orchestratorConfig := config.DefaultOrchestratorConfig()
 	nodeStatus := cluster.NodeStatus{
 		ID: "worker-1", Version: "1.0.0", Address: "https://worker-1",
-		Hardware:  hardware.Info{OS: "linux", Arch: "amd64", CPUCores: 8, TotalRAMMB: 16384, Score: 10},
-		Models:    []engine.Model{{Name: "general", Engine: "simulated", Tags: []string{}}},
-		FastScore: 1, LastSeen: now, Healthy: true,
+		Hardware:             hardware.Info{OS: "linux", Arch: "amd64", CPUCores: 8, TotalRAMMB: 16384, Score: 10},
+		Models:               []engine.Model{{Name: "general", Engine: "simulated", Tags: []string{}}},
+		SupportedShardModels: []string{"large-model"}, MaxLayersItCanHost: 16,
+		CurrentStageAssignments: 1, FastScore: 1, LastSeen: now, Healthy: true,
 		GPUHistory:    []hardware.GPUUsageSample{{Timestamp: now, Available: true, Utilization: 40}},
 		NPUHistory:    []hardware.NPUUsageSample{{Timestamp: now, Available: false}},
 		SystemHistory: []hardware.SystemUsageSample{{Timestamp: now, CPUAvailable: true, MemoryAvailable: true}},
@@ -202,6 +203,38 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 	}
 
 	values := map[string]any{
+		"dashboard-pipeline.schema.json": map[string]any{
+			"model_inventory": []any{
+				map[string]any{"model_id": "whole-model", "kind": "whole", "nodes": []string{"worker-1"}},
+				map[string]any{"model_id": "large-model", "kind": "sharded"},
+			},
+			"pipeline_plans": []any{map[string]any{
+				"model_id": "large-model", "status": "ready",
+				"plan": config.PipelinePlan{
+					Model: config.ShardedModelConfig{
+						LogicalID: "large-model", SourceModelID: "source-model", Revision: "revision-1",
+						TokenizerID: "tokenizer-1", ModelConfigID: "config-1", TotalLayers: 32,
+					},
+					Stages: []config.StageSpec{
+						{NodeID: "worker-1", StartLayer: 0, EndLayer: 16, Engine: "vllm"},
+						{NodeID: "worker-2", StartLayer: 16, EndLayer: 32, Engine: "vllm"},
+					},
+					PlanVersion: 1, CoordinatorEpoch: "epoch-1",
+				},
+				"stages": []any{
+					map[string]any{
+						"stage": 0, "node_id": "worker-1", "start_layer": 0, "end_layer": 16,
+						"engine": "vllm", "status": "ready", "active": 0, "capacity": 2,
+						"utilization_percent": 0,
+					},
+					map[string]any{
+						"stage": 1, "node_id": "worker-2", "start_layer": 16, "end_layer": 32,
+						"engine": "vllm", "status": "ready", "active": 1, "capacity": 2,
+						"utilization_percent": 50, "activation_transfer_ms": 1.5, "activation_bytes": 4096,
+					},
+				},
+			}},
+		},
 		"cluster-health.schema.json": map[string]any{
 			"nodes": []any{map[string]any{
 				"node_id": "worker-1", "healthy": true, "active": 2, "max": 4,
@@ -227,12 +260,82 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		"assignment.schema.json":          assignment,
 		"score-factors.schema.json":       scheduler.ScoreFactors{},
 		"node-status.schema.json":         nodeStatus,
-		"announcement.schema.json":        discovery.Announcement{Role: "node", ID: "worker-1", HTTPAddr: "http://worker-1", PeerAddr: "https://worker-1"},
-		"experience.schema.json":          snapshot.Experiences[0],
-		"fact.schema.json":                snapshot.Facts[0],
-		"performance.schema.json":         snapshot.Performances[0],
-		"dialogue-record.schema.json":     snapshot.Dialogues[0],
-		"snapshot.schema.json":            snapshot,
+		"stage-assignment.schema.json": engine.StageAssignment{
+			ModelID: "large-model", StartLayer: 0, EndLayer: 16, Engine: "vllm", IsFinal: true,
+		},
+		"stage-forward-frame.schema.json": engine.StageForwardFrame{
+			Type:   engine.StageFrameStart,
+			Prompt: "hello", Temperature: 0.2, MaxTokens: 32,
+			Assignment: &engine.StageAssignment{
+				ModelID: "large-model", StartLayer: 0, EndLayer: 16,
+				NextStageAddr: "https://worker-2:7451", Engine: "vllm",
+			},
+			KVCache: []byte("cache"),
+		},
+		"engine-status.schema.json": engine.Status{
+			Name: "llamacpp", Ready: true, InventoryState: engine.ModelInventoryAvailable, ModelCount: 1,
+			PipelineStage: &engine.PipelineStageCapabilities{
+				ProtocolVersion: engine.PipelineStageProtocolVersion, Runtime: "llamacpp",
+				Models:         []engine.PipelineStageModelCapability{{ModelID: "large-model", MaxLayers: 32}},
+				TensorDTypes:   []engine.TensorDType{engine.TensorFloat16},
+				DeviceBackends: []string{"cpu"},
+			},
+		},
+		"activation-tensor.schema.json": map[string]any{
+			"dtype": engine.TensorFloat32, "shape": []int64{1, 4, 8},
+		},
+		"pipeline-stage-capabilities.schema.json": engine.PipelineStageCapabilities{
+			ProtocolVersion: engine.PipelineStageProtocolVersion, Runtime: "llama.cpp",
+			Models:         []engine.PipelineStageModelCapability{{ModelID: "large-model", MaxLayers: 32}},
+			TensorDTypes:   []engine.TensorDType{engine.TensorFloat16, engine.TensorFloat32},
+			DeviceBackends: []string{"cpu"},
+		},
+		"pipeline-stage-control.schema.json": engine.PipelineStageControlRequest{
+			ProtocolVersion: engine.PipelineStageProtocolVersion, RequestID: "request-1",
+			Assignment: engine.StageAssignment{ModelID: "large-model", StartLayer: 0, EndLayer: 11},
+		},
+		"pipeline-stage-request.schema.json": engine.PipelineStageRequest{
+			ProtocolVersion: engine.PipelineStageProtocolVersion, RequestID: "request-1",
+			Assignment: engine.StageAssignment{ModelID: "large-model", StartLayer: 0, EndLayer: 11},
+			Prompt:     "hello", MaxTokens: 16,
+		},
+		"pipeline-stage-output.schema.json": engine.PipelineStageOutput{
+			Token: &engine.PipelineToken{ID: 1, Text: "hello"},
+		},
+		"pipeline-stage-message.schema.json": engine.StageMessageHeader{
+			Request: engine.PipelineStageRequest{
+				ProtocolVersion: engine.PipelineStageProtocolVersion, RequestID: "request-1",
+				Assignment: engine.StageAssignment{ModelID: "large-model", StartLayer: 0, EndLayer: 11},
+				Prompt:     "hello",
+			},
+			Output: &engine.PipelineStageOutput{
+				Token: &engine.PipelineToken{ID: 1, Text: "hello"},
+			},
+		},
+		"sharded-model-config.schema.json": config.ShardedModelConfig{
+			LogicalID: "large-model", SourceModelID: "source-model", Revision: "revision-1",
+			TokenizerID: "tokenizer-1", ModelConfigID: "config-1", TotalLayers: 32,
+		},
+		"stage-spec.schema.json": config.StageSpec{
+			NodeID: "worker-1", StartLayer: 0, EndLayer: 16, Engine: "vllm",
+		},
+		"pipeline-plan.schema.json": config.PipelinePlan{
+			Model: config.ShardedModelConfig{
+				LogicalID: "large-model", SourceModelID: "source-model", Revision: "revision-1",
+				TokenizerID: "tokenizer-1", ModelConfigID: "config-1", TotalLayers: 32,
+			},
+			Stages: []config.StageSpec{
+				{NodeID: "worker-1", StartLayer: 0, EndLayer: 16, Engine: "vllm"},
+				{NodeID: "worker-2", StartLayer: 16, EndLayer: 32, Engine: "vllm"},
+			},
+			PlanVersion: 1, CoordinatorEpoch: "epoch-1",
+		},
+		"announcement.schema.json":    discovery.Announcement{Role: "node", ID: "worker-1", HTTPAddr: "http://worker-1", PeerAddr: "https://worker-1"},
+		"experience.schema.json":      snapshot.Experiences[0],
+		"fact.schema.json":            snapshot.Facts[0],
+		"performance.schema.json":     snapshot.Performances[0],
+		"dialogue-record.schema.json": snapshot.Dialogues[0],
+		"snapshot.schema.json":        snapshot,
 		"assignment-explanation.schema.json": map[string]any{
 			"task_id": "task-1",
 			"assignments": []any{map[string]any{
@@ -296,12 +399,15 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 
 func TestSchemaSetIsComplete(t *testing.T) {
 	expected := []string{
-		"announcement.schema.json", "assignment-explanation.schema.json", "assignment.schema.json", "cluster-health.schema.json", "dialogue-record.schema.json",
-		"dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
+		"announcement.schema.json", "assignment-explanation.schema.json", "assignment.schema.json", "cluster-health.schema.json", "dashboard-pipeline.schema.json", "dialogue-record.schema.json",
+		"activation-tensor.schema.json", "dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
 		"fact.schema.json", "node-config.schema.json",
-		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json",
+		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json", "pipeline-plan.schema.json",
+		"pipeline-stage-capabilities.schema.json", "pipeline-stage-control.schema.json", "pipeline-stage-message.schema.json",
+		"pipeline-stage-output.schema.json", "pipeline-stage-request.schema.json",
 		"router-request-event.schema.json", "score-factors.schema.json", "snapshot.schema.json",
-		"subtask-result.schema.json", "subtask.schema.json", "task-dependencies.schema.json",
+		"stage-assignment.schema.json", "stage-forward-frame.schema.json",
+		"sharded-model-config.schema.json", "stage-spec.schema.json", "subtask-result.schema.json", "subtask.schema.json", "task-dependencies.schema.json",
 		"task-graph.schema.json", "task.schema.json",
 	}
 	actual, err := filepath.Glob(filepath.Join("schemas", "*.schema.json"))

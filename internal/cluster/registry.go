@@ -16,27 +16,30 @@ import (
 // NodeStatus is the snapshot a node agent reports about itself, either on
 // registration or on every heartbeat poll from the orchestrator.
 type NodeStatus struct {
-	ID                 string                       `json:"id"`
-	Version            string                       `json:"version"`
-	Address            string                       `json:"address"` // base URL the orchestrator can reach the node at
-	Hardware           hardware.Info                `json:"hardware"`
-	Models             []engine.Model               `json:"models"`
-	Engines            []engine.Status              `json:"engines,omitempty"`
-	Capabilities       []string                     `json:"capabilities,omitempty"`
-	GPUHistory         []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
-	NPUHistory         []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
-	SystemHistory      []hardware.SystemUsageSample `json:"system_history,omitempty"`
-	TelemetryAt        time.Time                    `json:"telemetry_at,omitempty"`
-	DefaultModel       string                       `json:"default_model,omitempty"`
-	FastScore          float64                      `json:"fast_score"`
-	ActiveTasks        int                          `json:"active_tasks"`
-	MaxConcurrentTasks int                          `json:"max_concurrent_tasks,omitempty"`
-	AvailableCapacity  int                          `json:"available_capacity,omitempty"`
-	QueuedTasks        int                          `json:"-"`
-	LastSeen           time.Time                    `json:"last_seen"`
-	Healthy            bool                         `json:"healthy"`
-	Leader             bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
-	VersionError       string                       `json:"version_error,omitempty"`
+	ID                      string                       `json:"id"`
+	Version                 string                       `json:"version"`
+	Address                 string                       `json:"address"` // base URL the orchestrator can reach the node at
+	Hardware                hardware.Info                `json:"hardware"`
+	Models                  []engine.Model               `json:"models"`
+	Engines                 []engine.Status              `json:"engines,omitempty"`
+	SupportedShardModels    []string                     `json:"supported_shard_models,omitempty"`
+	MaxLayersItCanHost      int                          `json:"max_layers_it_can_host,omitempty"`
+	CurrentStageAssignments int                          `json:"current_stage_assignments,omitempty"`
+	Capabilities            []string                     `json:"capabilities,omitempty"`
+	GPUHistory              []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
+	NPUHistory              []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
+	SystemHistory           []hardware.SystemUsageSample `json:"system_history,omitempty"`
+	TelemetryAt             time.Time                    `json:"telemetry_at,omitempty"`
+	DefaultModel            string                       `json:"default_model,omitempty"`
+	FastScore               float64                      `json:"fast_score"`
+	ActiveTasks             int                          `json:"active_tasks"`
+	MaxConcurrentTasks      int                          `json:"max_concurrent_tasks,omitempty"`
+	AvailableCapacity       int                          `json:"available_capacity,omitempty"`
+	QueuedTasks             int                          `json:"-"`
+	LastSeen                time.Time                    `json:"last_seen"`
+	Healthy                 bool                         `json:"healthy"`
+	Leader                  bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
+	VersionError            string                       `json:"version_error,omitempty"`
 }
 
 func (n NodeStatus) EngineReady(name string) bool {

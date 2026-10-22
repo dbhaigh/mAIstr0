@@ -11,8 +11,8 @@ in another language.
   exact Go mux patterns, including methodless and subtree registrations.
 - [`schemas/`](./schemas/) contains JSON Schema 2020-12 definitions for
   configuration, tasks and durable dispatch attempts, assignments, node and
-  engine readiness, router request events, discovery announcements, and
-  memory records.
+  engine readiness, sharded-model pipeline plans, router request events,
+  discovery announcements, and memory records.
 - [`fixtures/phase1/`](./fixtures/phase1/) contains exported HTTP golden cases.
   Each file has a `request`, `expected_response`, and `normalization_rules`.
   Response envelopes retain the HTTP status and content type; their `body` is
@@ -41,6 +41,31 @@ in another language.
 - Nodes that omit engine status remain compatible with older clients. Once a
   node reports engines, scheduling should use each engine's readiness and
   advertised protocol capabilities.
+- Node shard-readiness fields are optional and additive. `current_stage_assignments`
+  is the number of stage assignments currently held by that node. A pipeline
+  plan's stages use half-open layer ranges and must be contiguous, non-overlapping,
+  and cover the model's complete layer range; Go validation enforces these
+  cross-stage invariants. Nodes may configure `supported_shard_models` and
+  `max_layers_it_can_host` before stages are loaded so the orchestrator can place
+  the first plan; loaded assignments are also reflected in readiness.
+- A shard-readiness declaration alone is not proof of runtime support. Engine
+  status may include `pipeline_stage`, populated only after probing the local
+  engine's `/stage/capabilities` endpoint and validating its protocol version,
+  model/layer limits, and tensor dtypes. `pipeline_stage_error` reports probe
+  failures; clients must not infer capability from model inventory.
+- The legacy `/stage/forward` newline-delimited JSON protocol remains available
+  for compatibility. Protocol v2 uses `/stage/open`, `/stage/prefill`,
+  `/stage/decode`, and `/stage/close` over the existing trusted mTLS surface.
+  Prefill/decode bodies use `application/vnd.maistr0.pipeline-stage-v2`: a
+  4-byte big-endian JSON-header length, the JSON header, then the contiguous
+  tensor payload described by its activation metadata. Only activations cross
+  stage boundaries; each stage retains its request-local KV state until close.
+  Open/close requests use `PipelineStageControlRequest`. Cancellation must close
+  all opened stages and release their capacity slots.
+- Sharded models are registered additively in orchestrator startup config under
+  `sharded_models`. The orchestrator persists placement plans locally by
+  `logical_id`, revalidates them against current node readiness, and uses the
+  logical ID as the only client-visible model name.
 - Discovery announcements require `role`, `id`, `http_addr`, and `peer_addr`.
   The optional `orchestrator_id` identifies the associated coordinator; it
   must not be inferred merely from another visible announcement.

@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.0.18 - 2026-10-21
+
+### Added
+
+- Add protocol-v2 request-local stage open/prefill/decode/close operations with
+  typed binary activation tensors and verified runtime capability reporting.
+- Exercise token-by-token stage dispatch and request cleanup with the simulated
+  backend; ordinary llama.cpp and vLLM adapters remain non-stage-capable unless
+  their runtime explicitly implements the stage protocol.
+- Document the protocol-v2 stage contract and clarify that production
+  llama.cpp/vLLM partial-layer backends are still pending.
+
+## 0.0.17 - 2026-10-21
+
+### Added
+
+- Add a three-node simulated pipeline integration test covering contiguous
+  placement, stage invocation order, and streamed OpenAI-compatible output.
+- Add configured OpenAI-compatible adapters for TGI, LocalAI, MLX-LM, SGLang,
+  and generic servers, plus a llama.cpp RPC deployment profile for trusted
+  multi-host inference.
+- Add node-side pipeline-stage loading, streaming forward and unload endpoints,
+  with simulated and local HTTP stage-engine adapters.
+- Add configured sharded-model placement, atomic multi-node capacity
+  reservations, persisted pipeline plans, and OpenAI chat dispatch across stages.
+- Show whole versus sharded models, live pipeline stages and transfer/utilization
+  telemetry in the Workload view, with a control to recompute placement and load
+  stages.
+- Document how to configure distributed sharded models and the current PP-only
+  runtime requirements and limitations.
 
 ## 0.0.16 - 2026-10-19
 

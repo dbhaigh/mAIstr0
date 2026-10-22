@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/stage-assignment.schema.json",
+  "title": "StageAssignment",
+  "type": "object",
+  "required": ["model_id", "start_layer", "end_layer"],
+  "properties": {
+    "model_id": {"type": "string", "minLength": 1},
+    "start_layer": {"type": "integer", "minimum": 0},
+    "end_layer": {"type": "integer", "minimum": 1},
+    "next_stage_addr": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "engine": {"type": "string", "minLength": 1},
+    "is_final": {"type": "boolean"}
+  },
+  "additionalProperties": true
+}

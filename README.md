@@ -330,13 +330,17 @@ Nodes detect local Ollama, LM Studio, llama.cpp, and FastFlowLM services by
 default. LM Studio is discovered at `http://127.0.0.1:1234`; llama.cpp is
 discovered at `http://127.0.0.1:8080` or PAIR's managed-server port
 `http://127.0.0.1:8081`. Both can also be configured at another
-OpenAI-compatible server URL. Configure
-additional or remote engines in a node configuration file:
+OpenAI-compatible server URL. vLLM, Hugging Face Text Generation Inference
+(TGI), LocalAI, MLX-LM, SGLang, and other OpenAI-compatible servers can be configured
+explicitly in a node configuration file. They are not auto-detected because
+their default ports overlap and may not identify a unique server:
 
 ```json
 {
   "listen_addr": ":7451",
   "max_concurrent_tasks": 2,
+  "supported_shard_models": ["large-source-model"],
+  "max_layers_it_can_host": 32,
   "sync_max_bytes": 67108864,
   "sync_timeout_seconds": 600,
   "orchestrator_addr": "https://192.168.1.10:7450",
@@ -345,7 +349,12 @@ additional or remote engines in a node configuration file:
     { "name": "ollama", "url": "http://127.0.0.1:11434" },
     { "name": "lmstudio", "url": "http://127.0.0.1:1234" },
     { "name": "llamacpp", "url": "http://127.0.0.1:8080" },
-    { "name": "vllm", "url": "http://127.0.0.1:8000" }
+    { "name": "vllm", "url": "http://127.0.0.1:8000" },
+    { "name": "tgi", "url": "http://127.0.0.1:8082" },
+    { "name": "localai", "url": "http://127.0.0.1:8083" },
+    { "name": "mlx", "url": "http://127.0.0.1:8084" },
+    { "name": "sglang", "url": "http://127.0.0.1:30000" },
+    { "name": "openai", "url": "http://127.0.0.1:8085" }
   ]
 }
 ```
@@ -357,9 +366,52 @@ An orchestrator config can set the cluster-wide cap:
   "max_concurrent_dispatches": 16,
   "dispatch_timeout_seconds": 600,
   "sync_max_bytes": 67108864,
-  "sync_timeout_seconds": 600
+  "sync_timeout_seconds": 600,
+  "sharded_models": [
+    {
+      "logical_id": "large-assistant",
+      "source_model_id": "large-source-model",
+      "revision": "revision-1",
+      "tokenizer_id": "tokenizer-1",
+      "model_config_id": "model-config-1",
+      "total_layers": 80
+    }
+  ]
 }
 ```
+
+The node shard-readiness settings are an allow-list and an operator-configured
+layer ceiling, not proof of partial-layer execution. A node is eligible only
+when its selected engine also returns a valid protocol-v2 capability document.
+The orchestrator publishes only the logical model ID to OpenAI clients, places
+complete layer plans on healthy ready nodes, and persists plans beside its
+memory database for reuse.
+
+## Distributed / sharded models
+
+Declare a sharded model in the orchestrator's `sharded_models` configuration,
+and configure each eligible node with the matching source model in
+`supported_shard_models` plus its `max_layers_it_can_host` limit (examples are
+shown above). These node settings are eligibility limits, not proof of runtime
+support: an engine must pass the protocol-v2 `/stage/capabilities` probe and
+advertise the requested model and layer capacity. The orchestrator places
+contiguous layer ranges across healthy, ready nodes and exposes the configured
+`logical_id` as one model to API clients. Layer ranges in a plan are half-open:
+`[start_layer, end_layer)`.
+
+Every selected node needs a runtime implementing the protocol-v2 stage
+capability, load, request-open, prefill, decode, and close endpoints. The
+protocol transfers typed activation tensors; request-local KV state stays on
+the stage that owns it. The simulated stage engine is available for development
+and tests. The ordinary llama.cpp and vLLM OpenAI-compatible adapters do not
+yet provide production partial-layer backends, and standard llama.cpp RPC is a
+different distributed-inference mode rather than a stage backend.
+
+The current design targets trusted LAN clusters and Pipeline Parallelism (PP)
+only. Tensor Parallelism (TP), training, and Mixture-of-Experts expert
+parallelism are not supported. A stage failure cancels the request; it does not
+migrate live KV-cache state or transparently resume generation on replacement
+nodes.
 
 ## Configuration validation
 
@@ -376,10 +428,14 @@ Orchestrator configs must keep LAN discovery enabled. The optional orchestrator 
 
 Listen addresses must use `host:port` or `:port` syntax. A node's
 `orchestrator_addr` and `advertise_addr` must be empty or HTTPS URLs. Configured
-engine names must be `ollama`, `vllm`, `lmstudio`, `llamacpp`, or `fastflowlm`,
-and their `url` values must be HTTP or HTTPS URLs. A configured `pairing_pin`
-must contain exactly six digits. When `memory_path` is set, its parent
-directory must be creatable; missing parent directories are created as needed.
+engine names may be `ollama`, `vllm`, `lmstudio`, `llamacpp`, `fastflowlm`,
+`tgi`, `localai`, `mlx`, `sglang`, or `openai` (the generic
+OpenAI-compatible adapter);
+their `url` values must be HTTP or HTTPS URLs. OpenAI-compatible engines must
+implement `GET /v1/models` and `POST /v1/chat/completions`. A configured
+`pairing_pin` must contain exactly six digits. When `memory_path` is set, its
+parent directory must be creatable; missing parent directories are created as
+needed.
 
 Invalid settings are reported individually and prevent startup with exit code
 `2`.
@@ -403,7 +459,52 @@ the same model is available from multiple local engines. Ollama and
 OpenAI-compatible engines support token streaming. Other engines can still
 serve requests, but their streamed responses may arrive as a single completed
 chunk. Temperature and maximum-token settings are passed to engines that
-support those options.
+support those options. Acceleration and model-format support remain properties
+of the configured server; an engine adapter does not imply that a given
+hardware device is supported.
+
+### Distributed llama.cpp with RPC
+
+llama.cpp RPC lets one `llama-server` use CPU/GPU devices on other hosts for
+one distributed inference endpoint. Build `ggml-rpc-server` on each worker
+and build the main `llama-server` with the RPC backend enabled. The worker and
+main host must use compatible llama.cpp builds; select the accelerator backend
+per machine (for example CPU, CUDA, HIP/ROCm, SYCL, Vulkan, OpenVINO, or MUSA).
+Model support and accelerator coverage are determined by the llama.cpp build
+and selected model format; mAIstr0 does not install drivers, compile
+inference runtimes, or claim that an arbitrary NPU is supported.
+
+For a native install, build llama.cpp with `-DGGML_RPC=ON` on both worker and
+main hosts. Add one hardware backend on each host as needed, such as
+`-DGGML_CUDA=ON` for NVIDIA or `-DGGML_HIP=ON` for AMD ROCm. Start
+`ggml-rpc-server` on each worker and start `llama-server` on the main host with
+`--rpc host1:50052,host2:50052`. The server exposes one OpenAI-compatible
+endpoint. Configure only that endpoint as a `llamacpp` engine in the mAIstr0
+node configuration; RPC worker hosts are compute workers, not separate model
+replicas. Requests routed to that server use the remote devices through
+llama.cpp.
+
+For Linux Docker deployments, [packaging/llamacpp/compose.yaml](./packaging/llamacpp/compose.yaml)
+provides separate `rpc-worker` and `inference` profiles. Use images built with
+`GGML_RPC=ON`; choose CPU/CUDA/ROCm/SYCL/Vulkan/OpenVINO/MUSA build options and
+GPU container access per host, then set the image and model/RPC environment
+variables described alongside the file. For macOS and Windows, install and
+run the native llama.cpp build with its supported backends and configure the
+same `llamacpp` HTTP endpoint.
+
+**Security:** llama.cpp RPC is experimental and insecure. Do not expose its
+worker port to the public internet or untrusted networks, and do not use it in
+sensitive environments. Restrict worker ports to trusted hosts with host
+firewalls or an appropriately isolated network. The Compose worker requires
+an explicit private-interface bind address; its HTTP inference endpoint binds
+to loopback by default.
+
+The `tgi`, `localai`, `mlx`, `sglang`, and generic `openai` adapters connect to their
+already-running `/v1/models` and `/v1/chat/completions` endpoints. They work
+with the hardware and model formats supported by those runtimes; mAIstr0 routes
+to a served model but does not turn independent full-model copies into one
+distributed model. For multi-host model splitting, use a backend such as
+llama.cpp RPC or another server's supported distributed mode.
 
 ## API
 

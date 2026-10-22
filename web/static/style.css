@@ -813,6 +813,32 @@ button:hover { filter: brightness(1.1); }
   padding: 0.8rem 1rem;
 }
 
+.pipeline-dashboard-panel {
+  margin: 0.75rem 0 1rem;
+  padding: 0.8rem;
+  border: 1px solid #232b40;
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.pipeline-dashboard-panel > .section-heading { margin-bottom: 0; }
+.pipeline-action-status, .pipeline-action-message, .pipeline-empty {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.pipeline-action-status { min-height: 1.2rem; margin: 0.35rem 0 0.6rem; }
+.pipeline-action-message { margin: 0.55rem 0 0; }
+.pipeline-stage-list { display: grid; gap: 0.4rem; margin: 0.55rem 0; }
+.pipeline-stage {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #232b40;
+  border-radius: 6px;
+}
+.pipeline-stage-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.pipeline-stage-heading strong { min-width: 0; overflow-wrap: anywhere; font-size: 0.82rem; }
+.pipeline-stage .row { gap: 0.25rem 0.75rem; }
+.pipeline-reshard-button { width: auto; margin-top: 0.35rem; }
+
 .discovery-join-orchestrator { width: auto; }
 
 .card.leader {

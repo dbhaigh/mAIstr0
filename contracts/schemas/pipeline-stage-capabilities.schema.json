@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/pipeline-stage-capabilities.schema.json",
+  "title": "PipelineStageCapabilities",
+  "description": "Protocol-v2 capability document returned by a local stage runtime's GET /stage/capabilities endpoint.",
+  "type": "object",
+  "required": ["protocol_version", "runtime", "models", "tensor_dtypes"],
+  "properties": {
+    "protocol_version": {"type": "integer", "const": 2},
+    "runtime": {"type": "string", "minLength": 1},
+    "runtime_version": {"type": "string"},
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["model_id", "max_layers"],
+        "properties": {
+          "model_id": {"type": "string", "minLength": 1},
+          "max_layers": {"type": "integer", "minimum": 1}
+        },
+        "additionalProperties": true
+      }
+    },
+    "tensor_dtypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "enum": ["float16", "bfloat16", "float32", "int64", "uint8"]}
+    },
+    "device_backends": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

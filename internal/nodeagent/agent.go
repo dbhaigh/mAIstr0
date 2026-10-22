@@ -38,6 +38,7 @@ type Agent struct {
 	*peerComponent
 	*dialogueComponent
 
+	stageComponent      *stageComponent
 	mem                 memory.Store
 	generateIdempotency *generateIdempotencyCache
 	statusReporter      *statusComponent
@@ -141,7 +142,8 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 	identity := newIdentityComponent()
 	events := hub.New()
 	link := newOrchestratorLink(state, identity, telemetry, engines, tasks, events)
-	statusReporter := newStatusComponent(state, telemetry, engines, executor)
+	stages := newStageComponent()
+	statusReporter := newStatusComponent(state, telemetry, engines, executor, stages)
 	peers := newPeerComponent(
 		state, telemetry, engines, executor, tasks,
 		func() *http.Client { return link.peerClient },
@@ -154,6 +156,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		identityComponent:   identity,
 		orchestratorLink:    link,
 		executorComponent:   executor,
+		stageComponent:      stages,
 		peerComponent:       peers,
 		generateIdempotency: newGenerateIdempotencyCache(),
 		statusReporter:      statusReporter,

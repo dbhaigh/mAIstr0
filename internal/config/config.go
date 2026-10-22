@@ -44,6 +44,8 @@ type NodeConfig struct {
 	DisabledModels             []string       `json:"disabled_models"`
 	DefaultModel               string         `json:"default_model"`
 	Engines                    []EngineConfig `json:"engines,omitempty"`
+	SupportedShardModels       []string       `json:"supported_shard_models,omitempty"`
+	MaxLayersItCanHost         int            `json:"max_layers_it_can_host,omitempty"`
 	DiscoveryEnabled           bool           `json:"discovery_enabled"`
 	AutoOpenBrowser            bool           `json:"auto_open_browser"`
 	TrayMode                   string         `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
@@ -71,6 +73,21 @@ func (cfg *NodeConfig) Normalize() {
 		cfg.explicitInvalidSyncTimeout = cfg.explicitInvalidSyncTimeout || cfg.SyncTimeoutSeconds < 0
 		cfg.SyncTimeoutSeconds = DefaultSyncTimeoutSeconds
 	}
+	seenShardModels := make(map[string]struct{}, len(cfg.SupportedShardModels))
+	shardModels := cfg.SupportedShardModels[:0]
+	for _, modelID := range cfg.SupportedShardModels {
+		modelID = strings.TrimSpace(modelID)
+		key := strings.ToLower(modelID)
+		if modelID == "" {
+			continue
+		}
+		if _, exists := seenShardModels[key]; exists {
+			continue
+		}
+		seenShardModels[key] = struct{}{}
+		shardModels = append(shardModels, modelID)
+	}
+	cfg.SupportedShardModels = shardModels
 	if cfg.TrayMode == "" {
 		cfg.TrayMode = "taskbar"
 	}
@@ -83,6 +100,12 @@ func (cfg NodeConfig) Validate() error {
 	}
 	if cfg.MaxConcurrentTasks <= 0 || cfg.explicitInvalidConcurrency {
 		violations = append(violations, fmt.Errorf("max_concurrent_tasks must be greater than zero"))
+	}
+	if cfg.MaxLayersItCanHost < 0 {
+		violations = append(violations, errors.New("max_layers_it_can_host must not be negative"))
+	}
+	if len(cfg.SupportedShardModels) > 0 && cfg.MaxLayersItCanHost <= 0 {
+		violations = append(violations, errors.New("max_layers_it_can_host must be greater than zero when supported_shard_models is set"))
 	}
 	if cfg.SyncMaxBytes < 1 || cfg.SyncMaxBytes > MaxSyncMaxBytes || cfg.explicitInvalidSyncMax {
 		violations = append(violations, fmt.Errorf("sync_max_bytes must be between 1 and %d", MaxSyncMaxBytes))
@@ -133,17 +156,18 @@ func DefaultNodeConfig() NodeConfig {
 }
 
 type OrchestratorConfig struct {
-	ListenAddr                     string `json:"listen_addr"`
-	Mode                           string `json:"mode,omitempty"` // "full" or "minimal"
-	Harness                        string `json:"harness"`        // "deepseek" or "pi"
-	MaxConcurrentDispatches        int    `json:"max_concurrent_dispatches"`
-	DispatchTimeoutSeconds         int    `json:"dispatch_timeout_seconds"`
-	DiscoveryEnabled               bool   `json:"discovery_enabled"`
-	AutoOpenBrowser                bool   `json:"auto_open_browser"`
-	TrayMode                       string `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
-	MemoryPath                     string `json:"memory_path"` // empty = default per-user data dir
-	SyncMaxBytes                   int64  `json:"sync_max_bytes,omitempty"`
-	SyncTimeoutSeconds             int    `json:"sync_timeout_seconds,omitempty"`
+	ListenAddr                     string               `json:"listen_addr"`
+	Mode                           string               `json:"mode,omitempty"` // "full" or "minimal"
+	Harness                        string               `json:"harness"`        // "deepseek" or "pi"
+	MaxConcurrentDispatches        int                  `json:"max_concurrent_dispatches"`
+	DispatchTimeoutSeconds         int                  `json:"dispatch_timeout_seconds"`
+	ShardedModels                  []ShardedModelConfig `json:"sharded_models,omitempty"`
+	DiscoveryEnabled               bool                 `json:"discovery_enabled"`
+	AutoOpenBrowser                bool                 `json:"auto_open_browser"`
+	TrayMode                       string               `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
+	MemoryPath                     string               `json:"memory_path"` // empty = default per-user data dir
+	SyncMaxBytes                   int64                `json:"sync_max_bytes,omitempty"`
+	SyncTimeoutSeconds             int                  `json:"sync_timeout_seconds,omitempty"`
 	explicitInvalidConcurrency     bool
 	explicitInvalidDispatchTimeout bool
 	explicitInvalidSyncMax         bool
@@ -177,6 +201,9 @@ func (cfg *OrchestratorConfig) Normalize() {
 	if cfg.SyncTimeoutSeconds <= 0 {
 		cfg.explicitInvalidSyncTimeout = cfg.explicitInvalidSyncTimeout || cfg.SyncTimeoutSeconds < 0
 		cfg.SyncTimeoutSeconds = DefaultSyncTimeoutSeconds
+	}
+	for i := range cfg.ShardedModels {
+		cfg.ShardedModels[i].Normalize()
 	}
 	if cfg.TrayMode == "" {
 		cfg.TrayMode = "taskbar"
@@ -214,6 +241,18 @@ func (cfg OrchestratorConfig) Validate() error {
 	}
 	if err := validateMemoryPath(cfg.MemoryPath); err != nil {
 		violations = append(violations, err)
+	}
+	modelIDs := make(map[string]struct{}, len(cfg.ShardedModels))
+	for i, model := range cfg.ShardedModels {
+		if err := model.Validate(); err != nil {
+			violations = append(violations, fmt.Errorf("sharded_models[%d]: %w", i, err))
+		}
+		if _, exists := modelIDs[model.LogicalID]; exists {
+			violations = append(violations, fmt.Errorf(
+				"sharded_models[%d].logical_id %q is duplicated", i, model.LogicalID,
+			))
+		}
+		modelIDs[model.LogicalID] = struct{}{}
 	}
 	return errors.Join(violations...)
 }

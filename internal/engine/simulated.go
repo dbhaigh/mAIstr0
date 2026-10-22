@@ -3,13 +3,24 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // Simulated is a no-runtime-required fallback engine used when no real LLM
 // server (e.g. Ollama) is detected on the host. It lets the cluster be
 // exercised end-to-end (registration, scheduling, dispatch) without
 // requiring model weights to be installed on every test machine.
-type Simulated struct{}
+type Simulated struct {
+	stageMu       sync.Mutex
+	stages        map[string]StageAssignment
+	stageRequests map[string]*simulatedPipelineRequest
+}
+
+type simulatedPipelineRequest struct {
+	mu        sync.Mutex
+	tokens    []PipelineToken
+	nextToken int
+}
 
 func NewSimulated() *Simulated { return &Simulated{} }
 

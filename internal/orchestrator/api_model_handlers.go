@@ -237,11 +237,18 @@ func (s *Server) handleNodeModelTest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
 	models := backend.ListClusterModels()
-	list := make([]openAIModelObj, 0, len(models))
+	list := make([]openAIModelObj, 0, len(models)+len(s.shardedModels))
 	seen := make(map[string]bool)
+	shardedSources := make(map[string]struct{}, len(s.shardedModels))
+	for _, model := range s.shardedModels {
+		shardedSources[strings.ToLower(model.SourceModelID)] = struct{}{}
+	}
 	now := time.Now().Unix()
 
 	for _, m := range models {
+		if _, hidden := shardedSources[strings.ToLower(m.Name)]; hidden {
+			continue
+		}
 		if !seen[m.Name] {
 			seen[m.Name] = true
 			list = append(list, openAIModelObj{
@@ -251,6 +258,14 @@ func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 				OwnedBy: m.NodeID,
 			})
 		}
+	}
+	for logicalID := range s.shardedModels {
+		if seen[logicalID] {
+			continue
+		}
+		list = append(list, openAIModelObj{
+			ID: logicalID, Object: "model", Created: now, OwnedBy: "maistr0",
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -287,6 +302,21 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 	}
+	if model, ok := s.shardedModel(req.Model); ok {
+		s.handleShardedOpenAIChatCompletion(w, r, model, genReq.Prompt, engine.GenerationOptions{
+			Temperature: req.Temperature, MaxTokens: req.MaxTokens,
+		}, req.Stream)
+		return
+	}
+	if model, ok := s.shardedSourceModel(req.Model); ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": map[string]string{
+				"message": fmt.Sprintf("use logical model ID %q for this sharded model", model.LogicalID),
+				"type":    "invalid_request_error",
+			},
+		})
+		return
+	}
 
 	genBody, _ := json.Marshal(genReq)
 	generateURL := "/api/generate"
@@ -313,28 +343,9 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	var genResp generateAPIResponse
 	_ = json.Unmarshal(rec.body.Bytes(), &genResp)
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id":                 "chatcmpl-" + genResp.NodeID,
-		"object":             "chat.completion",
-		"created":            time.Now().Unix(),
-		"model":              genResp.Model,
-		"system_fingerprint": "maistr0-" + genResp.NodeID,
-		"choices": []map[string]any{
-			{
-				"index": 0,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": genResp.Output,
-				},
-				"finish_reason": "stop",
-			},
-		},
-		"usage": map[string]int{
-			"prompt_tokens":     len(genReq.Prompt) / 4,
-			"completion_tokens": len(genResp.Output) / 4,
-			"total_tokens":      (len(genReq.Prompt) + len(genResp.Output)) / 4,
-		},
-	})
+	writeJSON(w, http.StatusOK, openAIChatCompletionResponse(
+		genResp.Model, genResp.Output, genReq.Prompt, genResp.NodeID,
+	))
 }
 
 func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request) {

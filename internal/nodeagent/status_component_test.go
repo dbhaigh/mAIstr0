@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/config"
+	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
 )
 
@@ -82,5 +83,31 @@ func TestNodeStatusIncludesCopiedSystemHistory(t *testing.T) {
 	status.SystemHistory[0].CPUUtilization = 99
 	if agent.systemHistorySnapshot()[0].CPUUtilization != sample.CPUUtilization {
 		t.Fatal("node status exposed mutable system telemetry history")
+	}
+}
+
+func TestVerifiedStageReadinessRequiresRuntimeCapability(t *testing.T) {
+	cfg := config.NodeConfig{
+		SupportedShardModels: []string{"large-model"},
+		MaxLayersItCanHost:   24,
+	}
+	status := engine.Status{Name: "llamacpp", Ready: true, ModelCount: 1}
+	if models, layers := verifiedStageReadiness(cfg, []engine.Status{status}); len(models) != 0 || layers != 0 {
+		t.Fatalf("operator declaration alone advertised stage readiness: models=%v layers=%d", models, layers)
+	}
+
+	status.PipelineStage = &engine.PipelineStageCapabilities{
+		ProtocolVersion: engine.PipelineStageProtocolVersion, Runtime: "llamacpp",
+		Models:       []engine.PipelineStageModelCapability{{ModelID: "large-model", MaxLayers: 32}},
+		TensorDTypes: []engine.TensorDType{engine.TensorFloat16},
+	}
+	if models, layers := verifiedStageReadiness(cfg, []engine.Status{status}); len(models) != 1 ||
+		models[0] != "large-model" || layers != cfg.MaxLayersItCanHost {
+		t.Fatalf("verified stage readiness = models=%v layers=%d", models, layers)
+	}
+
+	status.Ready = false
+	if models, layers := verifiedStageReadiness(cfg, []engine.Status{status}); len(models) != 0 || layers != 0 {
+		t.Fatalf("unready runtime advertised stage readiness: models=%v layers=%d", models, layers)
 	}
 }

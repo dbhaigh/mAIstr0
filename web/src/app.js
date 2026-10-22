@@ -175,6 +175,8 @@ function applySnapshot(snap) {
   dashboardState.fullTaskHistoryLoaded = taskSnapshot.fullTaskHistoryLoaded;
   mergeLiveTaskHistory(snap.tasks || []);
   dashboardState.nodes = snap.nodes || [];
+  if (Array.isArray(snap.model_inventory)) dashboardState.modelInventory = snap.model_inventory;
+  if (Array.isArray(snap.pipeline_plans)) dashboardState.pipelinePlans = snap.pipeline_plans;
   if (snap.cluster_health) dashboardState.capacity = snap.cluster_health;
   const capacityByNode = new Map(
     (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node]),
@@ -299,6 +301,14 @@ function applySnapshot(snap) {
   if (routingSignature !== window.lastRoutingSignature) {
     renderRouting(dashboardState.nodes, dashboardState.tasks);
     window.lastRoutingSignature = routingSignature;
+  }
+  const pipelineSignature = JSON.stringify({
+    models: dashboardState.modelInventory,
+    plans: dashboardState.pipelinePlans,
+  });
+  if (pipelineSignature !== window.lastPipelineSignature) {
+    renderPipelineDashboard(dashboardState.modelInventory, dashboardState.pipelinePlans);
+    window.lastPipelineSignature = pipelineSignature;
   }
   if (peerSignature !== window.lastPeerSignature) {
     renderDiscovery(snap.discovery || []);

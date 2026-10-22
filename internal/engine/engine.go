@@ -23,14 +23,16 @@ type Model struct {
 }
 
 type Status struct {
-	Name             string    `json:"name"`
-	Ready            bool      `json:"ready"` // The engine responded to its model inventory request.
-	Protocols        []string  `json:"protocols,omitempty"`
-	InventoryState   string    `json:"inventory_state,omitempty"`
-	ModelCount       int       `json:"model_count"`
-	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
-	LastSuccessfulAt time.Time `json:"last_successful_at,omitempty"`
-	LastError        string    `json:"last_error,omitempty"`
+	Name              string                      `json:"name"`
+	Ready             bool                        `json:"ready"` // The engine responded to its model inventory request.
+	Protocols         []string                    `json:"protocols,omitempty"`
+	InventoryState    string                      `json:"inventory_state,omitempty"`
+	ModelCount        int                         `json:"model_count"`
+	LastCheckedAt     time.Time                   `json:"last_checked_at,omitempty"`
+	LastSuccessfulAt  time.Time                   `json:"last_successful_at,omitempty"`
+	LastError         string                      `json:"last_error,omitempty"`
+	PipelineStage     *PipelineStageCapabilities  `json:"pipeline_stage,omitempty"`
+	PipelineStageError string                     `json:"pipeline_stage_error,omitempty"`
 }
 
 const (
@@ -44,7 +46,7 @@ func ProtocolsForEngine(name string) []string {
 	switch name {
 	case "ollama":
 		return []string{"ollama", "openai"}
-	case "lmstudio", "llamacpp", "vllm", "fastflowlm":
+	case "lmstudio", "llamacpp", "vllm", "fastflowlm", "tgi", "localai", "mlx", "sglang", "openai":
 		return []string{"openai"}
 	default:
 		return nil
@@ -181,6 +183,8 @@ func NewConfigured(name, baseURL string) Engine {
 		return NewLMStudio(baseURL)
 	case "fastflowlm":
 		return NewFastFlowLM(baseURL)
+	case "tgi", "localai", "mlx", "sglang", "openai":
+		return newOpenAICompatibleEngine(baseURL, name)
 	default:
 		return nil
 	}

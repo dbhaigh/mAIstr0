@@ -16,10 +16,18 @@
     "disabled_models": {"type": ["array", "null"], "items": {"type": "string"}},
     "default_model": {"type": "string"},
     "engines": {"type": "array", "items": {"type": "object", "required": ["name", "url"], "properties": {"name": {"type": "string"}, "url": {"type": "string"}, "registry_url": {"type": "string"}}, "additionalProperties": true}},
+    "supported_shard_models": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "max_layers_it_can_host": {"type": "integer", "minimum": 0},
     "discovery_enabled": {"type": "boolean"},
     "auto_open_browser": {"type": "boolean"},
     "tray_mode": {"type": "string", "enum": ["taskbar", "hidden"]},
     "memory_path": {"type": "string"}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"supported_shard_models": {"minItems": 1}}},
+      "then": {"properties": {"max_layers_it_can_host": {"type": "integer", "minimum": 1}}}
+    }
+  ],
   "additionalProperties": true
 }

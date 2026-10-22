@@ -118,6 +118,8 @@ const dashboardState = {
     lastSyncAt: null,
   },
   capacity: null,
+  modelInventory: [],
+  pipelinePlans: [],
   fullTaskHistoryLoaded: false,
 };
 const taskHistoryPage = {

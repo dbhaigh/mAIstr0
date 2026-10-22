@@ -84,7 +84,7 @@ func TestNodeConfigNormalizeAndValidate(t *testing.T) {
 	validURLs.OrchestratorAddr = "https://orchestrator.example:7450"
 	validURLs.AdvertiseAddr = "HTTPS://node.example:7451"
 	validURLs.PairingPIN = "012345"
-	for index, name := range []string{"ollama", "vllm", "lmstudio", "llamacpp", "fastflowlm"} {
+	for index, name := range []string{"ollama", "vllm", "lmstudio", "llamacpp", "fastflowlm", "tgi", "localai", "mlx", "sglang", "openai"} {
 		scheme := "http"
 		if index%2 == 1 {
 			scheme = "https"
@@ -157,6 +157,7 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 		defaulted.TrayMode != "taskbar" {
 		t.Fatalf("normalized orchestrator defaults = %+v", defaulted)
 	}
+
 	if err := defaulted.Validate(); err != nil {
 		t.Fatalf("normalized orchestrator defaults are invalid: %v", err)
 	}
@@ -221,6 +222,52 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 				t.Fatalf("validation error = %v, want it to contain %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestNodeConfigNormalizesAndValidatesShardReadiness(t *testing.T) {
+	cfg := DefaultNodeConfig()
+	cfg.SupportedShardModels = []string{" source-model ", "SOURCE-MODEL", ""}
+	cfg.MaxLayersItCanHost = 12
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid shard readiness config rejected: %v", err)
+	}
+	if len(cfg.SupportedShardModels) != 1 || cfg.SupportedShardModels[0] != "source-model" {
+		t.Fatalf("normalized shard model list = %#v", cfg.SupportedShardModels)
+	}
+
+	cfg.MaxLayersItCanHost = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "max_layers_it_can_host") {
+		t.Fatalf("missing stage layer capacity error = %v", err)
+	}
+}
+
+func TestOrchestratorConfigNormalizesAndValidatesShardedModels(t *testing.T) {
+	cfg := DefaultOrchestratorConfig()
+	cfg.ShardedModels = []ShardedModelConfig{{
+		LogicalID: " large-model ", SourceModelID: " source-model ", Revision: " rev-1 ",
+		TokenizerID: " tokenizer-1 ", ModelConfigID: " config-1 ", TotalLayers: 12,
+	}}
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid sharded model config rejected: %v", err)
+	}
+	if cfg.ShardedModels[0].LogicalID != "large-model" ||
+		cfg.ShardedModels[0].SourceModelID != "source-model" {
+		t.Fatalf("sharded model was not normalized: %+v", cfg.ShardedModels[0])
+	}
+
+	duplicate := cfg
+	duplicate.ShardedModels = append(duplicate.ShardedModels, cfg.ShardedModels[0])
+	if err := duplicate.Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("duplicate logical ID error = %v, want duplicate validation", err)
+	}
+
+	invalid := cfg
+	invalid.ShardedModels = []ShardedModelConfig{{LogicalID: "broken"}}
+	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "sharded_models[0]") {
+		t.Fatalf("invalid model error = %v, want indexed sharded_models validation", err)
 	}
 }
 

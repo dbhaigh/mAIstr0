@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const indexSource = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
 const appScriptPaths = [...indexSource.matchAll(/<script\s+src="([^"]+)"\s*><\/script>/g)].map((match) => match[1]);
 const source = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8");
+const pipelineViewSource = fs.readFileSync(path.join(__dirname, "src", "views", "pipelines.js"), "utf8");
 const sharedSource = fs.readFileSync(path.join(__dirname, "src", "shared", "api.js"), "utf8");
 const applySnapshotStart = source.indexOf("function applySnapshot(snap) {");
 const applySnapshotSource = source.slice(applySnapshotStart, source.indexOf("\nfunction refreshOverviewTimes(", applySnapshotStart));
@@ -26,6 +27,8 @@ const dashboardSnapshot = require("./src/shared/snapshot.js");
 test("Dashboard loads its generated bundle through the Go embedded static path", () => {
   assert.deepEqual(appScriptPaths, ["/app.js"]);
   assert.match(indexSource, /id="connection-status"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(indexSource, /id="pipeline-model-list"/);
+  assert.match(indexSource, /id="pipeline-action-status"/);
   for (const scriptPath of appScriptPaths) {
     assert.ok(fs.existsSync(path.join(__dirname, "static", path.basename(scriptPath))), `${scriptPath} is missing`);
   }
@@ -79,12 +82,15 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
     pairing: { status: null },
     fullTaskHistoryLoaded: true,
     capacity: null,
+    modelInventory: [],
+    pipelinePlans: [],
   };
   const statNodes = { textContent: "" };
   const statModels = { textContent: "" };
   const statLoad = { textContent: "" };
   const statMemory = { textContent: "Memory: 1 · 50%" };
   const statVersion = { textContent: "" };
+  const pipelineRenderCalls = [];
   let titleCount;
   const context = vm.createContext({
     dashboardState,
@@ -103,6 +109,7 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
     renderNodes() {},
     renderSetupNodes() {},
     renderRouting() {},
+    renderPipelineDashboard: (models, plans) => pipelineRenderCalls.push({ models, plans }),
     renderDiscovery() {},
     renderTasks() {},
     refreshOverviewTimes() {},
@@ -125,6 +132,8 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
       { id: "new", status: "running", updated_at: "2026-10-16T02:00:00Z" },
     ],
     discovery: [],
+    model_inventory: [{ model_id: "logical-model", kind: "sharded" }],
+    pipeline_plans: [{ model_id: "logical-model", status: "ready" }],
   });
 
   assert.equal(titleCount, 3);
@@ -133,8 +142,100 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
   assert.equal(statLoad.textContent, "Active Load: 2 · Dispatch 2/8 · Queue 1");
   assert.equal(statMemory.textContent, "Memory: 5 · 80%");
   assert.equal(statVersion.textContent, "v1.2.3");
+  assert.deepEqual(dashboardState.modelInventory, [{ model_id: "logical-model", kind: "sharded" }]);
+  assert.deepEqual(dashboardState.pipelinePlans, [{ model_id: "logical-model", status: "ready" }]);
+  assert.deepEqual(pipelineRenderCalls, [{
+    models: [{ model_id: "logical-model", kind: "sharded" }],
+    plans: [{ model_id: "logical-model", status: "ready" }],
+  }]);
   assert.deepEqual(dashboardState.tasks.map((task) => task.id), ["new", "old"]);
   assert.equal(dashboardState.fullTaskHistoryLoaded, true);
+});
+
+test("Pipeline dashboard distinguishes model distribution and renders live stage details", () => {
+  const modelList = { innerHTML: "", contains: () => false, querySelectorAll: () => [] };
+  const actionStatus = { textContent: "" };
+  const context = vm.createContext({
+    document: {
+      activeElement: null,
+      getElementById(id) {
+        return id === "pipeline-model-list" ? modelList : actionStatus;
+      },
+    },
+    dashboardState: { modelInventory: [], pipelinePlans: [] },
+    escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+      })[character]);
+    },
+    fetchJSON: async () => ({}),
+  });
+  vm.runInContext(pipelineViewSource, context);
+  context.renderPipelineDashboard(
+    [
+      { model_id: "logical-model", kind: "sharded" },
+      { model_id: "whole-model", kind: "whole", nodes: ["node-a"] },
+    ],
+    [{
+      model_id: "logical-model",
+      status: "ready",
+      plan: { plan_version: 3 },
+      stages: [
+        { stage: 0, node_id: "node-a", start_layer: 0, end_layer: 8, engine: "simulated", status: "ready", active: 1, capacity: 2, utilization_percent: 50 },
+        { stage: 1, node_id: "node-b", start_layer: 8, end_layer: 16, engine: "simulated", status: "ready", active: 0, capacity: 2, utilization_percent: 0, activation_transfer_ms: 2.4, activation_bytes: 4096 },
+      ],
+    }],
+  );
+
+  assert.match(modelList.innerHTML, /logical-model.*Sharded/s);
+  assert.match(modelList.innerHTML, /whole-model.*Whole/s);
+  assert.match(modelList.innerHTML, /Stage 2 · node-b/);
+  assert.match(modelList.innerHTML, /8–16/);
+  assert.match(modelList.innerHTML, /50%/);
+  assert.match(modelList.innerHTML, /2\.4 ms · 4\.0 KiB/);
+  assert.match(modelList.innerHTML, /Reshard \/ Reload stages/);
+});
+
+test("Reshard button requests a new placement and reports completion", async () => {
+  const clickHandlers = [];
+  const button = {
+    dataset: { reshardModel: "logical model" },
+    addEventListener: (_event, handler) => clickHandlers.push(handler),
+    focus() {},
+  };
+  const modelList = {
+    innerHTML: "",
+    contains: () => false,
+    querySelectorAll: () => [button],
+  };
+  const actionStatus = { textContent: "" };
+  const requests = [];
+  const context = vm.createContext({
+    document: {
+      activeElement: null,
+      getElementById(id) {
+        return id === "pipeline-model-list" ? modelList : actionStatus;
+      },
+    },
+    dashboardState: {
+      modelInventory: [{ model_id: "logical model", kind: "sharded" }],
+      pipelinePlans: [],
+    },
+    escapeHtml: (value) => String(value),
+    fetchJSON: async (url, options) => {
+      requests.push({ url, options });
+      return { plan: { plan_version: 4 } };
+    },
+  });
+  vm.runInContext(pipelineViewSource, context);
+  context.renderPipelineDashboard(context.dashboardState.modelInventory, []);
+  await clickHandlers[0]();
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/pipelines/logical%20model/reshard");
+  assert.equal(requests[0].options.method, "POST");
+  assert.match(actionStatus.textContent, /Placement 4 .* is loaded/);
+  assert.match(modelList.innerHTML, /Placement 4 .* is loaded/);
 });
 
 test("Task history count labels preserve empty, singular, and plural forms", () => {
@@ -210,9 +311,18 @@ test("SSE snapshots parse safely and merge live task updates without losing hist
   assert.equal(merged.fullTaskHistoryLoaded, true);
 });
 
-test("Node properties allow configuring llama.cpp", () => {
+test("Node properties allow configuring supported inference engines", () => {
   const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
-  assert.match(index, /<option value="llamacpp">llama\.cpp<\/option>/);
+  for (const [value, label] of [
+    ["llamacpp", "llama\\.cpp"],
+    ["tgi", "TGI"],
+    ["localai", "LocalAI"],
+    ["mlx", "MLX-LM"],
+    ["sglang", "SGLang"],
+    ["openai", "OpenAI-compatible"],
+  ]) {
+    assert.match(index, new RegExp(`<option value="${value}">${label}<\\/option>`));
+  }
 });
 
 test("Live node context is expandable from cluster overview node cards", () => {

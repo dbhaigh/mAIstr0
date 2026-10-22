@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/pipeline-stage-control.schema.json",
+  "title": "PipelineStageControlRequest",
+  "type": "object",
+  "required": ["protocol_version", "request_id", "assignment"],
+  "properties": {
+    "protocol_version": {"type": "integer", "const": 2},
+    "request_id": {"type": "string", "minLength": 1},
+    "assignment": {"$ref": "stage-assignment.schema.json"}
+  },
+  "additionalProperties": true
+}

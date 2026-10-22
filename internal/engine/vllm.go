@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// VLLM talks to a vLLM OpenAI-compatible server. vLLM loads models when its
-// process starts, so downloading belongs in the server's model manager rather
-// than being treated as an Ollama pull operation.
+// VLLM contains the shared OpenAI-compatible client used by vLLM, llama.cpp,
+// and other configured servers. engineName preserves each backend's inventory
+// identity while sharing the same HTTP protocol.
 type VLLM struct {
 	baseURL     string
 	engineName  string
@@ -37,6 +37,14 @@ func newOpenAICompatibleEngine(baseURL, engineName string) *VLLM {
 
 func (v *VLLM) Name() string { return v.engineName }
 func (v *VLLM) URL() string  { return v.baseURL }
+
+func (v *VLLM) ProbePipelineStageCapabilities(ctx context.Context) (*PipelineStageCapabilities, error) {
+	stageEngine, err := NewHTTPPipelineStageEngine(v.engineName, v.baseURL, v.client)
+	if err != nil {
+		return nil, err
+	}
+	return stageEngine.ProbePipelineStageCapabilities(ctx)
+}
 
 func (v *VLLM) Available() bool {
 	resp, err := v.probeClient.Get(v.baseURL + "/v1/models")
@@ -114,7 +122,7 @@ func (v *VLLM) GenerateWithOptions(ctx context.Context, model, prompt string, op
 		return "", err
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("vllm returned no choices")
+		return "", fmt.Errorf("%s returned no choices", v.Name())
 	}
 	return result.Choices[0].Message.Content, nil
 }
@@ -151,7 +159,7 @@ func (v *VLLM) ChatWithContext(ctx context.Context, model string, messages []Cha
 		return "", err
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("vllm returned no choices")
+		return "", fmt.Errorf("%s returned no choices", v.Name())
 	}
 	return result.Choices[0].Message.Content, nil
 }

@@ -1,6 +1,7 @@
 package nodeagent
 
 import (
+	"context"
 	"log"
 	"strings"
 	"time"
@@ -81,6 +82,16 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 			status.InventoryState = engine.ModelInventoryEmpty
 		} else {
 			status.InventoryState = engine.ModelInventoryAvailable
+		}
+		if capabilityProvider, ok := eng.(engine.PipelineStageCapabilityProvider); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			capabilities, probeErr := capabilityProvider.ProbePipelineStageCapabilities(ctx)
+			cancel()
+			if probeErr != nil {
+				status.PipelineStageError = probeErr.Error()
+			} else {
+				status.PipelineStage = capabilities
+			}
 		}
 		for _, model := range listed {
 			model.Engine = eng.Name()
@@ -255,6 +266,13 @@ func (c *engineComponent) reportedEngineList() []engine.Status {
 	engines := append([]engine.Status(nil), c.reportedEngines...)
 	for i := range engines {
 		engines[i].Protocols = append([]string(nil), engines[i].Protocols...)
+		if engines[i].PipelineStage != nil {
+			capabilities := *engines[i].PipelineStage
+			capabilities.Models = append([]engine.PipelineStageModelCapability(nil), capabilities.Models...)
+			capabilities.TensorDTypes = append([]engine.TensorDType(nil), capabilities.TensorDTypes...)
+			capabilities.DeviceBackends = append([]string(nil), capabilities.DeviceBackends...)
+			engines[i].PipelineStage = &capabilities
+		}
 	}
 	c.modelMu.Unlock()
 	return engines

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/stage-forward-frame.schema.json",
+  "title": "StageForwardFrame",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {"type": "string", "enum": ["start", "activation", "token", "end", "complete", "error"]},
+    "assignment": {"$ref": "stage-assignment.schema.json"},
+    "prompt": {"type": "string"},
+    "temperature": {"type": "number"},
+    "max_tokens": {"type": "integer", "minimum": 0},
+    "data": {"type": "string", "contentEncoding": "base64"},
+    "kv_cache": {"type": "string", "contentEncoding": "base64"},
+    "error": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"const": "start"}}},
+      "then": {"required": ["assignment"]}
+    },
+    {
+      "if": {"properties": {"type": {"const": "activation"}}},
+      "then": {"required": ["data"]}
+    },
+    {
+      "if": {"properties": {"type": {"const": "token"}}},
+      "then": {"required": ["data"]}
+    },
+    {
+      "if": {"properties": {"type": {"const": "error"}}},
+      "then": {"required": ["error"]}
+    }
+  ],
+  "additionalProperties": true
+}

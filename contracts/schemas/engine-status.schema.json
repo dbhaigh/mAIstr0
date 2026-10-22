@@ -12,7 +12,9 @@
     "model_count": {"type": "integer", "minimum": 0},
     "last_checked_at": {"type": "string", "format": "date-time"},
     "last_successful_at": {"type": "string", "format": "date-time"},
-    "last_error": {"type": "string"}
+    "last_error": {"type": "string"},
+    "pipeline_stage": {"$ref": "pipeline-stage-capabilities.schema.json"},
+    "pipeline_stage_error": {"type": "string"}
   },
   "additionalProperties": true
 }

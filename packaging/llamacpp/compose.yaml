@@ -1,0 +1,63 @@
+x-rpc-worker: &rpc-worker
+  image: ${LLAMACPP_RPC_IMAGE:?Set an image built with GGML_RPC=ON}
+  entrypoint: ["ggml-rpc-server"]
+  command: ["--host", "0.0.0.0", "--port", "50052"]
+  ports:
+    - "${RPC_BIND_IP:?Set this to a trusted private-interface address}:50052:50052"
+  restart: unless-stopped
+
+x-inference: &inference
+  image: ${LLAMACPP_SERVER_IMAGE:?Set an image built with GGML_RPC=ON}
+  entrypoint: ["llama-server"]
+  command:
+    - "--model"
+    - "/models/${LLAMACPP_MODEL_FILE:?Set a GGUF model file}"
+    - "--host"
+    - "0.0.0.0"
+    - "--port"
+    - "8080"
+    - "--rpc"
+    - "${LLAMACPP_RPC_SERVERS:?Set one or more trusted host:port RPC workers}"
+    - "--n-gpu-layers"
+    - "${LLAMACPP_GPU_LAYERS:-99}"
+  ports:
+    - "127.0.0.1:8080:8080"
+  volumes:
+    - type: bind
+      source: ${LLAMACPP_MODEL_DIR:?Set the host directory containing the model}
+      target: /models
+      read_only: true
+  restart: unless-stopped
+
+services:
+  rpc-worker-cpu:
+    <<: *rpc-worker
+    profiles: ["rpc-worker-cpu"]
+
+  rpc-worker-cuda:
+    <<: *rpc-worker
+    profiles: ["rpc-worker-cuda"]
+    gpus: all
+
+  rpc-worker-rocm:
+    <<: *rpc-worker
+    profiles: ["rpc-worker-rocm"]
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+
+  inference-cpu:
+    <<: *inference
+    profiles: ["inference-cpu"]
+
+  inference-cuda:
+    <<: *inference
+    profiles: ["inference-cuda"]
+    gpus: all
+
+  inference-rocm:
+    <<: *inference
+    profiles: ["inference-rocm"]
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri

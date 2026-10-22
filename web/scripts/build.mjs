@@ -19,6 +19,7 @@ const sourceFiles = [
   "src/views/memory.js",
   "src/views/cluster.js",
   "src/views/nodes.js",
+  "src/views/pipelines.js",
   "src/views/routing.js",
   "src/components/task-list.js",
   "src/app.js",
