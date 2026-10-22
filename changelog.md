@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.19 - 2026-10-21
+
+### Changed
+
+- Document how to verify release artifact versions and clarify that distributed
+  pipeline inference remains simulated until production stage backends are added.
+
 ## 0.0.18 - 2026-10-21
 
 ### Added

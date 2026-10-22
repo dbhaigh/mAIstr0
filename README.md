@@ -656,3 +656,6 @@ binaries to `dist/windows-amd64/`, `dist/linux-amd64/`, and
 The release number comes from `internal/version/version.go` and is shown by
 running `maistr0 --version`. Tests use isolated temporary data stores; normal
 runs store persistent memory in the per-user data directory.
+On Windows, verify the release build with
+`.\dist\windows-amd64\maistr0.exe --version`; `dist/version.txt` records the
+same version for all cross-compiled artifacts.
