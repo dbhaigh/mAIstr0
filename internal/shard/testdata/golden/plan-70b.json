@@ -1,0 +1,69 @@
+{
+  "mode": "llamacpp-rpc",
+  "model": {
+    "architecture": "llama",
+    "parameters": 70000000000,
+    "layer_count": 80,
+    "hidden_size": 8192,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "vocab_size": 32000,
+    "quantization": "Q4_K_M",
+    "weights_size_bytes": 38654705664,
+    "requested_context": 4096
+  },
+  "nodes": [
+    {
+      "node_id": "gpu-a",
+      "rpc_address": "10.0.1.1:50052",
+      "start_layer": 0,
+      "end_layer": 27,
+      "tensor_split_layers": 27,
+      "devices": [
+        {
+          "kind": "gpu",
+          "vendor": "nvidia",
+          "name": "A10",
+          "index": 0,
+          "start_layer": 0,
+          "end_layer": 27,
+          "weights_bytes": 13045963162,
+          "kv_cache_bytes": 452984832,
+          "safety_margin_bytes": 1073741824,
+          "required_bytes": 14572689818,
+          "free_memory_bytes": 25769803776
+        }
+      ]
+    },
+    {
+      "node_id": "gpu-b",
+      "rpc_address": "10.0.1.2:50052",
+      "start_layer": 27,
+      "end_layer": 80,
+      "tensor_split_layers": 53,
+      "devices": [
+        {
+          "kind": "gpu",
+          "vendor": "nvidia",
+          "name": "A10",
+          "index": 0,
+          "start_layer": 27,
+          "end_layer": 80,
+          "weights_bytes": 25608742503,
+          "kv_cache_bytes": 889192448,
+          "safety_margin_bytes": 1073741824,
+          "required_bytes": 27571676775,
+          "free_memory_bytes": 51539607552
+        }
+      ]
+    }
+  ],
+  "rpc": "10.0.1.1:50052,10.0.1.2:50052",
+  "tensor_split": "27,53",
+  "rationale": [
+    "node \"gpu-a\" accepted with 1 device(s) eligible for proportional layer placement",
+    "node \"gpu-b\" accepted with 1 device(s) eligible for proportional layer placement",
+    "node \"gpu-a\" assigned layers [0,27) with tensor-split layer weight 27",
+    "node \"gpu-b\" assigned layers [27,80) with tensor-split layer weight 53"
+  ]
+}

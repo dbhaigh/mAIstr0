@@ -129,8 +129,12 @@ configuration. Eligible nodes need a matching source model,
 capability. The scheduler places contiguous layer ranges and exposes the
 logical model ID through the API.
 
-The current design targets trusted LAN clusters and pipeline parallelism only.
-The simulated stage engine is available for development and tests; ordinary
-llama.cpp and vLLM OpenAI-compatible adapters are not production partial-layer
-backends. A stage failure cancels the request; live KV state is not migrated.
-See [Configuration](./configuration.md) for engine and sharded-model settings.
+The current production request path targets trusted LAN clusters and pipeline
+parallelism only. The separate deterministic planner can propose llama.cpp RPC
+or vLLM multi-node layouts from supplied metadata, but does not launch engines
+or activate those layouts in request dispatch. The simulated stage engine is
+available for development and tests; ordinary llama.cpp and vLLM
+OpenAI-compatible adapters are not production partial-layer backends. A stage
+failure cancels the request; live KV state is not migrated. See
+[Configuration](./configuration.md) for engine and sharded-model settings and
+[the shard planner guide](./shard-planner.md) for planning semantics.
