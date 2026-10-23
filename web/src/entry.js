@@ -15,6 +15,7 @@ import "./views/memory.js";
 import "./views/cluster.js";
 import "./views/nodes.js";
 import "./views/pipelines.js";
+import "./views/shards.js";
 import "./views/routing.js";
 import "./components/task-list.js";
 import "./app.js";

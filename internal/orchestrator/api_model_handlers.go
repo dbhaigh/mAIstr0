@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -20,7 +21,51 @@ import (
 
 func (s *Server) handleListAllModels(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
-	writeJSON(w, http.StatusOK, backend.ListClusterModels())
+	writeJSON(w, http.StatusOK, s.listClusterModels(backend))
+}
+
+func (s *Server) listClusterModels(backend agent.Backend) []agent.ModelInfo {
+	models := backend.ListClusterModels()
+	if s.shards == nil {
+		return models
+	}
+	groups := s.shards.List()
+	groupNames := make(map[string]bool)
+	for _, group := range groups {
+		if group.State == ShardGroupReady {
+			groupNames[strings.ToLower(group.Model.Name)] = true
+		}
+	}
+	filtered := make([]agent.ModelInfo, 0, len(models)+len(groupNames))
+	for _, model := range models {
+		if !groupNames[strings.ToLower(model.Name)] {
+			filtered = append(filtered, model)
+		}
+	}
+	for _, group := range groups {
+		if group.State != ShardGroupReady {
+			continue
+		}
+		headID, headAddress := "", ""
+		members := make([]string, 0, len(group.Members))
+		seen := make(map[string]bool, len(group.Members))
+		for _, member := range group.Members {
+			if !seen[member.NodeID] {
+				members = append(members, member.NodeID)
+				seen[member.NodeID] = true
+			}
+			if member.Role == "head" {
+				headID, headAddress = member.NodeID, member.Address
+			}
+		}
+		filtered = append(filtered, agent.ModelInfo{
+			NodeID: headID, NodeAddr: headAddress, Name: group.Model.Name,
+			Engine: "shard/" + string(group.Mode), Tags: []string{"sharded"},
+			ContextLength: group.Model.RequestedContext,
+			Members:       members, Healthy: true,
+		})
+	}
+	return filtered
 }
 
 func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +292,7 @@ func (s *Server) handleNodeModelTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
-	models := backend.ListClusterModels()
+	models := s.listClusterModels(backend)
 	list := make([]openAIModelObj, 0, len(models)+len(s.shardedModels))
 	seen := make(map[string]bool)
 	shardedSources := make(map[string]struct{}, len(s.shardedModels))
@@ -297,6 +342,19 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	if len(req.Messages) == 0 {
 		writeError(w, apperr.Invalid(errors.New("messages array is required")))
 		return
+	}
+	if s.shards != nil {
+		if _, found := s.shards.GroupForModel(req.Model); found {
+			body, err := json.Marshal(req)
+			if err != nil {
+				writeError(w, apperr.InternalError(fmt.Errorf("encode shard inference request: %w", err)))
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.SetPathValue("path", "v1/chat/completions")
+			s.handleRouterRequest(w, r)
+			return
+		}
 	}
 
 	// Preserve every message role supported by the engine prompt format.
@@ -362,6 +420,19 @@ func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
+	}
+	if s.shards != nil {
+		if _, found := s.shards.GroupForModel(req.Model); found {
+			body, err := json.Marshal(req)
+			if err != nil {
+				writeError(w, apperr.InternalError(fmt.Errorf("encode shard inference request: %w", err)))
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.SetPathValue("path", "v1/completions")
+			s.handleRouterRequest(w, r)
+			return
+		}
 	}
 
 	genReq := generateAPIRequest{

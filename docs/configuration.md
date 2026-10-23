@@ -224,11 +224,14 @@ Starting a vLLM worker requires a shard plan in the start/restart request:
 }
 ```
 
-The supervisor starts workers headlessly and supplies the distributed flags
-from that plan. Native Windows vLLM launches are rejected. Readiness is checked
-over HTTP for llama-server/vLLM and TCP for the RPC server; unexpected exits
-use bounded exponential restart backoff. Shutdown terminates the process tree
-using Windows Job Objects or Unix process groups.
+The supervisor starts nonzero ranks headlessly and supplies the distributed
+flags from that plan; rank zero runs the HTTP inference service. Headless ranks
+are considered ready while their processes remain alive, and the shard group is
+ready only after rank zero passes its HTTP readiness probe. Native Windows vLLM
+launches are rejected. Readiness is checked over HTTP for llama-server/rank-zero
+vLLM and TCP for the RPC server; unexpected exits use bounded exponential
+restart backoff. Shutdown terminates the process tree using Windows Job Objects
+or Unix process groups.
 
 ## Validation and compatibility
 

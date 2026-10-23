@@ -1,0 +1,132 @@
+{
+  "name": "create-shard-group",
+  "request": {
+    "method": "POST",
+    "path": "/api/shards",
+    "schema": "create-shard-group.schema.json",
+    "body": {
+      "model": {
+        "name": "large-model",
+        "architecture": "llama",
+        "parameters": 7000000000,
+        "layer_count": 32,
+        "hidden_size": 4096,
+        "kv_heads": 32,
+        "head_dim": 128,
+        "vocab_size": 32000,
+        "quantization": "q4_0",
+        "file_size_bytes": 4000000000,
+        "requested_context": 4096
+      },
+      "mode": "llamacpp-rpc",
+      "pinned_nodes": ["worker-1", "worker-2"]
+    }
+  },
+  "expected_response": {
+    "schema": "shard-group.schema.json",
+    "body": {
+      "id": "shard-demo",
+      "model": {
+        "name": "large-model",
+        "architecture": "llama",
+        "parameters": 7000000000,
+        "layer_count": 32,
+        "hidden_size": 4096,
+        "kv_heads": 32,
+        "head_dim": 128,
+        "vocab_size": 32000,
+        "quantization": "q4_0",
+        "file_size_bytes": 4000000000,
+        "requested_context": 4096
+      },
+      "mode": "llamacpp-rpc",
+      "state": "ready",
+      "plan": {
+        "mode": "llamacpp-rpc",
+        "model": {
+          "name": "large-model",
+          "architecture": "llama",
+          "parameters": 7000000000,
+          "layer_count": 32,
+          "hidden_size": 4096,
+          "kv_heads": 32,
+          "head_dim": 128,
+          "vocab_size": 32000,
+          "quantization": "q4_0",
+          "file_size_bytes": 4000000000,
+          "requested_context": 4096
+        },
+        "nodes": [
+          {
+            "node_id": "worker-1",
+            "rpc_address": "worker-1:50052",
+            "start_layer": 0,
+            "end_layer": 16,
+            "devices": [
+              {
+                "kind": "gpu",
+                "vendor": "nvidia",
+                "name": "GPU 0",
+                "index": 0,
+                "start_layer": 0,
+                "end_layer": 16,
+                "weights_bytes": 1000,
+                "kv_cache_bytes": 1000,
+                "safety_margin_bytes": 1000,
+                "required_bytes": 3000,
+                "free_memory_bytes": 4000
+              }
+            ]
+          },
+          {
+            "node_id": "worker-2",
+            "rpc_address": "worker-2:50052",
+            "start_layer": 16,
+            "end_layer": 32,
+            "devices": [
+              {
+                "kind": "gpu",
+                "vendor": "nvidia",
+                "name": "GPU 0",
+                "index": 0,
+                "start_layer": 16,
+                "end_layer": 32,
+                "weights_bytes": 1000,
+                "kv_cache_bytes": 1000,
+                "safety_margin_bytes": 1000,
+                "required_bytes": 3000,
+                "free_memory_bytes": 4000
+              }
+            ]
+          }
+        ],
+        "rpc": "worker-1:50052,worker-2:50052",
+        "tensor_split": "1,1",
+        "rationale": ["Memory fit on both nodes."]
+      },
+      "members": [
+        {
+          "node_id": "worker-1",
+          "address": "https://worker-1:7451",
+          "role": "worker",
+          "engine_id": "rpc-1",
+          "engine_kind": "ggml-rpc-server",
+          "started": true
+        },
+        {
+          "node_id": "worker-2",
+          "address": "https://worker-2:7451",
+          "role": "head",
+          "engine_id": "llama-head",
+          "engine_kind": "llama-server",
+          "started": true
+        }
+      ],
+      "pinned_nodes": ["worker-1", "worker-2"],
+      "rationale": ["Memory fit on both nodes."],
+      "created_at": "2025-01-02T03:04:05Z",
+      "updated_at": "2025-01-02T03:04:05Z"
+    }
+  },
+  "normalization_rules": ["No generated IDs or timestamps are normalized in this static schema fixture."]
+}

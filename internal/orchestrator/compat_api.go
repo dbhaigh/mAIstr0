@@ -58,7 +58,7 @@ type anthropicRequest struct {
 
 func (s *Server) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
-	models := backend.ListClusterModels()
+	models := s.listClusterModels(backend)
 	type modelInfo struct {
 		Name       string         `json:"name"`
 		Model      string         `json:"model"`

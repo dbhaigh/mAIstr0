@@ -98,6 +98,9 @@ type Store interface {
 	SaveAgentSession(harness, id string, session []byte) error
 	AgentSessions() ([][]byte, error)
 	DeleteAgentSession(harness, id string) error
+	SaveShardGroup(id string, group []byte) error
+	ShardGroups() ([][]byte, error)
+	DeleteShardGroup(id string) error
 	SaveDialogue(DialogueRecord) error
 	AppendDialogueTurn(id string, participants []string, topic string, turn Turn) error
 	Dialogue(id string) (DialogueRecord, error)

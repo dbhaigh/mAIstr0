@@ -250,7 +250,7 @@ func (s *Server) handleAgentToolsList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgentModelsList(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
-	writeJSON(w, http.StatusOK, backend.ListClusterModels())
+	writeJSON(w, http.StatusOK, s.listClusterModels(backend))
 }
 
 func (s *Server) handleAgentStatsGet(w http.ResponseWriter, r *http.Request) {

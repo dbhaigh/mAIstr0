@@ -12,11 +12,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -125,6 +127,11 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		assignment, assignErr := s.assignRouterRequest(preferredModel, route.Protocol, tried)
 		if assignErr != nil {
+			if errors.Is(assignErr, apperr.Unavailable) {
+				s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: "shard_group_unavailable"})
+				writeRouterError(w, apperr.StatusCode(assignErr), assignErr.Error())
+				return
+			}
 			failureClass := "no_compatible_node"
 			status := http.StatusServiceUnavailable
 			if attemptNumber > 1 {
@@ -160,25 +167,68 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		s.metrics.changeRouterQueueDepth(1)
-		reservation, err := s.dispatcherPort().reservations().Reserve(ctx, []workpool.CapacityTarget{{
-			NodeID: assignment.NodeID, Address: assignment.Address,
-		}})
-		s.metrics.changeRouterQueueDepth(-1)
-		if err != nil {
-			s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
-			if ctx.Err() != nil {
+		shardGroupID := strings.TrimPrefix(assignment.Engine, "shard-group:")
+		isShardGroup := shardGroupID != assignment.Engine
+		upstreamPrefix := "/proxy"
+		upstreamEngine := assignment.Engine
+		if isShardGroup {
+			group, ok := s.shards.Get(shardGroupID)
+			if !ok || group.State != ShardGroupReady {
+				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+				writeRouterError(w, http.StatusServiceUnavailable, apperr.UnavailableError(errors.New("shard group is not ready")).Error())
+				return
+			}
+			var head ShardGroupMember
+			for _, member := range group.Members {
+				if member.Role == "head" {
+					head = member
+					break
+				}
+			}
+			if head.NodeID != assignment.NodeID || head.Address != assignment.Address {
+				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+				writeRouterError(w, http.StatusServiceUnavailable, apperr.UnavailableError(errors.New("shard group head is unavailable")).Error())
+				return
+			}
+			upstreamPrefix = "/api/engines/managed/" + url.PathEscape(head.EngineID) + "/proxy"
+			upstreamEngine = "shard/" + string(group.Mode)
+		}
+
+		var reservation workpool.CapacityReservation
+		if isShardGroup {
+			releaseRequest, err := s.shards.AcquireRequest(ctx, shardGroupID)
+			if err != nil {
+				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+				if ctx.Err() != nil {
+					return
+				}
+				writeRouterError(w, http.StatusServiceUnavailable, apperr.UnavailableError(err).Error())
+				return
+			}
+			reservation = staticRouterReservation{target: workpool.CapacityTarget{
+				NodeID: assignment.NodeID, Address: assignment.Address,
+			}, release: releaseRequest}
+		} else {
+			s.metrics.changeRouterQueueDepth(1)
+			reservation, err = s.dispatcherPort().reservations().Reserve(ctx, []workpool.CapacityTarget{{
+				NodeID: assignment.NodeID, Address: assignment.Address,
+			}})
+			s.metrics.changeRouterQueueDepth(-1)
+			if err != nil {
+				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+				if ctx.Err() != nil {
+					continue
+				}
+				s.recordRouterEvent(routerRequestEvent{
+					RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
+					Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
+					Engine: assignment.Engine, QueueMs: time.Since(startedAt).Milliseconds(),
+					DurationMs:   time.Since(startedAt).Milliseconds(),
+					FailureClass: "reservation",
+				})
+				lastAttemptFailureClass = "reservation"
 				continue
 			}
-			s.recordRouterEvent(routerRequestEvent{
-				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
-				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
-				Engine: assignment.Engine, QueueMs: time.Since(startedAt).Milliseconds(),
-				DurationMs:   time.Since(startedAt).Milliseconds(),
-				FailureClass: "reservation",
-			})
-			lastAttemptFailureClass = "reservation"
-			continue
 		}
 		reservedNodeID := reservation.Target().NodeID
 		s.metrics.recordCapacityReservation()
@@ -201,7 +251,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		upstreamURL := strings.TrimRight(assignment.Address, "/") + "/proxy" + route.Path
+		upstreamURL := strings.TrimRight(assignment.Address, "/") + upstreamPrefix + route.Path
 		if r.URL.RawQuery != "" {
 			upstreamURL += "?" + r.URL.RawQuery
 		}
@@ -216,7 +266,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		upstreamReq.Header = r.Header.Clone()
 		stripHopHeaders(upstreamReq.Header)
-		upstreamReq.Header.Set(inferroute.HeaderEngine, assignment.Engine)
+		upstreamReq.Header.Set(inferroute.HeaderEngine, upstreamEngine)
 		upstreamReq.Header.Set(inferroute.HeaderRequestID, requestID)
 		upstreamReq.Header.Set(inferroute.HeaderAttemptID, attemptID)
 		attemptStarted := time.Now()
@@ -455,6 +505,31 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol, tried map[string]bool) (scheduler.Assignment, error) {
+	if model != "" && s.shards != nil {
+		if group, found := s.shards.GroupForModel(model); found {
+			if group.State != ShardGroupReady {
+				return scheduler.Assignment{}, apperr.UnavailableError(fmt.Errorf("shard group for model %q is %s", model, group.State))
+			}
+			var head ShardGroupMember
+			for _, member := range group.Members {
+				if member.Role == "head" {
+					head = member
+					break
+				}
+			}
+			node, ok := s.registry.Get(head.NodeID)
+			if !ok || !node.Healthy || node.Address != head.Address {
+				return scheduler.Assignment{}, apperr.UnavailableError(fmt.Errorf("shard group head for model %q is unavailable", model))
+			}
+			if tried[routerPairKey(head.NodeID, group.Model.Name)] {
+				return scheduler.Assignment{}, apperr.UnavailableError(fmt.Errorf("shard group for model %q has no additional inference head", model))
+			}
+			return scheduler.Assignment{
+				NodeID: head.NodeID, Address: head.Address, Model: group.Model.Name,
+				Engine: "shard-group:" + group.ID,
+			}, nil
+		}
+	}
 	nodes := s.dispatcherPort().schedulerNodes()
 	eligible := make([]cluster.NodeStatus, 0, len(nodes))
 	for _, node := range nodes {
@@ -502,6 +577,18 @@ func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol,
 		return scheduler.Assignment{}, fmt.Errorf("scheduler returned no inference assignment")
 	}
 	return assignments[0], nil
+}
+
+type staticRouterReservation struct {
+	target  workpool.CapacityTarget
+	release func()
+}
+
+func (r staticRouterReservation) Target() workpool.CapacityTarget { return r.target }
+func (r staticRouterReservation) Release() {
+	if r.release != nil {
+		r.release()
+	}
 }
 
 func (s *Server) releaseRouterReservation(nodeID string, reservation workpool.CapacityReservation) {

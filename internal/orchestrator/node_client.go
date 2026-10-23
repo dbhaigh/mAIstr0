@@ -22,6 +22,7 @@ type nodeClient struct {
 	client     *http.Client
 	dispatcher *http.Client
 	status     *http.Client
+	managed    *http.Client
 	modelPull  *http.Client
 	sync       *http.Client
 }
@@ -44,7 +45,7 @@ type nodeClientAPI interface {
 func newNodeClient(client, dispatcher, status *http.Client) *nodeClient {
 	return &nodeClient{
 		client: clientWithRequestID(client), dispatcher: clientWithRequestID(dispatcher),
-		status:    clientWithRequestID(status),
+		status: clientWithRequestID(status), managed: clientWithRequestID(&http.Client{Timeout: 2 * time.Minute}),
 		modelPull: clientWithRequestID(&http.Client{Timeout: time.Hour}),
 		sync:      clientWithRequestID(&http.Client{Timeout: 10 * time.Minute}),
 	}
@@ -141,6 +142,7 @@ func (c *nodeClient) setTransport(newTransport func() *http.Transport) {
 	c.client.Transport = transport
 	c.dispatcher.Transport = transport
 	c.status.Transport = transport
+	c.managed.Transport = transport
 	if c.modelPull != nil {
 		c.modelPull.Transport = transport
 	}

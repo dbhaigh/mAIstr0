@@ -210,6 +210,7 @@ func registerManagedEngineRoutes(mux *http.ServeMux, agent *Agent) {
 	mux.Handle("POST /api/engines/managed/{id}/start", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStart)))
 	mux.Handle("POST /api/engines/managed/{id}/stop", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStop)))
 	mux.Handle("POST /api/engines/managed/{id}/restart", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineRestart)))
+	mux.Handle("POST /api/engines/managed/{id}/proxy/{path...}", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineProxy)))
 }
 
 func (a *Agent) currentElectedOrchestratorID() string {

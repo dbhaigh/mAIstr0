@@ -177,8 +177,63 @@ func TestVLLMArgsUseTypedShardPlanAndWindowsRejectsNativeLaunch(t *testing.T) {
 	if args[1] != configured.ModelID {
 		t.Fatalf("model ID was not passed as a single argv value: %#v", args)
 	}
+	headPlan := *plan
+	headPlan.NodeRank = 0
+	headArgs, err := buildArgs(configured, &headPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(headArgs, "\x00"), "--headless") {
+		t.Fatalf("rank-zero head must expose the inference API, argv = %#v", headArgs)
+	}
 	if err := validatePlatformAndPlan(configured, &ShardPlan{NNodes: 2, NodeRank: 2, MasterAddr: "node"}); !errors.Is(err, ErrInvalidShardPlan) && runtime.GOOS != "windows" {
 		t.Fatalf("invalid node rank error = %v, want invalid plan", err)
+	}
+}
+
+func TestVLLMHeadlessWorkersUseProcessReadinessAndHeadRequiresHTTP(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("vLLM sharding is unsupported on native Windows")
+	}
+	binary := buildFakeEngine(t)
+	t.Setenv("MAISTR0_FAKE_ENGINE_MODE", "never-ready")
+	cfg := config.NodeConfig{
+		ManagedEngineBinaryAllowlist: []string{filepath.Dir(binary)},
+		ManagedEngineModelAllowlist:  []string{"repo/model"},
+		ManagedEngines: []config.ManagedEngineConfig{
+			{
+				ID: "vllm-worker", Kind: config.ManagedEngineVLLM, BinaryPath: binary, ModelID: "repo/model",
+				Options: config.ManagedEngineOptions{VLLM: &config.VLLMOptions{Port: freePort(t)}},
+			},
+			{
+				ID: "vllm-head", Kind: config.ManagedEngineVLLM, BinaryPath: binary, ModelID: "repo/model",
+				Options: config.ManagedEngineOptions{VLLM: &config.VLLMOptions{Port: freePort(t)}},
+			},
+		},
+	}
+	options := testOptions()
+	options.ReadinessTimeout = 80 * time.Millisecond
+	manager, err := New(cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	workerPlan := &ShardPlan{NNodes: 2, NodeRank: 1, MasterAddr: "127.0.0.1"}
+	if err := manager.Start(context.Background(), "vllm-worker", workerPlan); err != nil {
+		t.Fatalf("headless worker start: %v", err)
+	}
+	if status, err := manager.Status("vllm-worker"); err != nil || status.State != stateReady {
+		t.Fatalf("headless worker status = %+v, error = %v", status, err)
+	}
+	if err := manager.Stop(context.Background(), "vllm-worker"); err != nil {
+		t.Fatalf("stop headless worker: %v", err)
+	}
+
+	headPlan := &ShardPlan{NNodes: 2, NodeRank: 0, MasterAddr: "127.0.0.1"}
+	err = manager.Start(context.Background(), "vllm-head", headPlan)
+	if !errors.Is(err, ErrReadinessTimeout) {
+		t.Fatalf("rank-zero head start error = %v, want HTTP readiness timeout", err)
 	}
 }
 

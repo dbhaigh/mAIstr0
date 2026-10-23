@@ -5,6 +5,8 @@
 package orchestrator
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
 	"io/fs"
@@ -23,6 +25,7 @@ import (
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/piagent"
+	"github.com/maistr0/maistr0/internal/shard"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/web"
 )
@@ -47,6 +50,7 @@ type Server struct {
 	routerBreakers     *routerCircuitBreakers
 	routerClients      *routerClientLimiter
 	mem                memory.Store
+	shards             *ShardManager
 	identityPath       string
 	identity           *peeridentity.Identity
 	orchestratorEpoch  string
@@ -224,6 +228,22 @@ func newWithMemoryHarnessAndConcurrency(
 		srv.identityPath = memoryPath + ".identity"
 	}
 	srv.tasks.SetFinalizer(srv.synthesizeTask)
+	if store != nil {
+		capacity, ok := dispatcher.capacityGate.(*dispatchCapacityGate)
+		if !ok {
+			if closeErr := srv.Close(); closeErr != nil {
+				logging.Errorf("orchestrator", "orchestrator: cleanup after shard capacity initialization failure: %v", closeErr)
+			}
+			return nil, errors.New("orchestrator: shard groups require the node dispatch capacity gate")
+		}
+		srv.shards, err = NewShardManager(store, reg, nodeClient, capacity, shard.Plan)
+		if err != nil {
+			if closeErr := srv.Close(); closeErr != nil {
+				logging.Errorf("orchestrator", "orchestrator: cleanup after shard manager initialization failure: %v", closeErr)
+			}
+			return nil, fmt.Errorf("orchestrator: initialize shard manager: %w", err)
+		}
+	}
 	if srv.harness != nil {
 		if err := srv.harness.restoreAgentSessions(); err != nil {
 			if closeErr := srv.Close(); closeErr != nil {
@@ -248,8 +268,17 @@ func (s *Server) Close() error {
 	}
 	s.dispatcherPort().close()
 	var agentErr error
+	if s.shards != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := s.shards.Close(ctx); err != nil {
+			agentErr = err
+		}
+		cancel()
+	}
 	if s.harness != nil {
-		agentErr = s.harnessPort().close()
+		if err := s.harnessPort().close(); agentErr == nil {
+			agentErr = err
+		}
 	}
 	if s.mem != nil {
 		if err := s.mem.Close(); agentErr == nil {
@@ -296,6 +325,10 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/events", s.events.ServeHTTP)
 	mux.HandleFunc("GET /api/router/requests", s.handleRouterEvents)
 	mux.HandleFunc("POST /api/pipelines/{model_id}/reshard", s.handlePipelineReshard)
+	mux.HandleFunc("POST /api/shards", s.handleCreateShardGroup)
+	mux.HandleFunc("GET /api/shards", s.handleListShardGroups)
+	mux.HandleFunc("GET /api/shards/{id}", s.handleGetShardGroup)
+	mux.HandleFunc("DELETE /api/shards/{id}", s.handleDeleteShardGroup)
 	mux.HandleFunc("POST /router/{path...}", s.handleRouterRequest)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
@@ -375,6 +408,11 @@ func (s *Server) Run(listenAddr string) error {
 	}
 	if err := s.InitializeIdentity(); err != nil {
 		return fmt.Errorf("orchestrator: initialize cluster identity: %w", err)
+	}
+	if s.shards != nil {
+		if err := s.shards.Recover(context.Background()); err != nil {
+			logging.Warnf("orchestrator", "some persisted shard groups could not be restored: %v", err)
+		}
 	}
 	go s.healthSweepLoop()
 	go s.broadcastLoop()

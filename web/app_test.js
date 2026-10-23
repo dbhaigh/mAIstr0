@@ -12,6 +12,7 @@ const moduleSources = [...entrySource.matchAll(/^import\s+"([^"]+)";$/gm)]
   .map((match) => fs.readFileSync(path.join(__dirname, "src", match[1]), "utf8"));
 const source = moduleSources.join("\n");
 const pipelineViewSource = fs.readFileSync(path.join(__dirname, "src", "views", "pipelines.js"), "utf8");
+const shardViewSource = fs.readFileSync(path.join(__dirname, "src", "views", "shards.js"), "utf8");
 const sharedSource = fs.readFileSync(path.join(__dirname, "src", "shared", "api.js"), "utf8");
 const applySnapshotStart = source.indexOf("function applySnapshot(snap) {");
 const applySnapshotSource = source.slice(applySnapshotStart, source.indexOf("\nfunction refreshOverviewTimes(", applySnapshotStart));
@@ -37,6 +38,8 @@ test("Dashboard loads its generated bundle through the Go embedded static path",
   assert.match(indexSource, /id="connection-status"[^>]*role="status"[^>]*aria-live="polite"/);
   assert.match(indexSource, /id="pipeline-model-list"/);
   assert.match(indexSource, /id="pipeline-action-status"/);
+  assert.match(indexSource, /id="shard-group-list"/);
+  assert.match(indexSource, /id="shard-group-status"/);
   for (const scriptPath of appScriptPaths) {
     assert.ok(fs.existsSync(path.join(__dirname, "static", path.basename(scriptPath))), `${scriptPath} is missing`);
     for (const encoding of ["br", "gz"]) {
@@ -57,6 +60,40 @@ test("Dashboard loads its generated bundle through the Go embedded static path",
 
 test("Dashboard bundle parses as a plain JavaScript browser script", () => {
   assert.doesNotThrow(() => new vm.Script(bundleSource, { filename: "static/app.js" }));
+});
+
+test("Shard dashboard renders group state, members, and escaped rationale", () => {
+  const elements = {
+    "shard-group-list": { innerHTML: "" },
+    "shard-group-status": { textContent: "" },
+    "refresh-shard-groups": { addEventListener() {} },
+  };
+  const context = vm.createContext({
+    document: { getElementById: (id) => elements[id] || null },
+    dashboardState: { shardGroups: [], shardGroupsError: "" },
+    escapeHtml: dashboardFormat.escapeHtml,
+  });
+  vm.runInContext(shardViewSource, context);
+  context.renderShardGroups([{
+    id: "shard-1",
+    model: { name: "model<&>" },
+    mode: "llamacpp-rpc",
+    state: "ready",
+    members: [{
+      role: "head",
+      node_id: "node<&>",
+      engine_id: "llama-head",
+      engine_kind: "llama-server",
+      started: true,
+    }],
+    plan: { rationale: ["GPU <memory> fit"] },
+  }]);
+
+  assert.match(elements["shard-group-list"].innerHTML, /model&lt;&amp;&gt;/);
+  assert.match(elements["shard-group-list"].innerHTML, /node&lt;&amp;&gt;/);
+  assert.match(elements["shard-group-list"].innerHTML, /GPU &lt;memory&gt; fit/);
+  assert.match(elements["shard-group-list"].innerHTML, /badge healthy/);
+  assert.equal(elements["shard-group-status"].textContent, "1 shard group");
 });
 
 test("Dashboard status view model renders node, model, load, memory, and version counts", () => {

@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/maistr0/maistr0/internal/logging"
 	"sort"
@@ -27,6 +28,11 @@ func (s *Server) healthSweepLoop() {
 			if node.Healthy && time.Since(node.LastSeen) > 30*time.Second {
 				s.registry.MarkUnhealthy(node.ID)
 				logging.Errorf("orchestrator", "orchestrator: node %s is offline after missing heartbeats", node.ID)
+			}
+		}
+		if s.shards != nil {
+			if err := s.shards.CheckHealth(context.Background()); err != nil {
+				logging.Errorf("orchestrator", "orchestrator: shard group health check failed: %v", err)
 			}
 		}
 		s.publishSnapshot()

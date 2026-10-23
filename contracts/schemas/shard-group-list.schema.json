@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/shard-group-list.schema.json",
+  "title": "ShardGroupList",
+  "type": "object",
+  "required": ["groups"],
+  "properties": {
+    "groups": {
+      "type": "array",
+      "items": {"$ref": "https://maistr0.dev/contracts/schemas/shard-group.schema.json"}
+    }
+  },
+  "additionalProperties": false
+}

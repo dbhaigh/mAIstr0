@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/shard-group.schema.json",
+  "title": "ShardGroup",
+  "type": "object",
+  "required": ["id", "model", "mode", "state", "plan", "members", "rationale", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "model": {"$ref": "https://maistr0.dev/contracts/schemas/shard-model-profile.schema.json"},
+    "mode": {"type": "string", "enum": ["llamacpp-rpc", "vllm-mp"]},
+    "state": {"type": "string", "enum": ["planning", "starting_workers", "starting_head", "ready", "degraded", "failed", "stopping"]},
+    "plan": {"$ref": "https://maistr0.dev/contracts/schemas/shard-plan.schema.json"},
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["node_id", "address", "role", "engine_id", "engine_kind"],
+        "properties": {
+          "node_id": {"type": "string", "minLength": 1},
+          "address": {"type": "string"},
+          "role": {"type": "string", "enum": ["worker", "head"]},
+          "engine_id": {"type": "string", "minLength": 1},
+          "engine_kind": {"type": "string", "enum": ["llama-server", "ggml-rpc-server", "vllm"]},
+          "rank": {"type": "integer", "minimum": 0},
+          "master_addr": {"type": "string"},
+          "started": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "pinned_nodes": {"type": "array", "items": {"type": "string"}},
+    "rationale": {"type": "array", "items": {"type": "string"}},
+    "error": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

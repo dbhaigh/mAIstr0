@@ -157,6 +157,7 @@ type ModelInfo struct {
 	Tags          []string `json:"tags"`
 	SizeGB        float64  `json:"size_gb,omitempty"`
 	ContextLength int      `json:"context_length,omitempty"`
+	Members       []string `json:"members,omitempty"`
 	Default       bool     `json:"default"`
 	Healthy       bool     `json:"healthy"`
 }

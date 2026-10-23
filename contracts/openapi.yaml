@@ -361,6 +361,50 @@ paths:
       - $ref: "#/components/parameters/ID"
     get:
       responses: {"200": {description: List node engines}}
+  /api/shards:
+    get:
+      summary: List shard groups
+      responses:
+        "200":
+          description: Persisted shard groups and current lifecycle states
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroupList"}
+        "503": {description: Shard-group persistence is unavailable}
+    post:
+      summary: Plan and start a shard group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateShardGroupRequest"}
+      responses:
+        "201":
+          description: Shard group is ready
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Invalid model profile, mode, or placement}
+        "409": {description: A group for the model already exists or an operation is active}
+        "503": {description: Required members or shard-group persistence are unavailable}
+  /api/shards/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Get a shard group
+      responses:
+        "200":
+          description: Shard group details, plan rationale, and member status
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "404": {description: Shard group does not exist}
+    delete:
+      summary: Stop and remove a shard group
+      responses:
+        "204": {description: Shard group stopped and removed}
+        "404": {description: Shard group does not exist}
+        "409": {description: A shard-group operation is already active}
   /api/engines/managed:
     get:
       summary: List managed engine process status
@@ -431,6 +475,18 @@ paths:
         "501": {description: Engine is unsupported on this platform}
         "502": {description: Engine failed to restart}
         "504": {description: Engine readiness or shutdown timed out}
+  /api/engines/managed/{id}/proxy/{path...}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Proxy an inference request to a ready managed engine
+      description: Node-local inference proxy; requests require a pinned mTLS certificate for the current paired orchestrator.
+      security:
+        - PairedOrchestrator: []
+      responses:
+        "403": {description: Request is not from the current paired orchestrator}
+        "503": {description: Managed engine is not ready}
+        "502": {description: Managed engine request failed}
   /api/nodes/{id}/models/refresh:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -958,6 +1014,16 @@ components:
       $ref: "./schemas/managed-engine-status.schema.json"
     ManagedEngineStartRequest:
       $ref: "./schemas/managed-engine-start.schema.json"
+    CreateShardGroupRequest:
+      $ref: "./schemas/create-shard-group.schema.json"
+    ShardModelProfile:
+      $ref: "./schemas/shard-model-profile.schema.json"
+    ShardPlan:
+      $ref: "./schemas/shard-plan.schema.json"
+    ShardGroup:
+      $ref: "./schemas/shard-group.schema.json"
+    ShardGroupList:
+      $ref: "./schemas/shard-group-list.schema.json"
     OrchestratorConfig:
       $ref: "./schemas/orchestrator-config.schema.json"
     Task:
@@ -1088,6 +1154,11 @@ x-maistr0-registered-routes:
   - "orchestrator|GET /api/nodes/{id}/properties"
   - "orchestrator|PATCH /api/nodes/{id}/properties"
   - "orchestrator|GET /api/nodes/{id}/engines"
+  - "orchestrator|POST /api/shards"
+  - "orchestrator|GET /api/shards"
+  - "orchestrator|GET /api/shards/{id}"
+  - "orchestrator|DELETE /api/shards/{id}"
+  - "node|POST /api/engines/managed/{id}/proxy/{path...}"
   - "orchestrator|POST /api/nodes/{id}/models/refresh"
   - "orchestrator|POST /api/nodes/{id}/models/pull"
   - "orchestrator|GET /api/discovery"

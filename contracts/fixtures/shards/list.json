@@ -1,0 +1,14 @@
+{
+  "name": "list-shard-groups",
+  "request": {
+    "method": "GET",
+    "path": "/api/shards"
+  },
+  "expected_response": {
+    "schema": "shard-group-list.schema.json",
+    "body": {
+      "groups": []
+    }
+  },
+  "normalization_rules": ["No generated values are present in the empty group list."]
+}

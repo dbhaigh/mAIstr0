@@ -54,9 +54,13 @@ var (
 )
 
 type ShardPlan struct {
-	NNodes     int    `json:"nnodes"`
-	NodeRank   int    `json:"node_rank"`
-	MasterAddr string `json:"master_addr"`
+	NNodes               int    `json:"nnodes"`
+	NodeRank             int    `json:"node_rank"`
+	MasterAddr           string `json:"master_addr"`
+	RPC                  string `json:"rpc,omitempty"`
+	TensorSplit          string `json:"tensor_split,omitempty"`
+	TensorParallelSize   int    `json:"tensor_parallel_size,omitempty"`
+	PipelineParallelSize int    `json:"pipeline_parallel_size,omitempty"`
 }
 
 type Status struct {
@@ -64,6 +68,7 @@ type Status struct {
 	Kind         string     `json:"kind"`
 	State        string     `json:"state"`
 	PID          int        `json:"pid,omitempty"`
+	Endpoint     string     `json:"endpoint,omitempty"`
 	RestartCount int        `json:"restart_count"`
 	LastError    string     `json:"last_error,omitempty"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
@@ -132,7 +137,7 @@ func New(cfg config.NodeConfig, options Options) (*Manager, error) {
 	}
 	for _, configured := range cfg.ManagedEngines {
 		entry := cloneManagedEngineConfig(configured)
-		status := Status{ID: entry.ID, Kind: string(entry.Kind), State: stateStopped}
+		status := Status{ID: entry.ID, Kind: string(entry.Kind), State: stateStopped, Endpoint: managedEndpoint(entry)}
 		if warning := nonLoopbackRPCWarning(entry); warning != "" {
 			status.Warnings = []string{warning}
 			logging.FileWarnf("managed_engine", "%s", warning)
@@ -227,7 +232,7 @@ func (m *Manager) Start(ctx context.Context, id string, plan *ShardPlan) error {
 	}
 	startupCtx, cancel := context.WithTimeout(ctx, m.options.ReadinessTimeout)
 	defer cancel()
-	if err := m.waitForReadiness(startupCtx, engine, runGeneration, done); err != nil {
+	if err := m.waitForReadiness(startupCtx, engine, runGeneration, done, plan); err != nil {
 		if stopErr := m.abortStartup(engine, runGeneration, err); stopErr != nil {
 			return errors.Join(err, stopErr)
 		}
@@ -302,7 +307,10 @@ func (m *Manager) startAttempt(ctx context.Context, engine *managedEngine, state
 	}
 	startupCtx, cancel := context.WithTimeout(ctx, m.options.ReadinessTimeout)
 	defer cancel()
-	if err := m.waitForReadiness(startupCtx, engine, runGeneration, done); err != nil {
+	engine.mu.Lock()
+	plan := cloneShardPlan(engine.shardPlan)
+	engine.mu.Unlock()
+	if err := m.waitForReadiness(startupCtx, engine, runGeneration, done, plan); err != nil {
 		if stopErr := m.abortStartup(engine, runGeneration, err); stopErr != nil {
 			return errors.Join(err, stopErr)
 		}
@@ -477,7 +485,7 @@ func (m *Manager) restartAfterCrash(engine *managedEngine, controlGeneration uin
 		runGeneration, done, err := m.launch(engine, controlGeneration, stateRestarting)
 		if err == nil {
 			startupCtx, cancel := context.WithTimeout(m.ctx, m.options.ReadinessTimeout)
-			err = m.waitForReadiness(startupCtx, engine, runGeneration, done)
+			err = m.waitForReadiness(startupCtx, engine, runGeneration, done, plan)
 			cancel()
 			if err == nil && m.markReady(engine, runGeneration) {
 				logging.FileInfof("managed_engine", "managed engine %s restarted and is ready", engine.config.ID)
@@ -508,7 +516,30 @@ func (m *Manager) restartAfterCrash(engine *managedEngine, controlGeneration uin
 	}
 }
 
-func (m *Manager) waitForReadiness(ctx context.Context, engine *managedEngine, runGeneration uint64, done <-chan struct{}) error {
+func (m *Manager) waitForReadiness(
+	ctx context.Context,
+	engine *managedEngine,
+	runGeneration uint64,
+	done <-chan struct{},
+	plan *ShardPlan,
+) error {
+	if engine.config.Kind == config.ManagedEngineVLLM && plan != nil && plan.NodeRank > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case <-done:
+			return ErrProcessExited
+		default:
+			engine.mu.Lock()
+			stillCurrent := engine.runGeneration == runGeneration && engine.command != nil
+			engine.mu.Unlock()
+			if stillCurrent {
+				return nil
+			}
+			return ErrProcessExited
+		}
+	}
 	ticker := time.NewTicker(m.options.ProbeInterval)
 	defer ticker.Stop()
 	for {
@@ -878,10 +909,36 @@ func validatePlatformAndPlan(configured config.ManagedEngineConfig, plan *ShardP
 		if plan == nil || plan.NNodes < 1 || plan.NNodes > 1024 || plan.NodeRank < 0 || plan.NodeRank >= plan.NNodes || !validMasterAddress(plan.MasterAddr) {
 			return ErrInvalidShardPlan
 		}
+		if plan.TensorParallelSize < 0 || plan.PipelineParallelSize < 0 ||
+			(plan.TensorParallelSize == 0) != (plan.PipelineParallelSize == 0) {
+			return ErrInvalidShardPlan
+		}
 		return nil
 	}
+	if configured.Kind == config.ManagedEngineLlamaServer && plan != nil {
+		if plan.RPC == "" || plan.TensorSplit == "" || strings.ContainsAny(plan.RPC, " \t\r\n\x00") {
+			return ErrInvalidShardPlan
+		}
+		for _, address := range strings.Split(plan.RPC, ",") {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil || host == "" {
+				return ErrInvalidShardPlan
+			}
+			if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+				return ErrInvalidShardPlan
+			}
+		}
+		for _, part := range strings.Split(plan.TensorSplit, ",") {
+			value, err := strconv.ParseFloat(part, 64)
+			if err != nil || value <= 0 {
+				return ErrInvalidShardPlan
+			}
+		}
+	}
 	if plan != nil {
-		return ErrInvalidShardPlan
+		if configured.Kind != config.ManagedEngineLlamaServer {
+			return ErrInvalidShardPlan
+		}
 	}
 	return nil
 }
@@ -1046,6 +1103,14 @@ func buildArgs(configured config.ManagedEngineConfig, plan *ShardPlan) ([]string
 				args = append(args, "--threads", strconv.Itoa(options.Threads))
 			}
 		}
+		if plan != nil {
+			if plan.RPC != "" {
+				args = append(args, "--rpc", plan.RPC)
+			}
+			if plan.TensorSplit != "" {
+				args = append(args, "--tensor-split", plan.TensorSplit)
+			}
+		}
 		return args, nil
 	case config.ManagedEngineGGMLRPCServer:
 		host, port := "127.0.0.1", 50052
@@ -1060,7 +1125,11 @@ func buildArgs(configured config.ManagedEngineConfig, plan *ShardPlan) ([]string
 		return []string{"--host", host, "--port", strconv.Itoa(port)}, nil
 	case config.ManagedEngineVLLM:
 		host, port := "127.0.0.1", 8000
-		args := []string{"serve", model, "--headless", "--nnodes", strconv.Itoa(plan.NNodes), "--node-rank", strconv.Itoa(plan.NodeRank), "--master-addr", plan.MasterAddr}
+		args := []string{"serve", model}
+		if plan.NodeRank > 0 {
+			args = append(args, "--headless")
+		}
+		args = append(args, "--nnodes", strconv.Itoa(plan.NNodes), "--node-rank", strconv.Itoa(plan.NodeRank), "--master-addr", plan.MasterAddr)
 		if options := configured.Options.VLLM; options != nil {
 			if options.Host != "" {
 				host = options.Host
@@ -1070,11 +1139,59 @@ func buildArgs(configured config.ManagedEngineConfig, plan *ShardPlan) ([]string
 			}
 		}
 		args = append(args, "--host", host, "--port", strconv.Itoa(port))
-		if options := configured.Options.VLLM; options != nil && options.TensorParallelSize > 0 {
-			args = append(args, "--tensor-parallel-size", strconv.Itoa(options.TensorParallelSize))
+		tensorParallelSize := plan.TensorParallelSize
+		if tensorParallelSize == 0 && configured.Options.VLLM != nil {
+			tensorParallelSize = configured.Options.VLLM.TensorParallelSize
+		}
+		if tensorParallelSize > 0 {
+			args = append(args, "--tensor-parallel-size", strconv.Itoa(tensorParallelSize))
+		}
+		if plan.PipelineParallelSize > 0 {
+			args = append(args, "--pipeline-parallel-size", strconv.Itoa(plan.PipelineParallelSize))
 		}
 		return args, nil
 	default:
 		return nil, fmt.Errorf("%w: unsupported managed engine kind", ErrStart)
+	}
+}
+
+func managedEndpoint(configured config.ManagedEngineConfig) string {
+	host, port := "127.0.0.1", 0
+	switch configured.Kind {
+	case config.ManagedEngineLlamaServer:
+		port = 8080
+		if options := configured.Options.LlamaServer; options != nil {
+			if options.Host != "" {
+				host = loopbackProbeHost(options.Host)
+			}
+			if options.Port != 0 {
+				port = options.Port
+			}
+		}
+		return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+	case config.ManagedEngineVLLM:
+		port = 8000
+		if options := configured.Options.VLLM; options != nil {
+			if options.Host != "" {
+				host = loopbackProbeHost(options.Host)
+			}
+			if options.Port != 0 {
+				port = options.Port
+			}
+		}
+		return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+	case config.ManagedEngineGGMLRPCServer:
+		host, port = "127.0.0.1", 50052
+		if options := configured.Options.GGMLRPCServer; options != nil {
+			if options.BindAddress != "" {
+				host = options.BindAddress
+			}
+			if options.Port != 0 {
+				port = options.Port
+			}
+		}
+		return net.JoinHostPort(host, strconv.Itoa(port))
+	default:
+		return ""
 	}
 }

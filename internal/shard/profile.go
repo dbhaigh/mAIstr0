@@ -11,6 +11,7 @@ import (
 // ModelProfile contains the metadata needed to estimate a model's sharded
 // inference memory without loading its tensors.
 type ModelProfile struct {
+	Name             string `json:"name,omitempty"`
 	Architecture     string `json:"architecture,omitempty"`
 	Parameters       uint64 `json:"parameters,omitempty"`
 	LayerCount       int    `json:"layer_count"`

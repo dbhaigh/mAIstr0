@@ -211,6 +211,53 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		}},
 	}
 
+	shardProfile := map[string]any{
+		"name": "large-model", "architecture": "llama", "parameters": 7000000000,
+		"layer_count": 32, "hidden_size": 4096, "kv_heads": 32, "head_dim": 128,
+		"vocab_size": 32000, "quantization": "q4_0", "file_size_bytes": 4000000000,
+		"requested_context": 4096,
+	}
+	shardPlan := map[string]any{
+		"mode": "llamacpp-rpc", "model": shardProfile,
+		"nodes": []any{
+			map[string]any{
+				"node_id": "worker-1", "rpc_address": "worker-1:50052", "start_layer": 0, "end_layer": 16,
+				"devices": []any{map[string]any{
+					"kind": "gpu", "vendor": "nvidia", "name": "GPU 0", "index": 0,
+					"start_layer": 0, "end_layer": 16, "weights_bytes": 1000, "kv_cache_bytes": 1000,
+					"safety_margin_bytes": 1000, "required_bytes": 3000, "free_memory_bytes": 4000,
+				}},
+			},
+			map[string]any{
+				"node_id": "worker-2", "rpc_address": "worker-2:50052", "start_layer": 16, "end_layer": 32,
+				"devices": []any{map[string]any{
+					"kind": "gpu", "vendor": "nvidia", "name": "GPU 0", "index": 0,
+					"start_layer": 16, "end_layer": 32, "weights_bytes": 1000, "kv_cache_bytes": 1000,
+					"safety_margin_bytes": 1000, "required_bytes": 3000, "free_memory_bytes": 4000,
+				}},
+			},
+		},
+		"rpc": "worker-1:50052,worker-2:50052", "tensor_split": "1,1",
+		"rationale": []string{"Memory fit on both nodes."},
+	}
+	shardGroup := map[string]any{
+		"id": "shard-demo", "model": shardProfile, "mode": "llamacpp-rpc", "state": "ready",
+		"plan": shardPlan,
+		"members": []any{
+			map[string]any{
+				"node_id": "worker-1", "address": "https://worker-1:7451", "role": "worker",
+				"engine_id": "rpc-1", "engine_kind": "ggml-rpc-server", "started": true,
+			},
+			map[string]any{
+				"node_id": "worker-2", "address": "https://worker-2:7451", "role": "head",
+				"engine_id": "llama-head", "engine_kind": "llama-server", "started": true,
+			},
+		},
+		"pinned_nodes": []string{"worker-1", "worker-2"},
+		"rationale":    []string{"Memory fit on both nodes."},
+		"created_at":   now, "updated_at": now,
+	}
+
 	values := map[string]any{
 		"dashboard-pipeline.schema.json": map[string]any{
 			"model_inventory": []any{
@@ -282,6 +329,13 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 				"nnodes": 2, "node_rank": 1, "master_addr": "192.0.2.10",
 			},
 		},
+		"create-shard-group.schema.json": map[string]any{
+			"model": shardProfile, "mode": "llamacpp-rpc", "pinned_nodes": []string{"worker-1", "worker-2"},
+		},
+		"shard-model-profile.schema.json": shardProfile,
+		"shard-plan.schema.json":          shardPlan,
+		"shard-group.schema.json":         shardGroup,
+		"shard-group-list.schema.json":    map[string]any{"groups": []any{shardGroup}},
 		"orchestrator-config.schema.json": orchestratorConfig,
 		"task.schema.json":                task,
 		"subtask-result.schema.json":      result,
@@ -425,6 +479,60 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 			}
 		})
 	}
+	fixtureFiles, err := filepath.Glob(filepath.Join("fixtures", "shards", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixtureFiles) == 0 {
+		t.Fatal("no shard-group contract fixtures found")
+	}
+	validateFixtureBody := func(filename string, body json.RawMessage) error {
+		var fixtureValue any
+		if err := json.Unmarshal(body, &fixtureValue); err != nil {
+			return err
+		}
+		schema, err := compiler.Compile(schemaIDs[filename])
+		if err != nil {
+			return err
+		}
+		return schema.Validate(fixtureValue)
+	}
+	for _, filename := range fixtureFiles {
+		t.Run(filepath.Join("shard-fixture", strings.TrimSuffix(filepath.Base(filename), ".json")), func(t *testing.T) {
+			var fixture struct {
+				Name    string `json:"name"`
+				Request struct {
+					Schema string          `json:"schema"`
+					Body   json.RawMessage `json:"body"`
+				} `json:"request"`
+				ExpectedResponse struct {
+					Schema string          `json:"schema"`
+					Body   json.RawMessage `json:"body"`
+				} `json:"expected_response"`
+				NormalizationRules []string `json:"normalization_rules"`
+			}
+			data, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(data, &fixture); err != nil {
+				t.Fatal(err)
+			}
+			if fixture.Name == "" || len(fixture.NormalizationRules) == 0 {
+				t.Fatal("fixture must include a name and normalization rules")
+			}
+			if fixture.Request.Schema != "" {
+				if err := validateFixtureBody(fixture.Request.Schema, fixture.Request.Body); err != nil {
+					t.Errorf("request does not validate against %s: %v", fixture.Request.Schema, err)
+				}
+			}
+			if fixture.ExpectedResponse.Schema != "" {
+				if err := validateFixtureBody(fixture.ExpectedResponse.Schema, fixture.ExpectedResponse.Body); err != nil {
+					t.Errorf("response does not validate against %s: %v", fixture.ExpectedResponse.Schema, err)
+				}
+			}
+		})
+	}
 }
 
 func TestDashboardRouterPropertiesAreTopLevel(t *testing.T) {
@@ -462,13 +570,14 @@ func TestSchemaSetIsComplete(t *testing.T) {
 	expected := []string{
 		"announcement.schema.json", "assignment-explanation.schema.json", "assignment.schema.json", "cluster-health.schema.json", "dashboard-pipeline.schema.json", "dialogue-record.schema.json",
 		"activation-tensor.schema.json", "dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
-		"fact.schema.json", "node-config.schema.json",
+		"fact.schema.json", "node-config.schema.json", "create-shard-group.schema.json",
 		"managed-engine-start.schema.json", "managed-engine-status.schema.json",
 		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json", "pipeline-plan.schema.json",
 		"pipeline-stage-capabilities.schema.json", "pipeline-stage-control.schema.json", "pipeline-stage-message.schema.json",
 		"pipeline-stage-output.schema.json", "pipeline-stage-request.schema.json",
 		"router-circuit-breaker.schema.json", "router-request-event.schema.json", "router-requests.schema.json",
 		"score-factors.schema.json", "snapshot.schema.json",
+		"shard-group-list.schema.json", "shard-group.schema.json", "shard-model-profile.schema.json", "shard-plan.schema.json",
 		"stage-assignment.schema.json", "stage-forward-frame.schema.json",
 		"sharded-model-config.schema.json", "stage-spec.schema.json", "subtask-result.schema.json", "subtask.schema.json", "task-dependencies.schema.json",
 		"task-graph.schema.json", "task.schema.json",

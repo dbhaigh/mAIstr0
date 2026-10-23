@@ -22,6 +22,7 @@ type Model struct {
 	SizeGB        float64  `json:"size_gb,omitempty"`
 	ContextLength int      `json:"context_length,omitempty"`
 	Device        string   `json:"device,omitempty"`
+	Members       []string `json:"members,omitempty"`
 }
 
 type Status struct {

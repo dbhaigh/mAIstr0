@@ -365,6 +365,7 @@ function activateWorkspacePanel(panelID) {
   if (panelID === "setup-catalog-panel") void loadModelCatalog();
   if (panelID === "tasks-panel") void refreshTaskHistory(true);
   if (panelID === "discovery-panel") void refreshDiscovery();
+  if (panelID === "routing-panel") void refreshShardGroups();
 }
 
 function refreshOverviewTimes() {
@@ -418,6 +419,9 @@ setInterval(refreshPersistenceStatus, 30000);
 setInterval(() => {
   if (document.getElementById("cluster-tab")?.classList.contains("active")) {
     void refresh();
+    if (document.getElementById("routing-panel")?.classList.contains("active")) {
+      void refreshShardGroups();
+    }
   }
 }, 15000);
 connectEvents();

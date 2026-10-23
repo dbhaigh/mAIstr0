@@ -7,8 +7,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 )
 
@@ -58,6 +60,70 @@ func (a *Agent) handleManagedEngineStop(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	a.writeManagedEngineStatus(w, r.PathValue("id"))
+}
+
+func (a *Agent) handleManagedEngineProxy(w http.ResponseWriter, r *http.Request) {
+	path := "/" + strings.TrimPrefix(r.PathValue("path"), "/")
+	if _, ok := inferroute.Lookup(r.Method, path); !ok {
+		http.NotFound(w, r)
+		return
+	}
+	status, err := a.managedEngines.Status(r.PathValue("id"))
+	if err != nil {
+		writeManagedEngineError(w, err)
+		return
+	}
+	if status.State != "ready" {
+		http.Error(w, "managed engine is not ready", http.StatusServiceUnavailable)
+		return
+	}
+	endpoint, err := url.Parse(status.Endpoint)
+	if err != nil || endpoint.Scheme != "http" || endpoint.Host == "" || endpoint.User != nil {
+		http.Error(w, "managed engine does not expose an HTTP endpoint", http.StatusBadGateway)
+		return
+	}
+	upstreamURL := strings.TrimRight(status.Endpoint, "/") + path
+	if r.URL.RawQuery != "" {
+		upstreamURL += "?" + r.URL.RawQuery
+	}
+	request, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
+	if err != nil {
+		http.Error(w, "could not prepare managed engine request", http.StatusBadGateway)
+		return
+	}
+	request.Header = r.Header.Clone()
+	stripManagedProxyHopHeaders(request.Header)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		http.Error(w, "managed engine request failed", http.StatusBadGateway)
+		return
+	}
+	defer response.Body.Close()
+	copyManagedProxyHeaders(w.Header(), response.Header)
+	w.WriteHeader(response.StatusCode)
+	if _, err := io.Copy(w, response.Body); err != nil {
+		return
+	}
+}
+
+func stripManagedProxyHopHeaders(header http.Header) {
+	for _, name := range []string{
+		"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+		"TE", "Trailer", "Transfer-Encoding", "Upgrade",
+	} {
+		header.Del(name)
+	}
+}
+
+func copyManagedProxyHeaders(destination, source http.Header) {
+	for name, values := range source {
+		if strings.EqualFold(name, "Connection") || strings.EqualFold(name, "Transfer-Encoding") {
+			continue
+		}
+		for _, value := range values {
+			destination.Add(name, value)
+		}
+	}
 }
 
 func (a *Agent) handleManagedEngineRestart(w http.ResponseWriter, r *http.Request) {

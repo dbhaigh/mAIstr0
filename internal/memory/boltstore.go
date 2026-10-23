@@ -33,6 +33,7 @@ var (
 	bucketDialogues     = []byte("dialogues")
 	bucketMeta          = []byte("meta")
 	bucketAgentSessions = []byte("agent_sessions")
+	bucketShardGroups   = []byte("shard_groups")
 )
 
 var experienceFingerprintIndexKey = []byte("experience-fingerprint-index-v1")
@@ -461,7 +462,7 @@ func Open(path, owner string) (Store, error) {
 	db.MaxBatchDelay = 250 * time.Microsecond // Bound coalescing delay for synchronous memory writes.
 
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketExperiences, bucketFacts, bucketPerf, bucketDialogues, bucketMeta, bucketAgentSessions} {
+		for _, b := range [][]byte{bucketExperiences, bucketFacts, bucketPerf, bucketDialogues, bucketMeta, bucketAgentSessions, bucketShardGroups} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -906,6 +907,36 @@ func (s *boltStore) DeleteAgentSession(harness, id string) error {
 	key := []byte(harness + "\x00" + id)
 	return s.db.Batch(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketAgentSessions).Delete(key)
+	})
+}
+
+func (s *boltStore) SaveShardGroup(id string, group []byte) error {
+	if id == "" || len(group) == 0 {
+		return errors.New("memory: shard group id and payload are required")
+	}
+	payload := append([]byte(nil), group...)
+	return s.db.Batch(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketShardGroups).Put([]byte(id), payload)
+	})
+}
+
+func (s *boltStore) ShardGroups() ([][]byte, error) {
+	var groups [][]byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketShardGroups).ForEach(func(_, value []byte) error {
+			groups = append(groups, append([]byte(nil), value...))
+			return nil
+		})
+	})
+	return groups, err
+}
+
+func (s *boltStore) DeleteShardGroup(id string) error {
+	if id == "" {
+		return errors.New("memory: shard group id is required")
+	}
+	return s.db.Batch(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketShardGroups).Delete([]byte(id))
 	})
 }
 

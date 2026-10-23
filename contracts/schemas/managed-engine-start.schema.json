@@ -6,17 +6,24 @@
   "properties": {
     "shard_plan": {
       "type": "object",
-      "required": ["nnodes", "node_rank", "master_addr"],
       "properties": {
-        "nnodes": {"type": "integer", "minimum": 1, "maximum": 1024},
-        "node_rank": {"type": "integer", "minimum": 0},
-        "master_addr": {"type": "string", "minLength": 1}
+        "nnodes": {"type": "integer", "minimum": 0, "maximum": 1024},
+        "node_rank": {"type": "integer", "minimum": 0, "maximum": 1023},
+        "master_addr": {"type": "string"},
+        "rpc": {"type": "string"},
+        "tensor_split": {"type": "string"},
+        "tensor_parallel_size": {"type": "integer", "minimum": 0},
+        "pipeline_parallel_size": {"type": "integer", "minimum": 0}
       },
-      "allOf": [
+      "anyOf": [
         {
-          "if": {"properties": {"nnodes": {"type": "integer"}}},
-          "then": {"properties": {"node_rank": {"maximum": 1023}}}
-        }
+          "required": ["nnodes", "node_rank", "master_addr"],
+          "properties": {
+            "nnodes": {"minimum": 1},
+            "master_addr": {"minLength": 1}
+          }
+        },
+        {"required": ["rpc", "tensor_split"]}
       ],
       "additionalProperties": false
     }

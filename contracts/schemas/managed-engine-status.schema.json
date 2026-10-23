@@ -9,6 +9,7 @@
     "kind": {"type": "string", "enum": ["llama-server", "ggml-rpc-server", "vllm"]},
     "state": {"type": "string", "enum": ["stopped", "starting", "ready", "stopping", "restarting", "failed"]},
     "pid": {"type": "integer", "minimum": 0},
+    "endpoint": {"type": "string"},
     "restart_count": {"type": "integer", "minimum": 0},
     "last_error": {"type": "string"},
     "started_at": {"type": "string", "format": "date-time"},

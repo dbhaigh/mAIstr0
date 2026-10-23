@@ -120,6 +120,8 @@ const dashboardState = {
   capacity: null,
   modelInventory: [],
   pipelinePlans: [],
+  shardGroups: [],
+  shardGroupsError: "",
   discovery: [],
   buildVersion: "",
   fullTaskHistoryLoaded: false,

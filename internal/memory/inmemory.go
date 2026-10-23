@@ -31,6 +31,7 @@ type memoryStore struct {
 	learnedBiases  atomic.Pointer[performanceSnapshot]
 	dialogues      map[string]DialogueRecord
 	agentSessions  map[string][]byte
+	shardGroups    map[string][]byte
 	changes        syncinterval.Signal
 }
 
@@ -46,6 +47,7 @@ func NewInMemoryStore() Store {
 		performances:   make(map[string]Performance),
 		dialogues:      make(map[string]DialogueRecord),
 		agentSessions:  make(map[string][]byte),
+		shardGroups:    make(map[string][]byte),
 	}
 }
 
@@ -455,6 +457,41 @@ func (s *memoryStore) DeleteAgentSession(harness, id string) error {
 	}
 	s.mu.Lock()
 	delete(s.agentSessions, harness+"\x00"+id)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *memoryStore) SaveShardGroup(id string, group []byte) error {
+	if id == "" || len(group) == 0 {
+		return errors.New("memory: shard group id and payload are required")
+	}
+	s.mu.Lock()
+	s.shardGroups[id] = append([]byte(nil), group...)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *memoryStore) ShardGroups() ([][]byte, error) {
+	s.mu.RLock()
+	ids := make([]string, 0, len(s.shardGroups))
+	for id := range s.shardGroups {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	groups := make([][]byte, 0, len(ids))
+	for _, id := range ids {
+		groups = append(groups, append([]byte(nil), s.shardGroups[id]...))
+	}
+	s.mu.RUnlock()
+	return groups, nil
+}
+
+func (s *memoryStore) DeleteShardGroup(id string) error {
+	if id == "" {
+		return errors.New("memory: shard group id is required")
+	}
+	s.mu.Lock()
+	delete(s.shardGroups, id)
 	s.mu.Unlock()
 	return nil
 }
