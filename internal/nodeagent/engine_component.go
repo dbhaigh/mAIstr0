@@ -2,12 +2,13 @@ package nodeagent
 
 import (
 	"context"
-	"github.com/maistr0/maistr0/internal/logging"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/logging"
 )
 
 const (
@@ -16,30 +17,101 @@ const (
 	modelInventoryCacheTTL     = 5 * time.Second
 )
 
-func prioritizeAcceleratedEngines(engines []engine.Engine, hw hardware.Info) []engine.Engine {
-	ordered := make([]engine.Engine, 0, len(engines))
-	priorities := make([]string, 0, 2)
-	if hw.HasNPU {
-		priorities = append(priorities, "fastflowlm")
+func prioritizeEnginesByCapabilities(engines []engine.Engine, hw hardware.Info, statuses []engine.Status) []engine.Engine {
+	type enginePriority struct {
+		backend engine.Engine
+		ready   bool
+		device  int
 	}
-	if hw.HasGPU {
-		priorities = append(priorities, "lmstudio")
-	}
-	preferred := make(map[string]bool, len(priorities))
-	for _, name := range priorities {
-		preferred[name] = true
-		for _, eng := range engines {
-			if eng.Name() == name {
-				ordered = append(ordered, eng)
+	priorities := make([]enginePriority, len(engines))
+	for i, backend := range engines {
+		capabilities := engine.CapabilitiesFor(backend)
+		ready := false
+		for _, status := range statuses {
+			if !strings.EqualFold(status.Name, backend.Name()) {
+				continue
 			}
+			capabilities = engine.MergeCapabilities(capabilities, status.Capabilities)
+			ready = ready || status.Ready && status.ModelCount > 0
+		}
+		priorities[i] = enginePriority{
+			backend: backend, ready: ready,
+			device: engineDeviceMatchScore(capabilities, hw),
 		}
 	}
-	for _, eng := range engines {
-		if !preferred[eng.Name()] {
-			ordered = append(ordered, eng)
+	sort.SliceStable(priorities, func(i, j int) bool {
+		if priorities[i].ready != priorities[j].ready {
+			return priorities[i].ready
 		}
+		return priorities[i].device > priorities[j].device
+	})
+	ordered := make([]engine.Engine, len(priorities))
+	for i := range priorities {
+		ordered[i] = priorities[i].backend
 	}
 	return ordered
+}
+
+func engineDeviceMatchScore(capabilities engine.Capabilities, hw hardware.Info) int {
+	if len(capabilities.OS) > 0 && !containsFold(capabilities.OS, hw.OS) {
+		return 0
+	}
+	best := 0
+	for _, device := range availableHardwareDevices(hw) {
+		kind := strings.ToLower(strings.TrimSpace(device.Kind))
+		if !engine.SupportsDeviceKind(capabilities.Devices, kind) {
+			continue
+		}
+		if !engine.BackendsOverlap(capabilities.Backends, device.Backends) {
+			continue
+		}
+		if priority := deviceKindPriority(kind); priority > best {
+			best = priority
+		}
+	}
+	return best
+}
+
+func availableHardwareDevices(hw hardware.Info) []hardware.Device {
+	devices := append([]hardware.Device(nil), hw.Devices...)
+	if hw.HasGPU && !hasHardwareDevice(devices, "gpu") {
+		devices = append(devices, hardware.Device{Kind: "gpu"})
+	}
+	if hw.HasNPU && !hasHardwareDevice(devices, "npu") {
+		devices = append(devices, hardware.Device{Kind: "npu"})
+	}
+	return devices
+}
+
+func hasHardwareDevice(devices []hardware.Device, kind string) bool {
+	for _, device := range devices {
+		if strings.EqualFold(device.Kind, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
+}
+
+func deviceKindPriority(kind string) int {
+	switch kind {
+	case "npu":
+		return 3
+	case "gpu":
+		return 2
+	case "cpu":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // ModelState pairs a discovered model with whether it is currently enabled
@@ -65,6 +137,7 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 		protocols := engine.ProtocolsForEngine(eng.Name())
 		status := engine.Status{
 			Name: eng.Name(), Protocols: protocols, InventoryState: engine.ModelInventoryUnknown,
+			Capabilities: engine.CapabilitiesFor(eng),
 		}
 		listed, err := eng.ListModels()
 		status.LastCheckedAt = time.Now()
@@ -78,6 +151,24 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 		status.Ready = true
 		status.ModelCount = len(listed)
 		status.LastSuccessfulAt = status.LastCheckedAt
+		status.Capabilities = engine.CapabilitiesFor(eng)
+		for _, model := range listed {
+			if model.Device != "" {
+				status.Capabilities = engine.MergeCapabilities(
+					status.Capabilities, engine.Capabilities{Devices: []string{model.Device}},
+				)
+			}
+		}
+		if capabilityProber, ok := eng.(engine.CapabilityProber); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			capabilities, probeErr := capabilityProber.ProbeCapabilities(ctx)
+			cancel()
+			if probeErr != nil {
+				status.CapabilitiesError = probeErr.Error()
+			} else {
+				status.Capabilities = engine.MergeCapabilities(status.Capabilities, capabilities)
+			}
+		}
 		if len(listed) == 0 {
 			status.InventoryState = engine.ModelInventoryEmpty
 		} else {
@@ -149,7 +240,6 @@ func (c *engineComponent) scanDetectedEngines(retainMissing bool) {
 		detector = engine.DetectAll
 	}
 	engines := detector()
-	engines = prioritizeAcceleratedEngines(engines, c.telemetry.hardwareSnapshot())
 	now := time.Now()
 	c.enginesMu.Lock()
 	detected := make([]engine.Engine, 0, len(engines)+len(c.detectedEngines))
@@ -207,30 +297,47 @@ func engineIdentity(eng engine.Engine) string {
 
 func (c *engineComponent) engineSnapshot() []engine.Engine {
 	hw, hardwareGeneration := c.telemetry.hardwareSnapshotVersioned()
+	statuses := c.engineCapabilityStatusSnapshot()
 	c.enginesMu.Lock()
-	defer c.enginesMu.Unlock()
+	var engines []engine.Engine
 	if c.engineSnapshotCacheValid &&
 		c.engineSnapshotGeneration == c.engineGeneration &&
 		c.engineSnapshotHardwareGen == hardwareGeneration {
-		return append([]engine.Engine(nil), c.engineSnapshotCache...)
-	}
-	engines := make([]engine.Engine, 0, len(c.engines)+len(c.detectedEngines))
-	seen := make(map[string]struct{}, len(c.engines)+len(c.detectedEngines))
-	for _, group := range [][]engine.Engine{c.engines, c.detectedEngines} {
-		for _, eng := range group {
-			key := engineIdentity(eng)
-			if _, ok := seen[key]; ok {
-				continue
+		engines = append([]engine.Engine(nil), c.engineSnapshotCache...)
+	} else {
+		engines = make([]engine.Engine, 0, len(c.engines)+len(c.detectedEngines))
+		seen := make(map[string]struct{}, len(c.engines)+len(c.detectedEngines))
+		for _, group := range [][]engine.Engine{c.engines, c.detectedEngines} {
+			for _, eng := range group {
+				key := engineIdentity(eng)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				engines = append(engines, eng)
 			}
-			seen[key] = struct{}{}
-			engines = append(engines, eng)
+		}
+		c.engineSnapshotCache = append([]engine.Engine(nil), engines...)
+		c.engineSnapshotGeneration = c.engineGeneration
+		c.engineSnapshotHardwareGen = hardwareGeneration
+		c.engineSnapshotCacheValid = true
+	}
+	c.enginesMu.Unlock()
+	return prioritizeEnginesByCapabilities(engines, hw, statuses)
+}
+
+func (c *engineComponent) engineCapabilityStatusSnapshot() []engine.Status {
+	c.modelMu.Lock()
+	statuses := make([]engine.Status, len(c.reportedEngines))
+	for i, status := range c.reportedEngines {
+		statuses[i] = engine.Status{
+			Name: status.Name, Ready: status.Ready, ModelCount: status.ModelCount,
+			// Capability slices are read-only after publication; refresh replaces the status snapshot.
+			Capabilities: status.Capabilities,
 		}
 	}
-	c.engineSnapshotCache = prioritizeAcceleratedEngines(engines, hw)
-	c.engineSnapshotGeneration = c.engineGeneration
-	c.engineSnapshotHardwareGen = hardwareGeneration
-	c.engineSnapshotCacheValid = true
-	return append([]engine.Engine(nil), c.engineSnapshotCache...)
+	c.modelMu.Unlock()
+	return statuses
 }
 
 func (c *engineComponent) allModelsWithState() []ModelState {
@@ -266,6 +373,7 @@ func (c *engineComponent) reportedEngineList() []engine.Status {
 	engines := append([]engine.Status(nil), c.reportedEngines...)
 	for i := range engines {
 		engines[i].Protocols = append([]string(nil), engines[i].Protocols...)
+		engines[i].Capabilities = engine.CloneCapabilities(engines[i].Capabilities)
 		if engines[i].PipelineStage != nil {
 			capabilities := *engines[i].PipelineStage
 			capabilities.Models = append([]engine.PipelineStageModelCapability(nil), capabilities.Models...)

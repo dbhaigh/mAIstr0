@@ -4,13 +4,11 @@ package hardware
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // GPUUsageSample is one five-second GPU telemetry snapshot. Utilization is
@@ -38,26 +36,49 @@ type SystemUsageSample struct {
 	MemoryUtilization int       `json:"memory_usage_percent"`
 }
 
+// Device describes one CPU or accelerator exposed by the host.
+type Device struct {
+	Kind          string   `json:"kind"`
+	Vendor        string   `json:"vendor,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	Index         int      `json:"index"`
+	MemoryMB      uint64   `json:"memory_mb,omitempty"`
+	FreeMemoryMB  uint64   `json:"free_memory_mb,omitempty"`
+	UnifiedMemory bool     `json:"unified_memory,omitempty"`
+	Driver        string   `json:"driver,omitempty"`
+	Backends      []string `json:"backends,omitempty"`
+}
+
+// NetworkLink describes one network interface and its advertised link speed.
+type NetworkLink struct {
+	Name      string `json:"name"`
+	SpeedMbps uint64 `json:"speed_mbps,omitempty"`
+	RDMA      bool   `json:"rdma,omitempty"`
+}
+
 // Info describes the detected capabilities of the host machine.
 type Info struct {
-	OS                   string  `json:"os"`
-	Arch                 string  `json:"arch"`
-	CPUCores             int     `json:"cpu_cores"`
-	CPUStatsAvailable    bool    `json:"cpu_stats_available"`
-	CPUUtilization       int     `json:"cpu_utilization_percent,omitempty"`
-	TotalRAMMB           uint64  `json:"total_ram_mb"`
-	MemoryStatsAvailable bool    `json:"memory_stats_available"`
-	MemoryUsage          int     `json:"memory_usage_percent,omitempty"`
-	HasGPU               bool    `json:"has_gpu"`
-	GPUVendor            string  `json:"gpu_vendor,omitempty"`
-	GPUStatsAvailable    bool    `json:"gpu_stats_available"`
-	GPUUtilization       int     `json:"gpu_utilization_percent"`
-	GPUMemoryFreeMB      uint64  `json:"gpu_memory_free_mb,omitempty"`
-	HasNPU               bool    `json:"has_npu"`
-	NPUVendor            string  `json:"npu_vendor,omitempty"`
-	NPUStatsAvailable    bool    `json:"npu_stats_available"`
-	NPUUtilization       int     `json:"npu_utilization_percent"`
-	Score                float64 `json:"score"`
+	OS                   string        `json:"os"`
+	Arch                 string        `json:"arch"`
+	CPUCores             int           `json:"cpu_cores"`
+	CPUStatsAvailable    bool          `json:"cpu_stats_available"`
+	CPUUtilization       int           `json:"cpu_utilization_percent,omitempty"`
+	TotalRAMMB           uint64        `json:"total_ram_mb"`
+	MemoryStatsAvailable bool          `json:"memory_stats_available"`
+	MemoryUsage          int           `json:"memory_usage_percent,omitempty"`
+	HasGPU               bool          `json:"has_gpu"`
+	GPUVendor            string        `json:"gpu_vendor,omitempty"`
+	GPUStatsAvailable    bool          `json:"gpu_stats_available"`
+	GPUUtilization       int           `json:"gpu_utilization_percent"`
+	GPUMemoryFreeMB      uint64        `json:"gpu_memory_free_mb,omitempty"`
+	HasNPU               bool          `json:"has_npu"`
+	NPUVendor            string        `json:"npu_vendor,omitempty"`
+	NPUStatsAvailable    bool          `json:"npu_stats_available"`
+	NPUUtilization       int           `json:"npu_utilization_percent"`
+	Devices              []Device      `json:"devices,omitempty"`
+	NUMANodes            []int         `json:"numa_nodes,omitempty"`
+	NetworkLinks         []NetworkLink `json:"network_links,omitempty"`
+	Score                float64       `json:"score"`
 }
 
 // Detect gathers hardware information about the current host.
@@ -68,8 +89,8 @@ func Detect() Info {
 		CPUCores: runtime.NumCPU(),
 	}
 	info.TotalRAMMB = totalMemoryMB()
-	info.HasGPU, info.GPUVendor = detectGPU()
-	info.HasNPU, info.NPUVendor = detectNPU()
+	info.Devices, info.NUMANodes, info.NetworkLinks = detectHardwareInventory(systemDeviceProbe{}, info.OS, info.Arch)
+	populateLegacyDeviceFields(&info)
 	info.Score = computeScore(info)
 	return info
 }
@@ -170,84 +191,4 @@ func computeScore(info Info) float64 {
 		score += 30 // prefer nodes with a neural accelerator for compatible servers
 	}
 	return score
-}
-
-// detectNPU makes a best-effort, dependency-free probe for neural accelerators.
-// It intentionally reports capability only; a compatible inference server still
-// has to be running locally before the node advertises its models.
-func detectNPU() (bool, string) {
-	switch runtime.GOOS {
-	case "darwin":
-		if runtime.GOARCH == "arm64" {
-			return true, "apple-neural-engine"
-		}
-	case "windows":
-		if _, err := exec.LookPath("powershell.exe"); err == nil {
-			out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-PnpDevice -PresentOnly | Select-Object -ExpandProperty FriendlyName").Output()
-			if err == nil {
-				if vendor := npuVendor(string(out)); vendor != "" {
-					return true, vendor
-				}
-			}
-		}
-	case "linux":
-		for _, path := range []string{"/dev/accel", "/dev/ivpu", "/dev/nnapi"} {
-			if _, err := os.Stat(path); err == nil {
-				return true, "linux-npu"
-			}
-		}
-		if _, err := exec.LookPath("lspci"); err == nil {
-			out, err := exec.Command("lspci").Output()
-			if err == nil {
-				if vendor := npuVendor(string(out)); vendor != "" {
-					return true, vendor
-				}
-			}
-		}
-	}
-	return false, ""
-}
-
-func npuVendor(text string) string {
-	value := strings.ToLower(text)
-	for _, match := range []struct {
-		needle string
-		vendor string
-	}{
-		{"neural engine", "apple-neural-engine"},
-		{"ai boost", "intel-npu"},
-		{"gaudi", " habana"},
-		{"ipu", "intel-npu"},
-		{"hexagon", "qualcomm-npu"},
-		{"hiai", "huawei-npu"},
-		{"hailo", "hailo-npu"},
-	} {
-		if strings.Contains(value, match.needle) {
-			return strings.TrimSpace(match.vendor)
-		}
-	}
-	for _, token := range strings.FieldsFunc(value, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}) {
-		if token == "npu" {
-			return "npu"
-		}
-	}
-	return ""
-}
-
-// detectGPU makes a best-effort, dependency-free attempt to detect a GPU
-// suitable for LLM acceleration by probing for common vendor CLI tools.
-func detectGPU() (bool, string) {
-	if _, err := exec.LookPath("nvidia-smi"); err == nil {
-		return true, "nvidia"
-	}
-	if _, err := exec.LookPath("rocm-smi"); err == nil {
-		return true, "amd"
-	}
-	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
-		// Apple Silicon has a unified-memory GPU usable via Metal.
-		return true, "apple"
-	}
-	return false, ""
 }

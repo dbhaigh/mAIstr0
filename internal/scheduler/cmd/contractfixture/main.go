@@ -56,6 +56,24 @@ func main() {
 		ID: "inspect", Description: "Inspect the image", Role: "vision", TaskType: "vision",
 		Tags: []string{"vision"}, RequiredCapabilities: []string{"vision"},
 	}})
+	generate("engine-device-capability", []cluster.NodeStatus{{
+		ID: "npu-worker", Address: "https://npu-worker", Healthy: true,
+		Hardware: hardware.Info{
+			Score: 20, HasNPU: true,
+			Devices: []hardware.Device{{Kind: "npu", Vendor: "huawei", Name: "Ascend 910", Backends: []string{"cann"}}},
+		},
+		Engines: []engine.Status{{
+			Name: "runtime", Ready: true, ModelCount: 1,
+			Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"cann"}},
+		}},
+		Models: []engine.Model{{
+			Name: "npu-model", Engine: "runtime", Tags: []string{"general"}, Device: "npu",
+		}},
+	}}, []engine.Model{{
+		Name: "npu-model", Engine: "runtime", Tags: []string{"general"}, Device: "npu",
+	}}, []scheduler.Subtask{{
+		ID: "infer", Description: "Run inference", Role: "worker", TaskType: "general",
+	}})
 }
 
 func generate(name string, nodes []cluster.NodeStatus, models []engine.Model, subtasks []scheduler.Subtask) {

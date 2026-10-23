@@ -130,7 +130,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 	tasks.SetSyncOrigin("task:" + cfg.NodeID)
 	configuredEngines := make([]engine.Engine, 0, len(cfg.Engines))
 	for _, configured := range cfg.Engines {
-		if e := engine.NewConfigured(configured.Name, configured.URL); e != nil {
+		if e := engine.NewConfiguredWithAPIKey(configured.Name, configured.URL, configured.APIKey); e != nil {
 			configuredEngines = append(configuredEngines, e)
 		}
 	}
@@ -355,6 +355,7 @@ type chatRequest struct {
 	Model       string               `json:"model"`
 	Messages    []engine.ChatMessage `json:"messages"`
 	Temperature float64              `json:"temperature,omitempty"`
+	MaxTokens   int                  `json:"max_tokens,omitempty"`
 }
 
 type chatResponse struct {

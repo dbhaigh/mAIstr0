@@ -16,7 +16,7 @@
     "pairing_pin": {"type": "string"},
     "disabled_models": {"type": ["array", "null"], "items": {"type": "string"}},
     "default_model": {"type": "string"},
-    "engines": {"type": "array", "items": {"type": "object", "required": ["name", "url"], "properties": {"name": {"type": "string"}, "url": {"type": "string"}, "registry_url": {"type": "string"}}, "additionalProperties": true}},
+    "engines": {"type": "array", "items": {"type": "object", "required": ["name", "url"], "properties": {"name": {"type": "string"}, "url": {"type": "string"}, "registry_url": {"type": "string"}, "api_key": {"type": "string", "description": "Optional bearer token for supported OpenAI-compatible engines; never returned by APIs or config dumps."}}, "additionalProperties": true}},
     "supported_shard_models": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "max_layers_it_can_host": {"type": "integer", "minimum": 0},
     "discovery_enabled": {"type": "boolean"},

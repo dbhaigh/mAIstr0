@@ -9,6 +9,7 @@
 !internal/memory/testdata/legacy-memory.db
 !internal/taskmgr/testdata/legacy-tasks.db
 .flm/*.tmp
+.flm/memory.json
 
 # Editor and operating-system files
 .vscode/

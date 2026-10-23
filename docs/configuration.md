@@ -41,10 +41,14 @@ PINs are optional for manual setup and should be supplied out of band.
   "engines": [
     { "name": "ollama", "url": "http://127.0.0.1:11434" },
     { "name": "lmstudio", "url": "http://127.0.0.1:1234" },
-    { "name": "llamacpp", "url": "http://127.0.0.1:8080" }
+    { "name": "llamacpp", "url": "http://127.0.0.1:8080", "api_key": "optional-token" }
   ]
 }
 ```
+
+`api_key` is optional and is sent as a bearer token by the `vllm`, `llamacpp`,
+`lmstudio`, and `fastflowlm` adapters. It is never logged or returned by node
+or orchestrator APIs, and `--print-config` redacts it.
 
 The node also supports `supported_shard_models` and
 `max_layers_it_can_host` as eligibility limits for configured stage-capable
@@ -111,7 +115,8 @@ request-level `routing_preference`.
 Nodes discover local Ollama, LM Studio, llama.cpp, and FastFlowLM services by
 default. Other supported configured engines include vLLM, TGI, LocalAI, MLX-LM,
 SGLang, and generic OpenAI-compatible servers. OpenAI-compatible engines
-implement `GET /v1/models` and `POST /v1/chat/completions`.
+include `vllm`, `llamacpp`, `lmstudio`, and `fastflowlm`; they implement
+`GET /v1/models` and `POST /v1/chat/completions`.
 
 LM Studio is discovered at `http://127.0.0.1:1234`; llama.cpp is discovered at
 `http://127.0.0.1:8080` or PAIR's managed-server port

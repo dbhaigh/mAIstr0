@@ -278,25 +278,70 @@ func TestHandlePropertiesLoadsAndSavesCompleteProperties(t *testing.T) {
 	}
 }
 
-func TestPrioritizeAcceleratedEnginesPrefersNPUCompatibleServer(t *testing.T) {
+type capabilityTestEngine struct {
+	engine.Engine
+	capabilities engine.Capabilities
+}
+
+func (e capabilityTestEngine) Capabilities() engine.Capabilities { return e.capabilities }
+
+func TestPrioritizeEnginesByCapabilitiesAndReadiness(t *testing.T) {
 	engines := []engine.Engine{
-		&pullTestEngine{name: "ollama"},
-		&pullTestEngine{name: "fastflowlm"},
-		&pullTestEngine{name: "lmstudio"},
+		capabilityTestEngine{
+			Engine:       &pullTestEngine{name: "cpu"},
+			capabilities: engine.Capabilities{Devices: []string{"cpu"}},
+		},
+		capabilityTestEngine{
+			Engine:       &pullTestEngine{name: "gpu"},
+			capabilities: engine.Capabilities{},
+		},
+		capabilityTestEngine{
+			Engine:       &pullTestEngine{name: "npu"},
+			capabilities: engine.Capabilities{},
+		},
 	}
 	tests := []struct {
-		name string
-		hw   hardware.Info
-		want string
+		name     string
+		hw       hardware.Info
+		statuses []engine.Status
+		want     string
 	}{
-		{name: "NPU takes precedence over GPU", hw: hardware.Info{HasGPU: true, HasNPU: true}, want: "fastflowlm,lmstudio,ollama"},
-		{name: "NPU without GPU", hw: hardware.Info{HasNPU: true}, want: "fastflowlm,ollama,lmstudio"},
-		{name: "GPU without NPU", hw: hardware.Info{HasGPU: true}, want: "lmstudio,ollama,fastflowlm"},
-		{name: "no accelerator", want: "ollama,fastflowlm,lmstudio"},
+		{
+			name: "best available device wins among ready engines",
+			hw: hardware.Info{Devices: []hardware.Device{
+				{Kind: "cpu"}, {Kind: "gpu", Backends: []string{"cuda"}}, {Kind: "npu", Backends: []string{"openvino"}},
+			}},
+			statuses: []engine.Status{
+				{Name: "cpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"cpu"}}},
+				{Name: "gpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}}},
+				{Name: "npu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"openvino"}}},
+			},
+			want: "npu,gpu,cpu",
+		},
+		{
+			name: "ready model outranks unsupported unready accelerator",
+			hw: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu", Backends: []string{"cuda"}}, {Kind: "npu", Backends: []string{"openvino"}},
+			}},
+			statuses: []engine.Status{
+				{Name: "gpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}}},
+				{Name: "npu", Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"openvino"}}},
+			},
+			want: "gpu,npu,cpu",
+		},
+		{
+			name: "backend mismatch does not match device",
+			hw:   hardware.Info{Devices: []hardware.Device{{Kind: "gpu", Backends: []string{"rocm"}}}},
+			statuses: []engine.Status{
+				{Name: "gpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}}},
+				{Name: "cpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"cpu"}}},
+			},
+			want: "cpu,gpu,npu",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ordered := prioritizeAcceleratedEngines(engines, tt.hw)
+			ordered := prioritizeEnginesByCapabilities(engines, tt.hw, tt.statuses)
 			var names []string
 			for _, e := range ordered {
 				names = append(names, e.Name())

@@ -28,6 +28,10 @@ func (s *Simulated) Name() string { return "simulated" }
 
 func (s *Simulated) Available() bool { return true }
 
+func (s *Simulated) Capabilities() Capabilities {
+	return Capabilities{Devices: []string{"cpu"}}
+}
+
 func (s *Simulated) ListModels() ([]Model, error) {
 	return []Model{
 		{Name: "simulated-general", Engine: "simulated", Tags: []string{"chat", "general"}},

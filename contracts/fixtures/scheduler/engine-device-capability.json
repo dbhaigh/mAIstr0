@@ -1,0 +1,124 @@
+{
+  "name": "engine-device-capability",
+  "request": {
+    "nodes": [
+      {
+        "id": "npu-worker",
+        "version": "",
+        "address": "https://npu-worker",
+        "hardware": {
+          "os": "",
+          "arch": "",
+          "cpu_cores": 0,
+          "cpu_stats_available": false,
+          "total_ram_mb": 0,
+          "memory_stats_available": false,
+          "has_gpu": false,
+          "gpu_stats_available": false,
+          "gpu_utilization_percent": 0,
+          "has_npu": true,
+          "npu_stats_available": false,
+          "npu_utilization_percent": 0,
+          "devices": [
+            {
+              "kind": "npu",
+              "vendor": "huawei",
+              "name": "Ascend 910",
+              "index": 0,
+              "backends": [
+                "cann"
+              ]
+            }
+          ],
+          "score": 20
+        },
+        "models": [
+          {
+            "name": "npu-model",
+            "engine": "runtime",
+            "tags": [
+              "general"
+            ],
+            "device": "npu"
+          }
+        ],
+        "engines": [
+          {
+            "name": "runtime",
+            "ready": true,
+            "capabilities": {
+              "devices": [
+                "npu"
+              ],
+              "backends": [
+                "cann"
+              ]
+            },
+            "model_count": 1,
+            "last_checked_at": "0001-01-01T00:00:00Z",
+            "last_successful_at": "0001-01-01T00:00:00Z"
+          }
+        ],
+        "telemetry_at": "0001-01-01T00:00:00Z",
+        "fast_score": 0,
+        "active_tasks": 0,
+        "last_seen": "0001-01-01T00:00:00Z",
+        "healthy": true,
+        "leader": false
+      }
+    ],
+    "models": [
+      {
+        "name": "npu-model",
+        "engine": "runtime",
+        "tags": [
+          "general"
+        ],
+        "device": "npu"
+      }
+    ],
+    "subtasks": [
+      {
+        "id": "infer",
+        "description": "Run inference",
+        "role": "worker",
+        "task_type": "general",
+        "tags": null
+      }
+    ]
+  },
+  "expected_response": {
+    "assignments": [
+      {
+        "subtask": {
+          "id": "infer",
+          "description": "Run inference",
+          "role": "worker",
+          "task_type": "general",
+          "tags": null
+        },
+        "node_id": "npu-worker",
+        "address": "https://npu-worker",
+        "model": "npu-model",
+        "engine": "runtime",
+        "score": 56,
+        "score_factors": {
+          "model_match": 50,
+          "hardware": 6,
+          "active_tasks": 0,
+          "queued_tasks": 0,
+          "load_penalty": 0,
+          "gpu_utilization_penalty": 0,
+          "npu_utilization_penalty": 0,
+          "estimated_completion_seconds": 3.5276684147527875,
+          "estimated_tokens_per_second": 9.071147352221454,
+          "learned_bias": 0,
+          "telemetry_fresh": false
+        }
+      }
+    ]
+  },
+  "normalization_rules": [
+    "No normalization; fixed inputs produce deterministic scores and assignments."
+  ]
+}

@@ -29,11 +29,44 @@
         "npu_vendor": {"type": "string"},
         "npu_stats_available": {"type": "boolean"},
         "npu_utilization_percent": {"type": "integer"},
+        "devices": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {"type": "string", "enum": ["cpu", "gpu", "npu"]},
+              "vendor": {"type": "string"},
+              "name": {"type": "string"},
+              "index": {"type": "integer", "minimum": 0},
+              "memory_mb": {"type": "integer", "minimum": 0},
+              "free_memory_mb": {"type": "integer", "minimum": 0},
+              "unified_memory": {"type": "boolean"},
+              "driver": {"type": "string"},
+              "backends": {"type": "array", "items": {"type": "string"}}
+            },
+            "additionalProperties": true
+          }
+        },
+        "numa_nodes": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "network_links": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "speed_mbps": {"type": "integer", "minimum": 0},
+              "rdma": {"type": "boolean"}
+            },
+            "additionalProperties": true
+          }
+        },
         "score": {"type": "number"}
       },
       "additionalProperties": true
     },
-    "models": {"type": ["array", "null"], "items": {"type": "object", "required": ["name", "engine", "tags"], "properties": {"name": {"type": "string"}, "engine": {"type": "string"}, "tags": {"type": ["array", "null"], "items": {"type": "string"}}, "protocols": {"type": "array", "items": {"type": "string"}}, "size_gb": {"type": "number"}}, "additionalProperties": true}},
+    "models": {"type": ["array", "null"], "items": {"type": "object", "required": ["name", "engine", "tags"], "properties": {"name": {"type": "string"}, "engine": {"type": "string"}, "tags": {"type": ["array", "null"], "items": {"type": "string"}}, "protocols": {"type": "array", "items": {"type": "string"}}, "size_gb": {"type": "number"}, "context_length": {"type": "integer", "minimum": 0}, "device": {"type": "string", "enum": ["cpu", "gpu", "npu"]}}, "additionalProperties": true}},
     "engines": {"type": "array", "items": {"$ref": "engine-status.schema.json"}},
     "supported_shard_models": {"type": "array", "items": {"type": "string"}},
     "max_layers_it_can_host": {"type": "integer", "minimum": 0},

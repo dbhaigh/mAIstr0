@@ -150,14 +150,15 @@ func (h *Harness) ExecuteTool(ctx context.Context, sessionID, name string, args 
 
 // ModelInfo describes an LLM model available on a specific cluster node.
 type ModelInfo struct {
-	NodeID   string   `json:"node_id"`
-	NodeAddr string   `json:"node_address"`
-	Name     string   `json:"name"`
-	Engine   string   `json:"engine"`
-	Tags     []string `json:"tags"`
-	SizeGB   float64  `json:"size_gb,omitempty"`
-	Default  bool     `json:"default"`
-	Healthy  bool     `json:"healthy"`
+	NodeID        string   `json:"node_id"`
+	NodeAddr      string   `json:"node_address"`
+	Name          string   `json:"name"`
+	Engine        string   `json:"engine"`
+	Tags          []string `json:"tags"`
+	SizeGB        float64  `json:"size_gb,omitempty"`
+	ContextLength int      `json:"context_length,omitempty"`
+	Default       bool     `json:"default"`
+	Healthy       bool     `json:"healthy"`
 }
 
 // ListClusterModels returns every available model across all healthy nodes.
@@ -167,14 +168,15 @@ func (h *Harness) ListClusterModels() []ModelInfo {
 	for _, n := range nodes {
 		for _, m := range n.Models {
 			models = append(models, ModelInfo{
-				NodeID:   n.ID,
-				NodeAddr: n.Address,
-				Name:     m.Name,
-				Engine:   m.Engine,
-				Tags:     m.Tags,
-				SizeGB:   m.SizeGB,
-				Default:  m.Name == n.DefaultModel,
-				Healthy:  n.Healthy,
+				NodeID:        n.ID,
+				NodeAddr:      n.Address,
+				Name:          m.Name,
+				Engine:        m.Engine,
+				Tags:          m.Tags,
+				SizeGB:        m.SizeGB,
+				ContextLength: m.ContextLength,
+				Default:       m.Name == n.DefaultModel,
+				Healthy:       n.Healthy,
 			})
 		}
 	}

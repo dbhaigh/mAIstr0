@@ -11,10 +11,13 @@ func TestNPUVendor(t *testing.T) {
 		text string
 		want string
 	}{
-		{name: "intel", text: "Intel(R) AI Boost", want: "intel-npu"},
-		{name: "qualcomm", text: "Qualcomm Hexagon NPU", want: "qualcomm-npu"},
+		{name: "intel AI Boost", text: "Intel(R) Core(TM) Ultra 7 155H AI Boost", want: "intel-npu"},
+		{name: "Intel IPU", text: "Intel IPU 6.0", want: "intel-npu"},
+		{name: "qualcomm", text: "Qualcomm Snapdragon X Elite Hexagon NPU", want: "qualcomm-npu"},
 		{name: "hailo", text: "Hailo-8 AI Processor", want: "hailo-npu"},
-		{name: "generic NPU token", text: "Unknown NPU device", want: "npu"},
+		{name: "habana", text: "Intel Gaudi 2 AI accelerator", want: "habana"},
+		{name: "generic NPU has unknown vendor", text: "Unknown NPU device", want: ""},
+		{name: "IPU inside unrelated word", text: "Quipu sensor", want: ""},
 		{name: "input device is not an NPU", text: "HID-compliant input device", want: ""},
 	}
 	for _, tt := range tests {

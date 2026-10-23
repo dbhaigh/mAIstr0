@@ -15,23 +15,27 @@ import (
 // Model describes an LLM available on a node, tagged with the task
 // categories it is well suited for so the scheduler can match work to it.
 type Model struct {
-	Name      string   `json:"name"`
-	Engine    string   `json:"engine"`
-	Tags      []string `json:"tags"`
-	Protocols []string `json:"protocols,omitempty"`
-	SizeGB    float64  `json:"size_gb,omitempty"`
+	Name          string   `json:"name"`
+	Engine        string   `json:"engine"`
+	Tags          []string `json:"tags"`
+	Protocols     []string `json:"protocols,omitempty"`
+	SizeGB        float64  `json:"size_gb,omitempty"`
+	ContextLength int      `json:"context_length,omitempty"`
+	Device        string   `json:"device,omitempty"`
 }
 
 type Status struct {
-	Name              string                      `json:"name"`
-	Ready             bool                        `json:"ready"` // The engine responded to its model inventory request.
-	Protocols         []string                    `json:"protocols,omitempty"`
-	InventoryState    string                      `json:"inventory_state,omitempty"`
-	ModelCount        int                         `json:"model_count"`
-	LastCheckedAt     time.Time                   `json:"last_checked_at,omitempty"`
-	LastSuccessfulAt  time.Time                   `json:"last_successful_at,omitempty"`
-	LastError         string                      `json:"last_error,omitempty"`
-	PipelineStage     *PipelineStageCapabilities  `json:"pipeline_stage,omitempty"`
+	Name               string                     `json:"name"`
+	Ready              bool                       `json:"ready"` // The engine responded to its model inventory request.
+	Protocols          []string                   `json:"protocols,omitempty"`
+	Capabilities       Capabilities               `json:"capabilities,omitempty"`
+	CapabilitiesError  string                     `json:"capabilities_error,omitempty"`
+	InventoryState     string                     `json:"inventory_state,omitempty"`
+	ModelCount         int                        `json:"model_count"`
+	LastCheckedAt      time.Time                  `json:"last_checked_at,omitempty"`
+	LastSuccessfulAt   time.Time                  `json:"last_successful_at,omitempty"`
+	LastError          string                     `json:"last_error,omitempty"`
+	PipelineStage      *PipelineStageCapabilities `json:"pipeline_stage,omitempty"`
 	PipelineStageError string                     `json:"pipeline_stage_error,omitempty"`
 }
 
@@ -96,6 +100,12 @@ type EngineWithOptions interface {
 // with request context cancellation.
 type EngineWithChatContext interface {
 	ChatWithContext(ctx context.Context, model string, messages []ChatMessage) (string, error)
+}
+
+// EngineWithChatOptions is implemented by engines that support generation
+// parameters during multi-turn chat.
+type EngineWithChatOptions interface {
+	ChatWithOptions(ctx context.Context, model string, messages []ChatMessage, options GenerationOptions) (string, error)
 }
 
 // StreamingEngine is implemented by engines that can return generated text
@@ -172,16 +182,32 @@ func firstAvailableLlamaCPP(candidates ...*LlamaCPP) Engine {
 }
 
 func NewConfigured(name, baseURL string) Engine {
+	return NewConfiguredWithAPIKey(name, baseURL, "")
+}
+
+func NewConfiguredWithAPIKey(name, baseURL, apiKey string) Engine {
 	switch name {
 	case "ollama":
 		return NewOllama(baseURL)
 	case "llamacpp":
+		if apiKey != "" {
+			return &LlamaCPP{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
+		}
 		return NewLlamaCPP(baseURL)
 	case "vllm":
+		if apiKey != "" {
+			return newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)
+		}
 		return NewVLLM(baseURL)
 	case "lmstudio":
+		if apiKey != "" {
+			return &LMStudio{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
+		}
 		return NewLMStudio(baseURL)
 	case "fastflowlm":
+		if apiKey != "" {
+			return &FastFlowLM{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
+		}
 		return NewFastFlowLM(baseURL)
 	case "tgi", "localai", "mlx", "sglang", "openai":
 		return newOpenAICompatibleEngine(baseURL, name)

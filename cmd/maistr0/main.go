@@ -439,7 +439,7 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 		}
 		return writeNormalizedConfig(out, struct {
 			Node config.NodeConfig `json:"node"`
-		}{Node: cfg})
+		}{Node: redactNodeConfig(cfg)})
 	}
 	if role != "auto" && role != "both" && role != "orchestrator" {
 		return fmt.Errorf("unknown --role %q (want auto, orchestrator, node, or both)", role)
@@ -501,7 +501,16 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 	return writeNormalizedConfig(out, struct {
 		Node         config.NodeConfig         `json:"node"`
 		Orchestrator config.OrchestratorConfig `json:"orchestrator"`
-	}{Node: nodeCfg, Orchestrator: orchCfg})
+	}{Node: redactNodeConfig(nodeCfg), Orchestrator: orchCfg})
+}
+
+func redactNodeConfig(cfg config.NodeConfig) config.NodeConfig {
+	for index := range cfg.Engines {
+		if cfg.Engines[index].APIKey != "" {
+			cfg.Engines[index].APIKey = "[REDACTED]"
+		}
+	}
+	return cfg
 }
 
 func writeNormalizedConfig(out io.Writer, value any) error {

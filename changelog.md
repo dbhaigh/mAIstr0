@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.0.21 - 2026-10-22
+
+### Added
+
+- Support optional bearer API keys for configured OpenAI-compatible engines,
+  report available model size/context metadata, and document the `llamacpp`
+  engine name and secret-handling behavior.
+- Add an optional per-device CPU/GPU/NPU inventory with accelerator memory,
+  supported backends, NUMA nodes, and network-link details while retaining the
+  legacy node hardware fields.
+- Report verified engine capabilities and model execution devices, match engine
+  ordering and GPU/NPU model bonuses to node devices, and only credit NPU
+  election strength when a ready model reports running on an NPU.
+
+### Fixed
+
+- Share vLLM-compatible chat request construction across generation, chat, and
+  streaming, including chat temperature and max-token options.
 
 ## 0.0.20 - 2026-10-22
 

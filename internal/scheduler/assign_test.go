@@ -245,10 +245,19 @@ func TestAssignPrefersModelsAdvertisedByGPUNode(t *testing.T) {
 	}
 }
 
-func TestAssignPrefersLMStudioAndSmallerModelOnGPU(t *testing.T) {
+func TestAssignPrefersCapabilityMatchedSmallerModelOnGPU(t *testing.T) {
 	nodes := []cluster.NodeStatus{{
 		ID: "gpu", Address: "http://gpu", Healthy: true,
-		Hardware: hardware.Info{HasGPU: true},
+		Hardware: hardware.Info{
+			HasGPU:  true,
+			Devices: []hardware.Device{{Kind: "gpu", Backends: []string{"cuda"}}},
+		},
+		Engines: []engine.Status{
+			{Name: "ollama", Ready: true, ModelCount: 1},
+			{Name: "lmstudio", Ready: true, ModelCount: 2, Capabilities: engine.Capabilities{
+				Devices: []string{"gpu"}, Backends: []string{"cuda"},
+			}},
+		},
 		Models: []engine.Model{
 			{Name: "ollama-general", Engine: "ollama", Tags: []string{"general"}},
 			{Name: "lmstudio-large", Engine: "lmstudio", Tags: []string{"general"}},
@@ -261,7 +270,7 @@ func TestAssignPrefersLMStudioAndSmallerModelOnGPU(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignments) != 1 || assignments[0].Model != "lmstudio-small" {
-		t.Fatalf("assigned to %+v, want the small LM Studio model on the GPU node", assignments)
+		t.Fatalf("assigned to %+v, want the smaller model from the GPU-capable engine", assignments)
 	}
 }
 

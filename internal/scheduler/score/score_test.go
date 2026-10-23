@@ -351,6 +351,92 @@ func TestScoreRejectsIneligibleModels(t *testing.T) {
 	}
 }
 
+func TestAcceleratorCompatibilityBonusUsesEngineCapabilities(t *testing.T) {
+	tests := []struct {
+		name      string
+		hardware  hardware.Info
+		status    engine.Status
+		model     engine.Model
+		wantBonus float64
+	}{
+		{
+			name: "GPU backend match",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu", Backends: []string{"cuda"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}},
+			},
+			model:     engine.Model{Engine: "engine", Tags: []string{"fast"}},
+			wantBonus: acceleratorModelBonus + acceleratorSmallModelBonus,
+		},
+		{
+			name: "NPU backend match",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "npu", Backends: []string{"cann"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"cann"}},
+			},
+			model:     engine.Model{Engine: "engine"},
+			wantBonus: acceleratorModelBonus,
+		},
+		{
+			name: "device kind mismatch",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu", Backends: []string{"cuda"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"npu"}},
+			},
+			model: engine.Model{Engine: "engine"},
+		},
+		{
+			name: "backend mismatch",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu", Backends: []string{"rocm"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}},
+			},
+			model: engine.Model{Engine: "engine"},
+		},
+		{
+			name: "engine not ready",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu"},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: false, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"gpu"}},
+			},
+			model: engine.Model{Engine: "engine"},
+		},
+		{
+			name:     "legacy hardware flags still match",
+			hardware: hardware.Info{HasGPU: true},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"gpu"}},
+			},
+			model:     engine.Model{Engine: "engine"},
+			wantBonus: acceleratorModelBonus,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			node := cluster.NodeStatus{Hardware: test.hardware, Engines: []engine.Status{test.status}}
+			if got := acceleratorCompatibilityBonus(node, test.model); got != test.wantBonus {
+				t.Fatalf("acceleratorCompatibilityBonus() = %v, want %v", got, test.wantBonus)
+			}
+		})
+	}
+}
+
 func scoreNode(model engine.Model) cluster.NodeStatus {
 	return cluster.NodeStatus{
 		ID: "node", Healthy: true, Models: []engine.Model{model},

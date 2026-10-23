@@ -156,7 +156,7 @@ func (c *dialogueComponent) turnContext(ctx context.Context, id, model, system, 
 	defer release()
 
 	start := time.Now()
-	reply, err := chatWithContext(turnCtx, eng, modelName, history)
+	reply, err := chatWithContext(turnCtx, eng, modelName, history, engine.GenerationOptions{})
 	if err != nil && turnCtx.Err() == nil {
 		reply, err = generateWithOptions(turnCtx, eng, modelName, flattenChatML(history), engine.GenerationOptions{})
 	}

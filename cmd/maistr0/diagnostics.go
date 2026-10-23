@@ -267,7 +267,7 @@ func probeNodeEngines(cfg config.NodeConfig) []engineStatus {
 	if len(cfg.Engines) != 0 {
 		for _, configured := range cfg.Engines {
 			probes = append(probes, engineProbe{
-				name: configured.Name, engine: engine.NewConfigured(configured.Name, configured.URL),
+				name: configured.Name, engine: engine.NewConfiguredWithAPIKey(configured.Name, configured.URL, configured.APIKey),
 			})
 		}
 	} else {

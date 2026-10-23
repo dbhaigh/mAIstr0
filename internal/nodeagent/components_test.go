@@ -203,6 +203,39 @@ func TestEngineInventoryRefreshTracksChangesAndRetainsLastGoodModelsOnError(t *t
 	}
 }
 
+func TestEngineInventorySurfacesModelAndEngineCapabilities(t *testing.T) {
+	eng := &capabilityInventoryTestEngine{
+		inventoryTestEngine: &inventoryTestEngine{models: []engine.Model{{
+			Name: "accelerated-model", Device: "npu",
+		}}},
+		capabilities: engine.Capabilities{Devices: []string{"cpu"}, Backends: []string{"cann"}},
+	}
+	component := newEngineComponent(
+		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{},
+		newAgentState(config.NodeConfig{}),
+	)
+
+	component.refreshReportedModels()
+	models := component.reportedModelList()
+	if len(models) != 1 || models[0].Device != "npu" {
+		t.Fatalf("reported models = %+v, want model running on NPU", models)
+	}
+	statuses := component.reportedEngineList()
+	if len(statuses) != 1 || !statuses[0].Ready || statuses[0].ModelCount != 1 {
+		t.Fatalf("reported engine status = %+v", statuses)
+	}
+	if !containsEngineCapability(statuses[0].Capabilities.Devices, "cpu") ||
+		!containsEngineCapability(statuses[0].Capabilities.Devices, "npu") ||
+		!containsEngineCapability(statuses[0].Capabilities.Backends, "cann") {
+		t.Fatalf("reported capabilities = %+v", statuses[0].Capabilities)
+	}
+
+	statuses[0].Capabilities.Devices[0] = "mutated"
+	if got := component.reportedEngineList()[0].Capabilities.Devices[0]; got == "mutated" {
+		t.Fatal("mutating a returned engine status changed cached capabilities")
+	}
+}
+
 func TestModelInventoryTTLAndHardwareGenerationCaches(t *testing.T) {
 	eng := &inventoryTestEngine{models: []engine.Model{{Name: "alpha"}}}
 	telemetry := &telemetryComponent{}
@@ -357,6 +390,15 @@ type inventoryTestEngine struct {
 	listModelCount int
 }
 
+type capabilityInventoryTestEngine struct {
+	*inventoryTestEngine
+	capabilities engine.Capabilities
+}
+
+func (e *capabilityInventoryTestEngine) Capabilities() engine.Capabilities {
+	return e.capabilities
+}
+
 type blockingInventoryEngine struct {
 	started chan struct{}
 	release chan struct{}
@@ -397,4 +439,13 @@ func (e *inventoryTestEngine) listModelCalls() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.listModelCount
+}
+
+func containsEngineCapability(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

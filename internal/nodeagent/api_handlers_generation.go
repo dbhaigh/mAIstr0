@@ -192,7 +192,8 @@ func (a *Agent) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	start := time.Now()
-	reply, err := chatWithContext(r.Context(), eng, modelName, req.Messages)
+	options := engine.GenerationOptions{Temperature: req.Temperature, MaxTokens: req.MaxTokens}
+	reply, err := chatWithContext(r.Context(), eng, modelName, req.Messages, options)
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -207,7 +208,7 @@ func (a *Agent) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		sb.WriteString("<|im_start|>assistant\n")
 		var genErr error
-		reply, genErr = generateWithOptions(r.Context(), eng, modelName, sb.String(), engine.GenerationOptions{})
+		reply, genErr = generateWithOptions(r.Context(), eng, modelName, sb.String(), options)
 		if genErr != nil {
 			writeJSONError(w, apperr.InternalError(fmt.Errorf("%s; fallback error: %w", err, genErr)),
 				chatResponse{Model: modelName, DurationMs: duration, Error: err.Error() + "; fallback error: " + genErr.Error()})

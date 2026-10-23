@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +36,24 @@ func TestPrintNormalizedConfigWritesEffectiveNodeSettings(t *testing.T) {
 	if result.Node.ListenAddr != ":7551" || result.Node.MaxConcurrentTasks != config.DefaultNodeConcurrency ||
 		result.Node.AutoOpenBrowser || result.Node.NodeID == "" || result.Node.AdvertiseAddr == "" {
 		t.Fatalf("printed node config = %+v", result.Node)
+	}
+}
+
+func TestPrintNormalizedConfigRedactsEngineAPIKeys(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "node.json")
+	const apiKey = "never-print-this-key"
+	if err := os.WriteFile(configPath, []byte(`{"engines":[{"name":"vllm","url":"http://127.0.0.1:8000","api_key":"`+apiKey+`"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := printNormalizedConfig(&output, configPrintOptions{
+		role: "node", nodeConfigPath: configPath,
+	}); err != nil {
+		t.Fatalf("print normalized config: %v", err)
+	}
+	if strings.Contains(output.String(), apiKey) || !strings.Contains(output.String(), `"api_key": "[REDACTED]"`) {
+		t.Fatalf("printed config does not safely redact the engine key: %s", output.String())
 	}
 }
 

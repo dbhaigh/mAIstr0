@@ -272,6 +272,12 @@ func (r *Registry) invalidateSnapshotLocked() {
 }
 
 func cloneNodeStatus(status NodeStatus) NodeStatus {
+	status.Hardware.Devices = cloneSlice(status.Hardware.Devices)
+	for i := range status.Hardware.Devices {
+		status.Hardware.Devices[i].Backends = cloneSlice(status.Hardware.Devices[i].Backends)
+	}
+	status.Hardware.NUMANodes = cloneSlice(status.Hardware.NUMANodes)
+	status.Hardware.NetworkLinks = cloneSlice(status.Hardware.NetworkLinks)
 	status.Models = cloneSlice(status.Models)
 	for i := range status.Models {
 		status.Models[i].Tags = cloneSlice(status.Models[i].Tags)
@@ -280,6 +286,7 @@ func cloneNodeStatus(status NodeStatus) NodeStatus {
 	status.Engines = cloneSlice(status.Engines)
 	for i := range status.Engines {
 		status.Engines[i].Protocols = cloneSlice(status.Engines[i].Protocols)
+		status.Engines[i].Capabilities = engine.CloneCapabilities(status.Engines[i].Capabilities)
 	}
 	status.Capabilities = cloneSlice(status.Capabilities)
 	status.GPUHistory = cloneSlice(status.GPUHistory)
@@ -311,11 +318,63 @@ func (r *Registry) Active() []NodeStatus {
 
 // CapabilityScore ranks the node's raw machine strength, using hardware and
 // model-acceleration capability as the tie-breaker for orchestrator election.
+const (
+	npuHardwareScoreBonus = 30
+	npuFastScoreBonus     = 100
+)
+
 func CapabilityScore(n NodeStatus) float64 {
-	if n.Hardware.Score == 0 {
-		return n.FastScore + float64(n.Hardware.CPUCores)*1.5
+	runningNPU := hasReadyNPUModel(n)
+	fastScore := n.FastScore
+	if hasHardwareNPU(n.Hardware) {
+		legacyFastScore := float64(n.Hardware.CPUCores)*2 + npuFastScoreBonus
+		if n.Hardware.HasGPU {
+			legacyFastScore += 100
+		}
+		if fastScore == legacyFastScore {
+			fastScore -= npuFastScoreBonus
+		}
+		if runningNPU {
+			fastScore += npuFastScoreBonus
+		}
 	}
-	return n.Hardware.Score + n.FastScore*0.75
+	if n.Hardware.Score == 0 {
+		return fastScore + float64(n.Hardware.CPUCores)*1.5
+	}
+	hardwareScore := n.Hardware.Score
+	if hasHardwareNPU(n.Hardware) && !runningNPU {
+		hardwareScore -= npuHardwareScoreBonus
+	}
+	return hardwareScore + fastScore*0.75
+}
+
+func hasReadyNPUModel(node NodeStatus) bool {
+	if !hasHardwareNPU(node.Hardware) {
+		return false
+	}
+	for _, model := range node.Models {
+		if engine.NormalizeDeviceKind(model.Device) != "npu" || model.Engine == "" {
+			continue
+		}
+		for _, status := range node.Engines {
+			if strings.EqualFold(status.Name, model.Engine) && status.Ready && status.ModelCount > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasHardwareNPU(info hardware.Info) bool {
+	if info.HasNPU {
+		return true
+	}
+	for _, device := range info.Devices {
+		if strings.EqualFold(device.Kind, "npu") {
+			return true
+		}
+	}
+	return false
 }
 
 // GPUUtilizationPenalty converts live GPU activity into the scheduler's
@@ -341,9 +400,6 @@ func NPUUtilizationPenalty(hw hardware.Info) float64 {
 func FastScore(hw hardware.Info) float64 {
 	s := float64(hw.CPUCores) * 2
 	if hw.HasGPU {
-		s += 100
-	}
-	if hw.HasNPU {
 		s += 100
 	}
 	return s

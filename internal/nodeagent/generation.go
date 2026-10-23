@@ -66,7 +66,10 @@ func (a *Agent) streamGenerate(w http.ResponseWriter, r *http.Request, eng engin
 	stream.Flush()
 }
 
-func chatWithContext(ctx context.Context, eng engine.Engine, model string, messages []engine.ChatMessage) (string, error) {
+func chatWithContext(ctx context.Context, eng engine.Engine, model string, messages []engine.ChatMessage, options engine.GenerationOptions) (string, error) {
+	if withOptions, ok := eng.(engine.EngineWithChatOptions); ok {
+		return withOptions.ChatWithOptions(ctx, model, messages, options)
+	}
 	if withChat, ok := eng.(engine.EngineWithChatContext); ok {
 		return withChat.ChatWithContext(ctx, model, messages)
 	}

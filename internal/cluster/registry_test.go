@@ -146,6 +146,84 @@ func TestEngineReadinessUsesReportedStatusAndKeepsLegacyRecordsCompatible(t *tes
 	}
 }
 
+func TestElectionOnlyRewardsNPUWithReadyRunningModel(t *testing.T) {
+	base := NodeStatus{
+		Hardware:  hardware.Info{Score: 230, HasNPU: true, CPUCores: 2},
+		FastScore: 4,
+	}
+	tests := []struct {
+		name string
+		node NodeStatus
+		want float64
+	}{
+		{name: "unverified NPU presence", node: base, want: 203},
+		{
+			name: "legacy reported NPU speed without a running model",
+			node: func() NodeStatus {
+				node := base
+				node.FastScore = 104
+				return node
+			}(),
+			want: 203,
+		},
+		{
+			name: "ready engine running on NPU",
+			node: func() NodeStatus {
+				node := base
+				node.Models = []engine.Model{{Name: "npu-model", Engine: "fastflowlm", Device: "npu"}}
+				node.Engines = []engine.Status{{Name: "fastflowlm", Ready: true, ModelCount: 1}}
+				return node
+			}(),
+			want: 308,
+		},
+		{
+			name: "legacy reported NPU speed with running model",
+			node: func() NodeStatus {
+				node := base
+				node.FastScore = 104
+				node.Models = []engine.Model{{Name: "npu-model", Engine: "fastflowlm", Device: "npu"}}
+				node.Engines = []engine.Status{{Name: "fastflowlm", Ready: true, ModelCount: 1}}
+				return node
+			}(),
+			want: 308,
+		},
+		{
+			name: "engine has no ready model",
+			node: func() NodeStatus {
+				node := base
+				node.Models = []engine.Model{{Name: "npu-model", Engine: "fastflowlm", Device: "npu"}}
+				node.Engines = []engine.Status{{Name: "fastflowlm", Ready: true}}
+				return node
+			}(),
+			want: 203,
+		},
+		{
+			name: "model device is unknown",
+			node: func() NodeStatus {
+				node := base
+				node.Models = []engine.Model{{Name: "npu-model", Engine: "fastflowlm"}}
+				node.Engines = []engine.Status{{Name: "fastflowlm", Ready: true, ModelCount: 1}}
+				return node
+			}(),
+			want: 203,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := CapabilityScore(test.node); got != test.want {
+				t.Fatalf("CapabilityScore() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestFastScoreIgnoresUnverifiedNPU(t *testing.T) {
+	hw := hardware.Info{CPUCores: 4, HasNPU: true}
+	if got, want := FastScore(hw), float64(8); got != want {
+		t.Fatalf("FastScore() = %v, want %v", got, want)
+	}
+}
+
 func TestOlderNodeGetsVersionError(t *testing.T) {
 	r := NewRegistry()
 	newer := node("newer", 20, 20)
@@ -178,6 +256,7 @@ func TestAllUsesCachedSnapshotAndInvalidatesOnWrites(t *testing.T) {
 	if len(first) != 1 || !r.allCacheValid {
 		t.Fatalf("first snapshot = %#v, cache valid = %v", first, r.allCacheValid)
 	}
+
 	first[0].Models[0].Tags[0] = "caller-mutation"
 	if got := r.All()[0].Models[0].Tags[0]; got != "original" {
 		t.Fatalf("mutating a returned snapshot changed cached data: %q", got)
@@ -196,5 +275,42 @@ func TestAllUsesCachedSnapshotAndInvalidatesOnWrites(t *testing.T) {
 	}
 	if got := r.All()[0].Healthy; got {
 		t.Fatal("cached snapshot retained stale health")
+	}
+}
+
+func TestRegistryClonesHardwareInventory(t *testing.T) {
+	r := NewRegistry()
+	status := node("inventory", 10, 10)
+	status.Hardware.Devices = []hardware.Device{{
+		Kind: "gpu", Vendor: "nvidia", Name: "test GPU", Index: 0,
+		Backends: []string{"cuda", "vulkan"},
+	}}
+	status.Hardware.NUMANodes = []int{0, 1}
+	status.Hardware.NetworkLinks = []hardware.NetworkLink{{Name: "ib0", SpeedMbps: 100000, RDMA: true}}
+	status.Engines = []engine.Status{{
+		Name: "test", Capabilities: engine.Capabilities{
+			Devices: []string{"gpu"}, Backends: []string{"cuda"},
+		},
+	}}
+	r.Upsert(status)
+
+	snapshot, ok := r.Get("inventory")
+	if !ok {
+		t.Fatal("inventory node was not registered")
+	}
+	snapshot.Hardware.Devices[0].Backends[0] = "mutated"
+	snapshot.Hardware.NUMANodes[0] = 9
+	snapshot.Hardware.NetworkLinks[0].Name = "mutated"
+	snapshot.Engines[0].Capabilities.Devices[0] = "mutated"
+
+	got, ok := r.Get("inventory")
+	if !ok {
+		t.Fatal("inventory node disappeared")
+	}
+	if got.Hardware.Devices[0].Backends[0] != "cuda" ||
+		got.Hardware.NUMANodes[0] != 0 ||
+		got.Hardware.NetworkLinks[0].Name != "ib0" ||
+		got.Engines[0].Capabilities.Devices[0] != "gpu" {
+		t.Fatalf("mutating returned device inventory or engine capabilities changed stored data: %+v", got)
 	}
 }

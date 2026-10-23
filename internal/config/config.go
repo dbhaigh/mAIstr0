@@ -40,6 +40,7 @@ type EngineConfig struct {
 	Name        string `json:"name"`
 	URL         string `json:"url"`
 	RegistryURL string `json:"registry_url,omitempty"`
+	APIKey      string `json:"api_key,omitempty"`
 }
 
 type NodeConfig struct {

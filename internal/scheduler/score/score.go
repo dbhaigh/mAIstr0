@@ -13,6 +13,7 @@ import (
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/hardware"
 )
 
 // Subtask contains the fields that affect model eligibility and score.
@@ -105,9 +106,9 @@ func (c Candidate) Model() string { return c.model }
 func (c Candidate) Engine() string { return c.engine }
 
 const (
-	telemetryFreshnessWindow = 30 * time.Second
-	gpuLMStudioModelBonus    = 3.0
-	gpuSmallModelBonus       = 0.5
+	telemetryFreshnessWindow   = 30 * time.Second
+	acceleratorModelBonus      = 3.0
+	acceleratorSmallModelBonus = 0.5
 )
 
 // DefaultScoringConfig returns the established scheduler defaults.
@@ -201,11 +202,8 @@ func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 			}
 		}
 
-		if node.Hardware.HasGPU && strings.EqualFold(model.Engine, "lmstudio") {
-			modelScore += gpuLMStudioModelBonus
-			if containsTag(model.Tags, "small") || containsTag(model.Tags, "fast") {
-				modelScore += gpuSmallModelBonus
-			}
+		if bonus := acceleratorCompatibilityBonus(node, model); bonus > 0 {
+			modelScore += bonus
 		}
 
 		if modelScore > bestModelScore {
@@ -219,6 +217,7 @@ func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 				modelQualityTags:    qualityTags,
 				modelAtLeastSevenGB: model.SizeGB >= 7.0,
 			}
+
 		}
 	}
 	if best.model == "" {
@@ -229,6 +228,48 @@ func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 		subtask.PreferredCapabilities, normalizedPreferred, nodeCapabilities, bestTags, includeDetails,
 	)
 	return best, true
+}
+
+func acceleratorCompatibilityBonus(node cluster.NodeStatus, model engine.Model) float64 {
+	if model.Engine == "" {
+		return 0
+	}
+	bonus := acceleratorModelBonus
+	if containsTag(model.Tags, "small") || containsTag(model.Tags, "fast") {
+		bonus += acceleratorSmallModelBonus
+	}
+	for _, status := range node.Engines {
+		if !strings.EqualFold(status.Name, model.Engine) {
+			continue
+		}
+		if !status.Ready || status.ModelCount <= 0 {
+			continue
+		}
+		capabilities := status.Capabilities
+		if len(capabilities.OS) > 0 && !hasCapability(capabilities.OS, node.Hardware.OS) {
+			continue
+		}
+		if supportsNodeAccelerator(capabilities, node.Hardware) {
+			return bonus
+		}
+	}
+	return 0
+}
+
+func supportsNodeAccelerator(capabilities engine.Capabilities, hw hardware.Info) bool {
+	if len(hw.Devices) == 0 {
+		return hw.HasGPU && engine.SupportsDeviceKind(capabilities.Devices, "gpu") ||
+			hw.HasNPU && engine.SupportsDeviceKind(capabilities.Devices, "npu")
+	}
+	for _, device := range hw.Devices {
+		kind := strings.ToLower(strings.TrimSpace(device.Kind))
+		if (kind == "gpu" || kind == "npu") &&
+			engine.SupportsDeviceKind(capabilities.Devices, kind) &&
+			engine.BackendsOverlap(capabilities.Backends, device.Backends) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchedPreferredCapabilities(preferred, normalized, capabilities, tags []string, includeDetails bool) ([]string, int) {

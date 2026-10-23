@@ -6,6 +6,8 @@ info:
     HTTP routes exposed by both the orchestrator and node agent. Server-specific
     route registrations are listed in x-maistr0-registered-routes and checked
     against the Go mux registration source by contracts/contracts_test.go.
+    Node engine configuration accepts an optional api_key for bearer
+    authentication; that secret is write-only and is never returned by APIs.
 servers:
   - url: https://localhost:7450
     description: Orchestrator
@@ -847,7 +849,26 @@ components:
       schema: {type: string}
   schemas:
     NodeConfig:
-      $ref: "./schemas/node-config.schema.json"
+      description: Node configuration; configured engine api_key values are write-only.
+      allOf:
+        - $ref: "./schemas/node-config.schema.json"
+        - type: object
+          properties:
+            engines:
+              type: array
+              items: {$ref: "#/components/schemas/EngineConfig"}
+    EngineConfig:
+      type: object
+      required: [name, url]
+      properties:
+        name: {type: string}
+        url: {type: string}
+        registry_url: {type: string}
+        api_key:
+          type: string
+          writeOnly: true
+          description: Bearer token for supported OpenAI-compatible engines.
+      additionalProperties: true
     OrchestratorConfig:
       $ref: "./schemas/orchestrator-config.schema.json"
     Task:

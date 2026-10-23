@@ -92,3 +92,13 @@ The language-neutral HTTP and data contracts are in
 [OpenAPI](./contracts/openapi.yaml), [JSON Schemas](./contracts/schemas/), and
 the [porting guide](./contracts/PORTING.md). Current project changes are
 recorded in the [changelog](./changelog.md).
+
+## Engine configuration
+
+Valid configured engine names include `ollama`, `vllm`, `llamacpp`,
+`lmstudio`, `fastflowlm`, `tgi`, `localai`, `mlx`, `sglang`, and `openai`.
+The `vllm`, `llamacpp`, `lmstudio`, and `fastflowlm` engines use the
+OpenAI-compatible API. Add an optional `api_key` to an engine configuration
+to send bearer authentication; it is redacted from config dumps and never
+returned by node or orchestrator APIs. See the
+[configuration guide](./docs/configuration.md#model-engines) for examples.
