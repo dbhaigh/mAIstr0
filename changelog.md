@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.22 - 2026-10-22
+
+### Added
+
+- Add an allow-list-backed node supervisor for llama-server, ggml-rpc-server,
+  and headless vLLM workers, with paired-orchestrator lifecycle APIs, readiness
+  checks, bounded restart backoff, and process-tree shutdown.
+
 ## 0.0.21 - 2026-10-22
 
 ### Added

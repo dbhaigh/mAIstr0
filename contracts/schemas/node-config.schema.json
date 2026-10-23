@@ -17,6 +17,9 @@
     "disabled_models": {"type": ["array", "null"], "items": {"type": "string"}},
     "default_model": {"type": "string"},
     "engines": {"type": "array", "items": {"type": "object", "required": ["name", "url"], "properties": {"name": {"type": "string"}, "url": {"type": "string"}, "registry_url": {"type": "string"}, "api_key": {"type": "string", "description": "Optional bearer token for supported OpenAI-compatible engines; never returned by APIs or config dumps."}}, "additionalProperties": true}},
+    "managed_engines": {"type": "array", "items": {"$ref": "#/$defs/ManagedEngine"}},
+    "managed_engine_binary_allowlist": {"type": "array", "description": "Absolute directories in which managed engine executables are allowed.", "items": {"type": "string", "minLength": 1}},
+    "managed_engine_model_allowlist": {"type": "array", "description": "Absolute directories from which managed engines may load local model files or directories.", "items": {"type": "string", "minLength": 1}},
     "supported_shard_models": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "max_layers_it_can_host": {"type": "integer", "minimum": 0},
     "discovery_enabled": {"type": "boolean"},
@@ -30,5 +33,106 @@
       "then": {"properties": {"max_layers_it_can_host": {"type": "integer", "minimum": 1}}}
     }
   ],
-  "additionalProperties": true
+  "additionalProperties": true,
+  "$defs": {
+    "ManagedEngine": {
+      "type": "object",
+      "required": ["id", "kind", "binary_path"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "kind": {"type": "string", "enum": ["llama-server", "ggml-rpc-server", "vllm"]},
+        "binary_path": {"type": "string", "minLength": 1, "description": "Absolute native executable path, resolved inside managed_engine_binary_allowlist."},
+        "model_path": {"type": "string", "minLength": 1, "description": "Optional absolute local model path, resolved inside managed_engine_model_allowlist."},
+        "model_id": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Model identifier passed as one argv value."},
+        "options": {"$ref": "#/$defs/ManagedEngineOptions"}
+      },
+      "oneOf": [
+        {"required": ["model_path"], "not": {"required": ["model_id"]}},
+        {"required": ["model_id"], "not": {"required": ["model_path"]}},
+        {"not": {"anyOf": [{"required": ["model_path"]}, {"required": ["model_id"]}]}}
+      ],
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"enum": ["llama-server", "vllm"]}}},
+          "then": {
+            "oneOf": [
+              {"required": ["model_path"], "not": {"required": ["model_id"]}},
+              {"required": ["model_id"], "not": {"required": ["model_path"]}}
+            ]
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "llama-server"}}},
+          "then": {"properties": {"options": {"oneOf": [{"type": "object", "maxProperties": 0}, {"$ref": "#/$defs/LlamaServerManagedOptions"}]}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "ggml-rpc-server"}}},
+          "then": {"properties": {"options": {"oneOf": [{"type": "object", "maxProperties": 0}, {"$ref": "#/$defs/GGMLRPCServerManagedOptions"}]}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "vllm"}}},
+          "then": {"properties": {"options": {"oneOf": [{"type": "object", "maxProperties": 0}, {"$ref": "#/$defs/VLLMManagedOptions"}]}}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "ManagedEngineOptions": {
+      "oneOf": [
+        {"type": "object", "maxProperties": 0},
+        {"$ref": "#/$defs/LlamaServerManagedOptions"},
+        {"$ref": "#/$defs/GGMLRPCServerManagedOptions"},
+        {"$ref": "#/$defs/VLLMManagedOptions"}
+      ]
+    },
+    "LlamaServerManagedOptions": {
+      "type": "object",
+      "properties": {
+        "llama_server": {
+          "type": "object",
+          "properties": {
+            "host": {"type": "string"},
+            "port": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "0 selects the engine default port."},
+            "context_size": {"type": "integer", "minimum": 0},
+            "gpu_layers": {"type": "integer", "minimum": 0},
+            "threads": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["llama_server"],
+      "additionalProperties": false
+    },
+    "GGMLRPCServerManagedOptions": {
+      "type": "object",
+      "properties": {
+        "ggml_rpc_server": {
+          "type": "object",
+          "properties": {
+            "bind_address": {"type": "string"},
+            "port": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "0 selects the engine default port."},
+            "allow_remote_bind": {"type": "boolean", "description": "Must be true to bind outside loopback; such binds produce a persistent warning."}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["ggml_rpc_server"],
+      "additionalProperties": false
+    },
+    "VLLMManagedOptions": {
+      "type": "object",
+      "properties": {
+        "vllm": {
+          "type": "object",
+          "properties": {
+            "host": {"type": "string"},
+            "port": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "0 selects the engine default port."},
+            "tensor_parallel_size": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["vllm"],
+      "additionalProperties": false
+    }
+  }
 }

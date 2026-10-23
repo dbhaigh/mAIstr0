@@ -98,6 +98,7 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("GET /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", a.handleAPINodeControl)
+	registerManagedEngineRoutes(mux, a)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", a.handleAPINodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/discovery", a.handleAPIDiscovery)
@@ -202,6 +203,13 @@ func (a *Agent) Run() error {
 		withMiddleware(secureHandler),
 		a.identityComponent.serverTLSConfig(),
 	)
+}
+
+func registerManagedEngineRoutes(mux *http.ServeMux, agent *Agent) {
+	mux.Handle("GET /api/engines/managed", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStatus)))
+	mux.Handle("POST /api/engines/managed/{id}/start", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStart)))
+	mux.Handle("POST /api/engines/managed/{id}/stop", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStop)))
+	mux.Handle("POST /api/engines/managed/{id}/restart", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineRestart)))
 }
 
 func (a *Agent) currentElectedOrchestratorID() string {

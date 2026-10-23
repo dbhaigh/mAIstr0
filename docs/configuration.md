@@ -151,6 +151,85 @@ the public internet or untrusted networks. Restrict it to trusted hosts with
 firewalls or an isolated network. Hardware backends and model-format support
 are determined by the llama.cpp build, not by mAIstr0.
 
+## Managed engine processes
+
+Nodes can manage explicitly configured `llama-server`, `ggml-rpc-server`, and
+`vllm` processes. Managed engines are not started automatically; the paired
+current orchestrator controls their lifecycle through the node's authenticated
+mTLS API:
+
+- `GET /api/engines/managed`
+- `POST /api/engines/managed/{id}/start`
+- `POST /api/engines/managed/{id}/stop`
+- `POST /api/engines/managed/{id}/restart`
+
+Configure absolute allow-list directories for executable binaries and local
+model files/directories. Paths are resolved before validation, so a symlink
+cannot escape an approved directory. Managed commands are built from typed
+options as argv arrays; command strings and shell scripts are not accepted.
+
+```json
+{
+  "managed_engine_binary_allowlist": ["/opt/maistr0/bin"],
+  "managed_engine_model_allowlist": ["/models"],
+  "managed_engines": [
+    {
+      "id": "llama-main",
+      "kind": "llama-server",
+      "binary_path": "/opt/maistr0/bin/llama-server",
+      "model_path": "/models/model.gguf",
+      "options": {
+        "llama_server": {
+          "host": "127.0.0.1",
+          "port": 8080,
+          "context_size": 4096,
+          "gpu_layers": 32
+        }
+      }
+    },
+    {
+      "id": "rpc-worker",
+      "kind": "ggml-rpc-server",
+      "binary_path": "/opt/maistr0/bin/ggml-rpc-server",
+      "options": {
+        "ggml_rpc_server": {"port": 50052}
+      }
+    },
+    {
+      "id": "vllm-worker",
+      "kind": "vllm",
+      "binary_path": "/opt/maistr0/bin/vllm",
+      "model_id": "organization/model",
+      "options": {"vllm": {"port": 8000}}
+    }
+  ]
+}
+```
+
+`llama-server` and vLLM require exactly one of `model_path` or `model_id`;
+local paths must be inside `managed_engine_model_allowlist`. The RPC server
+defaults to `127.0.0.1`. A non-loopback `bind_address` requires
+`allow_remote_bind: true` and is recorded as a warning in status and the
+rolling log. Treat remote RPC binds as trusted-network-only.
+
+Starting a vLLM worker requires a shard plan in the start/restart request:
+
+```json
+{
+  "shard_plan": {
+    "nnodes": 2,
+    "node_rank": 1,
+    "master_addr": "192.0.2.10"
+  }
+}
+```
+
+The supervisor starts workers headlessly and supplies the distributed flags
+from that plan. Native Windows vLLM launches are rejected. Readiness is checked
+over HTTP for llama-server/vLLM and TCP for the RPC server; unexpected exits
+use bounded exponential restart backoff. Shutdown terminates the process tree
+using Windows Job Objects or Unix process groups.
+
 ## Validation and compatibility
 
 Listen addresses must use `host:port` or `:port` syntax. Node

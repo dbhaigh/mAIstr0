@@ -361,6 +361,76 @@ paths:
       - $ref: "#/components/parameters/ID"
     get:
       responses: {"200": {description: List node engines}}
+  /api/engines/managed:
+    get:
+      summary: List managed engine process status
+      description: Node-local status; requests require a pinned mTLS certificate for the current paired orchestrator.
+      security:
+        - PairedOrchestrator: []
+      responses:
+        "200":
+          description: Managed engine status
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/ManagedEngineStatus"}
+        "403": {description: Request is not from the current paired orchestrator}
+  /api/engines/managed/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Start a configured managed engine
+      description: Launches the configured argv-only command and waits for readiness. vLLM requires shard_plan and is unsupported on native Windows.
+      security:
+        - PairedOrchestrator: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ManagedEngineStartRequest"}
+      responses:
+        "200": {description: Engine is ready}
+        "400": {description: Invalid request or shard plan}
+        "403": {description: Request is not from the current paired orchestrator}
+        "404": {description: Managed engine is not configured}
+        "502": {description: Engine failed to start}
+        "501": {description: Engine is unsupported on this platform}
+        "504": {description: Engine readiness timed out}
+  /api/engines/managed/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Stop a managed engine
+      description: Stops the configured process tree. Requests require a pinned mTLS certificate for the current paired orchestrator.
+      security:
+        - PairedOrchestrator: []
+      responses:
+        "200": {description: Engine is stopped}
+        "403": {description: Request is not from the current paired orchestrator}
+        "404": {description: Managed engine is not configured}
+        "504": {description: Engine did not stop before the request deadline}
+  /api/engines/managed/{id}/restart:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Restart a managed engine
+      description: Stops and restarts the configured process with bounded exponential backoff. vLLM requires shard_plan and is unsupported on native Windows.
+      security:
+        - PairedOrchestrator: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ManagedEngineStartRequest"}
+      responses:
+        "200": {description: Engine is ready}
+        "400": {description: Invalid request or shard plan}
+        "403": {description: Request is not from the current paired orchestrator}
+        "404": {description: Managed engine is not configured}
+        "501": {description: Engine is unsupported on this platform}
+        "502": {description: Engine failed to restart}
+        "504": {description: Engine readiness or shutdown timed out}
   /api/nodes/{id}/models/refresh:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -819,6 +889,10 @@ paths:
     post:
       responses: {"200": {description: Route an Ollama-compatible generate request}}
 components:
+  securitySchemes:
+    PairedOrchestrator:
+      type: mutualTLS
+      description: The node verifies the client certificate fingerprint, paired orchestrator role, and current election authority.
   parameters:
     PageSize:
       name: page_size
@@ -857,6 +931,15 @@ components:
             engines:
               type: array
               items: {$ref: "#/components/schemas/EngineConfig"}
+            managed_engines:
+              type: array
+              items: {$ref: "#/components/schemas/ManagedEngineConfig"}
+            managed_engine_binary_allowlist:
+              type: array
+              items: {type: string}
+            managed_engine_model_allowlist:
+              type: array
+              items: {type: string}
     EngineConfig:
       type: object
       required: [name, url]
@@ -869,6 +952,12 @@ components:
           writeOnly: true
           description: Bearer token for supported OpenAI-compatible engines.
       additionalProperties: true
+    ManagedEngineConfig:
+      $ref: "./schemas/node-config.schema.json#/$defs/ManagedEngine"
+    ManagedEngineStatus:
+      $ref: "./schemas/managed-engine-status.schema.json"
+    ManagedEngineStartRequest:
+      $ref: "./schemas/managed-engine-start.schema.json"
     OrchestratorConfig:
       $ref: "./schemas/orchestrator-config.schema.json"
     Task:
@@ -1115,6 +1204,10 @@ x-maistr0-registered-routes:
   - "node|GET /api/nodes/{id}/properties"
   - "node|PATCH /api/nodes/{id}/properties"
   - "node|GET /api/nodes/{id}/engines"
+  - "node|GET /api/engines/managed"
+  - "node|POST /api/engines/managed/{id}/start"
+  - "node|POST /api/engines/managed/{id}/stop"
+  - "node|POST /api/engines/managed/{id}/restart"
   - "node|POST /api/nodes/{id}/models/refresh"
   - "node|POST /api/nodes/{id}/models/pull"
   - "node|GET /api/discovery"

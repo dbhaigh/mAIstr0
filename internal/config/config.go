@@ -44,27 +44,30 @@ type EngineConfig struct {
 }
 
 type NodeConfig struct {
-	NodeID                     string         `json:"node_id"`
-	ListenAddr                 string         `json:"listen_addr"`
-	LogLevel                   string         `json:"log_level,omitempty"`
-	AdvertiseAddr              string         `json:"advertise_addr"`
-	OrchestratorAddr           string         `json:"orchestrator_addr"` // empty = auto-discover on the LAN
-	MaxConcurrentTasks         int            `json:"max_concurrent_tasks"`
-	PairingPIN                 string         `json:"pairing_pin,omitempty"`
-	DisabledModels             []string       `json:"disabled_models"`
-	DefaultModel               string         `json:"default_model"`
-	Engines                    []EngineConfig `json:"engines,omitempty"`
-	SupportedShardModels       []string       `json:"supported_shard_models,omitempty"`
-	MaxLayersItCanHost         int            `json:"max_layers_it_can_host,omitempty"`
-	DiscoveryEnabled           bool           `json:"discovery_enabled"`
-	AutoOpenBrowser            bool           `json:"auto_open_browser"`
-	TrayMode                   string         `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
-	MemoryPath                 string         `json:"memory_path"` // empty = default per-user data dir
-	explicitInvalidConcurrency bool
-	SyncMaxBytes               int64 `json:"sync_max_bytes,omitempty"`
-	SyncTimeoutSeconds         int   `json:"sync_timeout_seconds,omitempty"`
-	explicitInvalidSyncMax     bool
-	explicitInvalidSyncTimeout bool
+	NodeID                       string                `json:"node_id"`
+	ListenAddr                   string                `json:"listen_addr"`
+	LogLevel                     string                `json:"log_level,omitempty"`
+	AdvertiseAddr                string                `json:"advertise_addr"`
+	OrchestratorAddr             string                `json:"orchestrator_addr"` // empty = auto-discover on the LAN
+	MaxConcurrentTasks           int                   `json:"max_concurrent_tasks"`
+	PairingPIN                   string                `json:"pairing_pin,omitempty"`
+	DisabledModels               []string              `json:"disabled_models"`
+	DefaultModel                 string                `json:"default_model"`
+	Engines                      []EngineConfig        `json:"engines,omitempty"`
+	ManagedEngines               []ManagedEngineConfig `json:"managed_engines,omitempty"`
+	ManagedEngineBinaryAllowlist []string              `json:"managed_engine_binary_allowlist,omitempty"`
+	ManagedEngineModelAllowlist  []string              `json:"managed_engine_model_allowlist,omitempty"`
+	SupportedShardModels         []string              `json:"supported_shard_models,omitempty"`
+	MaxLayersItCanHost           int                   `json:"max_layers_it_can_host,omitempty"`
+	DiscoveryEnabled             bool                  `json:"discovery_enabled"`
+	AutoOpenBrowser              bool                  `json:"auto_open_browser"`
+	TrayMode                     string                `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
+	MemoryPath                   string                `json:"memory_path"` // empty = default per-user data dir
+	explicitInvalidConcurrency   bool
+	SyncMaxBytes                 int64 `json:"sync_max_bytes,omitempty"`
+	SyncTimeoutSeconds           int   `json:"sync_timeout_seconds,omitempty"`
+	explicitInvalidSyncMax       bool
+	explicitInvalidSyncTimeout   bool
 }
 
 func (cfg *NodeConfig) Normalize() {
@@ -139,6 +142,9 @@ func (cfg NodeConfig) Validate() error {
 	for index, configured := range cfg.Engines {
 		if engine.NewConfigured(configured.Name, configured.URL) == nil {
 			violations = append(violations, fmt.Errorf("engines[%d].name %q is not supported", index, configured.Name))
+		}
+		if err := ValidateManagedEngines(cfg.ManagedEngines, cfg.ManagedEngineBinaryAllowlist, cfg.ManagedEngineModelAllowlist); err != nil {
+			violations = append(violations, err)
 		}
 		if configured.URL == "" {
 			violations = append(violations, fmt.Errorf("engines[%d].url must be a valid HTTP or HTTPS URL", index))

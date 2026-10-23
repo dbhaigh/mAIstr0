@@ -177,6 +177,15 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 	nodeConfig := config.DefaultNodeConfig()
 	nodeConfig.NodeID = "worker-1"
 	nodeConfig.DisabledModels = []string{}
+	nodeConfig.ManagedEngineBinaryAllowlist = []string{"/opt/maistr0/bin"}
+	nodeConfig.ManagedEngineModelAllowlist = []string{"/models"}
+	nodeConfig.ManagedEngines = []config.ManagedEngineConfig{{
+		ID: "llama-main", Kind: config.ManagedEngineLlamaServer,
+		BinaryPath: "/opt/maistr0/bin/llama-server", ModelPath: "/models/model.gguf",
+		Options: config.ManagedEngineOptions{LlamaServer: &config.LlamaServerOptions{
+			Host: "127.0.0.1", Port: 8080, ContextSize: 4096,
+		}},
+	}}
 	orchestratorConfig := config.DefaultOrchestratorConfig()
 	nodeStatus := cluster.NodeStatus{
 		ID: "worker-1", Version: "1.0.0", Address: "https://worker-1",
@@ -262,7 +271,17 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 			},
 			"warnings": []string{},
 		},
-		"node-config.schema.json":         nodeConfig,
+		"node-config.schema.json": nodeConfig,
+		"managed-engine-status.schema.json": map[string]any{
+			"id": "llama-main", "kind": "llama-server", "state": "ready",
+			"pid": 1234, "restart_count": 0, "started_at": now,
+			"warnings": []string{},
+		},
+		"managed-engine-start.schema.json": map[string]any{
+			"shard_plan": map[string]any{
+				"nnodes": 2, "node_rank": 1, "master_addr": "192.0.2.10",
+			},
+		},
 		"orchestrator-config.schema.json": orchestratorConfig,
 		"task.schema.json":                task,
 		"subtask-result.schema.json":      result,
@@ -444,6 +463,7 @@ func TestSchemaSetIsComplete(t *testing.T) {
 		"announcement.schema.json", "assignment-explanation.schema.json", "assignment.schema.json", "cluster-health.schema.json", "dashboard-pipeline.schema.json", "dialogue-record.schema.json",
 		"activation-tensor.schema.json", "dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
 		"fact.schema.json", "node-config.schema.json",
+		"managed-engine-start.schema.json", "managed-engine-status.schema.json",
 		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json", "pipeline-plan.schema.json",
 		"pipeline-stage-capabilities.schema.json", "pipeline-stage-control.schema.json", "pipeline-stage-message.schema.json",
 		"pipeline-stage-output.schema.json", "pipeline-stage-request.schema.json",

@@ -16,6 +16,7 @@ import (
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"net/http"
@@ -42,6 +43,7 @@ type Agent struct {
 	mem                 memory.Store
 	generateIdempotency *generateIdempotencyCache
 	statusReporter      *statusComponent
+	managedEngines      *supervisor.Manager
 }
 
 type peerDispatchJob struct {
@@ -94,7 +96,7 @@ func NewWithPersistentTasks(cfg config.NodeConfig) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("nodeagent: open task history: %w", err)
 	}
-	return newAgentWithNormalizedConfig(cfg, tasks, engine.DetectAll), nil
+	return newAgentWithNormalizedConfig(cfg, tasks, engine.DetectAll)
 }
 
 func newAgent(cfg config.NodeConfig, tasks *taskmgr.Manager) (*Agent, error) {
@@ -106,7 +108,7 @@ func newAgentWithEngineDetector(cfg config.NodeConfig, tasks *taskmgr.Manager, d
 	if err != nil {
 		return nil, err
 	}
-	return newAgentWithNormalizedConfig(cfg, tasks, detector), nil
+	return newAgentWithNormalizedConfig(cfg, tasks, detector)
 }
 
 func normalizeAgentConfig(cfg config.NodeConfig) (config.NodeConfig, error) {
@@ -126,7 +128,11 @@ func normalizeAgentConfig(cfg config.NodeConfig) (config.NodeConfig, error) {
 	return cfg, nil
 }
 
-func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) *Agent {
+func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) (*Agent, error) {
+	managedEngines, err := supervisor.New(cfg, supervisor.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("nodeagent: initialize managed engine supervisor: %w", err)
+	}
 	tasks.SetSyncOrigin("task:" + cfg.NodeID)
 	configuredEngines := make([]engine.Engine, 0, len(cfg.Engines))
 	for _, configured := range cfg.Engines {
@@ -160,6 +166,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		peerComponent:       peers,
 		generateIdempotency: newGenerateIdempotencyCache(),
 		statusReporter:      statusReporter,
+		managedEngines:      managedEngines,
 	}
 	link.statusSnapshot = a.status
 	link.currentTasks = peers.currentTasks
@@ -183,7 +190,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 			return a.mostCapableNode().ID == cfg.NodeID
 		},
 	)
-	return a
+	return a, nil
 }
 
 // Close flushes and releases the persistent task and memory stores.
@@ -200,6 +207,9 @@ func (a *Agent) Close() error {
 	}
 	if a.peerComponent != nil && a.peerComponent.dispatchPool != nil {
 		a.peerComponent.dispatchPool.Close()
+	}
+	if a.managedEngines != nil {
+		closeErr = errors.Join(closeErr, a.managedEngines.Close())
 	}
 	if a.orchestratorLink.tasks != nil {
 		closeErr = errors.Join(closeErr, a.orchestratorLink.tasks.Close())

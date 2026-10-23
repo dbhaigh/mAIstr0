@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/managed-engine-start.schema.json",
+  "title": "ManagedEngineStartRequest",
+  "type": "object",
+  "properties": {
+    "shard_plan": {
+      "type": "object",
+      "required": ["nnodes", "node_rank", "master_addr"],
+      "properties": {
+        "nnodes": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "node_rank": {"type": "integer", "minimum": 0},
+        "master_addr": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"nnodes": {"type": "integer"}}},
+          "then": {"properties": {"node_rank": {"maximum": 1023}}}
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
