@@ -8,6 +8,7 @@ async function activateAgentTab(harness) {
     const active = tab.dataset.agent === harness;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
     tab.disabled = true;
   });
   setAgentConsoleMode(harness);
@@ -21,6 +22,7 @@ async function activateAgentTab(harness) {
       applyAgentBackend(backend);
       await loadAgentTools();
     }
+    await loadClusterModels();
     const sessions = sessionsForHarness(harness);
     const rememberedID = activeSessionIds.get(harness);
     const sessionID = sessions.some((session) => session.id === rememberedID)
@@ -37,6 +39,7 @@ async function activateAgentTab(harness) {
       const active = tab.dataset.agent === previousMode;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
     });
   } finally {
     agentTabs.forEach((tab) => { tab.disabled = false; });
@@ -98,17 +101,33 @@ function activateDirectChat() {
     const active = tab.dataset.agent === "direct";
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
   });
   setAgentConsoleMode("direct");
   chatInput?.focus();
 }
 
 agentTabs.forEach((tab) => {
+  tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
   tab.addEventListener("click", () => {
     if (tab.dataset.agent === "direct") activateDirectChat();
     else activateAgentTab(tab.dataset.agent);
   });
-
+  tab.addEventListener("keydown", (event) => {
+    const tabs = Array.from(agentTabs);
+    const index = tabs.indexOf(tab);
+    let nextIndex;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    const next = tabs[nextIndex];
+    next.focus();
+    if (next.dataset.agent === "direct") activateDirectChat();
+    else void activateAgentTab(next.dataset.agent);
+  });
 });
 
 pairingConnectForm?.addEventListener("submit", async (event) => {

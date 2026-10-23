@@ -6,8 +6,15 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/logging"
+)
+
+const (
+	pipelineRequestIdleTimeout  = 10 * time.Minute
+	pipelineRequestCloseTimeout = 5 * time.Second
 )
 
 var (
@@ -16,6 +23,7 @@ var (
 	errStageUnavailable        = errors.New("stage assignment is unavailable")
 	errStageEngineUnsupported  = errors.New("selected engine does not support pipeline stages")
 	errStageModelUnavailable   = errors.New("stage model is not available on this node")
+	errPipelineRequestNotOpen  = errors.New("pipeline request is not open")
 )
 
 type stageEngineResolver func(engine.StageAssignment) (engine.PipelineStageEngine, error)
@@ -24,6 +32,8 @@ type stageComponent struct {
 	mu       sync.Mutex
 	stages   map[string]*loadedStage
 	requests map[string]*activePipelineRequest
+
+	requestIdleTimeout time.Duration
 }
 
 type loadedStage struct {
@@ -50,17 +60,21 @@ type stageLease struct {
 }
 
 type activePipelineRequest struct {
-	mu              sync.Mutex
-	assignment      engine.StageAssignment
-	requestID       string
-	runtime         engine.PipelineStageEngineV2
-	lease           *stageLease
-	releaseCapacity func()
+	mu               sync.Mutex
+	assignment       engine.StageAssignment
+	requestID        string
+	runtime          engine.PipelineStageEngineV2
+	lease            *stageLease
+	releaseCapacity  func()
+	expiresAt        time.Time
+	expiryTimer      *time.Timer
+	expiryGeneration uint64
 }
 
 func newStageComponent() *stageComponent {
 	return &stageComponent{
 		stages: make(map[string]*loadedStage), requests: make(map[string]*activePipelineRequest),
+		requestIdleTimeout: pipelineRequestIdleTimeout,
 	}
 }
 
@@ -225,6 +239,9 @@ func (c *stageComponent) openPipelineRequest(
 	}
 	c.requests[key] = request
 	c.mu.Unlock()
+	request.mu.Lock()
+	c.schedulePipelineRequestExpiryLocked(key, request, c.requestIdleTimeout)
+	request.mu.Unlock()
 	return nil
 }
 
@@ -238,7 +255,7 @@ func (c *stageComponent) pipelineRequest(
 	request, exists := c.requests[key]
 	c.mu.Unlock()
 	if !exists {
-		return nil, errors.New("pipeline request is not open")
+		return nil, errPipelineRequestNotOpen
 	}
 	if !stageAssignmentMatches(request.assignment, assignment) {
 		return nil, errStageAssignmentConflict
@@ -256,7 +273,13 @@ func (c *stageComponent) prefillPipelineStage(
 	}
 	active.mu.Lock()
 	defer active.mu.Unlock()
-	return active.runtime.PrefillPipelineStage(ctx, active.assignment, request)
+	key := pipelineRequestKey(active.assignment, active.requestID)
+	if err := c.touchPipelineRequestLocked(key, active); err != nil {
+		return engine.PipelineStageOutput{}, err
+	}
+	output, err := active.runtime.PrefillPipelineStage(ctx, active.assignment, request)
+	c.schedulePipelineRequestExpiryLocked(key, active, c.requestIdleTimeout)
+	return output, err
 }
 
 func (c *stageComponent) decodePipelineStage(
@@ -269,7 +292,13 @@ func (c *stageComponent) decodePipelineStage(
 	}
 	active.mu.Lock()
 	defer active.mu.Unlock()
-	return active.runtime.DecodePipelineStage(ctx, active.assignment, request)
+	key := pipelineRequestKey(active.assignment, active.requestID)
+	if err := c.touchPipelineRequestLocked(key, active); err != nil {
+		return engine.PipelineStageOutput{}, err
+	}
+	output, err := active.runtime.DecodePipelineStage(ctx, active.assignment, request)
+	c.schedulePipelineRequestExpiryLocked(key, active, c.requestIdleTimeout)
+	return output, err
 }
 
 func (c *stageComponent) closePipelineRequest(
@@ -283,8 +312,16 @@ func (c *stageComponent) closePipelineRequest(
 	}
 	active.mu.Lock()
 	defer active.mu.Unlock()
-	closeErr := active.runtime.ClosePipelineRequest(ctx, active.assignment, active.requestID)
 	key := pipelineRequestKey(active.assignment, active.requestID)
+	if !c.pipelineRequestRegistered(key, active) {
+		return errPipelineRequestNotOpen
+	}
+	if active.expiryTimer != nil {
+		active.expiryTimer.Stop()
+		active.expiryTimer = nil
+	}
+	active.expiryGeneration++
+	closeErr := active.runtime.ClosePipelineRequest(ctx, active.assignment, active.requestID)
 	c.mu.Lock()
 	if c.requests[key] == active {
 		delete(c.requests, key)
@@ -295,6 +332,84 @@ func (c *stageComponent) closePipelineRequest(
 		active.releaseCapacity()
 	}
 	return closeErr
+}
+
+func (c *stageComponent) touchPipelineRequestLocked(
+	key string,
+	active *activePipelineRequest,
+) error {
+	if !c.pipelineRequestRegistered(key, active) {
+		return errPipelineRequestNotOpen
+	}
+	c.schedulePipelineRequestExpiryLocked(key, active, c.requestIdleTimeout)
+	return nil
+}
+
+func (c *stageComponent) pipelineRequestRegistered(key string, active *activePipelineRequest) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.requests[key] == active
+}
+
+func (c *stageComponent) schedulePipelineRequestExpiryLocked(
+	key string,
+	active *activePipelineRequest,
+	delay time.Duration,
+) {
+	if delay <= 0 {
+		delay = pipelineRequestIdleTimeout
+	}
+	if active.expiryTimer != nil {
+		active.expiryTimer.Stop()
+	}
+	active.expiryGeneration++
+	generation := active.expiryGeneration
+	active.expiresAt = time.Now().Add(delay)
+	active.expiryTimer = time.AfterFunc(delay, func() {
+		c.expirePipelineRequest(key, active, generation)
+	})
+}
+
+func (c *stageComponent) expirePipelineRequest(
+	key string,
+	active *activePipelineRequest,
+	generation uint64,
+) {
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	if active.expiryGeneration != generation {
+		return
+	}
+	if remaining := time.Until(active.expiresAt); remaining > 0 {
+		c.schedulePipelineRequestExpiryLocked(key, active, remaining)
+		return
+	}
+
+	c.mu.Lock()
+	if c.requests[key] != active {
+		c.mu.Unlock()
+		return
+	}
+	delete(c.requests, key)
+	c.mu.Unlock()
+
+	active.expiryTimer = nil
+	active.expiryGeneration++
+	ctx, cancel := context.WithTimeout(context.Background(), pipelineRequestCloseTimeout)
+	closeErr := active.runtime.ClosePipelineRequest(ctx, active.assignment, active.requestID)
+	cancel()
+	active.lease.release()
+	if active.releaseCapacity != nil {
+		active.releaseCapacity()
+	}
+	if closeErr != nil {
+		logging.Errorf(
+			"nodeagent",
+			"nodeagent: close expired pipeline request for model %s failed: %v",
+			active.assignment.ModelID,
+			closeErr,
+		)
+	}
 }
 
 func (lease *stageLease) release() {

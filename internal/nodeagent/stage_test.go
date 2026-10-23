@@ -191,6 +191,48 @@ func TestPipelineStageV2KeepsCapacityUntilRequestClose(t *testing.T) {
 	}
 }
 
+func TestPipelineStageOpenExpiresAndReleasesCapacity(t *testing.T) {
+	agent := newStageTestAgent(t, 1, nil)
+	agent.stageComponent.requestIdleTimeout = 25 * time.Millisecond
+	assignment := engine.StageAssignment{ModelID: "simulated-general", StartLayer: 0, EndLayer: 4}
+	if err := agent.stageComponent.load(context.Background(), assignment, agent.resolveStageEngine); err != nil {
+		t.Fatal(err)
+	}
+	releaseCapacity, err := agent.executorComponent.beginExecution(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	if err := agent.stageComponent.openPipelineRequest(
+		context.Background(), assignment, "orphaned-request",
+		func() {
+			releaseCapacity()
+			close(released)
+		},
+	); err != nil {
+		releaseCapacity()
+		t.Fatal(err)
+	}
+
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("expired pipeline request did not release executor capacity")
+	}
+	if status := agent.status(); status.ActiveTasks != 0 || status.AvailableCapacity != 1 {
+		t.Fatalf("expired pipeline request kept capacity reserved: %+v", status)
+	}
+	agent.stageComponent.mu.Lock()
+	requestCount := len(agent.stageComponent.requests)
+	agent.stageComponent.mu.Unlock()
+	if requestCount != 0 {
+		t.Fatalf("expired pipeline request remains registered: %d", requestCount)
+	}
+	if err := agent.stageComponent.unload(context.Background(), assignment); err != nil {
+		t.Fatalf("expired pipeline request kept its stage lease: %v", err)
+	}
+}
+
 type blockingPipelineStageEngine struct {
 	*engine.Simulated
 	started chan struct{}

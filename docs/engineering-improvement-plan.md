@@ -20,7 +20,7 @@ replacement for review or CI.
   still awaiting review and merge.
 - Phase 0's clean-baseline requirement is not currently met. The full Linux
   race suite passed in Ubuntu 24.04 WSL with Go 1.27.2; native Windows remains
-  blocked by ThreadSanitizer error 87. See [README Development](../README.md#development).
+  blocked by ThreadSanitizer error 87. See [Development](./development.md).
 
 ## Current architecture
 
@@ -59,7 +59,7 @@ checks contract fixtures, runs `go test ./contracts`, `go test ./...`,
 `go vet ./...`, `go build ./cmd/maistr0`, and `node --test web/app_test.js` on
 Ubuntu and Windows. It also runs `go test -race ./...` on Linux. The exact
 commands and known local race limitations are documented in
-[README Development](../README.md#development).
+[Development](./development.md).
 
 ## Status of items in `improvements.md`
 

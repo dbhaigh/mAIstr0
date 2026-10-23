@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -59,7 +59,7 @@ func (a *Agent) streamGenerate(w http.ResponseWriter, r *http.Request, eng engin
 		data, marshalErr := json.Marshal(map[string]string{"error": err.Error()})
 		if marshalErr == nil {
 			if writeErr := stream.WriteSSEData(data); writeErr != nil {
-				log.Printf("nodeagent: write generation stream error: %v", writeErr)
+				logging.Errorf("nodeagent", "nodeagent: write generation stream error: %v", writeErr)
 			}
 		}
 	}

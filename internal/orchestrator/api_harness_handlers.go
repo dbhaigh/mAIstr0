@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -32,11 +32,11 @@ func writeAgentStreamError(stream *httpx.StreamWriter, sessionID string, err err
 	event := agent.StreamEvent{Type: agent.EventError, SessionID: sessionID, Error: "could not persist agent session: " + err.Error()}
 	data, marshalErr := json.Marshal(event)
 	if marshalErr != nil {
-		log.Printf("orchestrator: encode agent stream error: %v", marshalErr)
+		logging.Errorf("orchestrator", "orchestrator: encode agent stream error: %v", marshalErr)
 		return
 	}
 	if err := stream.WriteSSEData(data); err != nil {
-		log.Printf("orchestrator: write agent stream error: %v", err)
+		logging.Errorf("orchestrator", "orchestrator: write agent stream error: %v", err)
 	}
 }
 
@@ -174,19 +174,19 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 			data, err := json.Marshal(ev)
 			if err == nil {
 				if writeErr := stream.WriteSSEData(data); writeErr != nil {
-					log.Printf("orchestrator: write agent stream event: %v", writeErr)
+					logging.Errorf("orchestrator", "orchestrator: write agent stream event: %v", writeErr)
 				}
 			}
 		}
 		session, ok := backend.GetSession(id)
 		if !ok {
 			err := errors.New("agent session disappeared while processing the message")
-			log.Printf("orchestrator: persist streamed agent session %s: %v", id, err)
+			logging.Errorf("orchestrator", "orchestrator: persist streamed agent session %s: %v", id, err)
 			writeAgentStreamError(stream, id, err)
 		} else {
 			session.Harness = harness
 			if err := s.persistAgentSession(session); err != nil {
-				log.Printf("orchestrator: persist streamed agent session %s: %v", id, err)
+				logging.Errorf("orchestrator", "orchestrator: persist streamed agent session %s: %v", id, err)
 				writeAgentStreamError(stream, id, err)
 			}
 		}
@@ -203,7 +203,7 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 	session.Harness = harness
 	if err := s.persistAgentSession(session); err != nil {
 		if sendErr != nil {
-			log.Printf("orchestrator: persist failed agent session %s: %v", id, err)
+			logging.Errorf("orchestrator", "orchestrator: persist failed agent session %s: %v", id, err)
 		}
 		writeError(w, apperr.InternalError(fmt.Errorf("could not persist agent session: %w", err)))
 		return

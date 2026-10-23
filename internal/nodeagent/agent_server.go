@@ -3,8 +3,8 @@ package nodeagent
 import (
 	"context"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io/fs"
-	"log"
 	"net/http"
 	"time"
 
@@ -131,9 +131,10 @@ func (a *Agent) Run() error {
 
 	staticFS, err := fs.Sub(web.StaticFiles, "static")
 	if err != nil {
-		log.Fatalf("nodeagent: embedded web assets missing: %v", err)
+		logging.Errorf("nodeagent", "embedded web assets missing: %v", err)
+		panic("nodeagent: embedded web assets missing")
 	}
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("/", web.NewHandler(staticFS))
 
 	cfg := a.configSnapshot()
 	if cfg.DiscoveryEnabled {
@@ -179,7 +180,7 @@ func (a *Agent) Run() error {
 	go a.orchestratorLink.heartbeat.Run(heartbeatCtx)
 
 	cfg = a.configSnapshot()
-	log.Printf("node agent %q listening on %s (advertised as %s)", cfg.NodeID, cfg.ListenAddr, cfg.AdvertiseAddr)
+	logging.Infof("nodeagent", "node agent %q listening on %s (advertised as %s)", cfg.NodeID, cfg.ListenAddr, cfg.AdvertiseAddr)
 	trustedHandler := a.identityComponent.requireTrustedPeer(a.currentCoordinatorWriteFence(mux))
 	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/pairing/invitation" {

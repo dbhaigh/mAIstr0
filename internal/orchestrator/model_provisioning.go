@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -210,7 +210,7 @@ func (p *autoModelProvisioner) pull(ctx context.Context, node cluster.NodeStatus
 }
 
 func (p *autoModelProvisioner) pullAndRefresh(ctx context.Context, node cluster.NodeStatus, model engine.Model) error {
-	log.Printf("orchestrator: auto-pulling model %s on node %s", model.Name, node.ID)
+	logging.Infof("orchestrator", "orchestrator: auto-pulling model %s on node %s", model.Name, node.ID)
 	body, err := json.Marshal(map[string]string{"model": model.Name, "engine": model.Engine})
 	if err != nil {
 		return fmt.Errorf("encode model pull request: %w", err)

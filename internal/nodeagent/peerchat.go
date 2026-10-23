@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -413,7 +413,7 @@ func (a *Agent) syncMemoryToOrchestrator() {
 		addr := a.getOrchestratorAddr()
 		if addr != "" {
 			if err := a.syncOrchestratorMemory(addr); err != nil {
-				log.Printf("FILE_ONLY: nodeagent: memory sync with orchestrator %s failed: %v", addr, err)
+				logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync with orchestrator %s failed: %v", addr, err)
 			}
 		}
 		backoff.Observe(syncinterval.WatermarksAdvanced(before, a.mem.Watermarks()))
@@ -439,7 +439,7 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 
 	fetchStarted := time.Now()
 	requestID := syncLogRequestID(nil)
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_start %s peer=%s body_bytes=unknown",
+	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_start %s peer=%s body_bytes=unknown",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(fetchStarted), "none"), addr)
 	remoteSnapshot, bodyBytes, status, err := fetchMemorySyncSnapshot(
 		a.memorySyncClient,
@@ -448,19 +448,19 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 		a.cfg.SyncMaxBytes,
 	)
 	if err != nil {
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_failed %s peer=%s body_bytes=0 elapsed=%s stage=request error=%v",
+		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_failed %s peer=%s body_bytes=0 elapsed=%s stage=request error=%v",
 			syncLogFields(requestID, a.cfg.NodeID, time.Since(fetchStarted), "fetch"), addr, time.Since(fetchStarted), err)
 		return fmt.Errorf("fetch merged snapshot: %w", err)
 	}
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_complete %s peer=%s status=%d body_bytes=%d records=%d elapsed=%s",
+	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_complete %s peer=%s status=%d body_bytes=%d records=%d elapsed=%s",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(fetchStarted), "none"), addr, status, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(fetchStarted))
 	mergeStarted := time.Now()
 	if err := a.mem.MergeSnapshotFrom(remoteSnapshot, peerID); err != nil {
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=merge_failed %s peer=%s body_bytes=%d elapsed=%s error=%v",
+		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=merge_failed %s peer=%s body_bytes=%d elapsed=%s error=%v",
 			syncLogFields(requestID, a.cfg.NodeID, time.Since(mergeStarted), "merge"), addr, bodyBytes, time.Since(mergeStarted), err)
 		return fmt.Errorf("merge orchestrator snapshot: %w", err)
 	}
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=merge_complete %s peer=%s body_bytes=%d records=%d elapsed=%s",
+	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=merge_complete %s peer=%s body_bytes=%d records=%d elapsed=%s",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(mergeStarted), "none"), addr, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(mergeStarted))
 
 	snapshot := memory.SnapshotForPeer(a.mem, remoteSnapshot.SyncVersion, remoteSnapshot.Watermarks)
@@ -481,7 +481,7 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 		})
 	})
 	if err != nil {
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_failed %s peer=%s stage=encode error=%v",
+		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_failed %s peer=%s stage=encode error=%v",
 			syncLogFields(requestID, a.cfg.NodeID, time.Since(postStarted), "encode"), addr, err)
 		return fmt.Errorf("encode local snapshot: %w", err)
 	}
@@ -489,7 +489,7 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 	for _, body := range bodies {
 		totalBodyBytes += int64(len(body))
 	}
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_start %s peer=%s body_bytes=%d pages=%d records=%d",
+	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_start %s peer=%s body_bytes=%d pages=%d records=%d",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(postStarted), "none"), addr, totalBodyBytes, len(bodies), memorySyncRecordCount(snapshot))
 	sentBytes, err := postMemorySnapshotPages(
 		a.memorySyncClient,
@@ -499,15 +499,15 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 		remoteSnapshot.SyncVersion,
 	)
 	if err != nil {
-		log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_failed %s peer=%s body_bytes=%d elapsed=%s error=%v",
+		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_failed %s peer=%s body_bytes=%d elapsed=%s error=%v",
 			syncLogFields(requestID, a.cfg.NodeID, time.Since(postStarted), "send"), addr, sentBytes, time.Since(postStarted), err)
 		return fmt.Errorf("send local snapshot: %w", err)
 	}
-	log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_complete %s peer=%s status=%d body_bytes=%d elapsed=%s",
+	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_complete %s peer=%s status=%d body_bytes=%d elapsed=%s",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(postStarted), "none"), addr, http.StatusOK, sentBytes, time.Since(postStarted))
 	if memory.SupportsIncrementalSync(remoteSnapshot.SyncVersion) {
 		if err := a.mem.SetPeerWatermarks(peerID, snapshot.Watermarks); err != nil {
-			log.Printf("FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=watermark_persist_failed %s peer=%s error=%v",
+			logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=watermark_persist_failed %s peer=%s error=%v",
 				syncLogFields(requestID, a.cfg.NodeID, time.Since(postStarted), "persistence"), addr, err)
 			return fmt.Errorf("persist orchestrator watermarks: %w", err)
 		}

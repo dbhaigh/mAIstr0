@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"strings"
 	"time"
 
@@ -233,7 +233,7 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 	}
 	for _, assignment := range assignments {
 		if err := p.dispatch.submitDispatch(task.ID, assignment); err != nil {
-			log.Printf("orchestrator: could not queue subtask %s: %v", assignment.Subtask.ID, err)
+			logging.Errorf("orchestrator", "orchestrator: could not queue subtask %s: %v", assignment.Subtask.ID, err)
 			p.tasks.CompleteSubtask(task.ID, assignment.Subtask.ID, "", err)
 		}
 	}

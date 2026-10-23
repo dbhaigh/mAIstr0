@@ -6,8 +6,8 @@ package orchestrator
 
 import (
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io/fs"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -154,7 +154,7 @@ func newWithMemoryHarnessAndConcurrency(
 	if mode != config.OrchestratorModeMinimal {
 		openedStore, err := memory.Open(memoryPath, selfID)
 		if err != nil {
-			log.Printf("orchestrator: memory unavailable, running stateless: %v", err)
+			logging.Errorf("orchestrator", "orchestrator: memory unavailable, running stateless: %v", err)
 		} else {
 			store = openedStore
 		}
@@ -227,13 +227,13 @@ func newWithMemoryHarnessAndConcurrency(
 	if srv.harness != nil {
 		if err := srv.harness.restoreAgentSessions(); err != nil {
 			if closeErr := srv.Close(); closeErr != nil {
-				log.Printf("orchestrator: cleanup after session restore failure: %v", closeErr)
+				logging.Errorf("orchestrator", "orchestrator: cleanup after session restore failure: %v", closeErr)
 			}
 			return nil, fmt.Errorf("orchestrator: restore agent sessions: %w", err)
 		}
 	}
 	if store != nil {
-		log.Printf("orchestrator: memory store at %s", store.Path())
+		logging.Infof("orchestrator", "orchestrator: memory store at %s", store.Path())
 	}
 	return srv, nil
 }
@@ -242,7 +242,7 @@ func (s *Server) Close() error {
 	for _, task := range s.tasks.All() {
 		if task.Status == taskmgr.StatusPending || task.Status == taskmgr.StatusRunning || task.Status == taskmgr.StatusSynthesis {
 			if _, err := s.tasks.CancelChecked(task.ID); err != nil {
-				log.Printf("orchestrator: cancel task %s during shutdown: %v", task.ID, err)
+				logging.Errorf("orchestrator", "orchestrator: cancel task %s during shutdown: %v", task.ID, err)
 			}
 		}
 	}
@@ -358,10 +358,11 @@ func (s *Server) Mux() *http.ServeMux {
 
 	staticFS, err := fs.Sub(web.StaticFiles, "static")
 	if err != nil {
-		log.Fatalf("orchestrator: embedded web assets missing: %v", err)
+		logging.Errorf("orchestrator", "embedded web assets missing: %v", err)
+		panic("orchestrator: embedded web assets missing")
 	}
 
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("/", web.NewHandler(staticFS))
 	return mux
 }
 
@@ -382,7 +383,7 @@ func (s *Server) Run(listenAddr string) error {
 		return fmt.Errorf("orchestrator: start cluster discovery: %w", err)
 	}
 	go s.electionPort().discoverySyncLoop(s.publishSnapshot)
-	log.Printf("orchestrator listening on %s", listenAddr)
+	logging.Infof("orchestrator", "orchestrator listening on %s", listenAddr)
 	mux := s.fenceStateChangingRequests(s.Mux())
 	secure := requireElectedOrchestrator(s.isElectedOrchestrator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/pairing/join" {

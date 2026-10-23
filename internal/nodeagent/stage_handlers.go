@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"mime"
 	"net/http"
 	"strings"
@@ -176,7 +176,7 @@ func (a *Agent) handleStageStep(w http.ResponseWriter, r *http.Request, prefill 
 	if err := engine.WriteStageMessage(w, engine.StageMessageHeader{
 		Request: responseRequest, Output: &output,
 	}, output.Activation); err != nil {
-		log.Printf("nodeagent: write pipeline stage v2 response failed: %v", err)
+		logging.Errorf("nodeagent", "nodeagent: write pipeline stage v2 response failed: %v", err)
 	}
 }
 
@@ -294,14 +294,14 @@ func (a *Agent) handleStageForward(w http.ResponseWriter, r *http.Request) {
 		if writeErr := writeStageFrame(w, r, engine.StageForwardFrame{
 			Type: engine.StageFrameError, Error: err.Error(),
 		}); writeErr != nil {
-			log.Printf("nodeagent: writing stage forward error frame failed: %v", writeErr)
+			logging.Errorf("nodeagent", "nodeagent: writing stage forward error frame failed: %v", writeErr)
 		}
 		return
 	}
 	if err := writeStageFrame(w, r, engine.StageForwardFrame{
 		Type: engine.StageFrameComplete, KVCache: updatedCache,
 	}); err != nil {
-		log.Printf("nodeagent: writing stage completion frame failed: %v", err)
+		logging.Errorf("nodeagent", "nodeagent: writing stage completion frame failed: %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@
   "node": {
     "node_id": "",
     "listen_addr": ":7451",
+    "log_level": "info",
     "advertise_addr": "",
     "orchestrator_addr": "",
     "max_concurrent_tasks": 2,
@@ -16,6 +17,7 @@
   },
   "orchestrator": {
     "listen_addr": ":7450",
+    "log_level": "info",
     "mode": "full",
     "harness": "pi",
     "max_concurrent_dispatches": 16,

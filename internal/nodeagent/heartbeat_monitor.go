@@ -3,7 +3,7 @@ package nodeagent
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"strings"
 	"sync"
@@ -90,7 +90,7 @@ func (m *HeartbeatMonitor) Run(ctx context.Context) {
 				if m.onRecovery != nil {
 					m.onRecovery(failedID)
 				}
-				log.Printf("nodeagent: orchestrator %s at %s responded to health checks again", failedID, address)
+				logging.Infof("nodeagent", "nodeagent: orchestrator %s at %s responded to health checks again", failedID, address)
 				triggered = false
 				failedID = ""
 			}
@@ -103,13 +103,13 @@ func (m *HeartbeatMonitor) Run(ctx context.Context) {
 		}
 		triggered = true
 		failedID = id
-		log.Printf("nodeagent: orchestrator %s at %s failed %d consecutive status probes: %v", id, address, failures, err)
+		logging.Errorf("nodeagent", "nodeagent: orchestrator %s at %s failed %d consecutive status probes: %v", id, address, failures, err)
 
 		m.starterMu.RLock()
 		start := m.startElection
 		m.starterMu.RUnlock()
 		if start == nil {
-			log.Printf("nodeagent: no election starter is configured; orchestrator failover cannot proceed")
+			logging.Errorf("nodeagent", "nodeagent: no election starter is configured; orchestrator failover cannot proceed")
 			continue
 		}
 		go start(id)

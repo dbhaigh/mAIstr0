@@ -2,7 +2,7 @@ package orchestrator
 
 import (
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"strconv"
 	"strings"
@@ -193,7 +193,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := writeOperationalMetrics(w, s.metrics, s.operationalMetricsGauges()); err != nil {
-		log.Printf("orchestrator: write metrics response failed: %v", err)
+		logging.Errorf("orchestrator", "orchestrator: write metrics response failed: %v", err)
 	}
 }
 

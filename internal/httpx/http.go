@@ -8,15 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
 )
 
 const (
+	RequestIDHeader                  = "X-Request-ID"
+	legacyRequestIDHeader            = "X-Maistr0-Request-ID"
 	DefaultMaxRequestBodyBytes int64 = 256 << 20
 	SmallJSONBodyBytes         int64 = 64 << 10
 	ControlJSONBodyBytes       int64 = 1 << 20
@@ -121,16 +123,49 @@ type requestIDKey struct{}
 
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var raw [16]byte
-		if _, err := rand.Read(raw[:]); err != nil {
-			http.Error(w, "could not initialize request", http.StatusInternalServerError)
-			return
+		id := r.Header.Get(RequestIDHeader)
+		if !validRequestID(id) {
+			id = r.Header.Get(legacyRequestIDHeader)
 		}
-		id := hex.EncodeToString(raw[:])
-		w.Header().Set("X-Request-ID", id)
+		if !validRequestID(id) {
+			generated, err := NewRequestID()
+			if err != nil {
+				http.Error(w, "could not initialize request", http.StatusInternalServerError)
+				return
+			}
+			id = generated
+		}
+		if r.Header == nil {
+			r.Header = make(http.Header)
+		}
+		r.Header.Set(RequestIDHeader, id)
+		if !validRequestID(r.Header.Get(legacyRequestIDHeader)) {
+			r.Header.Set(legacyRequestIDHeader, id)
+		}
+		w.Header().Set(RequestIDHeader, id)
 		ctx := context.WithValue(r.Context(), requestIDKey{}, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func NewRequestID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func validRequestID(id string) bool {
+	if len(id) == 0 || len(id) > 128 || strings.TrimSpace(id) != id {
+		return false
+	}
+	for _, character := range id {
+		if character < 0x21 || character > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func RequestIDFromContext(ctx context.Context) string {
@@ -140,8 +175,9 @@ func RequestIDFromContext(ctx context.Context) string {
 
 func RequestLogger(logger *slog.Logger) Middleware {
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(log.Writer(), nil))
+		logger = slog.Default()
 	}
+	logger = logger.With("component", "http")
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			recorder := &statusRecorder{ResponseWriter: w}
@@ -151,7 +187,7 @@ func RequestLogger(logger *slog.Logger) Middleware {
 			if status == 0 {
 				status = http.StatusOK
 			}
-			requestID := recorder.Header().Get("X-Request-ID")
+			requestID := recorder.Header().Get(RequestIDHeader)
 			if requestID == "" {
 				requestID = RequestIDFromContext(r.Context())
 			}

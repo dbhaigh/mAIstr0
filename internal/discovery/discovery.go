@@ -6,7 +6,7 @@ package discovery
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net"
 	"net/url"
 	"strings"
@@ -43,7 +43,7 @@ type Peer struct {
 func Beacon(get func() Announcement, interval time.Duration, stop <-chan struct{}) {
 	conn, err := listenUDP("udp4", ":0", true)
 	if err != nil {
-		log.Printf("discovery: beacon disabled, could not open UDP socket: %v", err)
+		logging.Errorf("discovery", "discovery: beacon disabled, could not open UDP socket: %v", err)
 		return
 	}
 	defer conn.Close()
@@ -59,11 +59,11 @@ func Beacon(get func() Announcement, interval time.Duration, stop <-chan struct{
 		}
 		addrs := broadcastAddrs()
 		if len(addrs) == 0 {
-			log.Printf("discovery: no non-loopback IPv4 interface found; announcement not sent")
+			logging.Infof("discovery", "discovery: no non-loopback IPv4 interface found; announcement not sent")
 		}
 		for _, addr := range addrs {
 			if _, err := conn.WriteTo(buf, &net.UDPAddr{IP: addr, Port: Port}); err != nil {
-				log.Printf("discovery: broadcast to %s failed: %v", addr, err)
+				logging.Errorf("discovery", "discovery: broadcast to %s failed: %v", addr, err)
 			}
 		}
 	}
@@ -120,7 +120,7 @@ func Listen(selfIDs ...string) *Listener {
 func (l *Listener) run() {
 	conn, err := listenUDP("udp4", ":"+itoa(Port), false)
 	if err != nil {
-		log.Printf("discovery: listener disabled, could not bind UDP port %d: %v", Port, err)
+		logging.Errorf("discovery", "discovery: listener disabled, could not bind UDP port %d: %v", Port, err)
 		l.mu.Lock()
 		l.readyErr = err
 		close(l.ready)

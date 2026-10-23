@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net"
 	"net/http"
 	"strings"
@@ -68,20 +68,20 @@ func (f *failoverCoordinator) StartElection(failedOrchestratorID string) {
 	}()
 
 	if f.listener == nil || !f.orchestrator.DiscoveryEnabled {
-		log.Printf("failover: cannot elect a coordinator because LAN discovery is disabled")
+		logging.Errorf("main", "failover: cannot elect a coordinator because LAN discovery is disabled")
 		return
 	}
 	if err := f.listener.WaitReady(2 * time.Second); err != nil {
-		log.Printf("failover: cannot start election: %v", err)
+		logging.Errorf("main", "failover: cannot start election: %v", err)
 		return
 	}
 	identity := f.agent.ClusterIdentity()
 	if identity == nil {
-		log.Printf("failover: cannot start election before the node identity is initialized")
+		logging.Errorf("main", "failover: cannot start election before the node identity is initialized")
 		return
 	}
 	if failedOrchestratorID == "" || !identity.IsTrustedID(failedOrchestratorID) {
-		log.Printf("failover: refusing to elect a coordinator without a paired current-orchestrator identity")
+		logging.Infof("main", "failover: refusing to elect a coordinator without a paired current-orchestrator identity")
 		return
 	}
 
@@ -95,21 +95,21 @@ func (f *failoverCoordinator) StartElection(failedOrchestratorID string) {
 		Score:    cluster.SelfScore(hardware.Detect()),
 	}
 	f.agent.BeginElection(candidate.PeerAddr)
-	log.Printf("failover: node %s is checking candidates for %s", candidate.ID, startupElectionWindow)
+	logging.Infof("main", "failover: node %s is checking candidates for %s", candidate.ID, startupElectionWindow)
 	time.Sleep(startupElectionWindow)
 
 	winner := failoverElectionWinner(candidate, f.listener.Snapshot(), failedOrchestratorID, identity.IsTrustedID)
 	if winner.ID != candidate.ID {
-		log.Printf("failover: trusted cluster member %s won the election; this node remains a worker", winner.ID)
+		logging.Infof("main", "failover: trusted cluster member %s won the election; this node remains a worker", winner.ID)
 		return
 	}
 
 	if err := f.promote(candidate.PeerAddr, identity); err != nil {
-		log.Printf("failover: could not promote elected node %s: %v", candidate.ID, err)
+		logging.Errorf("main", "failover: could not promote elected node %s: %v", candidate.ID, err)
 		return
 	}
 	promoted = true
-	log.Printf("failover: node %s is now the cluster orchestrator", candidate.ID)
+	logging.Infof("main", "failover: node %s is now the cluster orchestrator", candidate.ID)
 }
 
 func failoverElectionWinner(
@@ -170,9 +170,9 @@ func (f *failoverCoordinator) promote(address string, identity interface {
 	go func() {
 		err := server.Run(f.orchestrator.ListenAddr)
 		if err != nil {
-			log.Printf("failover: promoted orchestrator stopped: %v", err)
+			logging.Errorf("main", "failover: promoted orchestrator stopped: %v", err)
 		} else {
-			log.Printf("failover: promoted orchestrator stopped unexpectedly")
+			logging.Infof("main", "failover: promoted orchestrator stopped unexpectedly")
 		}
 		runDone <- err
 		f.mu.Lock()

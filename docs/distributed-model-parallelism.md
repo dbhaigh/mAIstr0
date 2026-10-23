@@ -104,6 +104,14 @@ replacement plan for later requests if readiness and capacity permit. Keep the
 logical model ID stable through this process; reject work rather than silently
 fall back to a different model or a partial pipeline.
 
+Protocol-v2 open requests are idle leases on the node. Prefill and decode
+activity refreshes the lease; after ten idle minutes, the node closes the
+runtime request and releases its stage lease and execution capacity. The
+orchestrator also attempts a bounded best-effort close when an open
+acknowledgement is uncertain. Automatic replanning drains active orchestrator
+requests and unloads reachable prior-plan stages before loading replacement
+assignments.
+
 ## Contract changes and v1 exclusions
 
 Keep changes additive: node shard-readiness and engine `pipeline_stage`

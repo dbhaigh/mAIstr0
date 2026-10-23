@@ -1,12 +1,11 @@
 function renderDirectMessages() {
   if (!chatMessagesEl) return;
-  chatMessagesEl.innerHTML = "";
+  dashboardDOM.resetVirtualList(chatMessagesEl, { estimateHeight: 140, threshold: 50, overscan: 6 });
   if (!directMessages.length) {
-    chatMessagesEl.innerHTML = `
-      <div class="welcome-card">
-        <h2>The mAIstr0 awaits your command</h2>
-      </div>
-    `;
+    const welcome = document.createElement("div");
+    welcome.className = "welcome-card";
+    welcome.innerHTML = "<h2>The mAIstr0 awaits your command</h2>";
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, welcome);
     return;
   }
   for (const message of directMessages) {
@@ -58,7 +57,7 @@ function appendMessageToChat(msg) {
       </div>
       ${bodyHTML}
     `;
-    chatMessagesEl.appendChild(card);
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, card);
     return;
   }
 
@@ -104,7 +103,7 @@ function appendMessageToChat(msg) {
     ${contentHTML}
   `;
 
-  chatMessagesEl.appendChild(msgDiv);
+  dashboardDOM.appendVirtualListItem(chatMessagesEl, msgDiv);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
@@ -255,13 +254,13 @@ function handleStreamEvent(event) {
     const thoughtBox = document.createElement("div");
     thoughtBox.className = "thought-box";
     thoughtBox.innerHTML = `💭 <strong>Step ${event.step || 1}:</strong> ${escapeHtml(event.content)}`;
-    chatMessagesEl.appendChild(thoughtBox);
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, thoughtBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "node_output" && event.output) {
     const outputBox = document.createElement("div");
     outputBox.className = "node-output-box";
     outputBox.innerHTML = `<strong>Orchestrator coordinator output · ${escapeHtml(event.node_id || "node")} · ${escapeHtml(event.model || "")}</strong><pre>${escapeHtml(event.output)}</pre>`;
-    chatMessagesEl.appendChild(outputBox);
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, outputBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "tool_call" && event.tool_call) {
     if (chatStatus) chatStatus.textContent = `⚡ Spreading work: Calling tool ${event.tool_call.name}...`;
@@ -269,7 +268,7 @@ function handleStreamEvent(event) {
     appendMessageToChat({ role: "tool", tool_response: event.tool_resp });
   } else if (event.type === "final_message" && event.message) {
     if (streamingAssistantEl) {
-      streamingAssistantEl.remove();
+      dashboardDOM.removeVirtualListItem(chatMessagesEl, streamingAssistantEl);
       streamingAssistantEl = null;
     }
     appendMessageToChat(event.message);
@@ -283,7 +282,7 @@ function handleStreamEvent(event) {
       const bubble = document.createElement("div");
       bubble.className = "msg-bubble";
       streamingAssistantEl.append(meta, bubble);
-      chatMessagesEl.appendChild(streamingAssistantEl);
+      dashboardDOM.appendVirtualListItem(chatMessagesEl, streamingAssistantEl);
     }
     const bubble = streamingAssistantEl.querySelector(".msg-bubble");
     if (bubble) bubble.textContent += event.content;

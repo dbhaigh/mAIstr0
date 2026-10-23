@@ -2,6 +2,7 @@
   "node": {
     "node_id": "worker-17",
     "listen_addr": ":7451",
+    "log_level": "info",
     "advertise_addr": "",
     "orchestrator_addr": "",
     "max_concurrent_tasks": 5,
@@ -16,6 +17,7 @@
   },
   "orchestrator": {
     "listen_addr": ":7450",
+    "log_level": "info",
     "mode": "full",
     "harness": "deepseek",
     "max_concurrent_dispatches": 7,

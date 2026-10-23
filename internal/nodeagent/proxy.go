@@ -3,8 +3,8 @@ package nodeagent
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -54,7 +54,7 @@ func (a *Agent) handleTransparentProxy(w http.ResponseWriter, r *http.Request) {
 	proxy := httputil.NewSingleHostReverseProxy(&upstreamTarget)
 	proxy.FlushInterval = -1
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
-		log.Printf("nodeagent: transparent inference proxy failed engine=%s: %v", eng.Name(), proxyErr)
+		logging.Errorf("nodeagent", "nodeagent: transparent inference proxy failed engine=%s: %v", eng.Name(), proxyErr)
 		http.Error(w, "inference engine is unavailable", http.StatusBadGateway)
 	}
 	proxy.Director = func(out *http.Request) {

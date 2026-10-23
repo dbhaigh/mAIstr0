@@ -1,7 +1,7 @@
 package orchestrator
 
 import (
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"sync"
 	"time"
 
@@ -151,7 +151,7 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 		if peer.Role == "node" && peer.OrchestratorID != "" && peer.OrchestratorID != e.selfID {
 			if status, ok := e.registry.Get(peer.ID); ok && status.Healthy {
 				e.registry.MarkUnhealthy(peer.ID)
-				log.Printf("orchestrator: node %s now announces orchestrator %s; skipping status probe", peer.ID, peer.OrchestratorID)
+				logging.Infof("orchestrator", "orchestrator: node %s now announces orchestrator %s; skipping status probe", peer.ID, peer.OrchestratorID)
 			}
 			delete(e.discoveredNodes, peer.ID)
 			continue
@@ -167,7 +167,7 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 			defer probes.Done()
 			status, err := e.statusProbe.discoveredNodeStatus(peer.PeerAddr)
 			if err != nil {
-				log.Printf("orchestrator: secure status probe for paired node %s failed: %v", peer.ID, err)
+				logging.Errorf("orchestrator", "orchestrator: secure status probe for paired node %s failed: %v", peer.ID, err)
 				return
 			}
 			results <- discoveryResult{peer: peer, status: status}
@@ -188,7 +188,7 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 		}
 		if _, ok := e.registry.Get(id); ok {
 			e.registry.MarkUnhealthy(id)
-			log.Printf("orchestrator: node %s is offline after its LAN announcement expired", id)
+			logging.Infof("orchestrator", "orchestrator: node %s is offline after its LAN announcement expired", id)
 		}
 		delete(e.discoveredNodes, id)
 	}
@@ -200,7 +200,7 @@ func (e *electionComponent) recordLeader(leaderID string) {
 	defer e.leaderMu.Unlock()
 	if leaderID != e.lastLeaderID {
 		if leaderID != "" {
-			log.Printf("orchestrator: cluster leadership passed to %s (most capable node)", leaderID)
+			logging.Infof("orchestrator", "orchestrator: cluster leadership passed to %s (most capable node)", leaderID)
 		}
 		e.lastLeaderID = leaderID
 	}

@@ -6,7 +6,11 @@ const vm = require("node:vm");
 
 const indexSource = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
 const appScriptPaths = [...indexSource.matchAll(/<script\s+src="([^"]+)"\s*><\/script>/g)].map((match) => match[1]);
-const source = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8");
+const bundleSource = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8");
+const entrySource = fs.readFileSync(path.join(__dirname, "src", "entry.js"), "utf8");
+const moduleSources = [...entrySource.matchAll(/^import\s+"([^"]+)";$/gm)]
+  .map((match) => fs.readFileSync(path.join(__dirname, "src", match[1]), "utf8"));
+const source = moduleSources.join("\n");
 const pipelineViewSource = fs.readFileSync(path.join(__dirname, "src", "views", "pipelines.js"), "utf8");
 const sharedSource = fs.readFileSync(path.join(__dirname, "src", "shared", "api.js"), "utf8");
 const applySnapshotStart = source.indexOf("function applySnapshot(snap) {");
@@ -23,21 +27,36 @@ const sendInteractiveEnd = source.indexOf("\nfunction handleStreamEvent(", sendI
 const sendInteractiveSource = source.slice(sendInteractiveStart, sendInteractiveEnd);
 const dashboardViewModel = require("./src/shared/view-model.js");
 const dashboardSnapshot = require("./src/shared/snapshot.js");
+const dashboardDOM = require("./src/shared/dom.js");
+const dashboardFormat = require("./src/shared/format.js");
 
 test("Dashboard loads its generated bundle through the Go embedded static path", () => {
-  assert.deepEqual(appScriptPaths, ["/app.js"]);
+  assert.equal(appScriptPaths.length, 1);
+  assert.match(appScriptPaths[0], /^\/app\.[a-f0-9]{12}\.js$/);
+  assert.match(indexSource, /href="\/style\.[a-f0-9]{12}\.css"/);
   assert.match(indexSource, /id="connection-status"[^>]*role="status"[^>]*aria-live="polite"/);
   assert.match(indexSource, /id="pipeline-model-list"/);
   assert.match(indexSource, /id="pipeline-action-status"/);
   for (const scriptPath of appScriptPaths) {
     assert.ok(fs.existsSync(path.join(__dirname, "static", path.basename(scriptPath))), `${scriptPath} is missing`);
+    for (const encoding of ["br", "gz"]) {
+      assert.ok(
+        fs.existsSync(path.join(__dirname, "static", `${path.basename(scriptPath)}.${encoding}`)),
+        `${scriptPath}.${encoding} is missing`,
+      );
+    }
+  }
+  const stylePath = indexSource.match(/href="(\/style\.[a-f0-9]{12}\.css)"/)?.[1];
+  assert.ok(stylePath);
+  for (const encoding of ["br", "gz"]) {
+    assert.ok(fs.existsSync(path.join(__dirname, "static", `${path.basename(stylePath)}.${encoding}`)));
   }
   const embedSource = fs.readFileSync(path.join(__dirname, "embed.go"), "utf8");
   assert.match(embedSource, /\/\/go:embed static/);
 });
 
 test("Dashboard bundle parses as a plain JavaScript browser script", () => {
-  assert.doesNotThrow(() => new vm.Script(source, { filename: "static/app.js" }));
+  assert.doesNotThrow(() => new vm.Script(bundleSource, { filename: "static/app.js" }));
 });
 
 test("Dashboard status view model renders node, model, load, memory, and version counts", () => {
@@ -98,6 +117,11 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
     dashboardViewModel,
     taskHistoryPage: { items: [], hasMore: false, loading: false },
     window: {},
+    dashboardDOM,
+    loadedDashboardPanels: new Set([
+      "cluster-overview-panel", "nodes-panel", "setup-nodes-panel",
+      "routing-panel", "discovery-panel", "tasks-panel",
+    ]),
     statNodes,
     statModels,
     statLoad,
@@ -169,6 +193,7 @@ test("Pipeline dashboard distinguishes model distribution and renders live stage
       })[character]);
     },
     fetchJSON: async () => ({}),
+    formatBytes: dashboardFormat.formatBytes,
   });
   vm.runInContext(pipelineViewSource, context);
   context.renderPipelineDashboard(
@@ -272,6 +297,7 @@ test("SSE snapshots parse safely and merge live task updates without losing hist
   const snapshots = [];
   const errors = [];
   const connectionChanges = [];
+  const frames = [];
   class FakeEventSource {
     constructor(url) {
       this.url = url;
@@ -283,6 +309,10 @@ test("SSE snapshots parse safely and merge live task updates without losing hist
       EventSourceImpl: FakeEventSource,
       onError: (error) => errors.push(error),
       onConnectionChange: (connected) => connectionChanges.push(connected),
+      requestAnimationFrameImpl: (callback) => {
+        frames.push(callback);
+        return frames.length;
+      },
     },
   );
   assert.equal(eventSource.url, "/api/events");
@@ -291,6 +321,7 @@ test("SSE snapshots parse safely and merge live task updates without losing hist
   assert.deepEqual(connectionChanges, [true, false]);
   eventSource.onmessage({ data: '{"nodes":[{"id":"node-a"}]}' });
   eventSource.onmessage({ data: "{" });
+  frames.shift()();
   assert.deepEqual(snapshots, [{ nodes: [{ id: "node-a" }] }]);
   assert.equal(errors.length, 1);
 
@@ -309,6 +340,83 @@ test("SSE snapshots parse safely and merge live task updates without losing hist
   assert.deepEqual(merged.tasks.map((task) => task.id), ["new", "same", "old"]);
   assert.equal(merged.tasks[1].status, "completed");
   assert.equal(merged.fullTaskHistoryLoaded, true);
+});
+
+test("Snapshot scheduling coalesces frames and skips identical snapshots", () => {
+  const frames = [];
+  const snapshots = [];
+  const scheduler = dashboardSnapshot.createSnapshotScheduler(
+    (snapshot) => snapshots.push(snapshot),
+    { requestAnimationFrameImpl: (callback) => { frames.push(callback); return frames.length; } },
+  );
+  assert.equal(scheduler.enqueue({ revision: 1 }), true);
+  assert.equal(scheduler.enqueue({ revision: 2 }), true);
+  assert.equal(scheduler.enqueue({ revision: 2 }), false);
+  assert.equal(frames.length, 1);
+  frames.shift()();
+  assert.deepEqual(snapshots, [{ revision: 2 }]);
+  assert.equal(scheduler.enqueue({ revision: 2 }), false);
+  assert.equal(scheduler.enqueue({ revision: 3 }), true);
+  frames.shift()();
+  assert.deepEqual(snapshots, [{ revision: 2 }, { revision: 3 }]);
+});
+
+test("Keyed DOM diff reuses stable nodes and replaces only changed items", () => {
+  class Element {
+    constructor(value) {
+      this.value = value;
+      this.dataset = {};
+      this.children = [];
+      this.parentNode = null;
+    }
+    get firstElementChild() { return this.children[0] || null; }
+    get nextElementSibling() {
+      if (!this.parentNode) return null;
+      return this.parentNode.children[this.parentNode.children.indexOf(this) + 1] || null;
+    }
+    insertBefore(node, anchor) {
+      if (node.parentNode) {
+        const oldIndex = node.parentNode.children.indexOf(node);
+        node.parentNode.children.splice(oldIndex, 1);
+      }
+      const index = anchor ? this.children.indexOf(anchor) : this.children.length;
+      this.children.splice(index < 0 ? this.children.length : index, 0, node);
+      node.parentNode = this;
+    }
+    remove() {
+      if (!this.parentNode) return;
+      const index = this.parentNode.children.indexOf(this);
+      if (index >= 0) this.parentNode.children.splice(index, 1);
+      this.parentNode = null;
+    }
+  }
+  const container = new Element("list");
+  let rendered = 0;
+  const options = {
+    keyOf: (item) => item.id,
+    signatureOf: (item) => item.value,
+    renderItem: (item) => {
+      rendered++;
+      return new Element(item.value);
+    },
+  };
+  const first = [{ id: "a", value: "one" }, { id: "b", value: "two" }];
+  dashboardDOM.patchKeyedChildren(container, first, options);
+  const originalA = container.children[0];
+  const originalB = container.children[1];
+  dashboardDOM.patchKeyedChildren(container, first, options);
+  assert.equal(rendered, 2);
+  assert.equal(container.children[0], originalA);
+  assert.equal(container.children[1], originalB);
+
+  dashboardDOM.patchKeyedChildren(container, [
+    { id: "b", value: "two" },
+    { id: "a", value: "updated" },
+  ], options);
+  assert.equal(rendered, 3);
+  assert.equal(container.children[0], originalB);
+  assert.equal(container.children[1].value, "updated");
+  assert.notEqual(container.children[1], originalA);
 });
 
 test("Node properties allow configuring supported inference engines", () => {
@@ -552,9 +660,17 @@ test("Expandable node context includes hardware, engine status, and model capabi
 
 function discoveryContext(nodes = [], pairing = null) {
   const list = {
-    innerHTML: "",
     cards: [],
-    appendChild(card) { this.cards.push(card); },
+    get firstElementChild() { return this.cards[0] || null; },
+    insertBefore(card, anchor) {
+      if (card.parentNode) {
+        const previousIndex = card.parentNode.cards.indexOf(card);
+        if (previousIndex >= 0) card.parentNode.cards.splice(previousIndex, 1);
+      }
+      const index = anchor ? this.cards.indexOf(anchor) : this.cards.length;
+      this.cards.splice(index < 0 ? this.cards.length : index, 0, card);
+      card.parentNode = this;
+    },
   };
   const contextMenus = [];
   const openedPairingTargets = [];
@@ -564,14 +680,28 @@ function discoveryContext(nodes = [], pairing = null) {
     document: {
       createElement: () => {
         const joinButton = { addEventListener(_event, handler) { this.handler = handler; } };
-        return {
+        const card = {
           innerHTML: "",
           className: "",
+          dataset: {},
+          parentNode: null,
+          get nextElementSibling() {
+            if (!this.parentNode) return null;
+            return this.parentNode.cards[this.parentNode.cards.indexOf(this) + 1] || null;
+          },
+          remove() {
+            if (!this.parentNode) return;
+            const index = this.parentNode.cards.indexOf(this);
+            if (index >= 0) this.parentNode.cards.splice(index, 1);
+            this.parentNode = null;
+          },
           joinButton,
           querySelector: (selector) => selector === "[data-action=join-orchestrator]" ? joinButton : null,
         };
+        return card;
       },
     },
+    dashboardDOM,
     escapeHtml: (value) => String(value),
     attachNodeContextMenu: (element, node) => contextMenus.push({ element, node }),
     openPairingDialog: (node) => openedPairingTargets.push(node),
@@ -700,20 +830,45 @@ test("Visible paired nodes are not presented as offline because registry health 
 test("Tasks are searchable and filterable in an expandable table", () => {
   const rows = [];
   const tables = [];
-  const createElement = (tagName) => ({
-    tagName,
-    className: "",
-    innerHTML: "",
-    dataset: {},
-    hidden: false,
-    children: [],
-    listeners: {},
-    attributes: {},
-    appendChild(child) {
-      this.children.push(child);
-      if (child.tagName === "tr") rows.push(child);
-    },
-    querySelector(selector) {
+  const createElement = (tagName) => {
+    const element = {
+      tagName,
+      className: "",
+      innerHTML: "",
+      dataset: {},
+      hidden: false,
+      children: [],
+      listeners: {},
+      attributes: {},
+      style: {},
+      get firstElementChild() { return this.children[0] || null; },
+      get nextElementSibling() {
+        if (!this.parentNode) return null;
+        return this.parentNode.children[this.parentNode.children.indexOf(this) + 1] || null;
+      },
+      appendChild(child) { this.insertBefore(child, null); },
+      insertBefore(child, anchor) {
+        if (child.parentNode) {
+          const previous = child.parentNode;
+          const index = previous.children.indexOf(child);
+          if (index >= 0) previous.children.splice(index, 1);
+        } else if (child.tagName === "tr") {
+          rows.push(child);
+        }
+        const index = anchor ? this.children.indexOf(anchor) : this.children.length;
+        this.children.splice(index < 0 ? this.children.length : index, 0, child);
+        child.parentNode = this;
+      },
+      remove() {
+        if (!this.parentNode) return;
+        const index = this.parentNode.children.indexOf(this);
+        if (index >= 0) this.parentNode.children.splice(index, 1);
+        this.parentNode = null;
+        const rowIndex = rows.indexOf(this);
+        if (rowIndex >= 0) rows.splice(rowIndex, 1);
+      },
+      setAttribute(name, value) { this.attributes[name] = value; },
+      querySelector(selector) {
       if (selector === ".task-expand-btn") {
         this.expandButton ||= {
           listeners: {},
@@ -724,10 +879,12 @@ test("Tasks are searchable and filterable in an expandable table", () => {
         return this.expandButton;
       }
       return null;
-    },
-    querySelectorAll: () => [],
-    addEventListener(type, listener) { this.listeners[type] = listener; },
-  });
+      },
+      querySelectorAll: () => [],
+      addEventListener(type, listener) { this.listeners[type] = listener; },
+    };
+    return element;
+  };
   const tasksList = {
     _innerHTML: "",
     set innerHTML(value) {
@@ -738,7 +895,10 @@ test("Tasks are searchable and filterable in an expandable table", () => {
       }
     },
     get innerHTML() { return this._innerHTML; },
-    appendChild(table) { tables.push(table); },
+    appendChild(table) { tables.push(table); table.parentNode = this; },
+    querySelector() { return null; },
+    setAttribute() {},
+    addEventListener() {},
     querySelectorAll(selector) {
       return selector === ".task-details-row:not([hidden])"
         ? rows.filter((row) => row.className === "task-details-row" && !row.hidden)
@@ -757,6 +917,8 @@ test("Tasks are searchable and filterable in an expandable table", () => {
       createElement,
     },
     dashboardViewModel,
+    dashboardDOM,
+    formatTimestamp: dashboardFormat.formatTimestamp,
     escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
     dashboardState: { tasks: [] },
     fetchJSON: async () => {},

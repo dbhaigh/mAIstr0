@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -43,16 +43,74 @@ type nodeClientAPI interface {
 
 func newNodeClient(client, dispatcher, status *http.Client) *nodeClient {
 	return &nodeClient{
-		client: client, dispatcher: dispatcher, status: status,
-		modelPull: &http.Client{Timeout: time.Hour},
-		sync:      &http.Client{Timeout: 10 * time.Minute},
+		client: clientWithRequestID(client), dispatcher: clientWithRequestID(dispatcher),
+		status:    clientWithRequestID(status),
+		modelPull: clientWithRequestID(&http.Client{Timeout: time.Hour}),
+		sync:      clientWithRequestID(&http.Client{Timeout: 10 * time.Minute}),
 	}
 }
 
 func newNodeClientWithSyncTimeout(client, dispatcher, status *http.Client, timeout time.Duration) *nodeClient {
 	node := newNodeClient(client, dispatcher, status)
-	node.sync = &http.Client{Timeout: timeout}
+	node.sync = clientWithRequestID(&http.Client{Timeout: timeout})
 	return node
+}
+
+type requestIDTransport struct {
+	next http.RoundTripper
+}
+
+func (t *requestIDTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	var err error
+	request, err = withRequestIDHeaders(request)
+	if err != nil {
+		return nil, err
+	}
+	next := t.next
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	return next.RoundTrip(request)
+}
+
+func clientWithRequestID(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+	clone := *client
+	if _, alreadyWrapped := clone.Transport.(*requestIDTransport); !alreadyWrapped {
+		clone.Transport = &requestIDTransport{next: clone.Transport}
+	}
+	return &clone
+}
+
+func withRequestIDHeaders(request *http.Request) (*http.Request, error) {
+	requestID := request.Header.Get(httpx.RequestIDHeader)
+	if requestID == "" {
+		requestID = request.Header.Get(inferroute.HeaderRequestID)
+	}
+	if requestID == "" {
+		requestID = httpx.RequestIDFromContext(request.Context())
+	}
+	if requestID == "" {
+		var err error
+		requestID, err = httpx.NewRequestID()
+		if err != nil {
+			return nil, fmt.Errorf("generate node request ID: %w", err)
+		}
+	}
+	request = request.Clone(request.Context())
+	request.Header = request.Header.Clone()
+	if request.Header == nil {
+		request.Header = make(http.Header)
+	}
+	if request.Header.Get(httpx.RequestIDHeader) == "" {
+		request.Header.Set(httpx.RequestIDHeader, requestID)
+	}
+	if request.Header.Get(inferroute.HeaderRequestID) == "" {
+		request.Header.Set(inferroute.HeaderRequestID, requestID)
+	}
+	return request, nil
 }
 
 func (c *nodeClient) Do(request *http.Request) (*http.Response, error) {
@@ -79,7 +137,7 @@ func (c *nodeClient) PostDispatch(url, contentType string, body io.Reader) (*htt
 }
 
 func (c *nodeClient) setTransport(newTransport func() *http.Transport) {
-	transport := newTransport()
+	transport := &requestIDTransport{next: newTransport()}
 	c.client.Transport = transport
 	c.dispatcher.Transport = transport
 	c.status.Transport = transport
@@ -183,7 +241,7 @@ func (c *nodeClient) streamNodeGenerate(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		log.Printf("orchestrator: stream from node %s failed: %v", address, err)
+		logging.Errorf("orchestrator", "orchestrator: stream from node %s failed: %v", address, err)
 	}
 }
 

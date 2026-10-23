@@ -3,10 +3,10 @@ package orchestrator
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/url"
 
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
@@ -54,7 +54,7 @@ func (s *Server) InitializeIdentity() error {
 	s.identity = identity
 	s.electionPort().setIdentity(identity)
 	s.nodeClientPort().setTransport(identity.ClientTransport)
-	log.Print("orchestrator: secure pairing PIN generated (valid for 30 minutes)")
+	logging.Infof("orchestrator", "secure pairing PIN generated (valid for 30 minutes)")
 	return nil
 }
 
@@ -74,7 +74,7 @@ func (s *Server) UseIdentity(identity *peeridentity.Identity) error {
 	s.electionPort().setSelfID(identity.ID())
 	s.electionPort().setIdentity(identity)
 	s.nodeClientPort().setTransport(identity.ClientTransport)
-	log.Print("orchestrator: secure pairing PIN generated (valid for 30 minutes)")
+	logging.Infof("orchestrator", "secure pairing PIN generated (valid for 30 minutes)")
 	return nil
 }
 

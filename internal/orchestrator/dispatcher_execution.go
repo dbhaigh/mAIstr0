@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
@@ -48,7 +51,7 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 	dependencyElapsed := time.Since(dependencyStarted)
 	d.dependencyWaitNanos.Add(dependencyElapsed.Nanoseconds())
 	if dependencyElapsed > 0 {
-		log.Printf("orchestrator: dependency wait task=%s subtask=%s duration_ms=%d", taskID, assignment.Subtask.ID, dependencyElapsed.Milliseconds())
+		logging.Infof("orchestrator", "orchestrator: dependency wait task=%s subtask=%s duration_ms=%d", taskID, assignment.Subtask.ID, dependencyElapsed.Milliseconds())
 	}
 
 	boundedCtx, cancelDeadline := context.WithTimeout(dispatchCtx, d.dispatchTimeout)
@@ -139,7 +142,7 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 		d.metrics.recordCapacityReservation()
 		defer reservation.Release()
 		if err := d.tasks.StartSubtaskChecked(taskID, assignment.Subtask.ID); err != nil {
-			log.Printf("orchestrator: could not persist start of subtask %s: %v", assignment.Subtask.ID, err)
+			logging.Errorf("orchestrator", "orchestrator: could not persist start of subtask %s: %v", assignment.Subtask.ID, err)
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
 			return
 		}
@@ -176,7 +179,7 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 		}
 		retry, err := d.retryAssignment(dispatchCtx, assignment.Subtask, alreadyTried)
 		if err != nil {
-			log.Printf("orchestrator: subtask %s retry unavailable after %v: %v", assignment.Subtask.ID, attemptErr, err)
+			logging.Errorf("orchestrator", "orchestrator: subtask %s retry unavailable after %v: %v", assignment.Subtask.ID, attemptErr, err)
 			failure := dispatchContextFailure(dispatchCtx)
 			if failure == nil {
 				failure = attemptErr
@@ -184,10 +187,10 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
 			return
 		}
-		log.Printf("orchestrator: retrying subtask %s on node %s after node %s failed: %v",
+		logging.Errorf("orchestrator", "orchestrator: retrying subtask %s on node %s after node %s failed: %v",
 			assignment.Subtask.ID, retry.NodeID, current.NodeID, attemptErr)
 		if err := d.reassignForRetry(taskID, assignment.Subtask.ID, retry); err != nil {
-			log.Printf("orchestrator: could not persist retry assignment for subtask %s: %v", assignment.Subtask.ID, err)
+			logging.Errorf("orchestrator", "orchestrator: could not persist retry assignment for subtask %s: %v", assignment.Subtask.ID, err)
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
 			return
 		}
@@ -255,6 +258,7 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if requestID != "" {
+		req.Header.Set(httpx.RequestIDHeader, requestID)
 		req.Header.Set(inferroute.HeaderRequestID, requestID)
 	}
 	if attemptID != "" {
@@ -330,9 +334,26 @@ func (d *dispatcherComponent) recordDispatchWithAttemptID(
 	} else if failureClass == "" {
 		failureClass = "dispatch_error"
 	}
-	log.Printf("orchestrator: dispatch request_id=%s attempt_id=%s task_type=%s subtask=%s node_id=%s model=%s engine=%s duration_ms=%d status=%d failure_class=%s success=%t",
-		requestID, attemptID, assignment.Subtask.TaskType, assignment.Subtask.ID, assignment.NodeID,
-		assignment.Model, assignment.Engine, elapsed.Milliseconds(), httpStatus, failureClass, dispatchErr == nil)
+	taskID, _, _ := strings.Cut(requestID, ":")
+	level := slog.LevelInfo
+	if dispatchErr != nil {
+		level = slog.LevelError
+	}
+	slog.Default().Log(context.Background(), level, "dispatch completed",
+		"component", "orchestrator",
+		"request_id", requestID,
+		"attempt_id", attemptID,
+		"task_id", taskID,
+		"subtask_id", assignment.Subtask.ID,
+		"task_type", assignment.Subtask.TaskType,
+		"node_id", assignment.NodeID,
+		"model", assignment.Model,
+		"engine", assignment.Engine,
+		"duration_ms", elapsed.Milliseconds(),
+		"http_status", httpStatus,
+		"failure_class", failureClass,
+		"success", dispatchErr == nil,
+	)
 	if d.memory == nil || failureClass == "hedge_loser" {
 		return
 	}
@@ -353,6 +374,6 @@ func (d *dispatcherComponent) recordDispatchWithAttemptID(
 		DurationMs:  elapsed.Milliseconds(),
 		Tags:        append(append([]string{"dispatch", "role:" + assignment.Subtask.Role}, assignment.Subtask.Tags...), "stage:"+assignment.Subtask.TaskType),
 	}); err != nil {
-		log.Printf("orchestrator: record subtask experience failed: %v", err)
+		logging.Errorf("orchestrator", "orchestrator: record subtask experience failed: %v", err)
 	}
 }

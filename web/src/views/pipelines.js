@@ -60,7 +60,7 @@ function pipelineStageMarkup(stage) {
     ? `${stage.active}/${stage.capacity} slots · ${stage.utilization_percent.toFixed(0)}%`
     : `${stage.active} active · capacity unavailable`;
   const transfer = Number.isFinite(stage.activation_transfer_ms)
-    ? `${stage.activation_transfer_ms.toFixed(1)} ms · ${formatPipelineBytes(stage.activation_bytes || 0)}`
+    ? `${stage.activation_transfer_ms.toFixed(1)} ms · ${formatBytes(stage.activation_bytes || 0)}`
     : "No activation transfer recorded";
   return `
     <div class="pipeline-stage">
@@ -74,12 +74,6 @@ function pipelineStageMarkup(stage) {
       ${stage.stage > 0 ? `<div class="row"><span>Activation transfer</span><span>${transfer}</span></div>` : ""}
     </div>
   `;
-}
-
-function formatPipelineBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 async function requestPipelineReshard(modelID) {

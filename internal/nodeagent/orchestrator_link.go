@@ -7,9 +7,9 @@ import (
 	"errors"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/version"
-	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -170,7 +170,7 @@ func (a *Agent) PromoteToOrchestrator(address string) error {
 
 func (c *orchestratorLink) resolveOrchestratorAndRegister() {
 	if c.getOrchestratorAddr() == "" && c.discoveryListener == nil {
-		log.Printf("nodeagent: discovery disabled and no orchestrator configured; registration will retry")
+		logging.Infof("nodeagent", "nodeagent: discovery disabled and no orchestrator configured; registration will retry")
 	}
 	c.registrationLoop()
 }
@@ -190,12 +190,12 @@ func (c *orchestratorLink) registrationLoop() {
 		}
 		for _, candidate := range candidates {
 			if !strings.HasPrefix(strings.ToLower(candidate.address), "https://") {
-				log.Printf("nodeagent: refusing insecure orchestrator address %q; use https", candidate.address)
+				logging.Infof("nodeagent", "nodeagent: refusing insecure orchestrator address %q; use https", candidate.address)
 				continue
 			}
 			if !c.trust.IsTrustedID(candidate.id) {
 				if pairErr := c.pairOrchestrator(candidate); pairErr != nil {
-					log.Printf("nodeagent: pairing candidate %s failed: %v", candidate.id, pairErr)
+					logging.Errorf("nodeagent", "nodeagent: pairing candidate %s failed: %v", candidate.id, pairErr)
 					continue
 				}
 			}
@@ -205,11 +205,11 @@ func (c *orchestratorLink) registrationLoop() {
 				if candidate.role == "orchestrator" {
 					certificate, ok := c.trust.TrustedPeers()[candidate.id]
 					if !ok {
-						log.Printf("nodeagent: registration with %s succeeded but its certificate is missing from the trust roster", candidate.id)
+						logging.Errorf("nodeagent", "nodeagent: registration with %s succeeded but its certificate is missing from the trust roster", candidate.id)
 						continue
 					}
 					if err := c.trust.TrustPeerDetails(candidate.id, certificate, "orchestrator", candidate.address); err != nil {
-						log.Printf("nodeagent: registration with %s succeeded but coordinator trust could not be updated: %v", candidate.id, err)
+						logging.Errorf("nodeagent", "nodeagent: registration with %s succeeded but coordinator trust could not be updated: %v", candidate.id, err)
 						continue
 					}
 				}
@@ -218,24 +218,24 @@ func (c *orchestratorLink) registrationLoop() {
 				c.setOrchestratorID(candidate.id)
 				c.markJoined()
 				if previous != candidate.address {
-					log.Printf("nodeagent: election winner is %s at %s, switching orchestrator", candidate.id, candidate.address)
+					logging.Infof("nodeagent", "nodeagent: election winner is %s at %s, switching orchestrator", candidate.id, candidate.address)
 				}
 				return
 			}
 			if resp != nil {
-				log.Printf("nodeagent: registration candidate %s rejected or unreachable: %v (status %s)", candidate.address, postErr, resp.Status)
+				logging.Errorf("nodeagent", "nodeagent: registration candidate %s rejected or unreachable: %v (status %s)", candidate.address, postErr, resp.Status)
 				resp.Body.Close()
 			} else if postErr != nil {
-				log.Printf("nodeagent: registration candidate %s unreachable: %v", candidate.address, postErr)
+				logging.Errorf("nodeagent", "nodeagent: registration candidate %s unreachable: %v", candidate.address, postErr)
 			}
 		}
 		c.joinedMu.Lock()
 		c.joined = false
 		c.joinedMu.Unlock()
 		if c.discoveryListener != nil {
-			log.Printf("nodeagent: retaining the last orchestrator address for health monitoring and retry")
+			logging.Infof("nodeagent", "nodeagent: retaining the last orchestrator address for health monitoring and retry")
 		}
-		log.Printf("nodeagent: no elected orchestrator accepted registration; discovery remains active")
+		logging.Infof("nodeagent", "nodeagent: no elected orchestrator accepted registration; discovery remains active")
 	}
 
 	time.Sleep(1500 * time.Millisecond)
@@ -309,7 +309,7 @@ func (c *orchestratorLink) peerPollLoop() {
 		}
 		resp, err := c.peerClient.Get(addr + "/api/nodes")
 		if err != nil {
-			log.Printf("nodeagent: peer poll failed: %v", err)
+			logging.Errorf("nodeagent", "nodeagent: peer poll failed: %v", err)
 			return
 		}
 		defer resp.Body.Close()
@@ -320,13 +320,13 @@ func (c *orchestratorLink) peerPollLoop() {
 		c.state.replacePeers(nodes)
 		rosterResp, err := c.peerClient.Get(addr + "/api/pairing/roster")
 		if err != nil {
-			log.Printf("nodeagent: paired-peer roster refresh failed: %v", err)
+			logging.Errorf("nodeagent", "nodeagent: paired-peer roster refresh failed: %v", err)
 		} else {
 			var roster map[string]string
 			decodeErr := json.NewDecoder(rosterResp.Body).Decode(&roster)
 			_ = rosterResp.Body.Close()
 			if decodeErr != nil {
-				log.Printf("nodeagent: decode paired-peer roster: %v", decodeErr)
+				logging.Errorf("nodeagent", "nodeagent: decode paired-peer roster: %v", decodeErr)
 			} else {
 				orchestratorID := c.getOrchestratorID()
 				for id, certificate := range roster {
@@ -334,7 +334,7 @@ func (c *orchestratorLink) peerPollLoop() {
 						continue
 					}
 					if err := c.trust.TrustPeer(id, certificate); err != nil {
-						log.Printf("nodeagent: trust paired peer %q: %v", id, err)
+						logging.Errorf("nodeagent", "nodeagent: trust paired peer %q: %v", id, err)
 					}
 				}
 				if orchestratorID != "" {
@@ -344,7 +344,7 @@ func (c *orchestratorLink) peerPollLoop() {
 						}
 						if _, ok := roster[id]; !ok {
 							if err := c.trust.RemovePeer(id); err != nil {
-								log.Printf("nodeagent: revoke stale peer %q: %v", id, err)
+								logging.Errorf("nodeagent", "nodeagent: revoke stale peer %q: %v", id, err)
 							}
 						}
 					}
@@ -371,7 +371,7 @@ func (c *orchestratorLink) sseSubscribeLoop() {
 			continue
 		}
 		if err := c.subscribeOnce(addr); err != nil {
-			log.Printf("nodeagent: event stream to orchestrator lost, retrying: %v", err)
+			logging.Errorf("nodeagent", "nodeagent: event stream to orchestrator lost, retrying: %v", err)
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -408,7 +408,7 @@ func (c *orchestratorLink) subscribeOnce(addr string) error {
 		}
 		if len(snap.Tasks) > 0 {
 			if err := c.tasks.ReplaceFromSync(snap.Tasks); err != nil {
-				log.Printf("nodeagent: could not apply task snapshot from orchestrator: %v", err)
+				logging.Errorf("nodeagent", "nodeagent: could not apply task snapshot from orchestrator: %v", err)
 			}
 		}
 		c.state.replacePeers(snap.Nodes)

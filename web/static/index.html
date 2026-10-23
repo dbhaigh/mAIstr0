@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>mAIstr0 · Interactive Cluster Orchestrator</title>
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.9c8ef1849de9.css" />
 </head>
 <body>
   <header>
@@ -21,10 +21,10 @@
         <span class="stat-pill" id="stat-version">Build -</span>
       </div>
     </div>
-    <nav class="nav-tabs">
-      <button class="nav-tab active" data-tab="agent-tab">Orchestrator</button>
-      <button class="nav-tab" data-tab="cluster-tab">Cluster &amp; Workload</button>
-      <button class="nav-tab" data-tab="memory-tab">Memory &amp; Learning</button>
+    <nav class="nav-tabs" role="tablist" aria-label="Dashboard views">
+      <button id="agent-tab-button" class="nav-tab active" type="button" role="tab" aria-controls="agent-tab" aria-selected="true" data-tab="agent-tab">Orchestrator</button>
+      <button id="cluster-tab-button" class="nav-tab" type="button" role="tab" aria-controls="cluster-tab" aria-selected="false" tabindex="-1" data-tab="cluster-tab">Cluster &amp; Workload</button>
+      <button id="memory-tab-button" class="nav-tab" type="button" role="tab" aria-controls="memory-tab" aria-selected="false" tabindex="-1" data-tab="memory-tab">Memory &amp; Learning</button>
     </nav>
   </header>
   <div id="connection-status" class="connection-status" role="status" aria-live="polite" data-connected="false">
@@ -33,7 +33,7 @@
   <div id="persistence-warning" class="persistence-warning" role="status" hidden></div>
 
   <!-- TAB 1: Interactive Orchestrator Console -->
-  <section id="agent-tab" class="tab-content active">
+  <section id="agent-tab" class="tab-content active" role="tabpanel" aria-labelledby="agent-tab-button">
     <div class="agent-layout">
       <!-- Sidebar / Session List & Tools -->
       <aside class="agent-sidebar" hidden>
@@ -85,9 +85,9 @@
       <div class="agent-chat-container">
         <div class="agent-tabbar">
           <nav class="agent-tabs" role="tablist" aria-label="Chat modes">
-            <button class="agent-tab active" type="button" role="tab" aria-selected="true" data-agent="direct">mAIstr0</button>
-            <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="pi">Pi Agent</button>
-            <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="deepseek">DeepSeek Agent</button>
+            <button id="agent-mode-direct-tab" class="agent-tab active" type="button" role="tab" aria-controls="chat-messages" aria-selected="true" data-agent="direct">mAIstr0</button>
+            <button id="agent-mode-pi-tab" class="agent-tab" type="button" role="tab" aria-controls="chat-messages" aria-selected="false" tabindex="-1" data-agent="pi">Pi Agent</button>
+            <button id="agent-mode-deepseek-tab" class="agent-tab" type="button" role="tab" aria-controls="chat-messages" aria-selected="false" tabindex="-1" data-agent="deepseek">DeepSeek Agent</button>
           </nav>
           <button id="clear-direct-chat-btn" class="icon-button direct-chat-clear" type="button">Clear chat</button>
         </div>
@@ -128,7 +128,7 @@
   </section>
 
   <!-- TAB 2: Cluster & Workload Workspace -->
-  <main id="cluster-tab" class="tab-content">
+  <main id="cluster-tab" class="tab-content" role="tabpanel" aria-labelledby="cluster-tab-button" hidden>
     <nav class="cluster-workspace-tabs" role="tablist" aria-label="Cluster workspace windows">
       <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-setup-tab" aria-controls="setup-panel" aria-selected="false" data-window="setup-panel">Setup</button>
       <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-submit-tab" aria-controls="submit-panel" aria-selected="false" data-window="submit-panel">Batch submit</button>
@@ -277,7 +277,7 @@
   </main>
 
   <!-- TAB 3: Persistent Memory & Learning -->
-  <main id="memory-tab" class="tab-content memory-grid">
+  <main id="memory-tab" class="tab-content memory-grid" role="tabpanel" aria-labelledby="memory-tab-button" hidden>
     <section id="learning-panel">
       <h2>What the cluster has learned</h2>
       <div id="learning-summary" class="cards"></div>
@@ -387,6 +387,6 @@
     </div>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.72dbedd8eeda.js"></script>
 </body>
 </html>

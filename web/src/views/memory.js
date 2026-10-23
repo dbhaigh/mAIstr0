@@ -1,6 +1,9 @@
 // --- Persistent memory & learning ---
 
 async function refreshMemory() {
+  dashboardDOM.renderSkeleton(factsList, 2);
+  dashboardDOM.renderSkeleton(experiencesList, 3);
+  dashboardDOM.renderSkeleton(transcriptsList, 2);
   try {
     const query = memorySearch?.value.trim() || "";
     const experienceURL = query
@@ -77,6 +80,7 @@ async function loadMoreMemoryHistory(name) {
 
 function appendMemoryLoadMore(container, name, hasMore, loading) {
   if (!container || !hasMore) return;
+  container.querySelector(".history-load-more")?.remove();
   const button = document.createElement("button");
   button.className = "icon-button history-load-more";
   button.type = "button";
@@ -126,79 +130,103 @@ function renderLearning(insights) {
 
 function renderFacts(facts, hasMore = false, loading = false) {
   if (!factsList) return;
-  factsList.innerHTML = "";
-  if (!facts || facts.length === 0) {
-    factsList.innerHTML = '<p style="color:var(--muted)">Nothing remembered yet.</p>';
-    appendMemoryLoadMore(factsList, "facts", hasMore, loading);
-    return;
-  }
-  for (const f of facts) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
+  const items = facts?.length ? facts : [{ key: "__empty", scope: "__empty" }];
+  factsList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(factsList, items, {
+    keyOf: (fact) => `${fact.scope || "cluster"}|${fact.key}`,
+    signatureOf: JSON.stringify,
+    estimateHeight: 140,
+    threshold: 30,
+    renderItem: (f) => {
+      if (f.scope === "__empty") {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "Nothing remembered yet.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
       <h3>${escapeHtml(f.key)} <span class="badge healthy">${escapeHtml(f.scope || "cluster")}</span></h3>
       <div class="row"><span>${escapeHtml(f.value)}</span></div>
       <div class="row"><span>Source</span><span>${escapeHtml(f.source || "unknown")}</span></div>
       <div class="row"><span>Recalled</span><span>${f.hits || 0}×</span></div>
       <button class="icon-button" data-forget="${escapeHtml(f.key)}" data-scope="${escapeHtml(f.scope || "cluster")}">Forget</button>
-    `;
-    card.querySelector("[data-forget]")?.addEventListener("click", async (e) => {
-      const key = e.target.dataset.forget;
-      const scope = e.target.dataset.scope;
-      await fetch(`/api/memory/facts/${encodeURIComponent(key)}?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
-      refreshMemory();
-    });
-    factsList.appendChild(card);
-  }
+      `;
+      card.querySelector("[data-forget]")?.addEventListener("click", async (e) => {
+        const key = e.target.dataset.forget;
+        const scope = e.target.dataset.scope;
+        await fetch(`/api/memory/facts/${encodeURIComponent(key)}?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
+        refreshMemory();
+      });
+      return card;
+    },
+  });
   appendMemoryLoadMore(factsList, "facts", hasMore, loading);
 }
 
 function renderExperiences(experiences, hasMore = false, loading = false) {
   if (!experiencesList) return;
-  experiencesList.innerHTML = "";
-  if (!experiences || experiences.length === 0) {
-    experiencesList.innerHTML = '<p style="color:var(--muted)">No matching experience recorded.</p>';
-    appendMemoryLoadMore(experiencesList, "experiences", hasMore, loading);
-    return;
-  }
-  for (const e of experiences) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
+  const items = experiences?.length ? experiences : [{ id: "__empty", empty: true }];
+  experiencesList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(experiencesList, items, {
+    keyOf: (item) => item.id || `${item.created_at || ""}|${item.description || ""}`,
+    signatureOf: JSON.stringify,
+    estimateHeight: 200,
+    threshold: 25,
+    renderItem: (e) => {
+      if (e.empty) {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No matching experience recorded.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
       <h3>${escapeHtml(e.kind || "task")} <span class="badge ${e.success ? "completed" : "failed"}">${e.success ? "success" : "failed"}</span></h3>
       <div class="row"><span>${escapeHtml(e.description || "")}</span></div>
       <div class="row"><span>${escapeHtml(e.node_id || "-")} / ${escapeHtml(e.model || "-")}</span><span>${e.duration_ms || 0}ms</span></div>
       <div class="row"><span>When</span><span>${new Date(e.created_at).toLocaleString()}</span></div>
       ${e.output ? `<div class="subtask-output">${escapeHtml(e.output.slice(0, 600))}</div>` : ""}
       ${e.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(e.error)}</div>` : ""}
-    `;
-    experiencesList.appendChild(card);
-  }
+      `;
+      return card;
+    },
+  });
   appendMemoryLoadMore(experiencesList, "experiences", hasMore, loading);
 }
 
 function renderTranscripts(dialogues, hasMore = false, loading = false) {
   if (!transcriptsList) return;
-  transcriptsList.innerHTML = "";
-  if (!dialogues || dialogues.length === 0) {
-    transcriptsList.innerHTML = '<p style="color:var(--muted)">No stored conversations yet.</p>';
-    appendMemoryLoadMore(transcriptsList, "dialogues", hasMore, loading);
-    return;
-  }
-  for (const d of dialogues) {
-    const card = document.createElement("div");
-    card.className = "card";
-    const turns = (d.turns || []).slice(-6)
-      .map((t) => `<div class="node-msg"><strong>${escapeHtml(t.speaker)}:</strong> ${escapeHtml((t.content || "").slice(0, 400))}</div>`)
-      .join("");
-    card.innerHTML = `
+  const items = dialogues?.length ? dialogues : [{ id: "__empty", empty: true }];
+  transcriptsList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(transcriptsList, items, {
+    keyOf: (dialogue) => dialogue.id,
+    signatureOf: JSON.stringify,
+    estimateHeight: 240,
+    threshold: 20,
+    renderItem: (d) => {
+      if (d.empty) {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No stored conversations yet.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      const turns = (d.turns || []).slice(-6)
+        .map((t) => `<div class="node-msg"><strong>${escapeHtml(t.speaker)}:</strong> ${escapeHtml((t.content || "").slice(0, 400))}</div>`)
+        .join("");
+      card.innerHTML = `
       <h3>${escapeHtml(d.id)} <span class="badge healthy">${(d.turns || []).length} turns</span></h3>
       <div class="row"><span>Participants</span><span>${escapeHtml((d.participants || []).join(", "))}</span></div>
       ${d.topic ? `<div class="row"><span>Topic</span><span>${escapeHtml(d.topic)}</span></div>` : ""}
       ${turns}
-    `;
-    transcriptsList.appendChild(card);
-  }
+      `;
+      return card;
+    },
+  });
   appendMemoryLoadMore(transcriptsList, "dialogues", hasMore, loading);
 }
 

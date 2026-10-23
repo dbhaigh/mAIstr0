@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -105,7 +105,7 @@ func (h *Harness) remember(e memory.Experience) {
 		return
 	}
 	if _, err := h.mem.Record(e); err != nil {
-		log.Printf("deepseek: memory write failed: %v", err)
+		logging.Errorf("deepseek", "deepseek: memory write failed: %v", err)
 	}
 }
 

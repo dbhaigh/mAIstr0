@@ -57,7 +57,10 @@ agentHarnessSelect?.addEventListener("change", async () => {
   await activateAgentTab(requested);
 });
 
+let clusterModelsLoaded = false;
+
 async function loadClusterModels() {
+  if (clusterModelsLoaded) return;
   try {
     const models = await fetchJSON("/api/agent/models");
     if (!agentModelSelect) return;
@@ -73,6 +76,7 @@ async function loadClusterModels() {
       if (m.name === currentVal) opt.selected = true;
       agentModelSelect.appendChild(opt);
     }
+    clusterModelsLoaded = true;
   } catch (err) {
     console.error("failed to load cluster models", err);
   }
@@ -193,14 +197,12 @@ async function deleteSession(id) {
 
 function renderChatMessages(session) {
   if (!chatMessagesEl) return;
-  chatMessagesEl.innerHTML = "";
+  dashboardDOM.resetVirtualList(chatMessagesEl, { estimateHeight: 140, threshold: 50, overscan: 6 });
   if (!session || !session.messages || session.messages.length === 0) {
-    chatMessagesEl.innerHTML = `
-        <div class="welcome-card">
-          <h2>What would you like to orchestrate?</h2>
-          <p>Ask a question or give a task to your local cluster.</p>
-        </div>
-      `;
+    const welcome = document.createElement("div");
+    welcome.className = "welcome-card";
+    welcome.innerHTML = "<h2>What would you like to orchestrate?</h2><p>Ask a question or give a task to your local cluster.</p>";
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, welcome);
     return;
   }
 

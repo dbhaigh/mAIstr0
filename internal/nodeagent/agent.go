@@ -14,10 +14,10 @@ import (
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/hub"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -164,10 +164,10 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 	link.statusSnapshot = a.status
 	link.currentTasks = peers.currentTasks
 	if store, err := memory.Open(cfg.MemoryPath, cfg.NodeID); err != nil {
-		log.Printf("nodeagent: memory unavailable, running stateless: %v", err)
+		logging.Errorf("nodeagent", "nodeagent: memory unavailable, running stateless: %v", err)
 	} else {
 		a.mem = store
-		log.Printf("nodeagent: memory store at %s", store.Path())
+		logging.Infof("nodeagent", "nodeagent: memory store at %s", store.Path())
 	}
 	a.dialogueComponent = newDialogueComponent(a.cfg.NodeID, a.mem, a.engineComponent, a.executorComponent, a.remember)
 	link.syncer = newSyncerComponent(
@@ -306,7 +306,7 @@ func (a *Agent) remember(e memory.Experience) {
 		e.NodeID = a.cfg.NodeID
 	}
 	if _, err := a.mem.Record(e); err != nil {
-		log.Printf("nodeagent: memory write failed: %v", err)
+		logging.Errorf("nodeagent", "nodeagent: memory write failed: %v", err)
 	}
 }
 

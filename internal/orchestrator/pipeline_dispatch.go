@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -26,7 +26,10 @@ type resolvedPipelineStage struct {
 	assignment engine.StageAssignment
 }
 
-const maxPipelineGeneratedTokens = 4096
+const (
+	maxPipelineGeneratedTokens   = 4096
+	maxPipelinePlanStartAttempts = 3
+)
 
 var errPipelinePlanPersistence = errors.New("pipeline plan persistence failed")
 
@@ -45,45 +48,110 @@ func (s *Server) shardedSourceModel(sourceModelID string) (config.ShardedModelCo
 }
 
 func (s *Server) pipelineForModel(
+	ctx context.Context,
 	model config.ShardedModelConfig,
 ) (config.PipelinePlan, []resolvedPipelineStage, error) {
-	unlock := s.pipelineLocker.lock(model.LogicalID)
-	defer unlock()
-	return s.pipelineForModelLocked(model)
-}
-
-func (s *Server) pipelineForModelLocked(
-	model config.ShardedModelConfig,
-) (config.PipelinePlan, []resolvedPipelineStage, error) {
-	nodes := s.dispatcher.schedulerNodes()
-	cached, hasCached := s.pipelinePlans.get(model.LogicalID)
-	if hasCached && cached.Model == model {
-		if stages, err := resolvePipelineStages(cached, nodes); err == nil {
-			if cached.CoordinatorEpoch != s.orchestratorEpoch {
-				cached.CoordinatorEpoch = s.orchestratorEpoch
-				if err := s.pipelinePlans.set(cached); err != nil {
-					return config.PipelinePlan{}, nil, fmt.Errorf("%w: persist current epoch: %v", errPipelinePlanPersistence, err)
+	for {
+		unlock := s.pipelineLocker.lock(model.LogicalID)
+		cached, hasCached := s.pipelinePlans.get(model.LogicalID)
+		previousPlan, hadPreviousPlan := cached, hasCached
+		nodes := s.dispatcher.schedulerNodes()
+		if hasCached && cached.Model == model {
+			if stages, err := resolvePipelineStages(cached, nodes); err == nil {
+				if cached.CoordinatorEpoch != s.orchestratorEpoch {
+					cached.CoordinatorEpoch = s.orchestratorEpoch
+					if err := s.pipelinePlans.set(cached); err != nil {
+						unlock()
+						return config.PipelinePlan{}, nil, fmt.Errorf("%w: persist current epoch: %v", errPipelinePlanPersistence, err)
+					}
 				}
+				unlock()
+				return cached, stages, nil
 			}
-			return cached, stages, nil
 		}
-	}
+		unlock()
 
-	plan, err := scheduler.PlacePipeline(model, nodes, s.orchestratorEpoch)
-	if err != nil {
-		return config.PipelinePlan{}, nil, err
+		var releaseRequests func()
+		if hasCached {
+			var err error
+			releaseRequests, err = s.pipelineRequests.beginReshard(ctx, model.LogicalID)
+			if err != nil {
+				return config.PipelinePlan{}, nil, err
+			}
+		}
+
+		unlock = s.pipelineLocker.lock(model.LogicalID)
+		cached, hasCached = s.pipelinePlans.get(model.LogicalID)
+		if !hasCached && hadPreviousPlan {
+			cached, hasCached = previousPlan, true
+		}
+		nodes = s.dispatcher.schedulerNodes()
+		if hasCached && cached.Model == model {
+			if stages, err := resolvePipelineStages(cached, nodes); err == nil {
+				if cached.CoordinatorEpoch != s.orchestratorEpoch {
+					cached.CoordinatorEpoch = s.orchestratorEpoch
+					if err := s.pipelinePlans.set(cached); err != nil {
+						unlock()
+						if releaseRequests != nil {
+							releaseRequests()
+						}
+						return config.PipelinePlan{}, nil, fmt.Errorf("%w: persist current epoch: %v", errPipelinePlanPersistence, err)
+					}
+				}
+				unlock()
+				if releaseRequests != nil {
+					releaseRequests()
+				}
+				return cached, stages, nil
+			}
+		}
+		if hasCached && releaseRequests == nil {
+			unlock()
+			continue
+		}
+
+		plan, err := scheduler.PlacePipeline(model, nodes, s.orchestratorEpoch)
+		if err != nil {
+			unlock()
+			if releaseRequests != nil {
+				releaseRequests()
+			}
+			return config.PipelinePlan{}, nil, err
+		}
+		if hasCached {
+			plan.PlanVersion = cached.PlanVersion + 1
+		}
+		stages, err := resolvePipelineStages(plan, nodes)
+		if err != nil {
+			unlock()
+			if releaseRequests != nil {
+				releaseRequests()
+			}
+			return config.PipelinePlan{}, nil, fmt.Errorf("%w: %v", errPipelineNodeUnavailable, err)
+		}
+		if hasCached {
+			unlock()
+			if err := s.unloadPipelinePlanStages(ctx, cached, nodes); err != nil {
+				if releaseRequests != nil {
+					releaseRequests()
+				}
+				return config.PipelinePlan{}, nil, err
+			}
+			unlock = s.pipelineLocker.lock(model.LogicalID)
+		}
+		if err := s.pipelinePlans.set(plan); err != nil {
+			unlock()
+			if releaseRequests != nil {
+				releaseRequests()
+			}
+			return config.PipelinePlan{}, nil, fmt.Errorf("%w: %v", errPipelinePlanPersistence, err)
+		}
+		unlock()
+		if releaseRequests != nil {
+			releaseRequests()
+		}
+		return plan, stages, nil
 	}
-	if hasCached {
-		plan.PlanVersion = cached.PlanVersion + 1
-	}
-	stages, err := resolvePipelineStages(plan, nodes)
-	if err != nil {
-		return config.PipelinePlan{}, nil, fmt.Errorf("%w: %v", errPipelineNodeUnavailable, err)
-	}
-	if err := s.pipelinePlans.set(plan); err != nil {
-		return config.PipelinePlan{}, nil, fmt.Errorf("%w: %v", errPipelinePlanPersistence, err)
-	}
-	return plan, stages, nil
 }
 
 func (s *Server) reshardPipeline(
@@ -141,22 +209,8 @@ func (s *Server) reshardPipeline(
 	defer reservation.Release()
 
 	if hadPrevious {
-		for i, stage := range previous.Stages {
-			node, exists := findNodeStatus(nodes, stage.NodeID)
-			if !exists || !node.Healthy || node.Address == "" {
-				continue
-			}
-			assignment := engine.StageAssignment{
-				ModelID: previous.Model.SourceModelID, StartLayer: stage.StartLayer,
-				EndLayer: stage.EndLayer, Engine: stage.Engine, IsFinal: i == len(previous.Stages)-1,
-			}
-			if err := s.nodeClient.unloadPipelineStage(ctx, node.ID, node.Address, assignment); err != nil {
-				var stageErr *pipelineStageHTTPError
-				if errors.As(err, &stageErr) && strings.HasPrefix(stageErr.status, "404 ") {
-					continue
-				}
-				return config.PipelinePlan{}, fmt.Errorf("unload prior pipeline stage on node %s: %w", node.ID, err)
-			}
+		if err := s.unloadPipelinePlanStages(ctx, previous, nodes); err != nil {
+			return config.PipelinePlan{}, err
 		}
 	}
 	for _, stage := range stages {
@@ -177,6 +231,31 @@ func findNodeStatus(nodes []cluster.NodeStatus, nodeID string) (cluster.NodeStat
 		}
 	}
 	return cluster.NodeStatus{}, false
+}
+
+func (s *Server) unloadPipelinePlanStages(
+	ctx context.Context,
+	plan config.PipelinePlan,
+	nodes []cluster.NodeStatus,
+) error {
+	for i, stage := range plan.Stages {
+		node, exists := findNodeStatus(nodes, stage.NodeID)
+		if !exists || !node.Healthy || node.Address == "" {
+			continue
+		}
+		assignment := engine.StageAssignment{
+			ModelID: plan.Model.SourceModelID, StartLayer: stage.StartLayer,
+			EndLayer: stage.EndLayer, Engine: stage.Engine, IsFinal: i == len(plan.Stages)-1,
+		}
+		if err := s.nodeClient.unloadPipelineStage(ctx, node.ID, node.Address, assignment); err != nil {
+			var stageErr *pipelineStageHTTPError
+			if errors.As(err, &stageErr) && strings.HasPrefix(stageErr.status, "404 ") {
+				continue
+			}
+			return fmt.Errorf("unload prior pipeline stage on node %s: %w", node.ID, err)
+		}
+	}
+	return nil
 }
 
 func resolvePipelineStages(
@@ -252,16 +331,34 @@ func (s *Server) runShardedPipeline(
 	ctx, cancel := context.WithCancel(requestCtx)
 	defer cancel()
 
-	releasePipelineRequest, err := s.pipelineRequests.begin(ctx, model.LogicalID)
-	if err != nil {
-		return "", err
+	var releasePipelineRequest func()
+	var stages []resolvedPipelineStage
+	for attempt := 0; attempt < maxPipelinePlanStartAttempts; attempt++ {
+		if _, _, err := s.pipelineForModel(ctx, model); err != nil {
+			return "", err
+		}
+		release, err := s.pipelineRequests.begin(ctx, model.LogicalID)
+		if err != nil {
+			return "", err
+		}
+		plan, exists := s.pipelinePlans.get(model.LogicalID)
+		if exists {
+			stages, err = resolvePipelineStages(plan, s.dispatcher.schedulerNodes())
+		}
+		if exists && err == nil {
+			releasePipelineRequest = release
+			break
+		}
+		release()
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+	}
+	if releasePipelineRequest == nil {
+		return "", errors.New("pipeline plan changed repeatedly before request start")
 	}
 	defer releasePipelineRequest()
 
-	_, stages, err := s.pipelineForModel(model)
-	if err != nil {
-		return "", err
-	}
 	gate, ok := s.dispatcher.capacityGate.(*dispatchCapacityGate)
 	if !ok {
 		return "", errors.New("pipeline capacity gate is unavailable")
@@ -298,7 +395,7 @@ func (s *Server) runShardedPipeline(
 			if err := s.nodeClient.closePipelineStageRequest(
 				closeCtx, stage.nodeID, stage.address, stage.assignment, requestID,
 			); err != nil {
-				log.Printf("orchestrator: close pipeline request %s on node %s failed: %v", requestID, stage.nodeID, err)
+				logging.Errorf("orchestrator", "orchestrator: close pipeline request %s on node %s failed: %v", requestID, stage.nodeID, err)
 			}
 		}
 	}()
@@ -306,6 +403,17 @@ func (s *Server) runShardedPipeline(
 		if err := s.nodeClient.openPipelineStageRequest(
 			ctx, stage.nodeID, stage.address, stage.assignment, requestID,
 		); err != nil {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			closeErr := s.nodeClient.closePipelineStageRequest(
+				closeCtx, stage.nodeID, stage.address, stage.assignment, requestID,
+			)
+			closeCancel()
+			if closeErr != nil {
+				var stageErr *pipelineStageHTTPError
+				if !errors.As(closeErr, &stageErr) || !strings.HasPrefix(stageErr.status, "404 ") {
+					logging.Errorf("orchestrator", "orchestrator: close uncertain pipeline request %s on node %s failed: %v", requestID, stage.nodeID, closeErr)
+				}
+			}
 			if ctx.Err() == nil {
 				s.invalidatePipelinePlan(model.LogicalID, err)
 			}
@@ -440,7 +548,7 @@ func newPipelineRequestID() (string, error) {
 
 func (s *Server) invalidatePipelinePlan(logicalID string, cause error) {
 	if err := s.pipelinePlans.remove(logicalID); err != nil {
-		log.Printf("orchestrator: remove failed pipeline plan %s after %v: %v", logicalID, cause, err)
+		logging.Errorf("orchestrator", "orchestrator: remove failed pipeline plan %s after %v: %v", logicalID, cause, err)
 	}
 }
 
@@ -527,12 +635,12 @@ func (s *Server) handleShardedOpenAIChatCompletion(
 		}
 		payload, marshalErr := json.Marshal(map[string]string{"error": err.Error()})
 		if marshalErr != nil {
-			log.Printf("orchestrator: encode pipeline stream error: %v", marshalErr)
+			logging.Errorf("orchestrator", "orchestrator: encode pipeline stream error: %v", marshalErr)
 			return
 		}
 		_, writeErr := stream.Write(append(append([]byte("data: "), payload...), '\n', '\n'))
 		if writeErr != nil {
-			log.Printf("orchestrator: write pipeline stream error: %v", writeErr)
+			logging.Errorf("orchestrator", "orchestrator: write pipeline stream error: %v", writeErr)
 		}
 		return
 	}

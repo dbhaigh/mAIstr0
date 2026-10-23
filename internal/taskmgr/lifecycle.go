@@ -3,7 +3,7 @@ package taskmgr
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +21,7 @@ func (m *Manager) SetFinalizer(finalizer Finalizer) {
 func (m *Manager) Create(description string, assignments []scheduler.Assignment) *Task {
 	task, err := m.CreateChecked(description, assignments)
 	if err != nil {
-		log.Printf("taskmgr: create task failed: %v", err)
+		logging.Errorf("taskmgr", "taskmgr: create task failed: %v", err)
 		return nil
 	}
 	return task
@@ -94,7 +94,7 @@ func (m *Manager) CreateWithGraphAndOptionsChecked(description string, graph *sc
 func (m *Manager) Cancel(id string) bool {
 	cancelled, err := m.CancelChecked(id)
 	if err != nil {
-		log.Printf("taskmgr: persist cancellation failed: %v", err)
+		logging.Errorf("taskmgr", "taskmgr: persist cancellation failed: %v", err)
 	}
 	return cancelled
 }
@@ -138,7 +138,7 @@ func (m *Manager) CancelAndSnapshotChecked(id string) (*Task, bool, error) {
 // StartSubtask marks a dispatched assignment as actively running.
 func (m *Manager) StartSubtask(taskID, subtaskID string) {
 	if err := m.StartSubtaskChecked(taskID, subtaskID); err != nil {
-		log.Printf("taskmgr: persist subtask start failed: %v", err)
+		logging.Errorf("taskmgr", "taskmgr: persist subtask start failed: %v", err)
 	}
 }
 
@@ -193,7 +193,7 @@ func (m *Manager) ReassignSubtaskChecked(taskID, subtaskID string, assignment sc
 // parent task's overall status up once every subtask has finished.
 func (m *Manager) CompleteSubtask(taskID, subtaskID string, output string, taskErr error) {
 	if err := m.CompleteSubtaskChecked(taskID, subtaskID, output, taskErr); err != nil {
-		log.Printf("taskmgr: persist subtask completion failed: %v", err)
+		logging.Errorf("taskmgr", "taskmgr: persist subtask completion failed: %v", err)
 	}
 }
 

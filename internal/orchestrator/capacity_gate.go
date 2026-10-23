@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"sync"
 	"time"
 
@@ -175,13 +175,13 @@ func (g *dispatchCapacityGate) dispatchCapacity(
 				nodeGate.endRefresh()
 				return 0, 0, 0, false
 			}
-			log.Printf("orchestrator: refreshing capacity for node %s failed: %v", nodeID, err)
+			logging.Errorf("orchestrator", "orchestrator: refreshing capacity for node %s failed: %v", nodeID, err)
 			g.registry.MarkUnhealthy(nodeID)
 			nodeGate.endRefresh()
 			return 0, 0, 0, false
 		}
 		if refreshed.ID != nodeID || refreshed.Address != address {
-			log.Printf("orchestrator: capacity response identity mismatch for node %s", nodeID)
+			logging.Errorf("orchestrator", "orchestrator: capacity response identity mismatch for node %s", nodeID)
 			g.registry.MarkUnhealthy(nodeID)
 			nodeGate.endRefresh()
 			return 0, 0, 0, false

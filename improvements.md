@@ -17,7 +17,7 @@ changes have been reviewed or merged.
   focused components and lock order documented. Further splits should follow a
   concrete review finding, not the line-count target alone.
 - Phase 0 remains open until the current worktree is reviewed and merged. The
-  Linux race suite has passed previously; native Windows still reports the
+  Linux race suite has passed previously; native Windows may report the
   documented ThreadSanitizer shadow-memory allocation limitation.
 - Incremental sync now supports configurable transfer limits and timeouts with
   the established 64 MiB and 10-minute defaults. Metrics, service examples,
@@ -30,10 +30,19 @@ changes have been reviewed or merged.
 ## Ground rules for every phase
 
 - Each phase goes into its own branch or PR, and the build stays green between phases.
+- Run commands from the repository root and use repository-relative paths.
+  These prompts are platform-neutral; provide both PowerShell and bash forms
+  whenever a shell-specific command or path is needed.
 - Make **no behavior changes** unless the phase explicitly says so. Keep JSON wire formats, API routes,
   on-disk bbolt bucket names, and config keys compatible.
 - Every phase must pass:
   ```powershell
+  go build ./...
+  go vet ./...
+  go test ./...
+  node --test web/app_test.js
+  ```
+  ```sh
   go build ./...
   go vet ./...
   go test ./...
@@ -79,7 +88,7 @@ the repository assessment documented in
 
 ### Prompt 0
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0.
+You are working in the existing mAIstr0 repository. Use repository-relative paths.
 
 Goal: stabilize the baseline before a refactoring program starts. Make no behavior changes.
 
@@ -119,7 +128,7 @@ Done when: all checks are green, the temp files are untracked, and you've given 
 
 ### Prompt 1
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. All tests currently pass.
+You are working in the existing mAIstr0 repository. All tests currently pass; use repository-relative paths.
 
 Goal: add characterization and contract tests that lock down current behavior. Don't change production behavior.
 
@@ -174,7 +183,7 @@ clear messages.
 
 ### Prompt 2
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phase 1 contract tests exist and pass.
+You are working in the existing mAIstr0 repository. Phase 1 contract tests exist and pass; use repository-relative paths.
 
 Goal: centralize configuration normalization and validation in internal/config.
 
@@ -218,7 +227,7 @@ removes `taskCreateError{status:…}` from domain logic.
 
 ### Prompt 3
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phase 1 contract tests exist and pass.
+You are working in the existing mAIstr0 repository. Phase 1 contract tests exist and pass; use repository-relative paths.
 
 Goal: decouple orchestration logic from HTTP status codes without changing API behavior.
 
@@ -265,7 +274,7 @@ with one generic, well-tested primitive.
 
 ### Prompt 4
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phase 1 contract tests exist and pass.
+You are working in the existing mAIstr0 repository. Phase 1 contract tests exist and pass; use repository-relative paths.
 
 Goal: replace the duplicated worker pools with one generic primitive.
 
@@ -313,7 +322,7 @@ Validate with go vet ./... and go test ./....
 
 ### Prompt 5
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phase 1 contract tests exist and pass.
+You are working in the existing mAIstr0 repository. Phase 1 contract tests exist and pass; use repository-relative paths.
 
 Goal: put persistence behind interfaces without changing on-disk formats.
 
@@ -381,7 +390,7 @@ Validate with go vet ./... and go test ./....
 
 ### Prompt 6a: taskmgr
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–5 are merged. Contract tests,
+You are working in the existing mAIstr0 repository. Phases 1–5 are merged. Contract tests,
 apperr, workpool, and persistence interfaces all exist.
 
 Goal: decompose internal/taskmgr/taskmgr.go into cohesive files and components with no behavior change.
@@ -401,7 +410,7 @@ Validate with go vet ./..., go test ./..., and, where available, go test -race .
 
 ### Prompt 6b: nodeagent
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–5 and 6a are merged.
+You are working in the existing mAIstr0 repository. Phases 1–5 and 6a are merged; use repository-relative paths.
 
 Goal: decompose nodeagent.Agent in internal/nodeagent/agent.go, which is about 1,500 lines, into focused
 components with no behavior change.
@@ -428,7 +437,7 @@ Validate with go vet ./... and go test ./....
 
 ### Prompt 6c: orchestrator
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–5, 6a, and 6b are merged.
+You are working in the existing mAIstr0 repository. Phases 1–5, 6a, and 6b are merged; use repository-relative paths.
 
 Goal: decompose orchestrator.Server in internal/orchestrator/server.go into focused components with no behavior
 change.
@@ -468,7 +477,7 @@ fallback and a compatibility path for mixed-version clusters.
 
 ### Prompt 7
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–6 are merged. Memory persistence
+You are working in the existing mAIstr0 repository. Phases 1–6 are merged. Memory persistence
 sits behind interfaces.
 
 Goal: add incremental memory and task-history synchronization while keeping full-snapshot sync as a fallback.
@@ -512,7 +521,7 @@ Validate with go vet ./... and go test ./....
 
 ### Prompt 8
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–7 are merged.
+You are working in the existing mAIstr0 repository. Phases 1–7 are merged; use repository-relative paths.
 
 Goal: produce language-neutral contracts and a porting guide
 

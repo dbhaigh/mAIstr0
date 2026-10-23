@@ -1,0 +1,39 @@
+version: 2
+project_name: maistr0
+
+builds:
+  - id: maistr0
+    main: ./cmd/maistr0
+    binary: maistr0
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/maistr0/maistr0/internal/version.Value={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: binaries
+    builds:
+      - maistr0
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - docs/*.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256

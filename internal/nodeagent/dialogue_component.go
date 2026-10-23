@@ -3,7 +3,7 @@ package nodeagent
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"sort"
 	"time"
 
@@ -198,12 +198,12 @@ func (c *dialogueComponent) turnContext(ctx context.Context, id, model, system, 
 		}
 		if appender, ok := c.mem.(memory.DialogueBatchAppender); ok {
 			if err := appender.AppendDialogueTurns(id, participants, "", turns); err != nil {
-				log.Printf("nodeagent: persist dialogue %s: %v", id, err)
+				logging.Errorf("nodeagent", "nodeagent: persist dialogue %s: %v", id, err)
 			}
 		} else {
 			for _, turn := range turns {
 				if err := c.mem.AppendDialogueTurn(id, participants, "", turn); err != nil {
-					log.Printf("nodeagent: persist dialogue %s turn: %v", id, err)
+					logging.Errorf("nodeagent", "nodeagent: persist dialogue %s turn: %v", id, err)
 				}
 			}
 		}

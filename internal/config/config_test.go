@@ -77,6 +77,9 @@ func TestNodeConfigNormalizeAndValidate(t *testing.T) {
 	if cfg.TrayMode != "taskbar" {
 		t.Fatalf("normalized tray mode = %q, want taskbar", cfg.TrayMode)
 	}
+	if cfg.LogLevel != DefaultLogLevel {
+		t.Fatalf("normalized log level = %q, want %q", cfg.LogLevel, DefaultLogLevel)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("normalized defaults are invalid: %v", err)
 	}
@@ -111,6 +114,7 @@ func TestNodeConfigNormalizeAndValidate(t *testing.T) {
 		{"negative sync timeout", func(cfg *NodeConfig, _ *testing.T) { cfg.SyncTimeoutSeconds = -1 }, "sync_timeout_seconds"},
 		{"oversized sync timeout", func(cfg *NodeConfig, _ *testing.T) { cfg.SyncTimeoutSeconds = MaxSyncTimeoutSeconds + 1 }, "sync_timeout_seconds"},
 		{"tray mode", func(cfg *NodeConfig, _ *testing.T) { cfg.TrayMode = "minimized" }, "tray_mode"},
+		{"log level", func(cfg *NodeConfig, _ *testing.T) { cfg.LogLevel = "verbose" }, "log_level"},
 		{"orchestrator URL", func(cfg *NodeConfig, _ *testing.T) { cfg.OrchestratorAddr = "http://orchestrator:7450" }, "orchestrator_addr"},
 		{"advertise URL", func(cfg *NodeConfig, _ *testing.T) { cfg.AdvertiseAddr = "http://node:7451" }, "advertise_addr"},
 		{"engine name", func(cfg *NodeConfig, _ *testing.T) {
@@ -151,6 +155,7 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 	defaulted := OrchestratorConfig{DiscoveryEnabled: true}
 	defaulted.Normalize()
 	if defaulted.ListenAddr != DefaultOrchestratorConfig().ListenAddr || defaulted.Harness != "pi" ||
+		defaulted.LogLevel != DefaultLogLevel ||
 		defaulted.Mode != OrchestratorModeFull || defaulted.MaxConcurrentDispatches != DefaultDispatchConcurrency ||
 		defaulted.DispatchTimeoutSeconds != DefaultDispatchTimeoutSeconds ||
 		defaulted.SpeculativeHedgingEnabled || defaulted.MaxConcurrentHedges != DefaultMaxConcurrentHedges ||
@@ -180,6 +185,11 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 	if cfg.Harness != "deepseek" {
 		t.Fatalf("normalized harness = %q, want deepseek", cfg.Harness)
 	}
+	cfg.LogLevel = " WARN "
+	cfg.Normalize()
+	if cfg.LogLevel != "warn" {
+		t.Fatalf("normalized log level = %q, want warn", cfg.LogLevel)
+	}
 	if cfg.MaxConcurrentDispatches != DefaultDispatchConcurrency {
 		t.Fatalf("normalized concurrency = %d, want %d", cfg.MaxConcurrentDispatches, DefaultDispatchConcurrency)
 	}
@@ -198,6 +208,7 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 		{"listen address", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.ListenAddr = "localhost" }, "listen_addr"},
 		{"mode", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Mode = "lite" }, "mode"},
 		{"harness", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Harness = "unknown" }, "harness"},
+		{"log level", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.LogLevel = "verbose" }, "log_level"},
 		{"concurrency", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.MaxConcurrentDispatches = -1 }, "max_concurrent_dispatches"},
 		{"dispatch timeout", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.DispatchTimeoutSeconds = -1 }, "dispatch_timeout_seconds"},
 		{"negative hedge cap", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.MaxConcurrentHedges = -1 }, "max_concurrent_hedges"},

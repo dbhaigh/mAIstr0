@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,7 +33,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		for _, existing := range s.registry.All() {
 			if existing.Version != "" && version.Compare(status.Version, existing.Version) < 0 {
 				message := "node " + status.ID + " version " + status.Version + " is older than node " + existing.ID + " version " + existing.Version
-				log.Printf("orchestrator: %s", message)
+				logging.Infof("orchestrator", "orchestrator: %s", message)
 				s.registry.Upsert(status)
 				writeError(w, apperr.ConflictError(errors.New(message)))
 				return
@@ -102,7 +102,12 @@ func (s *Server) handleNodeModelsGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("node not found")))
 		return
 	}
-	resp, err := s.nodeClientPort().Get(n.Address + "/models/all")
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, n.Address+"/models/all", nil)
+	if err != nil {
+		writeError(w, apperr.InternalError(err))
+		return
+	}
+	resp, err := s.nodeClientPort().Do(request)
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return
@@ -115,7 +120,7 @@ func (s *Server) handleNodeModelsGet(w http.ResponseWriter, r *http.Request) {
 
 func copyNodeResponse(w http.ResponseWriter, body io.Reader) {
 	if err := httpx.NewStreamWriter(w).Copy(body, nil); err != nil {
-		log.Printf("orchestrator: stream node response: %v", err)
+		logging.Errorf("orchestrator", "orchestrator: stream node response: %v", err)
 	}
 }
 
@@ -135,7 +140,7 @@ func (s *Server) handleNodeModelsPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequest(http.MethodPatch, n.Address+"/models", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPatch, n.Address+"/models", bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return
@@ -214,7 +219,7 @@ func (s *Server) handleNodeChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequest(http.MethodPost, n.Address+"/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, n.Address+"/chat", bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return
@@ -255,7 +260,7 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequest(r.Method, destURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, destURL, bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return

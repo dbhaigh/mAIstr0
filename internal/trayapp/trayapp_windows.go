@@ -3,7 +3,7 @@
 package trayapp
 
 import (
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"os/exec"
 	"syscall"
 
@@ -41,7 +41,7 @@ func setConsoleVisible(visible bool) {
 
 func openBrowser(url string) {
 	if err := exec.Command("explorer.exe", url).Start(); err != nil {
-		log.Printf("trayapp: failed to open browser: %v", err)
+		logging.Errorf("trayapp", "trayapp: failed to open browser: %v", err)
 	}
 }
 
@@ -97,20 +97,20 @@ func Run(opts Options) {
 
 func openLogFile(path string) {
 	if path == "" {
-		log.Printf("trayapp: cannot open application log: log file path is unavailable")
+		logging.Errorf("trayapp", "trayapp: cannot open application log: log file path is unavailable")
 		return
 	}
 	if err := exec.Command("explorer.exe", path).Start(); err != nil {
-		log.Printf("trayapp: failed to open application log %q: %v", path, err)
+		logging.Errorf("trayapp", "trayapp: failed to open application log %q: %v", path, err)
 	}
 }
 
 func openLogDirectory(path string) {
 	if path == "" {
-		log.Printf("trayapp: cannot open application log directory: path is unavailable")
+		logging.Errorf("trayapp", "trayapp: cannot open application log directory: path is unavailable")
 		return
 	}
 	if err := exec.Command("explorer.exe", path).Start(); err != nil {
-		log.Printf("trayapp: failed to open application log directory %q: %v", path, err)
+		logging.Errorf("trayapp", "trayapp: failed to open application log directory %q: %v", path, err)
 	}
 }

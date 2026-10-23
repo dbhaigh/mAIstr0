@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -235,7 +235,7 @@ func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path
 	w.WriteHeader(resp.StatusCode)
 
 	if err := httpx.NewStreamWriter(w).Copy(resp.Body, nil); err != nil {
-		log.Printf("nodeagent: peer proxy response stream failed: %v", err)
+		logging.Errorf("nodeagent", "nodeagent: peer proxy response stream failed: %v", err)
 	}
 }
 

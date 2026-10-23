@@ -2,7 +2,7 @@ package nodeagent
 
 import (
 	"context"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"strings"
 	"time"
 
@@ -69,7 +69,7 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 		listed, err := eng.ListModels()
 		status.LastCheckedAt = time.Now()
 		if err != nil {
-			log.Printf("nodeagent: list models for engine %s failed: %v", eng.Name(), err)
+			logging.Errorf("nodeagent", "nodeagent: list models for engine %s failed: %v", eng.Name(), err)
 			status.InventoryState = engine.ModelInventoryError
 			status.LastError = err.Error()
 			statuses = append(statuses, status)

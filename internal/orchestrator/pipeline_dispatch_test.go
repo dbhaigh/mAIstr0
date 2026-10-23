@@ -207,6 +207,73 @@ func TestPipelineReshardEndpointRecomputesAndLoadsStages(t *testing.T) {
 	}
 }
 
+func TestPipelineAutomaticReplanUnloadsOldStagesBeforeReload(t *testing.T) {
+	srv, model := newPipelineTestServer(t)
+	var stage0, stage1, stage2 pipelineTestNode
+	node0 := newPipelineTestNodeServer(t, "stage-0", false, &stage0)
+	defer node0.Close()
+	node1 := newPipelineTestNodeServer(t, "stage-1", true, &stage1)
+	defer node1.Close()
+	node2 := newPipelineTestNodeServer(t, "stage-2", true, &stage2)
+	defer node2.Close()
+	srv.registry.Upsert(pipelineTestStatus("stage-0", node0.URL, model.SourceModelID, 4, 2))
+	srv.registry.Upsert(pipelineTestStatus("stage-1", node1.URL, model.SourceModelID, 4, 1))
+
+	initialResponse := serveOpenAIChat(t, srv, openAIChatRequestBody(t, model.LogicalID, false))
+	if initialResponse.Code != http.StatusOK {
+		t.Fatalf("initial pipeline request returned %d: %s", initialResponse.Code, initialResponse.Body.String())
+	}
+	oldPlan, exists := srv.pipelinePlans.get(model.LogicalID)
+	if !exists || oldPlan.Stages[1].NodeID != "stage-1" {
+		t.Fatalf("initial plan = %+v, want stage-1 as final stage", oldPlan)
+	}
+
+	unreadyStage := pipelineTestStatus("stage-1", node1.URL, model.SourceModelID, 4, 1)
+	unreadyStage.Engines = nil
+	srv.registry.Upsert(unreadyStage)
+	changedEngine := pipelineTestStatus("stage-0", node0.URL, model.SourceModelID, 4, 2)
+	changedEngine.Engines[0].Name = "simulated-v2"
+	srv.registry.Upsert(changedEngine)
+	srv.registry.Upsert(pipelineTestStatus("stage-2", node2.URL, model.SourceModelID, 4, 1))
+
+	replannedResponse := serveOpenAIChat(t, srv, openAIChatRequestBody(t, model.LogicalID, false))
+	if replannedResponse.Code != http.StatusOK {
+		t.Fatalf("automatically replanned request returned %d: %s", replannedResponse.Code, replannedResponse.Body.String())
+	}
+	newPlan, exists := srv.pipelinePlans.get(model.LogicalID)
+	if !exists || newPlan.PlanVersion != oldPlan.PlanVersion+1 ||
+		newPlan.Stages[0].NodeID != "stage-0" || newPlan.Stages[1].NodeID != "stage-2" {
+		t.Fatalf("automatic replacement plan = %+v, want stage-0/stage-2 with incremented version", newPlan)
+	}
+
+	stage0.mu.Lock()
+	stage0Loads, stage0Unloads := stage0.loadCount, stage0.unloadCount
+	stage0Assignments := make([]engine.StageAssignment, 0, len(stage0.loaded))
+	for _, assignment := range stage0.loaded {
+		stage0Assignments = append(stage0Assignments, assignment)
+	}
+	stage0.mu.Unlock()
+	if stage0Loads != 2 || stage0Unloads != 1 || len(stage0Assignments) != 1 ||
+		stage0Assignments[0].Engine != "simulated-v2" {
+		t.Fatalf("stage-0 was not unloaded and reloaded with the new assignment: loads=%d unloads=%d assignments=%+v",
+			stage0Loads, stage0Unloads, stage0Assignments)
+	}
+
+	stage1.mu.Lock()
+	stage1Loads, stage1Unloads, stage1Assignments := stage1.loadCount, stage1.unloadCount, len(stage1.loaded)
+	stage1.mu.Unlock()
+	if stage1Loads != 1 || stage1Unloads != 1 || stage1Assignments != 0 {
+		t.Fatalf("retired stage-1 remains loaded: loads=%d unloads=%d assignments=%d",
+			stage1Loads, stage1Unloads, stage1Assignments)
+	}
+	stage2.mu.Lock()
+	stage2Loads, stage2Assignments := stage2.loadCount, len(stage2.loaded)
+	stage2.mu.Unlock()
+	if stage2Loads != 1 || stage2Assignments != 1 {
+		t.Fatalf("replacement stage-2 was not loaded: loads=%d assignments=%d", stage2Loads, stage2Assignments)
+	}
+}
+
 func TestShardedOpenAIStageFailureReturnsGatewayErrorAndReleasesCapacity(t *testing.T) {
 	srv, model := newPipelineTestServer(t)
 	var stage0, stage1 pipelineTestNode
@@ -261,19 +328,46 @@ func TestShardedOpenAIStreamingFailureAfterFirstTokenEmitsError(t *testing.T) {
 	}
 }
 
+func TestShardedOpenAttemptsBestEffortCloseAfterLostAcknowledgement(t *testing.T) {
+	srv, model := newPipelineTestServer(t)
+	var stage0, stage1 pipelineTestNode
+	stage0.failOpenAfterAccept = true
+	node0 := newPipelineTestNodeServer(t, "stage-0", false, &stage0)
+	defer node0.Close()
+	node1 := newPipelineTestNodeServer(t, "stage-1", true, &stage1)
+	defer node1.Close()
+	srv.registry.Upsert(pipelineTestStatus("stage-0", node0.URL, model.SourceModelID, 4, 2))
+	srv.registry.Upsert(pipelineTestStatus("stage-1", node1.URL, model.SourceModelID, 4, 1))
+
+	response := serveOpenAIChat(t, srv, openAIChatRequestBody(t, model.LogicalID, false))
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("pipeline response status = %d, want 502: %s", response.Code, response.Body.String())
+	}
+	stage0.mu.Lock()
+	remainingRequests := len(stage0.requests)
+	stage0.mu.Unlock()
+	if remainingRequests != 0 {
+		t.Fatalf("best-effort close left %d accepted pipeline request(s) open", remainingRequests)
+	}
+	if active := srv.dispatcher.capacityGate.Active(); active != 0 {
+		t.Fatalf("failed open acknowledgement leaked orchestrator capacity: %d", active)
+	}
+}
+
 type pipelineTestNode struct {
-	mu             sync.Mutex
-	id             string
-	isFinal        bool
-	failForward    bool
-	failAfterToken bool
-	loaded         map[string]engine.StageAssignment
-	requests       map[string]engine.StageAssignment
-	loadCount      int
-	unloadCount    int
-	controlCalls   int
-	lastPrompt     string
-	lastActivation string
+	mu                  sync.Mutex
+	id                  string
+	isFinal             bool
+	failForward         bool
+	failAfterToken      bool
+	failOpenAfterAccept bool
+	loaded              map[string]engine.StageAssignment
+	requests            map[string]engine.StageAssignment
+	loadCount           int
+	unloadCount         int
+	controlCalls        int
+	lastPrompt          string
+	lastActivation      string
 }
 
 func newPipelineTestNodeServer(t *testing.T, id string, isFinal bool, state *pipelineTestNode) *httptest.Server {
@@ -297,7 +391,13 @@ func newPipelineTestNodeServer(t *testing.T, id string, isFinal bool, state *pip
 		key := pipelineTestAssignmentKey(assignment)
 		state.mu.Lock()
 		state.controlCalls++
-		if _, exists := state.loaded[key]; !exists {
+		if current, exists := state.loaded[key]; exists {
+			if current != assignment {
+				state.mu.Unlock()
+				http.Error(w, "stage assignment conflict", http.StatusConflict)
+				return
+			}
+		} else {
 			state.loaded[key] = assignment
 			state.loadCount++
 		}
@@ -345,9 +445,14 @@ func newPipelineTestNodeServer(t *testing.T, id string, isFinal bool, state *pip
 		if loaded {
 			state.requests[request.RequestID] = request.Assignment
 		}
+		failAfterAccept := state.failOpenAfterAccept && loaded
 		state.mu.Unlock()
 		if !loaded {
 			http.Error(w, "stage not loaded", http.StatusNotFound)
+			return
+		}
+		if failAfterAccept {
+			http.Error(w, "open acknowledgement was lost", http.StatusServiceUnavailable)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"opened": true})

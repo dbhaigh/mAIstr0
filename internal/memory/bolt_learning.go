@@ -3,7 +3,7 @@ package memory
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"sort"
 	"strings"
 	"time"
@@ -112,7 +112,7 @@ func (s *boltStore) Performances() []Performance {
 func (s *boltStore) MergePerformances(incoming []Performance) {
 	previousWatermarks := s.Watermarks()
 	if err := s.mergePerformancesFrom(incoming, legacyOrigin); err != nil {
-		log.Printf("memory: merge performances: %v", err)
+		logging.Errorf("memory", "memory: merge performances: %v", err)
 		return
 	}
 	if syncinterval.WatermarksAdvanced(previousWatermarks, s.Watermarks()) {

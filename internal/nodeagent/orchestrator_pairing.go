@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -59,16 +59,16 @@ func (c *orchestratorLink) pairWithDiscoveredOrchestrator(id, address, pin strin
 func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (resultErr error) {
 	defer func() {
 		if resultErr != nil {
-			log.Printf("nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
+			logging.Errorf("nodeagent", "nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
 		}
 	}()
 	if !c.trust.Initialized() {
 		return errors.New("node identity is not initialized")
 	}
 	if pin == "" {
-		log.Printf("nodeagent: attempting auto-join with orchestrator at %s", address)
+		logging.Infof("nodeagent", "nodeagent: attempting auto-join with orchestrator at %s", address)
 	} else {
-		log.Printf("nodeagent: starting pairing with orchestrator at %s", address)
+		logging.Infof("nodeagent", "nodeagent: starting pairing with orchestrator at %s", address)
 	}
 	cfg := c.configState.configSnapshot()
 	body, err := json.Marshal(nodePairingRequest{
@@ -115,7 +115,7 @@ func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (res
 	c.configState.clearPairingPIN()
 	c.setOrchestratorAddr(address)
 	c.setOrchestratorID(result.ID)
-	log.Printf("nodeagent: successfully paired with orchestrator %s at %s", result.ID, address)
+	logging.Infof("nodeagent", "nodeagent: successfully paired with orchestrator %s at %s", result.ID, address)
 	return nil
 }
 

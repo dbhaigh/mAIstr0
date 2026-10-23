@@ -23,6 +23,7 @@ import (
 	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/piagent"
@@ -1590,6 +1591,9 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 			t.Errorf("dispatch request IDs missing: request=%q attempt=%q",
 				r.Header.Get(inferroute.HeaderRequestID), r.Header.Get(inferroute.HeaderAttemptID))
 		}
+		if got, want := r.Header.Get(httpx.RequestIDHeader), r.Header.Get(inferroute.HeaderRequestID); got != want {
+			t.Errorf("standard dispatch request ID = %q, want attempt request ID %q", got, want)
+		}
 		attemptIDs <- dispatchIDs{request: r.Header.Get(inferroute.HeaderRequestID), attempt: r.Header.Get(inferroute.HeaderAttemptID)}
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 	}))
@@ -1606,6 +1610,9 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 		if r.Header.Get(inferroute.HeaderRequestID) == "" || r.Header.Get(inferroute.HeaderAttemptID) == "" {
 			t.Errorf("retry request IDs missing: request=%q attempt=%q",
 				r.Header.Get(inferroute.HeaderRequestID), r.Header.Get(inferroute.HeaderAttemptID))
+		}
+		if got, want := r.Header.Get(httpx.RequestIDHeader), r.Header.Get(inferroute.HeaderRequestID); got != want {
+			t.Errorf("standard retry request ID = %q, want attempt request ID %q", got, want)
 		}
 		attemptIDs <- dispatchIDs{request: r.Header.Get(inferroute.HeaderRequestID), attempt: r.Header.Get(inferroute.HeaderAttemptID)}
 		_ = json.NewEncoder(w).Encode(map[string]string{"output": "retry succeeded"})
@@ -1820,6 +1827,9 @@ func TestDispatchRetriesWhenCompletedResponseIsLost(t *testing.T) {
 	secondIDs := make(chan dispatchIDs, 1)
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstCompleted.Add(1)
+		if got, want := r.Header.Get(httpx.RequestIDHeader), r.Header.Get(inferroute.HeaderRequestID); got != want {
+			t.Errorf("standard lost-response request ID = %q, want attempt request ID %q", got, want)
+		}
 		firstIDs <- dispatchIDs{
 			request: r.Header.Get(inferroute.HeaderRequestID),
 			attempt: r.Header.Get(inferroute.HeaderAttemptID),
@@ -1830,6 +1840,9 @@ func TestDispatchRetriesWhenCompletedResponseIsLost(t *testing.T) {
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secondCalls.Add(1)
+		if got, want := r.Header.Get(httpx.RequestIDHeader), r.Header.Get(inferroute.HeaderRequestID); got != want {
+			t.Errorf("standard retry request ID = %q, want attempt request ID %q", got, want)
+		}
 		secondIDs <- dispatchIDs{
 			request: r.Header.Get(inferroute.HeaderRequestID),
 			attempt: r.Header.Get(inferroute.HeaderAttemptID),

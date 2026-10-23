@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,10 +45,24 @@ func main() {
 	memoryPath := flag.String("memory-path", "", "override the cluster memory database file (empty = per-user data dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	printConfig := flag.Bool("print-config", false, "print normalized configuration and exit")
+	diagnostics := flag.Bool("diagnostics", false, "print a redacted local health summary and exit")
 	flag.Parse()
 
 	if *showVersion {
-		log.Printf("maistr0 %s", buildversion.String())
+		fmt.Printf("maistr0 %s\n", buildversion.String())
+		return
+	}
+	if *diagnostics {
+		if err := runDiagnostics(os.Stdout, configPrintOptions{
+			role: *role, nodeConfigPath: *nodeConfigPath, orchConfigPath: *orchConfigPath,
+			nodeListenAddr: *nodeListenAddr, orchListenAddr: *orchListenAddr,
+			orchestratorAddr: *orchestratorAddr, pairingPIN: *pairingPIN,
+			trayMode: *trayMode, noBrowser: *noBrowser, noDiscovery: *noDiscovery,
+			harness: *harness, memoryPath: *memoryPath,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "diagnostics failed: %v\n", err)
+			os.Exit(2)
+		}
 		return
 	}
 	if *printConfig {
@@ -68,11 +81,11 @@ func main() {
 	}
 	logFile, logFilePath, err := configureLogging()
 	if err != nil {
-		log.Fatalf("failed to initialize application log: %v", err)
+		fatalf("failed to initialize application log: %v", err)
 	}
 	defer logFile.Close()
 	if *pairTo != "" {
-		log.Fatal("--pair-to is no longer supported; orchestrators cannot be paired")
+		fatal("--pair-to is no longer supported; orchestrators cannot be paired")
 	}
 	if *role == "auto" && *orchestratorAddr != "" {
 		*role = "node"
@@ -95,6 +108,9 @@ func main() {
 		if err := electionOrchCfg.Validate(); err != nil {
 			exitConfigValidation(err)
 		}
+		if err := logging.SetLevel(electionOrchCfg.LogLevel); err != nil {
+			fatalf("configure log level: %v", err)
+		}
 		electionNodeCfg = loadNodeConfig(*nodeConfigPath, *nodeListenAddr, *orchestratorAddr, *noDiscovery)
 		if *pairingPIN != "" {
 			electionNodeCfg.PairingPIN = *pairingPIN
@@ -115,11 +131,11 @@ func main() {
 		probe := discovery.Listen(candidate.ID)
 		if err := probe.WaitReady(2 * time.Second); err != nil {
 			probe.Close()
-			log.Fatalf("cannot elect a single orchestrator without LAN discovery: %v", err)
+			fatalf("cannot elect a single orchestrator without LAN discovery: %v", err)
 		}
 		stop := make(chan struct{})
 		go discovery.Beacon(func() discovery.Announcement { return candidate }, 250*time.Millisecond, stop)
-		log.Printf("main: checking for an active orchestrator and startup candidates for %s", startupElectionWindow)
+		logging.Infof("main", "main: checking for an active orchestrator and startup candidates for %s", startupElectionWindow)
 		time.Sleep(startupElectionWindow)
 		close(stop)
 		peers := probe.Snapshot()
@@ -127,13 +143,13 @@ func main() {
 		winner := startupOrchestratorWinner(candidate, peers, preferActiveOrchestrator)
 		if winner.ID != candidate.ID {
 			if winner.PeerAddr == "" {
-				log.Fatalf("orchestrator election selected %s without an HTTPS address", winner.ID)
+				fatalf("orchestrator election selected %s without an HTTPS address", winner.ID)
 			}
-			log.Printf("main: joining orchestrator %s at %s as a node", winner.ID, winner.PeerAddr)
+			logging.Infof("main", "main: joining orchestrator %s at %s as a node", winner.ID, winner.PeerAddr)
 			*orchestratorAddr = winner.PeerAddr
 			*role = "node"
 		} else {
-			log.Printf("main: elected orchestrator for this cluster; starting local node worker")
+			logging.Infof("main", "main: elected orchestrator for this cluster; starting local node worker")
 			*role = "both"
 		}
 	}
@@ -159,9 +175,12 @@ func main() {
 		if err := cfg.Validate(); err != nil {
 			exitConfigValidation(err)
 		}
+		if err := logging.SetLevel(cfg.LogLevel); err != nil {
+			fatalf("configure log level: %v", err)
+		}
 		agent, err := nodeagent.NewWithPersistentTasks(cfg)
 		if err != nil {
-			log.Fatalf("failed to open node task history: %v", err)
+			fatalf("failed to open node task history: %v", err)
 		}
 		var nodeDiscovery *discovery.Listener
 		if cfg.DiscoveryEnabled {
@@ -186,7 +205,7 @@ func main() {
 			agent.SetElectionStarter(failover.StartElection)
 			closeOrchestrator = func() {
 				if err := failover.Close(); err != nil {
-					log.Printf("promoted orchestrator shutdown: %v", err)
+					logging.Errorf("main", "promoted orchestrator shutdown: %v", err)
 				}
 			}
 		}
@@ -195,7 +214,7 @@ func main() {
 				nodeDiscovery.Close()
 			}
 			if err := agent.Close(); err != nil {
-				log.Printf("node shutdown: %v", err)
+				logging.Errorf("main", "node shutdown: %v", err)
 			}
 		}
 		dashboardURL = localURL(cfg.ListenAddr)
@@ -215,45 +234,45 @@ func main() {
 		}
 		srv, err := orchestrator.NewWithConfig(orchCfg)
 		if err != nil {
-			log.Fatalf("failed to configure orchestrator agent: %v", err)
+			fatalf("failed to configure orchestrator agent: %v", err)
 		}
 		closeOrchestrator = func() {
 			if err := srv.Close(); err != nil {
-				log.Printf("orchestrator shutdown: %v", err)
+				logging.Errorf("main", "orchestrator shutdown: %v", err)
 			}
 		}
 		srv.SetDiscoveryEnabled(orchCfg.DiscoveryEnabled)
 		if err := srv.SetLocalNodeDashboard(localURL(nodeCfg.ListenAddr)); err != nil {
-			log.Fatalf("failed to configure local worker dashboard: %v", err)
+			fatalf("failed to configure local worker dashboard: %v", err)
 		}
 		agent, err := nodeagent.NewWithPersistentTasks(nodeCfg)
 		if err != nil {
-			log.Fatalf("failed to open node task history: %v", err)
+			fatalf("failed to open node task history: %v", err)
 		}
 		closeNode = func() {
 			if err := agent.Close(); err != nil {
-				log.Printf("node shutdown: %v", err)
+				logging.Errorf("main", "node shutdown: %v", err)
 			}
 		}
 		if err := srv.InitializeIdentity(); err != nil {
-			log.Fatalf("failed to initialize orchestrator identity: %v", err)
+			fatalf("failed to initialize orchestrator identity: %v", err)
 		}
 		if err := agent.InitializeIdentity(); err != nil {
-			log.Fatalf("failed to initialize node identity: %v", err)
+			fatalf("failed to initialize node identity: %v", err)
 		}
 		orchestratorCertificate, err := srv.IdentityCertificate()
 		if err != nil {
-			log.Fatalf("failed to read orchestrator identity: %v", err)
+			fatalf("failed to read orchestrator identity: %v", err)
 		}
 		nodeCertificate, err := agent.IdentityCertificate()
 		if err != nil {
-			log.Fatalf("failed to read node identity: %v", err)
+			fatalf("failed to read node identity: %v", err)
 		}
 		if err := agent.PairLocalOrchestrator(srv.SelfID(), orchestratorCertificate, nodeCfg.OrchestratorAddr); err != nil {
-			log.Fatalf("failed to pair local node with orchestrator: %v", err)
+			fatalf("failed to pair local node with orchestrator: %v", err)
 		}
 		if err := srv.TrustPeer(agent.ID(), nodeCertificate); err != nil {
-			log.Fatalf("failed to pair orchestrator with local node: %v", err)
+			fatalf("failed to pair orchestrator with local node: %v", err)
 		}
 
 		// A single process running both roles must share one UDP discovery
@@ -263,7 +282,7 @@ func main() {
 			shared := discovery.Listen(srv.SelfID(), agent.ID())
 			if err := shared.WaitReady(2 * time.Second); err != nil {
 				shared.Close()
-				log.Fatalf("cannot start cluster discovery: %v", err)
+				fatalf("cannot start cluster discovery: %v", err)
 			}
 			srv.SetDiscovery(shared)
 			agent.SetDiscovery(shared)
@@ -275,7 +294,7 @@ func main() {
 		go runOrchestrator(srv, orchCfg.ListenAddr)
 
 	default:
-		log.Fatalf("unknown --role %q (want orchestrator, node, or both)", *role)
+		fatalf("unknown --role %q (want orchestrator, node, or both)", *role)
 	}
 
 	if *trayMode != "" {
@@ -320,29 +339,34 @@ func startupOrchestratorWinner(candidate discovery.Announcement, peers []discove
 }
 
 func configureLogging() (*logging.DailyFile, string, error) {
-	configDir, err := os.UserConfigDir()
+	path, err := applicationLogPath()
 	if err != nil {
-		return nil, "", fmt.Errorf("locate user config directory: %w", err)
+		return nil, "", err
 	}
-	logDir := filepath.Join(configDir, "maistr0")
-	if err := os.MkdirAll(logDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, "", fmt.Errorf("create log directory: %w", err)
 	}
-	path := filepath.Join(logDir, "maistr0.log")
 	file, err := logging.OpenDailyFile(path, 7)
 	if err != nil {
 		return nil, "", fmt.Errorf("open rolling log %s: %w", path, err)
 	}
-	log.SetOutput(io.MultiWriter(logging.NewConsoleWriter(os.Stderr), file))
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("maistr0: logging to %s", path)
+	logging.ConfigureSlog(os.Stderr, file)
+	logging.Infof("main", "maistr0: logging to %s", path)
 	return file, path, nil
+}
+
+func applicationLogPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("locate user config directory: %w", err)
+	}
+	return filepath.Join(configDir, "maistr0", "maistr0.log"), nil
 }
 
 func loadOrchestratorConfig(path, listenOverride string, noDiscovery bool) config.OrchestratorConfig {
 	cfg, err := config.LoadOrchestratorConfig(path)
 	if err != nil {
-		log.Fatalf("failed to load orchestrator config: %v", err)
+		fatalf("failed to load orchestrator config: %v", err)
 	}
 	if listenOverride != "" {
 		cfg.ListenAddr = listenOverride
@@ -489,7 +513,7 @@ func writeNormalizedConfig(out io.Writer, value any) error {
 func loadNodeConfig(path, listenOverride, orchestratorOverride string, noDiscovery bool) config.NodeConfig {
 	cfg, err := config.LoadNodeConfig(path)
 	if err != nil {
-		log.Fatalf("failed to load node config: %v", err)
+		fatalf("failed to load node config: %v", err)
 	}
 	if listenOverride != "" {
 		cfg.ListenAddr = listenOverride
@@ -520,14 +544,24 @@ func printConfigValidationErrors(err error) {
 
 func runOrchestrator(srv *orchestrator.Server, listenAddr string) {
 	if err := srv.Run(listenAddr); err != nil {
-		log.Fatalf("orchestrator server stopped: %v", err)
+		fatalf("orchestrator server stopped: %v", err)
 	}
 }
 
 func runNode(agent *nodeagent.Agent) {
 	if err := agent.Run(); err != nil {
-		log.Fatalf("node agent stopped: %v", err)
+		fatalf("node agent stopped: %v", err)
 	}
+}
+
+func fatalf(format string, args ...any) {
+	logging.Errorf("main", format, args...)
+	os.Exit(1)
+}
+
+func fatal(args ...any) {
+	logging.Errorf("main", "%s", fmt.Sprint(args...))
+	os.Exit(1)
 }
 
 // localURL turns a listen address like ":7450" or "0.0.0.0:7450" into a
@@ -557,6 +591,6 @@ func openBrowser(url string) {
 		cmd = exec.Command("xdg-open", url)
 	}
 	if err := cmd.Start(); err != nil {
-		log.Printf("main: could not auto-open browser (%v); dashboard is at %s", err, url)
+		logging.Warnf("main", "main: could not auto-open browser (%v); dashboard is at %s", err, url)
 	}
 }

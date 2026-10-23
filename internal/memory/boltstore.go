@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"os"
 	"path/filepath"
 	"sort"
@@ -135,7 +135,7 @@ func (s *boltStore) Snapshot() Snapshot {
 		})
 	})
 	if err != nil {
-		log.Printf("memory: create snapshot: %v", err)
+		logging.Errorf("memory", "memory: create snapshot: %v", err)
 		return Snapshot{SyncVersion: SyncProtocolVersion}
 	}
 	sort.Slice(snapshot.Facts, func(i, j int) bool {

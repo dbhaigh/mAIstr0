@@ -2,7 +2,7 @@ package orchestrator
 
 import (
 	"encoding/json"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +26,7 @@ func (s *Server) healthSweepLoop() {
 		for _, node := range s.registry.All() {
 			if node.Healthy && time.Since(node.LastSeen) > 30*time.Second {
 				s.registry.MarkUnhealthy(node.ID)
-				log.Printf("orchestrator: node %s is offline after missing heartbeats", node.ID)
+				logging.Errorf("orchestrator", "orchestrator: node %s is offline after missing heartbeats", node.ID)
 			}
 		}
 		s.publishSnapshot()

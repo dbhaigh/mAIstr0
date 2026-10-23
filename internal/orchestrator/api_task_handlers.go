@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"sort"
 	"time"
@@ -144,7 +144,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.metrics.recordSyncPage()
-		log.Printf("FILE_ONLY: orchestrator: task history sync event=page_served %s records=%d more=%t",
+		logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: task history sync event=page_served %s records=%d more=%t",
 			syncLogFields(syncLogRequestID(r), syncLogNodeID(r), time.Since(pageStarted), "none"), len(tasks), more)
 	}
 	if err := memory.SetSyncResponseHeadersForPeer(w, currentWatermarks, version); err != nil {
@@ -156,7 +156,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := memory.WriteSyncJSON(w, http.StatusOK, tasks, version, memory.AcceptsSyncCompression(r)); err != nil {
-		log.Printf("FILE_ONLY: orchestrator: task sync response encoding failed: %v", err)
+		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: task sync response encoding failed: %v", err)
 	}
 }
 
@@ -354,7 +354,7 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	for _, subtask := range resumed.Subtasks {
 		if subtask.Status == taskmgr.StatusPending {
 			if err := s.submitDispatch(resumed.ID, subtask.Assignment); err != nil {
-				log.Printf("orchestrator: could not queue resumed subtask %s: %v", subtask.Subtask.ID, err)
+				logging.Errorf("orchestrator", "orchestrator: could not queue resumed subtask %s: %v", subtask.Subtask.ID, err)
 				s.tasks.CompleteSubtask(resumed.ID, subtask.Subtask.ID, "", err)
 			}
 		}

@@ -51,7 +51,7 @@ Run `go test -race ./...` on a supported Linux environment when changing
 concurrent code. Windows may fail before tests start because ThreadSanitizer
 cannot allocate shadow memory (error 87); Ubuntu 24.04 WSL has also had an
 intermittent node-agent test failure without a race report. See
-[README Development](./README.md#development) for the recorded limitations and
+[docs/development.md](./docs/development.md) for the recorded limitations and
 CI race job.
 
 For package characterization goldens, run the relevant package tests with

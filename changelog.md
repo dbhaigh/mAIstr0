@@ -2,8 +2,15 @@
 
 ## Unreleased
 
+## 0.0.20 - 2026-10-22
+
 ### Added
 
+- Add contributor and vulnerability-reporting guidance, focused issue and
+  pull-request templates, architecture and operational reference docs, and a
+  short README linked to those references.
+- Publish tagged Windows/Linux amd64 release archives with SHA-256 checksums;
+  add a golangci-lint CI job and uploadable Go coverage reports.
 - Add per-node/model transparent-router circuit breakers, separate first-byte
   and idle-stream timeouts, opt-in per-client request/concurrency limits, and
   prompt-free router metrics for attempts, failures, queue depth, latency, and
@@ -11,8 +18,21 @@
 - Document the peer trust model and harden local dashboard access, pairing
   secret handling, certificate pin changes, inbound request limits, and TLS
   transport requirements.
+- Standardize application logs on structured `log/slog` records with configurable
+  levels, preserve daily rotation and seven-day retention, and correlate
+  orchestrator-to-node dispatches with standard `X-Request-ID` headers.
+- Add a prompt-free `--diagnostics` report with redacted configuration,
+  bounded engine health probes, read-only database checks, and metadata-only
+  recent error summaries.
 - Require Go 1.27.3, which includes fixes for standard-library vulnerabilities
   reported by `govulncheck`.
+
+### Fixed
+
+- Expire idle pipeline-stage requests so lost open acknowledgements cannot
+  retain node capacity indefinitely; drain requests and retire prior-plan
+  stages before automatic replanning to prevent stale assignment conflicts.
+- Fix the non-Windows tray build so Linux release binaries compile.
 
 ## 0.0.19 - 2026-10-21
 

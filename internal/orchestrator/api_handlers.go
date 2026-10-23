@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +17,7 @@ import (
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/version"
 )
@@ -123,7 +124,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.TLS == nil {
-		log.Printf("orchestrator: rejected plaintext pairing request from %s", r.RemoteAddr)
+		logging.Errorf("orchestrator", "orchestrator: rejected plaintext pairing request from %s", r.RemoteAddr)
 		http.Error(w, "pairing requires HTTPS", http.StatusUpgradeRequired)
 		return
 	}
@@ -133,17 +134,17 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Role != "node" {
-		log.Printf("orchestrator: rejected pairing request from %s: invalid peer role", r.RemoteAddr)
+		logging.Errorf("orchestrator", "orchestrator: rejected pairing request from %s: invalid peer role", r.RemoteAddr)
 		writeError(w, apperr.Invalid(errors.New("only nodes can join an orchestrator")))
 		return
 	}
 	if request.ID == "" || request.ID == s.SelfID() {
-		log.Printf("orchestrator: rejected pairing request from %s: invalid peer identity", r.RemoteAddr)
+		logging.Errorf("orchestrator", "orchestrator: rejected pairing request from %s: invalid peer identity", r.RemoteAddr)
 		writeError(w, apperr.Invalid(errors.New("invalid peer identity")))
 		return
 	}
 	if err := s.identity.ValidatePeer(request.ID, request.CertificatePEM); err != nil {
-		log.Printf("orchestrator: rejected pairing request from %s: invalid peer certificate: %v", r.RemoteAddr, err)
+		logging.Errorf("orchestrator", "orchestrator: rejected pairing request from %s: invalid peer certificate: %v", r.RemoteAddr, err)
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -156,7 +157,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 
 	pinValid := s.identity.ConsumePairingPIN(request.PIN)
 	if !sameSubnet && !pinValid {
-		log.Printf("orchestrator: rejected pairing request from %s: PIN invalid, expired, or already used", r.RemoteAddr)
+		logging.Errorf("orchestrator", "orchestrator: rejected pairing request from %s: PIN invalid, expired, or already used", r.RemoteAddr)
 		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
 		return
 	}
@@ -170,7 +171,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.identity.TrustPeerDetails(request.ID, request.CertificatePEM, request.Role, peerAddr); err != nil {
-		log.Printf("orchestrator: failed to save paired peer from %s: %v", r.RemoteAddr, err)
+		logging.Errorf("orchestrator", "orchestrator: failed to save paired peer from %s: %v", r.RemoteAddr, err)
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -179,9 +180,9 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, apperr.InternalError(errors.New("peer paired but could not create the next pairing PIN")))
 			return
 		}
-		log.Printf("orchestrator: successfully paired peer role=%s from %s using PIN", request.Role, r.RemoteAddr)
+		logging.Infof("orchestrator", "orchestrator: successfully paired peer role=%s from %s using PIN", request.Role, r.RemoteAddr)
 	} else {
-		log.Printf("orchestrator: automatically paired node %s from same subnet (%s)", request.ID, r.RemoteAddr)
+		logging.Infof("orchestrator", "orchestrator: automatically paired node %s from same subnet (%s)", request.ID, r.RemoteAddr)
 	}
 	s.metrics.recordPairingEvent()
 	writeJSON(w, http.StatusOK, pairingJoinResponse{
@@ -279,6 +280,10 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outbound.Header.Set("Content-Type", "application/json")
+	if requestID := httpx.RequestIDFromContext(r.Context()); requestID != "" {
+		outbound.Header.Set(httpx.RequestIDHeader, requestID)
+		outbound.Header.Set(inferroute.HeaderRequestID, requestID)
+	}
 	client := &http.Client{
 		Timeout:   discoveryRequestTimeout,
 		Transport: s.identity.BootstrapTransportForID(nodeID),

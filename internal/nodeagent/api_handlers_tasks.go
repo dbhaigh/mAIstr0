@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
-	"log"
 	"net/http"
 	"net/url"
 )
@@ -113,7 +113,7 @@ func (a *Agent) handleTasksList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := memory.WriteSyncJSON(w, http.StatusOK, tasks, version, memory.AcceptsSyncCompression(r)); err != nil {
-		log.Printf("FILE_ONLY: nodeagent: task sync response encoding failed: %v", err)
+		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: task sync response encoding failed: %v", err)
 	}
 }
 

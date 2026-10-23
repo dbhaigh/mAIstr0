@@ -2,7 +2,7 @@ package scheduler
 
 import (
 	"errors"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"math"
 	"strings"
 	"time"
@@ -148,7 +148,7 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 		}
 		simulatedLoad[bestNode.ID] = load
 
-		log.Printf("scheduler: subtask %s (%s) assigned to node %s (model %s, engine %s, score %.2f) [match=%.1f cap=%.1f qual=%.1f hw=%.1f load=-%.1f tele_fresh=%v]",
+		logging.Infof("scheduler", "scheduler: subtask %s (%s) assigned to node %s (model %s, engine %s, score %.2f) [match=%.1f cap=%.1f qual=%.1f hw=%.1f load=-%.1f tele_fresh=%v]",
 			st.ID, st.Role, bestNode.ID, bestModel, bestEngine, bestScore,
 			factors.ModelMatch, factors.CapabilityScore, factors.ModelQualityScore,
 			factors.Hardware, factors.LoadPenalty, factors.TelemetryFresh)

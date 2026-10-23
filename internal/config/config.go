@@ -17,6 +17,7 @@ import (
 
 const (
 	DefaultNodeConcurrency                = 2
+	DefaultLogLevel                       = "info"
 	DefaultDispatchConcurrency            = 16
 	DefaultDispatchTimeoutSeconds         = 600
 	DefaultMaxConcurrentHedges            = 1
@@ -44,6 +45,7 @@ type EngineConfig struct {
 type NodeConfig struct {
 	NodeID                     string         `json:"node_id"`
 	ListenAddr                 string         `json:"listen_addr"`
+	LogLevel                   string         `json:"log_level,omitempty"`
 	AdvertiseAddr              string         `json:"advertise_addr"`
 	OrchestratorAddr           string         `json:"orchestrator_addr"` // empty = auto-discover on the LAN
 	MaxConcurrentTasks         int            `json:"max_concurrent_tasks"`
@@ -65,6 +67,7 @@ type NodeConfig struct {
 }
 
 func (cfg *NodeConfig) Normalize() {
+	cfg.LogLevel = normalizeLogLevel(cfg.LogLevel)
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = DefaultNodeConfig().ListenAddr
 	}
@@ -102,6 +105,9 @@ func (cfg *NodeConfig) Normalize() {
 
 func (cfg NodeConfig) Validate() error {
 	var violations []error
+	if err := validateLogLevel(cfg.LogLevel); err != nil {
+		violations = append(violations, err)
+	}
 	if err := validateListenAddr(cfg.ListenAddr); err != nil {
 		violations = append(violations, fmt.Errorf("listen_addr: %w", err))
 	}
@@ -151,6 +157,7 @@ func (cfg NodeConfig) Validate() error {
 func DefaultNodeConfig() NodeConfig {
 	return NodeConfig{
 		ListenAddr:         ":7451",
+		LogLevel:           DefaultLogLevel,
 		AdvertiseAddr:      "",
 		OrchestratorAddr:   "",
 		MaxConcurrentTasks: DefaultNodeConcurrency,
@@ -164,6 +171,7 @@ func DefaultNodeConfig() NodeConfig {
 
 type OrchestratorConfig struct {
 	ListenAddr                          string               `json:"listen_addr"`
+	LogLevel                            string               `json:"log_level,omitempty"`
 	Mode                                string               `json:"mode,omitempty"` // "full" or "minimal"
 	Harness                             string               `json:"harness"`        // "deepseek" or "pi"
 	MaxConcurrentDispatches             int                  `json:"max_concurrent_dispatches"`
@@ -191,6 +199,7 @@ type OrchestratorConfig struct {
 }
 
 func (cfg *OrchestratorConfig) Normalize() {
+	cfg.LogLevel = normalizeLogLevel(cfg.LogLevel)
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = DefaultOrchestratorConfig().ListenAddr
 	}
@@ -240,6 +249,9 @@ func (cfg *OrchestratorConfig) Normalize() {
 
 func (cfg OrchestratorConfig) Validate() error {
 	var violations []error
+	if err := validateLogLevel(cfg.LogLevel); err != nil {
+		violations = append(violations, err)
+	}
 	if err := validateListenAddr(cfg.ListenAddr); err != nil {
 		violations = append(violations, fmt.Errorf("listen_addr: %w", err))
 	}
@@ -324,6 +336,7 @@ func (cfg OrchestratorConfig) Validate() error {
 func DefaultOrchestratorConfig() OrchestratorConfig {
 	return OrchestratorConfig{
 		ListenAddr:                          ":7450",
+		LogLevel:                            DefaultLogLevel,
 		Mode:                                OrchestratorModeFull,
 		Harness:                             "pi",
 		MaxConcurrentDispatches:             DefaultDispatchConcurrency,
@@ -336,6 +349,23 @@ func DefaultOrchestratorConfig() OrchestratorConfig {
 		TrayMode:                            "taskbar",
 		SyncMaxBytes:                        DefaultSyncMaxBytes,
 		SyncTimeoutSeconds:                  DefaultSyncTimeoutSeconds,
+	}
+}
+
+func normalizeLogLevel(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return DefaultLogLevel
+	}
+	return value
+}
+
+func validateLogLevel(value string) error {
+	switch value {
+	case "debug", "info", "warn", "error":
+		return nil
+	default:
+		return fmt.Errorf("log_level must be debug, info, warn, or error")
 	}
 }
 

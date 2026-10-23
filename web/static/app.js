@@ -111,6 +111,8 @@ const dashboardState = {
   capacity: null,
   modelInventory: [],
   pipelinePlans: [],
+  discovery: [],
+  buildVersion: "",
   fullTaskHistoryLoaded: false
 };
 const taskHistoryPage = {
@@ -241,6 +243,53 @@ let terminalDialogueId = null;
   if (typeof module === "object" && module.exports) module.exports = snapshot;
   root.dashboardSnapshot = snapshot;
 })(globalThis, (root) => {
+  function hashSnapshot(serialized) {
+    let hash = 2166136261;
+    for (let i = 0; i < serialized.length; i++) {
+      hash ^= serialized.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+  function createSnapshotScheduler(onSnapshot, options = {}) {
+    const requestFrame = options.requestAnimationFrameImpl || root.requestAnimationFrame?.bind(root) || ((callback) => root.setTimeout(callback, 0));
+    const cancelFrame = options.cancelAnimationFrameImpl || root.cancelAnimationFrame?.bind(root) || root.clearTimeout?.bind(root);
+    let pending = null;
+    let lastHash = null;
+    let lastSerialized = null;
+    let scheduled = false;
+    let frameID = null;
+    const flush = () => {
+      scheduled = false;
+      frameID = null;
+      const update = pending;
+      pending = null;
+      if (!update || update.hash === lastHash && update.serialized === lastSerialized) return;
+      lastHash = update.hash;
+      lastSerialized = update.serialized;
+      onSnapshot(update.snapshot);
+    };
+    return Object.freeze({
+      enqueue(snapshot) {
+        const serialized = JSON.stringify(snapshot);
+        const hash = hashSnapshot(serialized);
+        if (hash === lastHash && serialized === lastSerialized || pending && hash === pending.hash && serialized === pending.serialized) return false;
+        pending = { snapshot, serialized, hash };
+        if (!scheduled) {
+          scheduled = true;
+          frameID = requestFrame(flush);
+        }
+        return true;
+      },
+      cancel() {
+        if (scheduled && cancelFrame && frameID !== null) cancelFrame(frameID);
+        pending = null;
+        scheduled = false;
+        frameID = null;
+      },
+      flush
+    });
+  }
   function mergeTaskSnapshot(currentTasks, incomingTasks, complete, fullTaskHistoryLoaded) {
     const tasks = incomingTasks || [];
     if (complete) return { tasks, fullTaskHistoryLoaded: true };
@@ -259,31 +308,341 @@ let terminalDialogueId = null;
     const onError = options.onError || ((error) => root.console.error(error));
     const onConnectionChange = options.onConnectionChange || (() => {
     });
+    const scheduler = createSnapshotScheduler((snapshot) => {
+      try {
+        onSnapshot(snapshot);
+      } catch (error) {
+        onError(error);
+      }
+    }, options);
     const eventSource = new EventSourceImpl("/api/events");
     eventSource.onopen = () => onConnectionChange(true);
     eventSource.onerror = () => onConnectionChange(false);
     eventSource.onmessage = (event) => {
       try {
-        onSnapshot(JSON.parse(event.data));
+        scheduler.enqueue(JSON.parse(event.data));
       } catch (error) {
         onError(error);
       }
     };
     return eventSource;
   }
-  return Object.freeze({ connectDashboardEvents, mergeTaskSnapshot });
+  return Object.freeze({ connectDashboardEvents, createSnapshotScheduler, hashSnapshot, mergeTaskSnapshot });
 });
-navTabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
-    navTabs.forEach((t) => t.classList.remove("active"));
-    tabContents.forEach((c) => c.classList.remove("active"));
-    tab.classList.add("active");
-    const target = document.getElementById(tab.dataset.tab);
-    if (target) target.classList.add("active");
-    if (tab.dataset.tab === "memory-tab") refreshMemory();
-    if (tab.dataset.tab === "cluster-tab") void refresh();
+(function(root, factory) {
+  const dom = factory(root);
+  if (typeof module === "object" && module.exports) module.exports = dom;
+  root.dashboardDOM = dom;
+})(globalThis, (root) => {
+  const keyedState = /* @__PURE__ */ new WeakMap();
+  const virtualState = /* @__PURE__ */ new WeakMap();
+  function patchKeyedChildren(container, items, options) {
+    if (!container || !options || typeof options.renderItem !== "function") return;
+    const keyOf = options.keyOf || ((item) => item.id);
+    const signatureOf = options.signatureOf || JSON.stringify;
+    const previous = keyedState.get(container) || /* @__PURE__ */ new Map();
+    const desired = new Set(items.map((item, index) => String(keyOf(item, index))));
+    for (const [key, entry] of previous) {
+      if (!desired.has(key)) {
+        entry.nodes.forEach((node) => node.remove());
+        previous.delete(key);
+      }
+    }
+    let cursor = container.firstElementChild;
+    const next = /* @__PURE__ */ new Map();
+    for (const [index, item] of items.entries()) {
+      const key = String(keyOf(item, index));
+      const signature = signatureOf(item, index);
+      let entry = previous.get(key);
+      if (entry && entry.signature !== signature) {
+        entry.nodes.forEach((node) => node.remove());
+        entry = null;
+      }
+      if (!entry) {
+        const rendered = options.renderItem(item, index);
+        const nodes = Array.isArray(rendered) ? rendered : [rendered];
+        for (const node of nodes) {
+          node.dataset.renderKey = key;
+          container.insertBefore(node, cursor);
+        }
+        entry = { signature, nodes };
+      } else {
+        for (const node of entry.nodes) {
+          if (node !== cursor) container.insertBefore(node, cursor);
+          cursor = node.nextElementSibling;
+        }
+      }
+      if (!entry.nodes.length) continue;
+      if (entry.nodes[0].parentNode === container) {
+        cursor = entry.nodes[entry.nodes.length - 1].nextElementSibling;
+      }
+      next.set(key, entry);
+    }
+    keyedState.set(container, next);
+  }
+  function getVirtualRange(items, scrollTop, viewportHeight, options = {}) {
+    const estimate = Math.max(1, options.estimateHeight || 96);
+    const overscan = Math.max(0, options.overscan ?? 6);
+    const heightOf = options.heightOf || (() => estimate);
+    if (!items.length) return { start: 0, end: 0, top: 0, bottom: 0 };
+    const offsets = new Array(items.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < items.length; i++) {
+      offsets[i + 1] = offsets[i] + Math.max(1, heightOf(items[i], i) || estimate);
+    }
+    const findIndex = (offset) => {
+      let low = 0;
+      let high = items.length;
+      while (low < high) {
+        const middle = low + high >>> 1;
+        if (offsets[middle + 1] <= offset) low = middle + 1;
+        else high = middle;
+      }
+      return low;
+    };
+    const first = findIndex(Math.max(0, scrollTop));
+    const last = findIndex(Math.max(0, scrollTop) + Math.max(1, viewportHeight));
+    const start = Math.max(0, first - overscan);
+    const end = Math.min(items.length, last + overscan + 1);
+    return {
+      start,
+      end,
+      top: offsets[start],
+      bottom: offsets[items.length] - offsets[end]
+    };
+  }
+  function renderVirtualList(container, items, options) {
+    if (!container || !options || typeof options.renderItem !== "function") return;
+    let state = virtualState.get(container);
+    if (!state) {
+      const top = document.createElement("div");
+      const content = document.createElement("div");
+      const bottom = document.createElement("div");
+      top.className = "virtual-list-spacer virtual-list-spacer-top";
+      bottom.className = "virtual-list-spacer virtual-list-spacer-bottom";
+      content.className = "virtual-list-items";
+      top.setAttribute("aria-hidden", "true");
+      bottom.setAttribute("aria-hidden", "true");
+      container.replaceChildren(top, content, bottom);
+      container.classList.add("virtual-list-container");
+      state = { top, content, bottom, items: [], options, frame: 0, heights: /* @__PURE__ */ new Map(), observer: null };
+      state.onScroll = () => {
+        if (state.frame) return;
+        const raf = root.requestAnimationFrame || ((callback) => root.setTimeout(callback, 16));
+        state.frame = raf(() => {
+          state.frame = 0;
+          renderVirtualList(container, state.items, state.options);
+        });
+      };
+      container.addEventListener("scroll", state.onScroll, { passive: true });
+      if (typeof root.ResizeObserver === "function") {
+        state.observer = new root.ResizeObserver((entries) => {
+          let changed = false;
+          for (const entry of entries) {
+            const key = entry.target.dataset.renderKey;
+            const height = entry.contentRect.height;
+            if (key && Number.isFinite(height) && height > 0 && Math.abs((state.heights.get(key) || 0) - height) > 1) {
+              state.heights.set(key, height);
+              changed = true;
+            }
+          }
+          if (changed) state.onScroll();
+        });
+      }
+      virtualState.set(container, state);
+    }
+    container.setAttribute("aria-busy", "false");
+    state.items = items;
+    state.options = options;
+    const keyOf = options.keyOf || ((item, index) => item.id ?? index);
+    const heightOf = (item, index) => state.heights.get(String(keyOf(item, index))) || options.estimateHeight || 96;
+    const threshold = options.threshold || 40;
+    const range = items.length > threshold ? getVirtualRange(items, container.scrollTop, container.clientHeight || 600, {
+      estimateHeight: options.estimateHeight,
+      overscan: options.overscan,
+      heightOf
+    }) : { start: 0, end: items.length, top: 0, bottom: 0 };
+    const visible = items.slice(range.start, range.end);
+    const signatureOf = options.signatureOf || JSON.stringify;
+    state.top.style.height = `${range.top}px`;
+    state.bottom.style.height = `${range.bottom}px`;
+    state.top.hidden = range.top === 0;
+    state.bottom.hidden = range.bottom === 0;
+    patchKeyedChildren(state.content, visible, {
+      keyOf: (item, index) => keyOf(item, range.start + index),
+      signatureOf,
+      renderItem: (item, index) => options.renderItem(item, range.start + index)
+    });
+    state.observer?.disconnect();
+    state.content.querySelectorAll(":scope > [data-render-key]").forEach((node) => state.observer?.observe(node));
+  }
+  function resetVirtualList(container, options = {}) {
+    if (!container) return;
+    const state = virtualState.get(container);
+    if (state) {
+      state.items = [];
+      state.options = { ...options, keyOf: (node) => node.dataset.virtualKey, renderItem: (node) => node };
+      state.heights.clear();
+      container.scrollTop = 0;
+      renderVirtualList(container, [], state.options);
+      return;
+    }
+    container.scrollTop = 0;
+    renderVirtualList(container, [], {
+      ...options,
+      keyOf: (node) => node.dataset.virtualKey,
+      signatureOf: (node) => node.dataset.virtualSignature || "",
+      renderItem: (node) => node
+    });
+  }
+  function appendVirtualListItem(container, node) {
+    let state = virtualState.get(container);
+    if (!state) {
+      resetVirtualList(container);
+      state = virtualState.get(container);
+    }
+    if (!node.dataset.virtualKey) node.dataset.virtualKey = `virtual-${state.items.length}`;
+    state.items = [...state.items, node];
+    const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 48;
+    renderVirtualList(container, state.items, state.options);
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
+  }
+  function removeVirtualListItem(container, node) {
+    const state = virtualState.get(container);
+    if (!state) {
+      node.remove();
+      return;
+    }
+    state.items = state.items.filter((item) => item !== node);
+    state.heights.delete(node.dataset.virtualKey);
+    renderVirtualList(container, state.items, state.options);
+  }
+  function renderSkeleton(container, count = 3) {
+    if (!container) return;
+    const state = virtualState.get(container);
+    if (state) {
+      state.observer?.disconnect();
+      if (state.frame) {
+        const cancel = root.cancelAnimationFrame || root.clearTimeout;
+        cancel?.call(root, state.frame);
+      }
+      container.removeEventListener("scroll", state.onScroll);
+      virtualState.delete(container);
+      keyedState.delete(state.content);
+    }
+    container.setAttribute("aria-busy", "true");
+    const placeholders = Array.from({ length: count }, (_, index) => {
+      const card = document.createElement("div");
+      card.className = "skeleton-card";
+      card.setAttribute("aria-hidden", "true");
+      card.innerHTML = `<span class="skeleton skeleton-heading"></span><span class="skeleton"></span><span class="skeleton skeleton-short"></span>`;
+      card.dataset.skeletonIndex = String(index);
+      return card;
+    });
+    container.replaceChildren(...placeholders);
+  }
+  return Object.freeze({
+    appendVirtualListItem,
+    getVirtualRange,
+    patchKeyedChildren,
+    renderSkeleton,
+    removeVirtualListItem,
+    renderVirtualList,
+    resetVirtualList
   });
 });
+(function(root, factory) {
+  const format = factory();
+  if (typeof module === "object" && module.exports) module.exports = format;
+  root.dashboardFormat = format;
+  Object.assign(root, {
+    escapeHtml: format.escapeHtml,
+    formatBytes: format.formatBytes,
+    formatRelativeTime: format.formatRelativeTime,
+    formatTimestamp: format.formatTimestamp
+  });
+})(globalThis, () => {
+  function escapeHtml2(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[character]);
+  }
+  function formatBytes2(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value < 0) return "0 B";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+  function formatRelativeTime2(value) {
+    if (!value) return "time unavailable";
+    const timestamp = new Date(value).getTime();
+    if (!Number.isFinite(timestamp)) return "time unavailable";
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1e3));
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return new Date(timestamp).toLocaleDateString();
+  }
+  function formatTimestamp2(label, value) {
+    if (!value) return `<span class="task-time-unavailable">${escapeHtml2(label)} unavailable</span>`;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return `<span class="task-time-unavailable">${escapeHtml2(label)} unavailable</span>`;
+    }
+    return `<time datetime="${escapeHtml2(value)}">${escapeHtml2(label)} ${escapeHtml2(date.toLocaleString())}</time>`;
+  }
+  return Object.freeze({ escapeHtml: escapeHtml2, formatBytes: formatBytes2, formatRelativeTime: formatRelativeTime2, formatTimestamp: formatTimestamp2 });
+});
+function wirePrimaryTabs(tabs, panels) {
+  const tabList = tabs[0]?.closest('[role="tablist"]');
+  if (tabList) tabList.setAttribute("role", "tablist");
+  const selectTab = (tab) => {
+    tabs.forEach((item) => {
+      const active = item === tab;
+      item.classList.toggle("active", active);
+      item.setAttribute("role", "tab");
+      item.setAttribute("aria-controls", item.dataset.tab);
+      item.setAttribute("aria-selected", String(active));
+      item.tabIndex = active ? 0 : -1;
+    });
+    panels.forEach((panel) => {
+      const active = panel.id === tab.dataset.tab;
+      panel.classList.toggle("active", active);
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tab.id);
+      panel.hidden = !active;
+    });
+    activateDashboardTab(tab.dataset.tab);
+  };
+  tabs.forEach((tab, index) => {
+    const target = document.getElementById(tab.dataset.tab);
+    if (!tab.id) tab.id = `dashboard-${tab.dataset.tab}-tab`;
+    if (target) {
+      target.setAttribute("role", "tabpanel");
+      target.setAttribute("aria-labelledby", tab.id);
+      target.hidden = !tab.classList.contains("active");
+    }
+    tab.tabIndex = tab.classList.contains("active") ? 0 : -1;
+    tab.addEventListener("click", () => selectTab(tab));
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      selectTab(tabs[nextIndex]);
+      tabs[nextIndex].focus();
+    });
+  });
+}
+wirePrimaryTabs(navTabs, tabContents);
 function wireWorkspaceTabs(tabs, panels) {
   const selectTab = (tab) => {
     const targetID = tab.getAttribute("aria-controls");
@@ -298,6 +657,7 @@ function wireWorkspaceTabs(tabs, panels) {
       panel.classList.toggle("active", active);
       panel.hidden = !active;
     });
+    activateWorkspacePanel(targetID);
   };
   tabs.forEach((tab, index) => {
     tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
@@ -489,6 +849,7 @@ async function activateAgentTab(harness) {
     const active = tab.dataset.agent === harness;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
     tab.disabled = true;
   });
   setAgentConsoleMode(harness);
@@ -502,6 +863,7 @@ async function activateAgentTab(harness) {
       applyAgentBackend(backend);
       await loadAgentTools();
     }
+    await loadClusterModels();
     const sessions = sessionsForHarness(harness);
     const rememberedID = activeSessionIds.get(harness);
     const sessionID = sessions.some((session) => session.id === rememberedID) ? rememberedID : sessions[0]?.id;
@@ -516,6 +878,7 @@ async function activateAgentTab(harness) {
       const active = tab.dataset.agent === previousMode;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
     });
   } finally {
     agentTabs.forEach((tab) => {
@@ -572,14 +935,31 @@ function activateDirectChat() {
     const active = tab.dataset.agent === "direct";
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
   });
   setAgentConsoleMode("direct");
   chatInput?.focus();
 }
 agentTabs.forEach((tab) => {
+  tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
   tab.addEventListener("click", () => {
     if (tab.dataset.agent === "direct") activateDirectChat();
     else activateAgentTab(tab.dataset.agent);
+  });
+  tab.addEventListener("keydown", (event) => {
+    const tabs = Array.from(agentTabs);
+    const index = tabs.indexOf(tab);
+    let nextIndex;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    const next = tabs[nextIndex];
+    next.focus();
+    if (next.dataset.agent === "direct") activateDirectChat();
+    else void activateAgentTab(next.dataset.agent);
   });
 });
 pairingConnectForm?.addEventListener("submit", async (event) => {
@@ -894,7 +1274,9 @@ agentHarnessSelect?.addEventListener("change", async () => {
   const requested = agentHarnessSelect.value;
   await activateAgentTab(requested);
 });
+let clusterModelsLoaded = false;
 async function loadClusterModels() {
+  if (clusterModelsLoaded) return;
   try {
     const models = await fetchJSON("/api/agent/models");
     if (!agentModelSelect) return;
@@ -910,6 +1292,7 @@ async function loadClusterModels() {
       if (m.name === currentVal) opt.selected = true;
       agentModelSelect.appendChild(opt);
     }
+    clusterModelsLoaded = true;
   } catch (err) {
     console.error("failed to load cluster models", err);
   }
@@ -1021,14 +1404,12 @@ async function deleteSession(id) {
 }
 function renderChatMessages(session) {
   if (!chatMessagesEl) return;
-  chatMessagesEl.innerHTML = "";
+  dashboardDOM.resetVirtualList(chatMessagesEl, { estimateHeight: 140, threshold: 50, overscan: 6 });
   if (!session || !session.messages || session.messages.length === 0) {
-    chatMessagesEl.innerHTML = `
-        <div class="welcome-card">
-          <h2>What would you like to orchestrate?</h2>
-          <p>Ask a question or give a task to your local cluster.</p>
-        </div>
-      `;
+    const welcome = document.createElement("div");
+    welcome.className = "welcome-card";
+    welcome.innerHTML = "<h2>What would you like to orchestrate?</h2><p>Ask a question or give a task to your local cluster.</p>";
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, welcome);
     return;
   }
   for (const msg of session.messages) {
@@ -1100,13 +1481,12 @@ function nodeContextDetailsMarkup(node, expanded) {
 }
 function renderDirectMessages() {
   if (!chatMessagesEl) return;
-  chatMessagesEl.innerHTML = "";
+  dashboardDOM.resetVirtualList(chatMessagesEl, { estimateHeight: 140, threshold: 50, overscan: 6 });
   if (!directMessages.length) {
-    chatMessagesEl.innerHTML = `
-      <div class="welcome-card">
-        <h2>The mAIstr0 awaits your command</h2>
-      </div>
-    `;
+    const welcome = document.createElement("div");
+    welcome.className = "welcome-card";
+    welcome.innerHTML = "<h2>The mAIstr0 awaits your command</h2>";
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, welcome);
     return;
   }
   for (const message of directMessages) {
@@ -1153,7 +1533,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
       </div>
       ${bodyHTML}
     `;
-    chatMessagesEl.appendChild(card);
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, card);
     return;
   }
   const msgDiv = document.createElement("div");
@@ -1191,7 +1571,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
     ${toolsHTML}
     ${contentHTML}
   `;
-  chatMessagesEl.appendChild(msgDiv);
+  dashboardDOM.appendVirtualListItem(chatMessagesEl, msgDiv);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 function formatDirectTaskDispatch(task) {
@@ -1336,13 +1716,13 @@ function handleStreamEvent(event) {
     const thoughtBox = document.createElement("div");
     thoughtBox.className = "thought-box";
     thoughtBox.innerHTML = `💭 <strong>Step ${event.step || 1}:</strong> ${escapeHtml(event.content)}`;
-    chatMessagesEl.appendChild(thoughtBox);
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, thoughtBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "node_output" && event.output) {
     const outputBox = document.createElement("div");
     outputBox.className = "node-output-box";
     outputBox.innerHTML = `<strong>Orchestrator coordinator output · ${escapeHtml(event.node_id || "node")} · ${escapeHtml(event.model || "")}</strong><pre>${escapeHtml(event.output)}</pre>`;
-    chatMessagesEl.appendChild(outputBox);
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, outputBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "tool_call" && event.tool_call) {
     if (chatStatus) chatStatus.textContent = `⚡ Spreading work: Calling tool ${event.tool_call.name}...`;
@@ -1350,7 +1730,7 @@ function handleStreamEvent(event) {
     appendMessageToChat({ role: "tool", tool_response: event.tool_resp });
   } else if (event.type === "final_message" && event.message) {
     if (streamingAssistantEl) {
-      streamingAssistantEl.remove();
+      dashboardDOM.removeVirtualListItem(chatMessagesEl, streamingAssistantEl);
       streamingAssistantEl = null;
     }
     appendMessageToChat(event.message);
@@ -1364,7 +1744,7 @@ function handleStreamEvent(event) {
       const bubble2 = document.createElement("div");
       bubble2.className = "msg-bubble";
       streamingAssistantEl.append(meta, bubble2);
-      chatMessagesEl.appendChild(streamingAssistantEl);
+      dashboardDOM.appendVirtualListItem(chatMessagesEl, streamingAssistantEl);
     }
     const bubble = streamingAssistantEl.querySelector(".msg-bubble");
     if (bubble) bubble.textContent += event.content;
@@ -1419,6 +1799,9 @@ promptChips.forEach((chip) => {
   });
 });
 async function refreshMemory() {
+  dashboardDOM.renderSkeleton(factsList, 2);
+  dashboardDOM.renderSkeleton(experiencesList, 3);
+  dashboardDOM.renderSkeleton(transcriptsList, 2);
   try {
     const query = memorySearch?.value.trim() || "";
     const experienceURL = query ? `/api/memory/experiences?q=${encodeURIComponent(query)}` : "/api/memory/experiences";
@@ -1488,6 +1871,7 @@ async function loadMoreMemoryHistory(name) {
 }
 function appendMemoryLoadMore(container, name, hasMore, loading) {
   if (!container || !hasMore) return;
+  container.querySelector(".history-load-more")?.remove();
   const button = document.createElement("button");
   button.className = "icon-button history-load-more";
   button.type = "button";
@@ -1524,75 +1908,99 @@ function renderLearning(insights) {
 }
 function renderFacts(facts, hasMore = false, loading = false) {
   if (!factsList) return;
-  factsList.innerHTML = "";
-  if (!facts || facts.length === 0) {
-    factsList.innerHTML = '<p style="color:var(--muted)">Nothing remembered yet.</p>';
-    appendMemoryLoadMore(factsList, "facts", hasMore, loading);
-    return;
-  }
-  for (const f of facts) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
+  const items = facts?.length ? facts : [{ key: "__empty", scope: "__empty" }];
+  factsList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(factsList, items, {
+    keyOf: (fact) => `${fact.scope || "cluster"}|${fact.key}`,
+    signatureOf: JSON.stringify,
+    estimateHeight: 140,
+    threshold: 30,
+    renderItem: (f) => {
+      if (f.scope === "__empty") {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "Nothing remembered yet.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
       <h3>${escapeHtml(f.key)} <span class="badge healthy">${escapeHtml(f.scope || "cluster")}</span></h3>
       <div class="row"><span>${escapeHtml(f.value)}</span></div>
       <div class="row"><span>Source</span><span>${escapeHtml(f.source || "unknown")}</span></div>
       <div class="row"><span>Recalled</span><span>${f.hits || 0}×</span></div>
       <button class="icon-button" data-forget="${escapeHtml(f.key)}" data-scope="${escapeHtml(f.scope || "cluster")}">Forget</button>
-    `;
-    card.querySelector("[data-forget]")?.addEventListener("click", async (e) => {
-      const key = e.target.dataset.forget;
-      const scope = e.target.dataset.scope;
-      await fetch(`/api/memory/facts/${encodeURIComponent(key)}?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
-      refreshMemory();
-    });
-    factsList.appendChild(card);
-  }
+      `;
+      card.querySelector("[data-forget]")?.addEventListener("click", async (e) => {
+        const key = e.target.dataset.forget;
+        const scope = e.target.dataset.scope;
+        await fetch(`/api/memory/facts/${encodeURIComponent(key)}?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
+        refreshMemory();
+      });
+      return card;
+    }
+  });
   appendMemoryLoadMore(factsList, "facts", hasMore, loading);
 }
 function renderExperiences(experiences, hasMore = false, loading = false) {
   if (!experiencesList) return;
-  experiencesList.innerHTML = "";
-  if (!experiences || experiences.length === 0) {
-    experiencesList.innerHTML = '<p style="color:var(--muted)">No matching experience recorded.</p>';
-    appendMemoryLoadMore(experiencesList, "experiences", hasMore, loading);
-    return;
-  }
-  for (const e of experiences) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
+  const items = experiences?.length ? experiences : [{ id: "__empty", empty: true }];
+  experiencesList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(experiencesList, items, {
+    keyOf: (item) => item.id || `${item.created_at || ""}|${item.description || ""}`,
+    signatureOf: JSON.stringify,
+    estimateHeight: 200,
+    threshold: 25,
+    renderItem: (e) => {
+      if (e.empty) {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No matching experience recorded.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
       <h3>${escapeHtml(e.kind || "task")} <span class="badge ${e.success ? "completed" : "failed"}">${e.success ? "success" : "failed"}</span></h3>
       <div class="row"><span>${escapeHtml(e.description || "")}</span></div>
       <div class="row"><span>${escapeHtml(e.node_id || "-")} / ${escapeHtml(e.model || "-")}</span><span>${e.duration_ms || 0}ms</span></div>
       <div class="row"><span>When</span><span>${new Date(e.created_at).toLocaleString()}</span></div>
       ${e.output ? `<div class="subtask-output">${escapeHtml(e.output.slice(0, 600))}</div>` : ""}
       ${e.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(e.error)}</div>` : ""}
-    `;
-    experiencesList.appendChild(card);
-  }
+      `;
+      return card;
+    }
+  });
   appendMemoryLoadMore(experiencesList, "experiences", hasMore, loading);
 }
 function renderTranscripts(dialogues, hasMore = false, loading = false) {
   if (!transcriptsList) return;
-  transcriptsList.innerHTML = "";
-  if (!dialogues || dialogues.length === 0) {
-    transcriptsList.innerHTML = '<p style="color:var(--muted)">No stored conversations yet.</p>';
-    appendMemoryLoadMore(transcriptsList, "dialogues", hasMore, loading);
-    return;
-  }
-  for (const d of dialogues) {
-    const card = document.createElement("div");
-    card.className = "card";
-    const turns = (d.turns || []).slice(-6).map((t) => `<div class="node-msg"><strong>${escapeHtml(t.speaker)}:</strong> ${escapeHtml((t.content || "").slice(0, 400))}</div>`).join("");
-    card.innerHTML = `
+  const items = dialogues?.length ? dialogues : [{ id: "__empty", empty: true }];
+  transcriptsList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(transcriptsList, items, {
+    keyOf: (dialogue) => dialogue.id,
+    signatureOf: JSON.stringify,
+    estimateHeight: 240,
+    threshold: 20,
+    renderItem: (d) => {
+      if (d.empty) {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No stored conversations yet.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      const turns = (d.turns || []).slice(-6).map((t) => `<div class="node-msg"><strong>${escapeHtml(t.speaker)}:</strong> ${escapeHtml((t.content || "").slice(0, 400))}</div>`).join("");
+      card.innerHTML = `
       <h3>${escapeHtml(d.id)} <span class="badge healthy">${(d.turns || []).length} turns</span></h3>
       <div class="row"><span>Participants</span><span>${escapeHtml((d.participants || []).join(", "))}</span></div>
       ${d.topic ? `<div class="row"><span>Topic</span><span>${escapeHtml(d.topic)}</span></div>` : ""}
       ${turns}
-    `;
-    transcriptsList.appendChild(card);
-  }
+      `;
+      return card;
+    }
+  });
   appendMemoryLoadMore(transcriptsList, "dialogues", hasMore, loading);
 }
 factForm?.addEventListener("submit", async (e) => {
@@ -1770,16 +2178,6 @@ const SUBTASK_STATES = /* @__PURE__ */ new Set(["pending", "running", "completed
 function knownStatus(status, states) {
   return states.has(status) ? status : "unknown";
 }
-function formatRelativeTime(value) {
-  if (!value) return "time unavailable";
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return "time unavailable";
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1e3));
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return new Date(timestamp).toLocaleDateString();
-}
 function nodeAssignments(tasks) {
   const assigned = /* @__PURE__ */ new Map();
   for (const task of tasks || []) {
@@ -1836,28 +2234,45 @@ function renderOverview(nodes, tasks, peers, parts = {}) {
     const expandedNodeIDs = new Set(
       [...overviewNodes.querySelectorAll(".overview-node-context[open]")].map((details) => details.closest("[data-node-id]")?.dataset.nodeId).filter(Boolean)
     );
-    overviewNodes.innerHTML = displayNodes.length ? displayNodes.map((node) => {
-      const capacity = capacityByNode.get(node.id);
-      const active = capacity?.active ?? node.active_tasks ?? 0;
-      const capacityLabel = capacity ? ` · ${capacity.remaining}/${capacity.max} slots free` : "";
-      const nodeTasks = assignments.get(node.id) || [];
-      const state = node.discovered ? "discovered" : node.healthy ? "online" : "offline";
-      const status = node.discovered ? "available · not paired" : state;
-      const lastSeen = node.last_seen ? `${node.discovered ? "Seen" : "Last seen"} ${formatRelativeTime(node.last_seen)}` : "Last seen unavailable";
-      return `<article class="overview-node ${state}" data-node-id="${escapeHtml(node.id)}">
-            <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
-            <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
-            <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${active} active tasks${capacityLabel} · ${(node.models || []).length} models`}</div>
-            <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
-            <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
-            ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
-            ${node.discovered ? "" : nodeContextDetailsMarkup(node, expandedNodeIDs.has(node.id))}
-          </article>`;
-    }).join("") : '<p class="overview-empty">No known cluster members.</p>';
-    const nodesByID = new Map(displayNodes.map((node) => [node.id, node]));
-    overviewNodes.querySelectorAll("[data-node-id]").forEach((card) => {
-      const node = nodesByID.get(card.dataset.nodeId);
-      if (node) attachNodeContextMenu(card, node);
+    const nodeItems = displayNodes.length ? displayNodes : [{ id: "__empty", empty: true }];
+    dashboardDOM.patchKeyedChildren(overviewNodes, nodeItems, {
+      keyOf: (item) => item.id,
+      signatureOf: (item) => item.empty ? "empty" : JSON.stringify({
+        node: item,
+        capacity: capacityByNode.get(item.id),
+        assignments: assignments.get(item.id),
+        leaderID,
+        expanded: expandedNodeIDs.has(item.id)
+      }),
+      renderItem: (node) => {
+        if (node.empty) {
+          const empty = document.createElement("p");
+          empty.className = "overview-empty";
+          empty.textContent = "No known cluster members.";
+          return empty;
+        }
+        const capacity = capacityByNode.get(node.id);
+        const active = capacity?.active ?? node.active_tasks ?? 0;
+        const capacityLabel = capacity ? ` · ${capacity.remaining}/${capacity.max} slots free` : "";
+        const nodeTasks = assignments.get(node.id) || [];
+        const state = node.discovered ? "discovered" : node.healthy ? "online" : "offline";
+        const status = node.discovered ? "available · not paired" : state;
+        const lastSeen = node.last_seen ? `${node.discovered ? "Seen" : "Last seen"} ${formatRelativeTime(node.last_seen)}` : "Last seen unavailable";
+        const card = document.createElement("article");
+        card.className = `overview-node ${state}`;
+        card.dataset.nodeId = node.id;
+        card.innerHTML = `
+          <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
+          <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
+          <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${active} active tasks${capacityLabel} · ${(node.models || []).length} models`}</div>
+          <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
+          <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
+          ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
+          ${node.discovered ? "" : nodeContextDetailsMarkup(node, expandedNodeIDs.has(node.id))}
+        `;
+        if (!node.discovered) attachNodeContextMenu(card, node);
+        return card;
+      }
     });
   }
   if (parts.peers !== false && clusterPeers) {
@@ -1882,84 +2297,90 @@ overviewActivity?.addEventListener("click", (event) => {
 function renderNodes(nodes) {
   dashboardState.nodes = nodes || [];
   if (!nodesList) return;
-  nodesList.innerHTML = "";
   if (!nodes || nodes.length === 0) {
-    nodesList.innerHTML = '<p style="color:var(--muted)">No nodes registered yet.</p>';
+    dashboardDOM.patchKeyedChildren(nodesList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No nodes registered yet.";
+        return empty;
+      }
+    });
     return;
   }
   const ordered = sortNodesByCapability(nodes);
   const leaderID = ordered.find((n) => n.leader)?.id;
   const fastestID = ordered.reduce((best, node) => !best || node.fast_score > best.fast_score || node.fast_score === best.fast_score && node.id < best.id ? node : best, null)?.id;
-  for (const n of ordered) {
-    const card = document.createElement("div");
-    card.className = "card" + (n.id === leaderID ? " leader" : "");
-    const modelTags = (n.models || []).map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`).join("");
-    const nodeActions = n.healthy ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
-         <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
-         <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>` : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
-    card.innerHTML = `
-      <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
-      ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
-      <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ""}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ""}</div>
-      ${engineStatusSummaryMarkup(n.engines)}
-      <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
-      <div class="row"><span>OS / Arch</span><span>${escapeHtml(n.hardware.os)}/${escapeHtml(n.hardware.arch)}</span></div>
-      <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
-      <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
-      ${nodeAcceleratorMarkup(n)}
-      ${resourceHistoryMarkup(n)}
-      ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
-      <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
-      <div class="row"><span>Score</span><span>${n.hardware.score.toFixed(1)}</span></div>
-      <div class="row"><span>Fast score</span><span>${(n.fast_score || 0).toFixed(1)}</span></div>
-      <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
-      <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
-      ${nodeActions}
-      <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
-    `;
-    nodesList.appendChild(card);
-    card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
-    card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
-    attachNodeContextMenu(card, n);
-    card.querySelectorAll(".model-tag-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const nodeId = btn.dataset.node;
-        const model = btn.dataset.model;
-        btn.textContent = "⏳ Testing…";
-        try {
-          const res = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/${encodeURIComponent(model)}/test`, { method: "POST" });
-          if (res.healthy) {
-            btn.textContent = `✓ ${model} (${res.duration_ms}ms)`;
-          } else {
-            btn.textContent = `✗ ${model} (err)`;
-          }
-        } catch (e) {
-          btn.textContent = `✗ ${model}`;
+  dashboardDOM.patchKeyedChildren(nodesList, ordered, {
+    keyOf: (node) => node.id,
+    signatureOf: (node) => JSON.stringify({
+      node,
+      modelPanelOpen: modelPanelOpen.has(node.id),
+      modelPanel: lastFetchedModels.get(node.id)
+    }),
+    renderItem: (n) => {
+      const card = document.createElement("div");
+      card.className = "card" + (n.id === leaderID ? " leader" : "");
+      const modelTags = (n.models || []).map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`).join("");
+      const nodeActions = n.healthy ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
+           <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
+           <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>` : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
+      card.innerHTML = `
+        <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
+        ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
+        <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ""}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ""}</div>
+        ${engineStatusSummaryMarkup(n.engines)}
+        <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
+        <div class="row"><span>OS / Arch</span><span>${escapeHtml(n.hardware.os)}/${escapeHtml(n.hardware.arch)}</span></div>
+        <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
+        <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
+        ${nodeAcceleratorMarkup(n)}
+        ${resourceHistoryMarkup(n)}
+        ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
+        <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
+        <div class="row"><span>Score</span><span>${n.hardware.score.toFixed(1)}</span></div>
+        <div class="row"><span>Fast score</span><span>${(n.fast_score || 0).toFixed(1)}</span></div>
+        <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
+        <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
+        ${nodeActions}
+        <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
+      `;
+      card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
+      card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
+      card.querySelector(".model-config-toggle")?.addEventListener("click", () => {
+        if (modelPanelOpen.has(n.id)) {
+          modelPanelOpen.delete(n.id);
+          lastFetchedModels.delete(n.id);
+        } else {
+          modelPanelOpen.add(n.id);
         }
-        setTimeout(() => {
-          btn.textContent = `⚡ ${model}`;
-        }, 3500);
+        renderNodes(nodes);
       });
-    });
-    if (modelPanelOpen.has(n.id)) {
-      if (lastFetchedModels.has(n.id)) {
-        renderModelPanel(n.id, lastFetchedModels.get(n.id), n.engines);
-      } else {
-        loadModelPanel(n.id);
+      card.querySelectorAll(".model-tag-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const nodeId = btn.dataset.node;
+          const model = btn.dataset.model;
+          btn.textContent = "⏳ Testing…";
+          try {
+            const res = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/${encodeURIComponent(model)}/test`, { method: "POST" });
+            btn.textContent = res.healthy ? `✓ ${model} (${res.duration_ms}ms)` : `✗ ${model} (err)`;
+          } catch {
+            btn.textContent = `✗ ${model}`;
+          }
+          setTimeout(() => {
+            btn.textContent = `⚡ ${model}`;
+          }, 3500);
+        });
+      });
+      attachNodeContextMenu(card, n);
+      if (modelPanelOpen.has(n.id)) {
+        if (lastFetchedModels.has(n.id)) renderModelPanel(n.id, lastFetchedModels.get(n.id), n.engines);
+        else loadModelPanel(n.id);
       }
+      return card;
     }
-  }
-  nodesList.querySelectorAll(".model-config-toggle").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const nodeId = btn.dataset.node;
-      if (modelPanelOpen.has(nodeId)) {
-        modelPanelOpen.delete(nodeId);
-        lastFetchedModels.delete(nodeId);
-      } else {
-        modelPanelOpen.add(nodeId);
-      }
-      renderNodes(nodes);
-    });
   });
 }
 function renderSetupNodes(nodes) {
@@ -1970,15 +2391,26 @@ function renderSetupNodes(nodes) {
     setupNodeSummary.textContent = `${online} online · ${ordered.length - online} offline · ${ordered.length} total`;
   }
   if (!ordered.length) {
-    setupNodeList.innerHTML = '<p class="setup-empty">No cluster members are registered yet. Pair a node to add it to the cluster.</p>';
+    dashboardDOM.patchKeyedChildren(setupNodeList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "setup-empty";
+        empty.textContent = "No cluster members are registered yet. Pair a node to add it to the cluster.";
+        return empty;
+      }
+    });
     return;
   }
-  setupNodeList.innerHTML = "";
-  for (const node of ordered) {
-    const online = Boolean(node.healthy);
-    const card = document.createElement("article");
-    card.className = `setup-node-card ${online ? "online" : "offline"}`;
-    card.innerHTML = `
+  dashboardDOM.patchKeyedChildren(setupNodeList, ordered, {
+    keyOf: (node) => node.id,
+    signatureOf: JSON.stringify,
+    renderItem: (node) => {
+      const online = Boolean(node.healthy);
+      const card = document.createElement("article");
+      card.className = `setup-node-card ${online ? "online" : "offline"}`;
+      card.innerHTML = `
       <div class="setup-node-heading">
         <div><h4>${escapeHtml(node.id)}</h4><span class="panel-caption">${escapeHtml(node.address || "Address unavailable")}</span></div>
         <span class="setup-node-status ${online ? "online" : "offline"}"><span class="legend-dot ${online ? "online" : "offline"}"></span>${online ? "Online" : "Offline"}</span>
@@ -1988,10 +2420,11 @@ function renderSetupNodes(nodes) {
         <span>${node.active_tasks || 0} active tasks</span>
         ${online ? "" : `<span>Last seen ${escapeHtml(node.last_seen ? formatRelativeTime(node.last_seen) : "unknown")}</span>`}
       </div>`;
-    card.insertAdjacentHTML("beforeend", engineStatusSummaryMarkup(node.engines));
-    attachNodeContextMenu(card, node);
-    setupNodeList.appendChild(card);
-  }
+      card.insertAdjacentHTML("beforeend", engineStatusSummaryMarkup(node.engines));
+      attachNodeContextMenu(card, node);
+      return card;
+    }
+  });
 }
 async function openNodeTerminal(node) {
   terminalNode = node;
@@ -2361,7 +2794,7 @@ function pipelineModelCard(model, pipeline) {
 function pipelineStageMarkup(stage) {
   const ready = stage.status === "ready";
   const utilization = Number.isFinite(stage.utilization_percent) ? `${stage.active}/${stage.capacity} slots · ${stage.utilization_percent.toFixed(0)}%` : `${stage.active} active · capacity unavailable`;
-  const transfer = Number.isFinite(stage.activation_transfer_ms) ? `${stage.activation_transfer_ms.toFixed(1)} ms · ${formatPipelineBytes(stage.activation_bytes || 0)}` : "No activation transfer recorded";
+  const transfer = Number.isFinite(stage.activation_transfer_ms) ? `${stage.activation_transfer_ms.toFixed(1)} ms · ${formatBytes(stage.activation_bytes || 0)}` : "No activation transfer recorded";
   return `
     <div class="pipeline-stage">
       <div class="pipeline-stage-heading">
@@ -2374,11 +2807,6 @@ function pipelineStageMarkup(stage) {
       ${stage.stage > 0 ? `<div class="row"><span>Activation transfer</span><span>${transfer}</span></div>` : ""}
     </div>
   `;
-}
-function formatPipelineBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 async function requestPipelineReshard(modelID) {
   const current = pipelineActions.get(modelID) || {};
@@ -2401,9 +2829,17 @@ async function requestPipelineReshard(modelID) {
 }
 function renderRouting(nodes, tasks) {
   if (!routingList) return;
-  routingList.innerHTML = "";
   if (!nodes || nodes.length === 0) {
-    routingList.innerHTML = '<p style="color:var(--muted)">No nodes registered yet.</p>';
+    dashboardDOM.patchKeyedChildren(routingList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No nodes registered yet.";
+        return empty;
+      }
+    });
     return;
   }
   const byNode = new Map(nodes.map((n) => [n.id, {
@@ -2434,15 +2870,18 @@ function renderRouting(nodes, tasks) {
     if ((b.node.active_tasks || 0) !== (a.node.active_tasks || 0)) return (b.node.active_tasks || 0) - (a.node.active_tasks || 0);
     return b.running + b.pending - (a.running + a.pending);
   });
-  for (const { node, pending, running, completed, failed, cancelled, unknown, recent } of workload) {
-    const card = document.createElement("div");
-    card.className = "card";
-    const total = pending + running + completed + failed + cancelled + unknown;
-    const pct = (n) => total === 0 ? 0 : Math.round(n / total * 100);
-    const recentHTML = recent.length ? recent.map(
-      (r) => `<div class="row"><span>${r.taskId}/${r.subtaskId} (${r.taskType}) &rarr; ${escapeHtml(r.model)}</span><span class="badge ${r.status}">${r.status}</span></div>`
-    ).join("") : '<p style="color:var(--muted);font-size:0.8rem">No jobs routed yet.</p>';
-    card.innerHTML = `
+  dashboardDOM.patchKeyedChildren(routingList, workload, {
+    keyOf: (item) => item.node.id,
+    signatureOf: JSON.stringify,
+    renderItem: ({ node, pending, running, completed, failed, cancelled, unknown, recent }) => {
+      const card = document.createElement("div");
+      card.className = "card";
+      const total = pending + running + completed + failed + cancelled + unknown;
+      const pct = (n) => total === 0 ? 0 : Math.round(n / total * 100);
+      const recentHTML = recent.length ? recent.map(
+        (r) => `<div class="row"><span>${r.taskId}/${r.subtaskId} (${r.taskType}) &rarr; ${escapeHtml(r.model)}</span><span class="badge ${r.status}">${r.status}</span></div>`
+      ).join("") : '<p style="color:var(--muted);font-size:0.8rem">No jobs routed yet.</p>';
+      card.innerHTML = `
       <h3>${escapeHtml(node.id)} <span class="badge ${node.healthy ? "healthy" : "unhealthy"}">${node.active_tasks} active</span></h3>
       <div class="workload-bar" role="img" aria-label="${pending} pending, ${running} running, ${completed} completed, ${failed} failed, ${cancelled} cancelled">
         <div class="workload-seg workload-pending" style="width:${pct(pending)}%"></div>
@@ -2459,8 +2898,9 @@ function renderRouting(nodes, tasks) {
       <h4>Recent jobs</h4>
       ${recentHTML}
     `;
-    routingList.appendChild(card);
-  }
+      return card;
+    }
+  });
 }
 function visibleNetworkPeers(peers, nodes, pairingStatus2) {
   const visible = new Map((peers || []).map((peer) => [peer.id, peer]));
@@ -2488,31 +2928,46 @@ function visibleNetworkPeers(peers, nodes, pairingStatus2) {
 }
 function renderDiscovery(peers) {
   if (!discoveryList) return;
-  discoveryList.innerHTML = "";
   const ordered = visibleNetworkPeers(peers, dashboardState.nodes, dashboardState.pairing.status);
   if (ordered.length === 0) {
-    discoveryList.innerHTML = '<p style="color:var(--muted)">No visible nodes found on the local network yet.</p>';
+    dashboardDOM.patchKeyedChildren(discoveryList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No visible nodes found on the local network yet.";
+        return empty;
+      }
+    });
     return;
   }
-  for (const p of ordered) {
-    const card = document.createElement("div");
-    card.className = "card";
-    const associated = p.role === "node" ? p.orchestrator_id || "Not announced" : p.role === "orchestrator" ? dashboardState.pairing.status?.role === "node" ? p.id === dashboardState.pairing.status.orchestrator_id ? "current orchestrator" : "available to join" : "self" : "Not elected";
-    const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
-    const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
-    const joinOrchestrator = p.role === "orchestrator" && dashboardState.pairing.status?.role === "node" && !p.local;
-    const orchestratorTarget = joinOrchestrator ? {
-      id: p.id,
-      role: p.role,
-      address: p.peer_addr || "",
-      peer_addr: p.peer_addr,
-      healthy: true,
-      discovered: true,
-      joinOrchestrator: true
-    } : null;
-    const alreadyJoined = dashboardState.pairing.status?.joined && dashboardState.pairing.status.orchestrator_id === p.id;
-    const joinLabel = alreadyJoined ? `Re-pair with ${p.id}` : dashboardState.pairing.status?.joined ? `Switch to ${p.id}'s cluster` : `Join ${p.id}'s cluster`;
-    card.innerHTML = `
+  dashboardDOM.patchKeyedChildren(discoveryList, ordered, {
+    keyOf: (peer) => peer.id,
+    signatureOf: (peer) => JSON.stringify({
+      peer,
+      pairing: dashboardState.pairing.status,
+      member: dashboardState.nodes.find((node) => node.id === peer.id)
+    }),
+    renderItem: (p) => {
+      const card = document.createElement("div");
+      card.className = "card";
+      const associated = p.role === "node" ? p.orchestrator_id || "Not announced" : p.role === "orchestrator" ? dashboardState.pairing.status?.role === "node" ? p.id === dashboardState.pairing.status.orchestrator_id ? "current orchestrator" : "available to join" : "self" : "Not elected";
+      const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
+      const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
+      const joinOrchestrator = p.role === "orchestrator" && dashboardState.pairing.status?.role === "node" && !p.local;
+      const orchestratorTarget = joinOrchestrator ? {
+        id: p.id,
+        role: p.role,
+        address: p.peer_addr || "",
+        peer_addr: p.peer_addr,
+        healthy: true,
+        discovered: true,
+        joinOrchestrator: true
+      } : null;
+      const alreadyJoined = dashboardState.pairing.status?.joined && dashboardState.pairing.status.orchestrator_id === p.id;
+      const joinLabel = alreadyJoined ? `Re-pair with ${p.id}` : dashboardState.pairing.status?.joined ? `Switch to ${p.id}'s cluster` : `Join ${p.id}'s cluster`;
+      card.innerHTML = `
       <h3>${escapeHtml(p.id)} <span class="badge healthy">${escapeHtml(p.role)}</span></h3>
       <div class="row"><span>Address</span><span>${escapeHtml(p.peer_addr || p.http_addr || "Address unavailable")}</span></div>
       ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
@@ -2520,84 +2975,134 @@ function renderDiscovery(peers) {
       <div class="row"><span>Last seen</span><span>${p.local ? "This device" : p.last_seen ? new Date(p.last_seen).toLocaleTimeString() : "Online in cluster"}</span></div>
       ${orchestratorTarget ? `<button type="button" class="discovery-join-orchestrator" data-action="join-orchestrator" ${p.peer_addr ? "" : "disabled"}>${escapeHtml(joinLabel)}</button>` : ""}
     `;
-    discoveryList.appendChild(card);
-    if (p.role === "node") {
-      attachNodeContextMenu(card, member || {
-        id: p.id,
-        address: p.peer_addr || p.http_addr,
-        healthy: true,
-        discovered: !p.local,
-        last_seen: p.last_seen,
-        models: [],
-        active_tasks: 0,
-        hardware: {}
-      });
-    } else if (orchestratorTarget) {
-      card.querySelector("[data-action=join-orchestrator]")?.addEventListener("click", () => {
-        openPairingDialog(orchestratorTarget);
-      });
-      attachNodeContextMenu(card, orchestratorTarget);
+      if (p.role === "node") {
+        attachNodeContextMenu(card, member || {
+          id: p.id,
+          address: p.peer_addr || p.http_addr,
+          healthy: true,
+          discovered: !p.local,
+          last_seen: p.last_seen,
+          models: [],
+          active_tasks: 0,
+          hardware: {}
+        });
+      } else if (orchestratorTarget) {
+        card.querySelector("[data-action=join-orchestrator]")?.addEventListener("click", () => {
+          openPairingDialog(orchestratorTarget);
+        });
+        attachNodeContextMenu(card, orchestratorTarget);
+      }
+      return card;
     }
-  }
+  });
 }
 function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
-  const expandedTaskIds = new Set(
-    Array.from(container.querySelectorAll?.(".task-details-row:not([hidden])") || []).map((item) => item.dataset.taskId).filter(Boolean)
-  );
-  container.innerHTML = "";
+  let state = container.__taskTableState;
+  if (!state) {
+    const table = document.createElement("table");
+    table.className = "task-history-table";
+    table.innerHTML = `
+      <thead><tr>
+        <th scope="col"><span class="sr-only">Expand</span></th>
+        <th scope="col">Task</th>
+        <th scope="col">Task ID</th>
+        <th scope="col">Steps</th>
+        <th scope="col">Status</th>
+      </tr></thead>
+    `;
+    const rows = document.createElement("tbody");
+    table.appendChild(rows);
+    container.innerHTML = "";
+    container.appendChild(table);
+    state = {
+      table,
+      rows,
+      expanded: /* @__PURE__ */ new Set(),
+      heights: /* @__PURE__ */ new Map(),
+      tasks: [],
+      frame: 0,
+      idPrefix,
+      linkNodes
+    };
+    state.onScroll = () => {
+      if (state.frame) return;
+      const raf = globalThis.requestAnimationFrame || ((callback) => setTimeout(callback, 16));
+      state.frame = raf(() => {
+        state.frame = 0;
+        renderTaskHistoryTable(container, state.tasks, state.idPrefix, state.linkNodes);
+      });
+    };
+    container.addEventListener?.("scroll", state.onScroll, { passive: true });
+    container.__taskTableState = state;
+  }
+  state.tasks = tasks;
+  container.setAttribute?.("aria-busy", "false");
+  state.idPrefix = idPrefix;
+  state.linkNodes = linkNodes;
+  const virtualized = tasks.length > 80;
+  const range = virtualized ? dashboardDOM.getVirtualRange(tasks, container.scrollTop || 0, container.clientHeight || 600, {
+    estimateHeight: 64,
+    overscan: 8,
+    heightOf: (task) => state.heights.get(task.id) || 64
+  }) : { start: 0, end: tasks.length, top: 0, bottom: 0 };
+  if (virtualized && !state.topSpacer) {
+    const createSpacer = () => {
+      const spacer = document.createElement("tbody");
+      spacer.className = "task-virtual-spacer";
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 5;
+      cell.setAttribute("aria-hidden", "true");
+      row.appendChild(cell);
+      spacer.appendChild(row);
+      return { spacer, cell };
+    };
+    state.topSpacer = createSpacer();
+    state.bottomSpacer = createSpacer();
+    state.table.insertBefore(state.topSpacer.spacer, state.rows);
+    state.table.appendChild(state.bottomSpacer.spacer);
+  }
+  if (state.topSpacer) {
+    state.topSpacer.spacer.hidden = range.top === 0;
+    state.topSpacer.cell.style.height = `${range.top}px`;
+    state.bottomSpacer.spacer.hidden = range.bottom === 0;
+    state.bottomSpacer.cell.style.height = `${range.bottom}px`;
+  }
   const validStatuses = /* @__PURE__ */ new Set(["pending", "running", "synthesizing", "awaiting_approval", "completed", "failed", "cancelled"]);
-  const formatTimestamp = (label, value) => {
-    if (!value) return `<span class="task-time-unavailable">${escapeHtml(label)} unavailable</span>`;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return `<span class="task-time-unavailable">${escapeHtml(label)} unavailable</span>`;
-    }
-    return `<time datetime="${escapeHtml(value)}">${escapeHtml(label)} ${escapeHtml(date.toLocaleString())}</time>`;
-  };
-  const table = document.createElement("table");
-  table.className = "task-history-table";
-  table.innerHTML = `
-    <thead><tr>
-      <th scope="col"><span class="sr-only">Expand</span></th>
-      <th scope="col">Task</th>
-      <th scope="col">Task ID</th>
-      <th scope="col">Steps</th>
-      <th scope="col">Status</th>
-    </tr></thead>
-  `;
-  const tbody = document.createElement("tbody");
-  table.appendChild(tbody);
-  container.appendChild(table);
-  for (const [index, t] of tasks.entries()) {
-    const status = validStatuses.has(t.status) ? t.status : "unknown";
-    const isExpanded = expandedTaskIds.has(t.id);
-    const detailsId = `${idPrefix}-details-${index}`;
-    const subtasks = t.subtasks || [];
-    const completedCount = subtasks.filter((subtask) => subtask.status === "completed").length;
-    const subtaskHTML = subtasks.map((s) => {
-      const subtaskStatus = validStatuses.has(s.status) ? s.status : "unknown";
-      const subtask = s.subtask || {};
-      const node = s.node_id ? linkNodes ? `<button class="activity-assignment" type="button" data-target-node="${escapeHtml(s.node_id)}">${escapeHtml(s.node_id)}</button>` : escapeHtml(s.node_id) : "Unassigned";
-      const attempts = Array.isArray(s.attempts) ? s.attempts : [];
-      const attemptTimestamps = attempts.length ? attempts.map((attempt, attemptIndex) => {
-        const attemptNumber = Number(attempt.number) || attemptIndex + 1;
-        const attemptStatus = typeof attempt.status === "string" ? attempt.status : "unknown";
-        const durationMs = Number(attempt.duration_ms);
-        const details = [
-          `<strong>Attempt ${attemptNumber} · ${escapeHtml(attemptStatus)}</strong>`,
-          attempt.id ? `<span>Attempt ID: ${escapeHtml(attempt.id)}</span>` : "",
-          attempt.request_id ? `<span>Request ID: ${escapeHtml(attempt.request_id)}</span>` : "",
-          attempt.node_id ? `<span>Node: ${escapeHtml(attempt.node_id)}</span>` : "",
-          attempt.model ? `<span>Model: ${escapeHtml(attempt.model)}</span>` : "",
-          attempt.engine ? `<span>Engine: ${escapeHtml(attempt.engine)}</span>` : "",
-          attempt.failure_class ? `<span>Failure: ${escapeHtml(attempt.failure_class)}</span>` : "",
-          attempt.http_status ? `<span>HTTP ${escapeHtml(attempt.http_status)}</span>` : "",
-          Number.isFinite(durationMs) && durationMs >= 0 ? `<span>Duration: ${durationMs} ms</span>` : "",
-          attempt.error ? `<span>Error: ${escapeHtml(attempt.error)}</span>` : ""
-        ].join("");
-        return `<div class="task-step-attempt">${details}${formatTimestamp("Started", attempt.started_at)}${formatTimestamp("Finished", attempt.finished_at)}</div>`;
-      }).join("") : `<div class="task-step-attempt"><span>Not dispatched</span>${formatTimestamp("Task created", t.created_at)}</div>`;
-      return `
+  dashboardDOM.patchKeyedChildren(state.rows, tasks.slice(range.start, range.end), {
+    keyOf: (task) => task.id,
+    signatureOf: (task) => JSON.stringify({ task, idPrefix, linkNodes }),
+    renderItem: (t, visibleIndex) => {
+      const index = range.start + visibleIndex;
+      const status = validStatuses.has(t.status) ? t.status : "unknown";
+      const isExpanded = state.expanded.has(t.id);
+      const detailsId = `${idPrefix}-details-${index}`;
+      const subtasks = t.subtasks || [];
+      const completedCount = subtasks.filter((subtask) => subtask.status === "completed").length;
+      const subtaskHTML = subtasks.map((s) => {
+        const subtaskStatus = validStatuses.has(s.status) ? s.status : "unknown";
+        const subtask = s.subtask || {};
+        const node = s.node_id ? linkNodes ? `<button class="activity-assignment" type="button" data-target-node="${escapeHtml(s.node_id)}">${escapeHtml(s.node_id)}</button>` : escapeHtml(s.node_id) : "Unassigned";
+        const attempts = Array.isArray(s.attempts) ? s.attempts : [];
+        const attemptTimestamps = attempts.length ? attempts.map((attempt, attemptIndex) => {
+          const attemptNumber = Number(attempt.number) || attemptIndex + 1;
+          const attemptStatus = typeof attempt.status === "string" ? attempt.status : "unknown";
+          const durationMs = Number(attempt.duration_ms);
+          const details = [
+            `<strong>Attempt ${attemptNumber} · ${escapeHtml(attemptStatus)}</strong>`,
+            attempt.id ? `<span>Attempt ID: ${escapeHtml(attempt.id)}</span>` : "",
+            attempt.request_id ? `<span>Request ID: ${escapeHtml(attempt.request_id)}</span>` : "",
+            attempt.node_id ? `<span>Node: ${escapeHtml(attempt.node_id)}</span>` : "",
+            attempt.model ? `<span>Model: ${escapeHtml(attempt.model)}</span>` : "",
+            attempt.engine ? `<span>Engine: ${escapeHtml(attempt.engine)}</span>` : "",
+            attempt.failure_class ? `<span>Failure: ${escapeHtml(attempt.failure_class)}</span>` : "",
+            attempt.http_status ? `<span>HTTP ${escapeHtml(attempt.http_status)}</span>` : "",
+            Number.isFinite(durationMs) && durationMs >= 0 ? `<span>Duration: ${durationMs} ms</span>` : "",
+            attempt.error ? `<span>Error: ${escapeHtml(attempt.error)}</span>` : ""
+          ].join("");
+          return `<div class="task-step-attempt">${details}${formatTimestamp("Started", attempt.started_at)}${formatTimestamp("Finished", attempt.finished_at)}</div>`;
+        }).join("") : `<div class="task-step-attempt"><span>Not dispatched</span>${formatTimestamp("Task created", t.created_at)}</div>`;
+        return `
         <article class="task-step">
           <div class="task-step-heading"><strong>${escapeHtml(subtask.id || "Subtask")}</strong><span class="badge ${subtaskStatus}">${escapeHtml(subtaskStatus.replaceAll("_", " "))}</span></div>
           <div class="task-step-target">${escapeHtml(subtask.role || subtask.task_type || "Task step")} · ${escapeHtml(subtask.task_type || "general")} · ${node} / ${escapeHtml(s.model || "No model")}</div>
@@ -2608,23 +3113,23 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
           ${s.output ? `<div class="subtask-output-wrap"><button class="copy-output-btn" type="button" data-copy-output="${encodeURIComponent(s.output)}">Copy output</button><pre class="subtask-output">${escapeHtml(s.output)}</pre></div>` : ""}
         </article>
       `;
-    }).join("");
-    const item = document.createElement("tr");
-    item.className = `task-history-row task-history-row-${status}`;
-    item.dataset.taskId = t.id;
-    item.innerHTML = `
+      }).join("");
+      const item = document.createElement("tr");
+      item.className = `task-history-row task-history-row-${status}`;
+      item.dataset.taskId = t.id;
+      item.innerHTML = `
       <td><button class="task-expand-btn" type="button" aria-expanded="${isExpanded}" aria-controls="${detailsId}" aria-label="Show details for ${escapeHtml(t.description || t.id)}"><span class="task-expand-icon" aria-hidden="true">›</span></button></td>
       <td><span class="task-history-title" title="${escapeHtml(t.description || t.id)}">${escapeHtml(t.description || t.id)}</span><span class="task-history-timestamp">${formatTimestamp("Created", t.created_at)}</span></td>
       <td><span class="task-history-id" title="${escapeHtml(t.id)}">${escapeHtml(t.id)}</span></td>
       <td>${subtasks.length ? `${completedCount} / ${subtasks.length}` : "—"}</td>
       <td><span class="badge ${status}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
     `;
-    const detailsRow = document.createElement("tr");
-    detailsRow.id = detailsId;
-    detailsRow.className = "task-details-row";
-    detailsRow.dataset.taskId = t.id;
-    detailsRow.hidden = !isExpanded;
-    detailsRow.innerHTML = `
+      const detailsRow = document.createElement("tr");
+      detailsRow.id = detailsId;
+      detailsRow.className = "task-details-row";
+      detailsRow.dataset.taskId = t.id;
+      detailsRow.hidden = !isExpanded;
+      detailsRow.innerHTML = `
       <td colspan="5"><div class="task-details-content">
       <div class="task-menu-meta">
         ${formatTimestamp("Created", t.created_at)}
@@ -2641,51 +3146,69 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
       ${t.result ? `<section class="task-result"><h4>Final result</h4><pre class="subtask-output">${escapeHtml(t.result)}</pre></section>` : ""}
       </div></td>
     `;
-    tbody.appendChild(item);
-    tbody.appendChild(detailsRow);
-    const expandButton = item.querySelector(".task-expand-btn");
-    expandButton?.addEventListener("click", () => {
-      detailsRow.hidden = !detailsRow.hidden;
-      expandButton.setAttribute("aria-expanded", String(!detailsRow.hidden));
-      expandButton.setAttribute("aria-label", `${detailsRow.hidden ? "Show" : "Hide"} details for ${t.description || t.id}`);
-    });
-    detailsRow.querySelector(".resume-task-btn")?.addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/resume`, { method: "POST" });
-      } catch (err) {
-        button.disabled = false;
-        if (submitStatus) submitStatus.textContent = `Unable to resume ${t.id}: ${err.message}`;
-      }
-    });
-    detailsRow.querySelector(".cancel-task-btn")?.addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
-      } catch (err) {
-        if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err.message}`;
-      }
-    });
-    detailsRow.querySelector(".approve-task-btn")?.addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/approve`, { method: "POST" });
-      } catch (err) {
-        button.disabled = false;
-        if (submitStatus) submitStatus.textContent = `Unable to approve ${t.id}: ${err.message}`;
-      }
-    });
-    detailsRow.querySelectorAll("[data-copy-output]").forEach((button) => {
-      button.addEventListener("click", () => copyText(decodeURIComponent(button.dataset.copyOutput), button));
-    });
-  }
+      const expandButton = item.querySelector(".task-expand-btn");
+      expandButton?.addEventListener("click", () => {
+        detailsRow.hidden = !detailsRow.hidden;
+        if (detailsRow.hidden) state.expanded.delete(t.id);
+        else state.expanded.add(t.id);
+        expandButton.setAttribute("aria-expanded", String(!detailsRow.hidden));
+        expandButton.setAttribute("aria-label", `${detailsRow.hidden ? "Show" : "Hide"} details for ${t.description || t.id}`);
+        const height = (item.getBoundingClientRect?.().height || 0) + (detailsRow.hidden ? 0 : detailsRow.getBoundingClientRect?.().height || 0);
+        if (height > 0) state.heights.set(t.id, height);
+      });
+      detailsRow.querySelector(".resume-task-btn")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/resume`, { method: "POST" });
+        } catch (err) {
+          button.disabled = false;
+          if (submitStatus) submitStatus.textContent = `Unable to resume ${t.id}: ${err.message}`;
+        }
+      });
+      detailsRow.querySelector(".cancel-task-btn")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
+        } catch (err) {
+          if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err.message}`;
+        }
+      });
+      detailsRow.querySelector(".approve-task-btn")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/approve`, { method: "POST" });
+        } catch (err) {
+          button.disabled = false;
+          if (submitStatus) submitStatus.textContent = `Unable to approve ${t.id}: ${err.message}`;
+        }
+      });
+      detailsRow.querySelectorAll("[data-copy-output]").forEach((button) => {
+        button.addEventListener("click", () => copyText(decodeURIComponent(button.dataset.copyOutput), button));
+      });
+      return [item, detailsRow];
+    }
+  });
+  state.rows.querySelectorAll?.(".task-history-row").forEach((row) => {
+    const details = row.nextElementSibling;
+    const height = (row.getBoundingClientRect?.().height || 0) + (details && !details.hidden ? details.getBoundingClientRect?.().height || 0 : 0);
+    if (height > 0) state.heights.set(row.dataset.taskId, height);
+  });
 }
 function renderTasks(tasks, hasMore = false, loading = false) {
   if (!tasksList) return;
+  tasksList.querySelector?.(".history-load-more")?.remove();
+  tasksList.setAttribute?.("aria-busy", String(loading));
   if (!tasks || tasks.length === 0) {
+    tasksList.__taskTableState?.table.remove?.();
+    delete tasksList.__taskTableState;
+    if (loading) {
+      dashboardDOM.renderSkeleton(tasksList, 3);
+      if (taskHistoryCount) taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(0, 0);
+      return;
+    }
     tasksList.innerHTML = '<p class="task-history-empty">No tasks submitted yet.</p>';
     if (taskHistoryCount) taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(0, 0);
     appendTaskHistoryLoadMore(hasMore, loading);
@@ -2722,6 +3245,8 @@ function renderTasks(tasks, hasMore = false, loading = false) {
     taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(orderedTasks.length, tasks.length);
   }
   if (orderedTasks.length === 0) {
+    tasksList.__taskTableState?.table.remove?.();
+    delete tasksList.__taskTableState;
     tasksList.innerHTML = '<p class="task-history-empty">No tasks match the selected filters.</p>';
     appendTaskHistoryLoadMore(hasMore, loading);
     return;
@@ -2765,11 +3290,6 @@ ${s.output || s.error || ""}`)
   ].join("\n")).join("\n\n");
 }
 copyTasksBtn?.addEventListener("click", () => copyAllTaskResults());
-function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = s;
-  return div.innerHTML;
-}
 function updateConnectionStatus() {
   if (!connectionStatus) return;
   const state = dashboardState.connection;
@@ -2777,18 +3297,19 @@ function updateConnectionStatus() {
   connectionStatus.dataset.connected = String(state.connected);
   connectionStatus.textContent = `${state.connected ? "Connected" : "Reconnecting"} · Last sync ${lastSync}`;
 }
+const loadedDashboardPanels = /* @__PURE__ */ new Set(["agent-tab"]);
 function markDashboardSynced() {
   dashboardState.connection.lastSyncAt = Date.now();
   updateConnectionStatus();
 }
 async function refresh() {
+  if (!document.getElementById("cluster-tab")?.classList.contains("active")) return;
   try {
     const [nodes, peers, build] = await Promise.all([
       fetchJSON("/api/nodes/all"),
       fetchJSON("/api/discovery"),
       fetchJSON("/api/version")
     ]);
-    await refreshTaskHistory();
     applySnapshot({ nodes, tasks: dashboardState.tasks || [], discovery: peers, build_version: build.version });
     markDashboardSynced();
   } catch (err) {
@@ -2922,7 +3443,11 @@ async function refreshDiscovery() {
     console.error("local network refresh failed", err);
   }
 }
-setInterval(refreshDiscovery, 5e3);
+setInterval(() => {
+  if (loadedDashboardPanels.has("discovery-panel") && document.getElementById("cluster-tab")?.classList.contains("active") && document.getElementById("discovery-panel")?.classList.contains("active")) {
+    void refreshDiscovery();
+  }
+}, 5e3);
 function applySnapshot(snap) {
   const taskSnapshot = dashboardSnapshot.mergeTaskSnapshot(
     dashboardState.tasks,
@@ -2934,6 +3459,8 @@ function applySnapshot(snap) {
   dashboardState.fullTaskHistoryLoaded = taskSnapshot.fullTaskHistoryLoaded;
   mergeLiveTaskHistory(snap.tasks || []);
   dashboardState.nodes = snap.nodes || [];
+  if (Array.isArray(snap.discovery)) dashboardState.discovery = snap.discovery;
+  if (snap.build_version) dashboardState.buildVersion = snap.build_version;
   if (Array.isArray(snap.model_inventory)) dashboardState.modelInventory = snap.model_inventory;
   if (Array.isArray(snap.pipeline_plans)) dashboardState.pipelinePlans = snap.pipeline_plans;
   if (snap.cluster_health) dashboardState.capacity = snap.cluster_health;
@@ -3054,17 +3581,20 @@ function applySnapshot(snap) {
     nodes: overviewNodeSignature !== window.lastOverviewNodeSignature,
     peers: peerSignature !== window.lastOverviewPeerSignature
   };
-  if (overviewParts.activity || overviewParts.nodes || overviewParts.peers) {
+  if (loadedDashboardPanels.has("cluster-overview-panel") && (overviewParts.activity || overviewParts.nodes || overviewParts.peers)) {
     renderOverview(dashboardState.nodes, dashboardState.tasks, snap.discovery || [], overviewParts);
     window.lastActivitySignature = activitySignature;
     window.lastOverviewNodeSignature = overviewNodeSignature;
     window.lastOverviewPeerSignature = peerSignature;
     overviewChanged = true;
   }
-  if (nodeSignature !== window.lastNodeSignature) {
+  if (loadedDashboardPanels.has("nodes-panel") && nodeSignature !== window.lastNodeSignature) {
     renderNodes(dashboardState.nodes);
-    renderSetupNodes(dashboardState.nodes);
     window.lastNodeSignature = nodeSignature;
+  }
+  if (loadedDashboardPanels.has("setup-nodes-panel") && nodeSignature !== window.lastSetupNodeSignature) {
+    renderSetupNodes(dashboardState.nodes);
+    window.lastSetupNodeSignature = nodeSignature;
   }
   const routingSignature = JSON.stringify({
     nodes: nodeState.map((node) => ({ id: node.id, healthy: node.healthy, active_tasks: node.active_tasks })),
@@ -3074,7 +3604,7 @@ function applySnapshot(snap) {
       subtasks: task.subtasks
     }))
   });
-  if (routingSignature !== window.lastRoutingSignature) {
+  if (loadedDashboardPanels.has("routing-panel") && routingSignature !== window.lastRoutingSignature) {
     renderRouting(dashboardState.nodes, dashboardState.tasks);
     window.lastRoutingSignature = routingSignature;
   }
@@ -3082,19 +3612,48 @@ function applySnapshot(snap) {
     models: dashboardState.modelInventory,
     plans: dashboardState.pipelinePlans
   });
-  if (pipelineSignature !== window.lastPipelineSignature) {
+  if (loadedDashboardPanels.has("routing-panel") && pipelineSignature !== window.lastPipelineSignature) {
     renderPipelineDashboard(dashboardState.modelInventory, dashboardState.pipelinePlans);
     window.lastPipelineSignature = pipelineSignature;
   }
-  if (peerSignature !== window.lastPeerSignature) {
+  if (loadedDashboardPanels.has("discovery-panel") && peerSignature !== window.lastPeerSignature) {
     renderDiscovery(snap.discovery || []);
     window.lastPeerSignature = peerSignature;
   }
-  if (taskSignature !== window.lastTaskSignature) {
+  if (loadedDashboardPanels.has("tasks-panel") && taskSignature !== window.lastTaskSignature) {
     renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, taskHistoryPage.loading);
     window.lastTaskSignature = taskSignature;
   }
   if (overviewChanged) refreshOverviewTimes();
+}
+function activateDashboardTab(tabID) {
+  if (tabID === "memory-tab") {
+    loadedDashboardPanels.add(tabID);
+    void refreshMemory();
+    return;
+  }
+  if (tabID !== "cluster-tab") return;
+  const selected = Array.from(clusterWorkspaceTabs).find((tab) => tab.getAttribute("aria-selected") === "true");
+  activateWorkspacePanel(selected?.getAttribute("aria-controls") || "cluster-overview-panel");
+  void refresh();
+}
+function activateWorkspacePanel(panelID) {
+  if (panelID.startsWith("overview-")) loadedDashboardPanels.add("cluster-overview-panel");
+  if (panelID.startsWith("setup-")) loadedDashboardPanels.add("setup-panel");
+  loadedDashboardPanels.add(panelID);
+  applySnapshot({
+    nodes: dashboardState.nodes,
+    tasks: dashboardState.tasks,
+    discovery: dashboardState.discovery,
+    model_inventory: dashboardState.modelInventory,
+    pipeline_plans: dashboardState.pipelinePlans,
+    cluster_health: dashboardState.capacity,
+    build_version: dashboardState.buildVersion
+  });
+  if (panelID === "setup-readiness-panel") void checkSetupReadiness();
+  if (panelID === "setup-catalog-panel") void loadModelCatalog();
+  if (panelID === "tasks-panel") void refreshTaskHistory(true);
+  if (panelID === "discovery-panel") void refreshDiscovery();
 }
 function refreshOverviewTimes() {
   overviewNodes?.querySelectorAll("[data-last-seen]").forEach((label) => {
@@ -3144,8 +3703,4 @@ setInterval(() => {
     void refresh();
   }
 }, 15e3);
-loadClusterModels();
-refresh();
-checkSetupReadiness();
-loadModelCatalog();
 connectEvents();

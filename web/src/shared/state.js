@@ -120,6 +120,8 @@ const dashboardState = {
   capacity: null,
   modelInventory: [],
   pipelinePlans: [],
+  discovery: [],
+  buildVersion: "",
   fullTaskHistoryLoaded: false,
 };
 const taskHistoryPage = {

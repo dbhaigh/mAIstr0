@@ -8,8 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -52,7 +53,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	requestID, err := newRouterRequestID()
 	if err != nil {
-		log.Printf("orchestrator: generate router request ID failed: %v", err)
+		logging.Errorf("orchestrator", "orchestrator: generate router request ID failed: %v", err)
 		writeRouterError(w, http.StatusInternalServerError, "could not initialize request")
 		return
 	}
@@ -432,8 +433,13 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			} else if ctx.Err() != nil {
 				event.FailureClass = "timeout"
 			}
-			log.Printf("orchestrator: router stream ended after response commit request_id=%s node=%s failure_class=%s",
-				requestID, assignment.NodeID, event.FailureClass)
+			slog.Default().Warn("router stream ended after response commit",
+				"component", "orchestrator",
+				"request_id", requestID,
+				"node_id", assignment.NodeID,
+				"model", assignment.Model,
+				"failure_class", event.FailureClass,
+			)
 		}
 		s.recordRouterEvent(event)
 		return
@@ -526,9 +532,18 @@ func (s *Server) recordRouterEvent(event routerRequestEvent) {
 		if failureClass == "" {
 			failureClass = "none"
 		}
-		log.Printf("orchestrator: router dispatch request_id=%s attempt_id=%s node_id=%s model=%s engine=%s duration_ms=%d status=%d failure_class=%s success=%t",
-			event.RequestID, event.AttemptID, event.NodeID, event.Model, event.Engine,
-			event.DurationMs, event.Status, failureClass, event.Phase == "attempt_succeeded")
+		slog.Default().Info("router dispatch",
+			"component", "orchestrator",
+			"request_id", event.RequestID,
+			"attempt_id", event.AttemptID,
+			"node_id", event.NodeID,
+			"model", event.Model,
+			"engine", event.Engine,
+			"duration_ms", event.DurationMs,
+			"http_status", event.Status,
+			"failure_class", failureClass,
+			"success", event.Phase == "attempt_succeeded",
+		)
 	}
 }
 

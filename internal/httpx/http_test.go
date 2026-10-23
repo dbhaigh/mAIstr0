@@ -115,6 +115,58 @@ func TestMiddlewareChainAddsRequestIDLimitsBodyAndLogsNoRequestContent(t *testin
 			t.Fatalf("request log omitted %q: %s", field, logs.String())
 		}
 	}
+	if !strings.Contains(logs.String(), "component=http") {
+		t.Fatalf("request log omitted component field: %s", logs.String())
+	}
+}
+
+func TestRequestIDUsesValidClientAndLegacyHeaders(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		header string
+		value  string
+	}{
+		{name: "standard", header: RequestIDHeader, value: "client.trace-123"},
+		{name: "legacy", header: legacyRequestIDHeader, value: "legacy:trace-123"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var contextID, requestHeaderID string
+			handler := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				contextID = RequestIDFromContext(r.Context())
+				requestHeaderID = r.Header.Get(RequestIDHeader)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.Header.Set(test.header, test.value)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if contextID != test.value || requestHeaderID != test.value ||
+				response.Header().Get(RequestIDHeader) != test.value {
+				t.Fatalf("request IDs: context=%q request=%q response=%q",
+					contextID, requestHeaderID, response.Header().Get(RequestIDHeader))
+			}
+		})
+	}
+}
+
+func TestRequestIDReplacesInvalidClientHeader(t *testing.T) {
+	var contextID string
+	handler := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contextID = RequestIDFromContext(r.Context())
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set(RequestIDHeader, "unsafe\r\nInjected: value")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if len(contextID) != 32 || strings.ContainsAny(contextID, "\r\n") ||
+		response.Header().Get(RequestIDHeader) != contextID {
+		t.Fatalf("invalid request ID was not replaced safely: context=%q response=%q",
+			contextID, response.Header().Get(RequestIDHeader))
+	}
 }
 
 func TestLimitBodyBytesRejectsInvalidLimit(t *testing.T) {
