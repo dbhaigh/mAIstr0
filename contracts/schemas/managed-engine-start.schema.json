@@ -11,6 +11,18 @@
         "node_rank": {"type": "integer", "minimum": 0, "maximum": 1023},
         "master_addr": {"type": "string"},
         "rpc": {"type": "string"},
+        "rpc_relays": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["peer_id", "address"],
+            "properties": {
+              "peer_id": {"type": "string", "minLength": 1},
+              "address": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
         "tensor_split": {"type": "string"},
         "tensor_parallel_size": {"type": "integer", "minimum": 0},
         "pipeline_parallel_size": {"type": "integer", "minimum": 0}
@@ -23,7 +35,8 @@
             "master_addr": {"minLength": 1}
           }
         },
-        {"required": ["rpc", "tensor_split"]}
+        {"required": ["rpc", "tensor_split"]},
+        {"required": ["rpc_relays", "tensor_split"]}
       ],
       "additionalProperties": false
     }

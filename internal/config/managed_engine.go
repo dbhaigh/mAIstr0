@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/maistr0/maistr0/internal/engine"
 )
 
 type ManagedEngineKind string
@@ -25,6 +27,7 @@ type ManagedEngineConfig struct {
 	BinaryPath string               `json:"binary_path"`
 	ModelPath  string               `json:"model_path,omitempty"`
 	ModelID    string               `json:"model_id,omitempty"`
+	Template   string               `json:"template,omitempty"`
 	Options    ManagedEngineOptions `json:"options,omitempty"`
 }
 
@@ -50,6 +53,7 @@ type GGMLRPCServerOptions struct {
 
 type VLLMOptions struct {
 	Host               string `json:"host,omitempty"`
+	HostIP             string `json:"host_ip,omitempty"`
 	Port               int    `json:"port,omitempty"`
 	TensorParallelSize int    `json:"tensor_parallel_size,omitempty"`
 }
@@ -88,6 +92,17 @@ func ValidateManagedEngines(engines []ManagedEngineConfig, binaryAllowlist, mode
 		case ManagedEngineLlamaServer, ManagedEngineGGMLRPCServer, ManagedEngineVLLM:
 		default:
 			violations = append(violations, fmt.Errorf("%s.kind must be llama-server, ggml-rpc-server, or vllm", field))
+		}
+		if configured.Template != "" {
+			template, ok := engine.ManagedEngineTemplateFor(configured.Template)
+			if !ok || template.ManagedEngineKind == "" {
+				violations = append(violations, fmt.Errorf("%s.template %q is not a managed process template", field, configured.Template))
+			} else if template.ManagedEngineKind != string(configured.Kind) {
+				violations = append(violations, fmt.Errorf("%s.template %q requires kind %s", field, configured.Template, template.ManagedEngineKind))
+			} else if template.Capabilities.RequiresContextCap &&
+				(configured.Options.LlamaServer == nil || configured.Options.LlamaServer.ContextSize <= 0) {
+				violations = append(violations, fmt.Errorf("%s.template %q requires options.llama_server.context_size to be set", field, configured.Template))
+			}
 		}
 		if err := validateAllowedManagedPath(configured.BinaryPath, binaryRoots, true); err != nil {
 			violations = append(violations, fmt.Errorf("%s.binary_path: %w", field, err))
@@ -233,8 +248,8 @@ func validateManagedEngineOptions(configured ManagedEngineConfig, field string) 
 		if bindAddress == "" {
 			bindAddress = "127.0.0.1"
 		}
-		if !managedAddressIsLoopback(bindAddress) && !o.AllowRemoteBind {
-			return fmt.Errorf("%s.options.ggml_rpc_server.allow_remote_bind must be true for non-loopback bind_address", field)
+		if !managedAddressIsLoopback(bindAddress) {
+			return fmt.Errorf("%s.options.ggml_rpc_server.bind_address must be loopback; use the authenticated RPC relay for remote access", field)
 		}
 	case ManagedEngineVLLM:
 		if options.VLLM == nil {
@@ -242,6 +257,9 @@ func validateManagedEngineOptions(configured ManagedEngineConfig, field string) 
 		}
 		if err := validateHostPort(options.VLLM.Host, options.VLLM.Port, "vllm"); err != nil {
 			return fmt.Errorf("%s.options: %w", field, err)
+		}
+		if options.VLLM.HostIP != "" && net.ParseIP(strings.Trim(options.VLLM.HostIP, "[]")) == nil {
+			return fmt.Errorf("%s.options.vllm.host_ip must be an IP address", field)
 		}
 		if options.VLLM.TensorParallelSize < 0 {
 			return fmt.Errorf("%s.options.vllm.tensor_parallel_size must not be negative", field)

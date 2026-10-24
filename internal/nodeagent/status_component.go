@@ -38,25 +38,26 @@ type statusComponent struct {
 }
 
 type statusResponse struct {
-	ID                      string                       `json:"id"`
-	Version                 string                       `json:"version"`
-	Address                 string                       `json:"address"`
-	Hardware                hardware.Info                `json:"hardware"`
-	TelemetryAt             time.Time                    `json:"telemetry_at"`
-	GPUHistory              []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
-	NPUHistory              []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
-	SystemHistory           []hardware.SystemUsageSample `json:"system_history,omitempty"`
-	Models                  []engine.Model               `json:"models"`
-	Engines                 []engine.Status              `json:"engines,omitempty"`
-	SupportedShardModels    []string                     `json:"supported_shard_models,omitempty"`
-	MaxLayersItCanHost      int                          `json:"max_layers_it_can_host,omitempty"`
-	CurrentStageAssignments int                          `json:"current_stage_assignments,omitempty"`
-	Capabilities            []string                     `json:"capabilities,omitempty"`
-	DefaultModel            string                       `json:"default_model,omitempty"`
-	FastScore               float64                      `json:"fast_score"`
-	ActiveTasks             int                          `json:"active_tasks"`
-	MaxConcurrentTasks      int                          `json:"max_concurrent_tasks"`
-	AvailableCapacity       int                          `json:"available_capacity"`
+	ID                        string                       `json:"id"`
+	Version                   string                       `json:"version"`
+	Address                   string                       `json:"address"`
+	Hardware                  hardware.Info                `json:"hardware"`
+	TelemetryAt               time.Time                    `json:"telemetry_at"`
+	GPUHistory                []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
+	NPUHistory                []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
+	SystemHistory             []hardware.SystemUsageSample `json:"system_history,omitempty"`
+	Models                    []engine.Model               `json:"models"`
+	Engines                   []engine.Status              `json:"engines,omitempty"`
+	SupportedShardModels      []string                     `json:"supported_shard_models,omitempty"`
+	MaxLayersItCanHost        int                          `json:"max_layers_it_can_host,omitempty"`
+	AllowInsecureShardNetwork bool                         `json:"allow_insecure_shard_network,omitempty"`
+	CurrentStageAssignments   int                          `json:"current_stage_assignments,omitempty"`
+	Capabilities              []string                     `json:"capabilities,omitempty"`
+	DefaultModel              string                       `json:"default_model,omitempty"`
+	FastScore                 float64                      `json:"fast_score"`
+	ActiveTasks               int                          `json:"active_tasks"`
+	MaxConcurrentTasks        int                          `json:"max_concurrent_tasks"`
+	AvailableCapacity         int                          `json:"available_capacity"`
 }
 
 func newStatusComponent(
@@ -92,31 +93,39 @@ func (c *statusComponent) snapshot() statusResponse {
 	cfg := c.state.configSnapshot()
 	active := c.executor.activeTaskCount()
 	hw := c.telemetry.hardwareSnapshot()
+	trustedInterfaces := make(map[string]struct{}, len(cfg.TrustedNetworkInterfaces))
+	for _, name := range cfg.TrustedNetworkInterfaces {
+		trustedInterfaces[name] = struct{}{}
+	}
+	for index := range hw.NetworkLinks {
+		_, hw.NetworkLinks[index].Trusted = trustedInterfaces[hw.NetworkLinks[index].Name]
+	}
 	models := c.models.reportedModelList()
 	engines := c.models.reportedEngineList()
 	stageReadiness := c.stages.readinessSnapshot()
 	verifiedModels, verifiedMaxLayers := verifiedStageReadiness(cfg, engines)
 	supportedShardModels := mergeShardModels(verifiedModels, stageReadiness.SupportedModels)
 	return statusResponse{
-		ID:                      cfg.NodeID,
-		Version:                 version.String(),
-		Address:                 cfg.AdvertiseAddr,
-		Hardware:                hw,
-		TelemetryAt:             c.telemetry.telemetryTimestamp(),
-		GPUHistory:              c.telemetry.gpuHistorySnapshot(),
-		NPUHistory:              c.telemetry.npuHistorySnapshot(),
-		SystemHistory:           c.telemetry.systemHistorySnapshot(),
-		Models:                  models,
-		Engines:                 engines,
-		SupportedShardModels:    supportedShardModels,
-		MaxLayersItCanHost:      max(verifiedMaxLayers, stageReadiness.MaxLayersItCanHost),
-		CurrentStageAssignments: stageReadiness.Assignments,
-		Capabilities:            cluster.NodeStatus{Hardware: hw, Models: models}.EffectiveCapabilities(),
-		DefaultModel:            c.models.defaultModelName(),
-		FastScore:               fastScore(hw),
-		ActiveTasks:             active,
-		MaxConcurrentTasks:      cfg.MaxConcurrentTasks,
-		AvailableCapacity:       c.executor.availableCapacity(cfg.MaxConcurrentTasks),
+		ID:                        cfg.NodeID,
+		Version:                   version.String(),
+		Address:                   cfg.AdvertiseAddr,
+		Hardware:                  hw,
+		TelemetryAt:               c.telemetry.telemetryTimestamp(),
+		GPUHistory:                c.telemetry.gpuHistorySnapshot(),
+		NPUHistory:                c.telemetry.npuHistorySnapshot(),
+		SystemHistory:             c.telemetry.systemHistorySnapshot(),
+		Models:                    models,
+		Engines:                   engines,
+		SupportedShardModels:      supportedShardModels,
+		MaxLayersItCanHost:        max(verifiedMaxLayers, stageReadiness.MaxLayersItCanHost),
+		AllowInsecureShardNetwork: cfg.AllowInsecureShardNetwork,
+		CurrentStageAssignments:   stageReadiness.Assignments,
+		Capabilities:              cluster.NodeStatus{Hardware: hw, Models: models}.EffectiveCapabilities(),
+		DefaultModel:              c.models.defaultModelName(),
+		FastScore:                 fastScore(hw),
+		ActiveTasks:               active,
+		MaxConcurrentTasks:        cfg.MaxConcurrentTasks,
+		AvailableCapacity:         c.executor.availableCapacity(cfg.MaxConcurrentTasks),
 	}
 }
 

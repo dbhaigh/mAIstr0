@@ -205,7 +205,7 @@ func TestLlamaCPPListModelsUsesPropsMetadata(t *testing.T) {
 		case "/v1/models":
 			_, _ = fmt.Fprint(w, `{"data":[{"id":"local-gguf"}]}`)
 		case "/props":
-			_, _ = fmt.Fprint(w, `{"default_generation_settings":{"n_ctx":8192},"model_size":4294967296,"n_gpu_layers":1,"total_slots":4,"backends":["cuda"],"quantizations":["q4_k_m"],"supports_sharding":["llamacpp-rpc"],"validated_rpc":true}`)
+			_, _ = fmt.Fprint(w, `{"default_generation_settings":{"n_ctx":8192},"model_size":4294967296,"n_gpu_layers":1,"total_slots":4,"backends":["cuda"],"quantizations":["q4_k_m"],"quantization":"q4_k_m","supports_sharding":["llamacpp-rpc"],"validated_rpc":true}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -223,11 +223,14 @@ func TestLlamaCPPListModelsUsesPropsMetadata(t *testing.T) {
 	if models[0].Device != "gpu" {
 		t.Fatalf("model device = %q, want gpu", models[0].Device)
 	}
+	if models[0].Quantization != "q4_k_m" {
+		t.Fatalf("model quantization = %q, want q4_k_m", models[0].Quantization)
+	}
 	capabilities := backend.(CapabilityProvider).Capabilities()
-	if capabilities.MaxParallelSeqs != 4 || !capabilities.ValidatedRPC ||
+	if capabilities.MaxParallelSeqs != 4 || capabilities.MaxContextLength != 8192 || capabilities.ValidatedRPC ||
 		!containsString(capabilities.Devices, "gpu") ||
 		!containsString(capabilities.SupportsSharding, "llamacpp-rpc") {
-		t.Fatalf("llama.cpp capabilities = %+v, want props-derived limits and RPC support", capabilities)
+		t.Fatalf("llama.cpp capabilities = %+v, want RPC support and operator-gated validation", capabilities)
 	}
 	probed, err := backend.(CapabilityProber).ProbeCapabilities(context.Background())
 	if err != nil || !reflect.DeepEqual(probed, capabilities) {

@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/maistr0/maistr0/internal/engine"
 )
 
 func TestManagedEngineConfigRequiresOperatorAllowLists(t *testing.T) {
@@ -84,7 +86,7 @@ func TestManagedEngineConfigRejectsPathEscapeAndMismatchedOptions(t *testing.T) 
 	}
 }
 
-func TestGGMLRPCRemoteBindRequiresExplicitApproval(t *testing.T) {
+func TestGGMLRPCAlwaysRequiresLoopback(t *testing.T) {
 	binary, binaryDir := createManagedEngineBinary(t)
 	configured := ManagedEngineConfig{
 		ID:         "rpc-worker",
@@ -94,18 +96,57 @@ func TestGGMLRPCRemoteBindRequiresExplicitApproval(t *testing.T) {
 			GGMLRPCServer: &GGMLRPCServerOptions{BindAddress: "0.0.0.0", Port: 50052},
 		},
 	}
-	if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, nil); err == nil ||
-		!strings.Contains(err.Error(), "allow_remote_bind") {
-		t.Fatalf("remote bind error = %v, want explicit allow_remote_bind rejection", err)
-	}
-	configured.Options.GGMLRPCServer.AllowRemoteBind = true
-	if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, nil); err != nil {
-		t.Fatalf("explicit remote bind approval rejected: %v", err)
+	for _, allowRemote := range []bool{false, true} {
+		configured.Options.GGMLRPCServer.AllowRemoteBind = allowRemote
+		if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, nil); err == nil ||
+			!strings.Contains(err.Error(), "must be loopback") {
+			t.Fatalf("remote bind (allow_remote_bind=%t) error = %v, want loopback-only rejection", allowRemote, err)
+		}
 	}
 	configured.Options.GGMLRPCServer.BindAddress = "127.0.0.1"
 	configured.Options.GGMLRPCServer.AllowRemoteBind = false
 	if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, nil); err != nil {
 		t.Fatalf("loopback RPC bind rejected: %v", err)
+	}
+}
+
+func TestManagedEngineTemplatesAreTypedAndKindChecked(t *testing.T) {
+	binary, binaryDir := createManagedEngineBinary(t)
+	modelDir := t.TempDir()
+	modelPath := filepath.Join(modelDir, "model.gguf")
+	if err := os.WriteFile(modelPath, []byte("model"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configured := ManagedEngineConfig{
+		ID: "intel-npu", Kind: ManagedEngineLlamaServer, BinaryPath: binary,
+		ModelPath: modelPath, Template: engine.TemplateLlamaCPPOpenVINONPU,
+		Options: ManagedEngineOptions{LlamaServer: &LlamaServerOptions{ContextSize: 4096}},
+	}
+	if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, []string{modelDir}); err != nil {
+		t.Fatalf("valid OpenVINO template rejected: %v", err)
+	}
+
+	configured.ID = "amd-xdna2"
+	configured.Template = engine.TemplateLlamaCPPXDNA2NPU
+	if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, []string{modelDir}); err != nil {
+		t.Fatalf("valid XDNA template rejected: %v", err)
+	}
+	configured.Options.LlamaServer.ContextSize = 0
+	if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, []string{modelDir}); err == nil ||
+		!strings.Contains(err.Error(), "requires options.llama_server.context_size") {
+		t.Fatalf("XDNA template without context size error = %v, want explicit context requirement", err)
+	}
+	configured.Options.LlamaServer.ContextSize = 4096
+	configured.Kind = ManagedEngineVLLM
+	if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, []string{modelDir}); err == nil ||
+		!strings.Contains(err.Error(), "requires kind llama-server") {
+		t.Fatalf("template kind mismatch error = %v", err)
+	}
+	configured.Kind = ManagedEngineLlamaServer
+	configured.Template = engine.TemplateFastFlowLMXDNA2
+	if err := ValidateManagedEngines([]ManagedEngineConfig{configured}, []string{binaryDir}, []string{modelDir}); err == nil ||
+		!strings.Contains(err.Error(), "not a managed process template") {
+		t.Fatalf("external FastFlowLM template error = %v", err)
 	}
 }
 

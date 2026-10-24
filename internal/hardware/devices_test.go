@@ -205,6 +205,38 @@ func TestDetectLinuxNPUDevicesUsesSysfsAndDeviceNodes(t *testing.T) {
 	}
 }
 
+func TestDetectLinuxNPUDevicesRecognizesDocumentedNPUVendors(t *testing.T) {
+	tests := []struct {
+		name     string
+		pci      string
+		label    string
+		vendor   string
+		backends []string
+	}{
+		{name: "Intel", pci: "0x8086", label: "Intel VPU", vendor: "intel-npu", backends: []string{"openvino", "directml"}},
+		{name: "AMD XDNA", pci: "0x1022", label: "AMD XDNA 2", vendor: "amd-npu", backends: []string{"xdna"}},
+		{name: "Qualcomm Hexagon", pci: "0x17cb", label: "Qualcomm Hexagon", vendor: "qualcomm-npu", backends: []string{"hexagon", "qnn"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			probe := &fakeDeviceProbe{
+				globs: map[string][]string{
+					"/sys/class/accel/accel*": {"/sys/class/accel/accel0"},
+				},
+				files: map[string]string{
+					"/sys/class/accel/accel0/device/vendor": test.pci,
+					"/sys/class/accel/accel0/device/label":  test.label,
+				},
+			}
+			devices := detectLinuxNPUDevices(probe)
+			if len(devices) != 1 || devices[0].Vendor != test.vendor ||
+				!reflect.DeepEqual(devices[0].Backends, test.backends) {
+				t.Fatalf("Linux NPU inventory = %+v, want vendor %q and backends %v", devices, test.vendor, test.backends)
+			}
+		})
+	}
+}
+
 func TestLinuxTopologyDetectsNUMAAndNetworkLinks(t *testing.T) {
 	probe := &fakeDeviceProbe{
 		globs: map[string][]string{

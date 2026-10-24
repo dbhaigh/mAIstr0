@@ -12,6 +12,9 @@ import (
 
 func main() {
 	writePID(os.Getenv("MAISTR0_FAKE_ENGINE_PID_FILE"))
+	if path := os.Getenv("MAISTR0_FAKE_ENGINE_ENV_FILE"); path != "" {
+		_ = os.WriteFile(path, []byte(os.Getenv("VLLM_HOST_IP")), 0o600)
+	}
 	switch os.Getenv("MAISTR0_FAKE_ENGINE_MODE") {
 	case "http":
 		startHTTP()

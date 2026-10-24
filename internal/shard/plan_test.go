@@ -272,12 +272,55 @@ func TestPlanAllowsCPUOffloadOnlyWhenExplicit(t *testing.T) {
 	}
 }
 
+func TestPlanRefusesLlamaCPPRPCWithoutProtectedRelay(t *testing.T) {
+	node := llamaNode("worker", "192.0.2.10:7452",
+		gpu("nvidia", "A10", 0, 16384, 16384),
+	)
+	node.RPCProtected = false
+	_, err := Plan(profile7B(), []CandidateNode{node}, Policy{Mode: ModeLlamaCPPRPC})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || refusal.Code != RefusalUntrustedNetwork {
+		t.Fatalf("Plan() error = %v, want protected-network refusal", err)
+	}
+}
+
+func TestPlanRefusesVLLMWithoutTrustedNetworkLink(t *testing.T) {
+	nodes := vllmNodes(10000)
+	for index := range nodes {
+		for linkIndex := range nodes[index].NetworkLinks {
+			nodes[index].NetworkLinks[linkIndex].Trusted = false
+		}
+	}
+	_, err := Plan(profile7B(), nodes, Policy{Mode: ModeVLLMMP})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || refusal.Code != RefusalUntrustedNetwork {
+		t.Fatalf("Plan() error = %v, want trusted-network refusal", err)
+	}
+}
+
+func TestPlanRequiresExplicitInsecureVLLMOptIn(t *testing.T) {
+	nodes := vllmNodes(10000)
+	for index := range nodes {
+		for linkIndex := range nodes[index].NetworkLinks {
+			nodes[index].NetworkLinks[linkIndex].Trusted = false
+		}
+		nodes[index].AllowInsecureShardNetwork = true
+	}
+	plan, err := Plan(profile7B(), nodes, Policy{Mode: ModeVLLMMP})
+	if err != nil {
+		t.Fatalf("Plan() with explicit insecure opt-in error = %v", err)
+	}
+	if !containsRationale(plan.Rationale, "WARNING:") {
+		t.Fatalf("insecure plan did not surface a warning: %v", plan.Rationale)
+	}
+}
+
 func TestPlanNPURequiresValidatedRPCForLayerShards(t *testing.T) {
 	model := profileWithWeights(32, 16*testGiB)
 	nodes := []CandidateNode{
 		llamaNode("gpu", "gpu:50052", gpu("nvidia", "A10", 0, 16384, 16384)),
 		{
-			ID: "npu", OS: "linux", RPCAddress: "npu:50052",
+			ID: "npu", OS: "linux", RPCAddress: "npu:50052", RPCProtected: true,
 			Devices:      []hardware.Device{{Kind: "npu", Vendor: "intel", Name: "NPU", Index: 0, FreeMemoryMB: 16384}},
 			Capabilities: plannerCapabilities(),
 		},
@@ -315,7 +358,7 @@ func TestPlanNPURequiresValidatedRPCForLayerShards(t *testing.T) {
 func TestPlanAllowsUnvalidatedNPUOnlyAsWholeModel(t *testing.T) {
 	model := profileWithWeights(32, 4*testGiB)
 	node := CandidateNode{
-		ID: "npu", OS: "linux", RPCAddress: "npu:50052",
+		ID: "npu", OS: "linux", RPCAddress: "npu:50052", RPCProtected: true,
 		Devices:      []hardware.Device{{Kind: "npu", Vendor: "intel", Name: "NPU", Index: 0, FreeMemoryMB: 8192}},
 		Capabilities: plannerCapabilities(),
 	}
@@ -470,7 +513,7 @@ func plannerCapabilities() engine.Capabilities {
 
 func llamaNode(id, address string, devices ...hardware.Device) CandidateNode {
 	return CandidateNode{
-		ID: id, OS: "linux", RPCAddress: address, Devices: devices,
+		ID: id, OS: "linux", RPCAddress: address, RPCProtected: true, Devices: devices,
 		Capabilities: plannerCapabilities(),
 	}
 }
@@ -489,7 +532,7 @@ func vllmNode(id, name string, memory, speed uint64) CandidateNode {
 func vllmNodeWithDevices(id string, devices []hardware.Device, speed uint64) CandidateNode {
 	return CandidateNode{
 		ID: id, OS: "linux", Devices: devices,
-		NetworkLinks: []hardware.NetworkLink{{Name: "eth0", SpeedMbps: speed}},
+		NetworkLinks: []hardware.NetworkLink{{Name: "eth0", SpeedMbps: speed, Trusted: true}},
 		Capabilities: plannerCapabilities(),
 	}
 }

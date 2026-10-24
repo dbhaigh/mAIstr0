@@ -40,11 +40,20 @@ var ErrNoHealthyNodes = errors.New("scheduler: no healthy nodes available")
 // a compatible model. Assign is all-or-nothing so callers cannot silently
 // report a partially executed task as complete.
 type UnassignableSubtasksError struct {
-	SubtaskIDs []string
+	SubtaskIDs      []string
+	ModelRejections []score.ModelEligibilityRejection
 }
 
 func (e *UnassignableSubtasksError) Error() string {
-	return "scheduler: no compatible model for subtasks: " + strings.Join(e.SubtaskIDs, ", ")
+	message := "scheduler: no compatible model for subtasks: " + strings.Join(e.SubtaskIDs, ", ")
+	if len(e.ModelRejections) == 0 {
+		return message
+	}
+	details := make([]string, 0, len(e.ModelRejections))
+	for _, rejection := range e.ModelRejections {
+		details = append(details, rejection.Model+" on node "+rejection.NodeID+": "+strings.Join(rejection.Reasons, ", "))
+	}
+	return message + "; NPU model rejections: " + strings.Join(details, "; ")
 }
 
 // Experience supplies a learned routing adjustment for a node+model+task
@@ -127,6 +136,7 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 
 	assignments := make([]Assignment, 0, len(subtasks))
 	var unassignable []string
+	var modelRejections []score.ModelEligibilityRejection
 	now := time.Now()
 
 	for _, st := range subtasks {
@@ -138,6 +148,10 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, nodeCapabilities, simulatedLoad, exp, cfg, now)
 		if bestNode == nil {
 			unassignable = append(unassignable, st.ID)
+			modelRejections = append(
+				modelRejections,
+				score.ExplainNPUModelRejections(healthy, toScoringSubtask(st, outDegree))...,
+			)
 			continue
 		}
 
@@ -165,7 +179,9 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	}
 
 	if len(unassignable) > 0 {
-		return nil, &UnassignableSubtasksError{SubtaskIDs: unassignable}
+		return nil, &UnassignableSubtasksError{
+			SubtaskIDs: unassignable, ModelRejections: modelRejections,
+		}
 	}
 	return assignments, nil
 }

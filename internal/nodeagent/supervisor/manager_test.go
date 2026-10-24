@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/config"
+	"github.com/maistr0/maistr0/internal/engine"
 )
 
 func TestManagerStartStopAndCloseKillProcessTree(t *testing.T) {
@@ -82,6 +83,7 @@ func TestManagerTCPReadinessAndRPCLoopbackDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	manager.SetRPCRelayController(testRPCRelayController{})
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -191,6 +193,60 @@ func TestVLLMArgsUseTypedShardPlanAndWindowsRejectsNativeLaunch(t *testing.T) {
 	}
 }
 
+func TestLlamaServerNPUTemplatesApplyFixedLaunchSettings(t *testing.T) {
+	openVINO, ok := engine.ManagedEngineTemplateFor(engine.TemplateLlamaCPPOpenVINONPU)
+	if !ok {
+		t.Fatal("OpenVINO template is missing")
+	}
+	environment := applyTemplateEnvironment(
+		[]string{"GGML_OPENVINO_DEVICE=CPU", "KEEP=value"},
+		openVINO.Environment,
+	)
+	if len(environment) != 2 || environment[0] != "GGML_OPENVINO_DEVICE=NPU" || environment[1] != "KEEP=value" {
+		t.Fatalf("OpenVINO template environment = %#v", environment)
+	}
+	openVINOArgs, err := buildArgs(config.ManagedEngineConfig{
+		ID: "openvino", Kind: config.ManagedEngineLlamaServer, ModelID: "model",
+		Template: engine.TemplateLlamaCPPOpenVINONPU,
+		Options:  config.ManagedEngineOptions{LlamaServer: &config.LlamaServerOptions{ContextSize: 8192}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(openVINOArgs, "\x00"); !strings.Contains(joined, "--parallel\x001") ||
+		!strings.Contains(joined, "--ctx-size\x008192") {
+		t.Fatalf("OpenVINO template argv = %#v, want one sequence and explicit context size", openVINOArgs)
+	}
+
+	args, err := buildArgs(config.ManagedEngineConfig{
+		ID: "hexagon", Kind: config.ManagedEngineLlamaServer, ModelID: "model",
+		Template: engine.TemplateLlamaCPPHexagonNPU,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "--device\x00HTP0") {
+		t.Fatalf("Hexagon template argv = %#v, want the documented HTP0 device selection", args)
+	}
+
+	args, err = buildArgs(config.ManagedEngineConfig{
+		ID: "xdna", Kind: config.ManagedEngineLlamaServer, ModelID: "model",
+		Template: engine.TemplateLlamaCPPXDNA2NPU,
+		Options:  config.ManagedEngineOptions{LlamaServer: &config.LlamaServerOptions{ContextSize: 8192}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(args, "\x00")
+	if !strings.Contains(joined, "--device\x00XDNA0") ||
+		!strings.Contains(joined, "--parallel\x001") ||
+		!strings.Contains(joined, "-nkvo") ||
+		!strings.Contains(joined, "--ctx-size\x008192") {
+		t.Fatalf("XDNA template argv = %#v, want explicit device, one sequence, no KV offload, and context size", args)
+	}
+}
+
 func TestVLLMHeadlessWorkersUseProcessReadinessAndHeadRequiresHTTP(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("vLLM sharding is unsupported on native Windows")
@@ -199,7 +255,7 @@ func TestVLLMHeadlessWorkersUseProcessReadinessAndHeadRequiresHTTP(t *testing.T)
 	t.Setenv("MAISTR0_FAKE_ENGINE_MODE", "never-ready")
 	cfg := config.NodeConfig{
 		ManagedEngineBinaryAllowlist: []string{filepath.Dir(binary)},
-		ManagedEngineModelAllowlist:  []string{"repo/model"},
+		TrustedNetworkInterfaces:     []string{"test0"},
 		ManagedEngines: []config.ManagedEngineConfig{
 			{
 				ID: "vllm-worker", Kind: config.ManagedEngineVLLM, BinaryPath: binary, ModelID: "repo/model",
@@ -213,6 +269,8 @@ func TestVLLMHeadlessWorkersUseProcessReadinessAndHeadRequiresHTTP(t *testing.T)
 	}
 	options := testOptions()
 	options.ReadinessTimeout = 80 * time.Millisecond
+	environmentFile := filepath.Join(t.TempDir(), "vllm-host-ip")
+	t.Setenv("MAISTR0_FAKE_ENGINE_ENV_FILE", environmentFile)
 	manager, err := New(cfg, options)
 	if err != nil {
 		t.Fatal(err)
@@ -223,9 +281,23 @@ func TestVLLMHeadlessWorkersUseProcessReadinessAndHeadRequiresHTTP(t *testing.T)
 	if err := manager.Start(context.Background(), "vllm-worker", workerPlan); err != nil {
 		t.Fatalf("headless worker start: %v", err)
 	}
-	if status, err := manager.Status("vllm-worker"); err != nil || status.State != stateReady {
-		t.Fatalf("headless worker status = %+v, error = %v", status, err)
-	}
+	// Process readiness can precede the child's first environment-file write.
+	waitForStatus(t, manager, "vllm-worker", func(status Status) bool {
+		got, err := os.ReadFile(environmentFile)
+		if errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read VLLM_HOST_IP: %v", err)
+		}
+		if len(got) == 0 {
+			return false
+		}
+		if string(got) != "10.20.0.1" {
+			t.Fatalf("VLLM_HOST_IP = %q; want trusted-interface address", got)
+		}
+		return status.State == stateReady
+	})
 	if err := manager.Stop(context.Background(), "vllm-worker"); err != nil {
 		t.Fatalf("stop headless worker: %v", err)
 	}
@@ -237,7 +309,40 @@ func TestVLLMHeadlessWorkersUseProcessReadinessAndHeadRequiresHTTP(t *testing.T)
 	}
 }
 
-func TestRemoteRPCBindWarningIsRecorded(t *testing.T) {
+func TestVLLMStartRefusesUntrustedInterfaceBeforeLaunching(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("vLLM sharding is unsupported on native Windows")
+	}
+	binary := buildFakeEngine(t)
+	cfg := config.NodeConfig{
+		ManagedEngineBinaryAllowlist: []string{filepath.Dir(binary)},
+		ManagedEngines: []config.ManagedEngineConfig{{
+			ID: "vllm-worker", Kind: config.ManagedEngineVLLM, BinaryPath: binary, ModelID: "repo/model",
+			Options: config.ManagedEngineOptions{VLLM: &config.VLLMOptions{Port: freePort(t)}},
+		}},
+	}
+	pidFile := filepath.Join(t.TempDir(), "unexpected.pid")
+	t.Setenv("MAISTR0_FAKE_ENGINE_PID_FILE", pidFile)
+	options := testOptions()
+	options.NetworkAddresses = staticNetworkAddressSource{{Interface: "eth0", IP: net.ParseIP("10.20.0.1")}}
+	manager, err := New(cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	err = manager.Start(context.Background(), "vllm-worker", &ShardPlan{
+		NNodes: 2, NodeRank: 1, MasterAddr: "10.20.0.2",
+	})
+	if !errors.Is(err, ErrUntrustedShardNetwork) {
+		t.Fatalf("Start() error = %v, want untrusted-network refusal", err)
+	}
+	if _, err := os.Stat(pidFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fake vLLM process was launched before preflight: stat error = %v", err)
+	}
+}
+
+func TestRemoteRPCBindIsRejectedEvenWithCompatibilityFlag(t *testing.T) {
 	binary := buildFakeEngine(t)
 	cfg := config.NodeConfig{
 		ManagedEngineBinaryAllowlist: []string{filepath.Dir(binary)},
@@ -248,19 +353,62 @@ func TestRemoteRPCBindWarningIsRecorded(t *testing.T) {
 			}},
 		}},
 	}
-	manager, err := New(cfg, Options{})
+	if _, err := New(cfg, Options{}); err == nil || !strings.Contains(err.Error(), "must be loopback") {
+		t.Fatalf("remote RPC config error = %v, want loopback-only rejection", err)
+	}
+}
+
+func TestLlamaServerRPCRelayPlanBecomesLoopbackArgv(t *testing.T) {
+	binary := buildFakeEngine(t)
+	cfg := testConfig(binary, config.ManagedEngineLlamaServer, freePort(t))
+	manager, err := New(cfg, testOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	status, err := manager.Status("rpc-remote")
+	manager.SetRPCRelayController(testRPCRelayController{})
+	engine, err := manager.engine("test-engine")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.Warnings) != 1 || !strings.Contains(status.Warnings[0], "non-loopback") {
-		t.Fatalf("remote RPC warning = %v", status.Warnings)
+	plan := &ShardPlan{
+		TensorSplit: "2",
+		RPCRelays: []RPCRelayTarget{
+			{PeerID: "worker-a", Address: "10.0.0.2:7452"},
+		},
+	}
+	launchPlan, err := manager.prepareLaunchPlan(context.Background(), engine, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := buildArgs(engine.config, launchPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "--rpc\x00127.0.0.1:50000") {
+		t.Fatalf("llama-server RPC argv = %#v, want loopback relay endpoint", args)
+	}
+	if strings.Contains(joined, "10.0.0.2") {
+		t.Fatalf("llama-server argv exposed worker's LAN address: %#v", args)
 	}
 }
+
+type testRPCRelayController struct{}
+
+func (testRPCRelayController) StartWorker(context.Context, string, string) (string, error) {
+	return "192.0.2.10:7452", nil
+}
+
+func (testRPCRelayController) StartHead(_ context.Context, _ string, targets []RPCRelayTarget) ([]string, error) {
+	addresses := make([]string, len(targets))
+	for index := range targets {
+		addresses[index] = net.JoinHostPort("127.0.0.1", strconv.Itoa(50000+index))
+	}
+	return addresses, nil
+}
+
+func (testRPCRelayController) Stop(context.Context, string) error { return nil }
 
 func TestSanitizedProcessOutputRedactsCredentialForms(t *testing.T) {
 	line := []byte(`api_key="secret-one" AWS_SECRET_ACCESS_KEY=secret-five Authorization: Bearer secret-two URL=https://user:secret-three@example.test/?token=secret-four`)
@@ -278,6 +426,7 @@ func testOptions() Options {
 		ProbeInterval:    10 * time.Millisecond,
 		StopTimeout:      2 * time.Second,
 		Restart:          RestartPolicy{MaxAttempts: 3, InitialBackoff: 10 * time.Millisecond, MaxBackoff: 40 * time.Millisecond},
+		NetworkAddresses: staticNetworkAddressSource{{Interface: "test0", IP: net.ParseIP("10.20.0.1")}},
 	}
 }
 

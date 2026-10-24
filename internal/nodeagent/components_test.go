@@ -368,6 +368,24 @@ func TestPeriodicEngineScanRetainsUnavailableEngineDuringGracePeriod(t *testing.
 	}
 }
 
+func TestConfiguredEngineProfileReplacesDetectedEngineAtSameEndpoint(t *testing.T) {
+	endpoint := "http://127.0.0.1:8080"
+	configured := engine.NewConfigured(engine.TemplateLlamaCPPXDNA2NPU, endpoint)
+	detected := engine.NewLlamaCPP(endpoint)
+	component := newEngineComponent(
+		[]engine.Engine{configured},
+		func() []engine.Engine { return []engine.Engine{detected} },
+		&telemetryComponent{},
+		newAgentState(config.NodeConfig{}),
+	)
+	component.rescanDetectedEngines()
+
+	engines := component.engineSnapshot()
+	if len(engines) != 1 || engines[0].Name() != engine.TemplateLlamaCPPXDNA2NPU {
+		t.Fatalf("engine snapshot = %#v, want the configured XDNA profile only", engines)
+	}
+}
+
 type componentTestEngine struct {
 	models []engine.Model
 }

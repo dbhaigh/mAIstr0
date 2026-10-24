@@ -23,6 +23,8 @@
           "engine_kind": {"type": "string", "enum": ["llama-server", "ggml-rpc-server", "vllm"]},
           "rank": {"type": "integer", "minimum": 0},
           "master_addr": {"type": "string"},
+          "rpc_relay_endpoint": {"type": "string"},
+          "rpc_backend_address": {"type": "string"},
           "started": {"type": "boolean"}
         },
         "additionalProperties": false

@@ -7,15 +7,19 @@ import (
 
 // Capabilities describes verified engine support and runtime limits.
 type Capabilities struct {
-	Devices            []string `json:"devices,omitempty"`
-	Backends           []string `json:"backends,omitempty"`
-	Quantizations      []string `json:"quantizations,omitempty"`
-	MaxParallelSeqs    int      `json:"max_parallel_seqs,omitempty"`
-	RequiresContextCap bool     `json:"requires_context_cap,omitempty"`
-	SupportsSharding   []string `json:"supports_sharding,omitempty"`
-	HomogeneousOnly    bool     `json:"homogeneous_only,omitempty"`
-	OS                 []string `json:"os,omitempty"`
-	ValidatedRPC       bool     `json:"validated_rpc,omitempty"`
+	Devices             []string `json:"devices,omitempty"`
+	Backends            []string `json:"backends,omitempty"`
+	NPUVendors          []string `json:"npu_vendors,omitempty"`
+	Quantizations       []string `json:"quantizations,omitempty"`
+	PrimaryQuantization string   `json:"primary_quantization,omitempty"`
+	Modalities          []string `json:"modalities,omitempty"`
+	MaxParallelSeqs     int      `json:"max_parallel_seqs,omitempty"`
+	MaxContextLength    int      `json:"max_context_length,omitempty"`
+	RequiresContextCap  bool     `json:"requires_context_cap,omitempty"`
+	SupportsSharding    []string `json:"supports_sharding,omitempty"`
+	HomogeneousOnly     bool     `json:"homogeneous_only,omitempty"`
+	OS                  []string `json:"os,omitempty"`
+	ValidatedRPC        bool     `json:"validated_rpc,omitempty"`
 }
 
 // CapabilityProvider exposes the engine's conservative baseline capabilities.
@@ -41,7 +45,9 @@ func CapabilitiesFor(backend Engine) Capabilities {
 func CloneCapabilities(capabilities Capabilities) Capabilities {
 	capabilities.Devices = append([]string(nil), capabilities.Devices...)
 	capabilities.Backends = append([]string(nil), capabilities.Backends...)
+	capabilities.NPUVendors = append([]string(nil), capabilities.NPUVendors...)
 	capabilities.Quantizations = append([]string(nil), capabilities.Quantizations...)
+	capabilities.Modalities = append([]string(nil), capabilities.Modalities...)
 	capabilities.SupportsSharding = append([]string(nil), capabilities.SupportsSharding...)
 	capabilities.OS = append([]string(nil), capabilities.OS...)
 	return capabilities
@@ -50,18 +56,28 @@ func CloneCapabilities(capabilities Capabilities) Capabilities {
 // MergeCapabilities combines baseline capabilities with runtime-confirmed data.
 func MergeCapabilities(base, observed Capabilities) Capabilities {
 	merged := Capabilities{
-		Devices:            uniqueDeviceKinds(base.Devices, observed.Devices),
-		Backends:           uniqueCapabilityValues(base.Backends, observed.Backends),
-		Quantizations:      uniqueCapabilityValues(base.Quantizations, observed.Quantizations),
-		MaxParallelSeqs:    base.MaxParallelSeqs,
-		RequiresContextCap: base.RequiresContextCap || observed.RequiresContextCap,
-		SupportsSharding:   uniqueCapabilityValues(base.SupportsSharding, observed.SupportsSharding),
-		HomogeneousOnly:    base.HomogeneousOnly || observed.HomogeneousOnly,
-		OS:                 uniqueCapabilityValues(base.OS, observed.OS),
-		ValidatedRPC:       base.ValidatedRPC || observed.ValidatedRPC,
+		Devices:             uniqueDeviceKinds(base.Devices, observed.Devices),
+		Backends:            uniqueCapabilityValues(base.Backends, observed.Backends),
+		NPUVendors:          uniqueCapabilityValues(base.NPUVendors, observed.NPUVendors),
+		Quantizations:       uniqueCapabilityValues(base.Quantizations, observed.Quantizations),
+		PrimaryQuantization: base.PrimaryQuantization,
+		Modalities:          uniqueCapabilityValues(base.Modalities, observed.Modalities),
+		MaxParallelSeqs:     base.MaxParallelSeqs,
+		MaxContextLength:    base.MaxContextLength,
+		RequiresContextCap:  base.RequiresContextCap || observed.RequiresContextCap,
+		SupportsSharding:    uniqueCapabilityValues(base.SupportsSharding, observed.SupportsSharding),
+		HomogeneousOnly:     base.HomogeneousOnly || observed.HomogeneousOnly,
+		OS:                  uniqueCapabilityValues(base.OS, observed.OS),
+		ValidatedRPC:        base.ValidatedRPC || observed.ValidatedRPC,
 	}
 	if observed.MaxParallelSeqs > 0 {
 		merged.MaxParallelSeqs = observed.MaxParallelSeqs
+	}
+	if observed.MaxContextLength > 0 {
+		merged.MaxContextLength = observed.MaxContextLength
+	}
+	if merged.PrimaryQuantization == "" {
+		merged.PrimaryQuantization = strings.TrimSpace(observed.PrimaryQuantization)
 	}
 	return merged
 }
@@ -110,6 +126,29 @@ func BackendsOverlap(engineBackends, deviceBackends []string) bool {
 		}
 	}
 	return false
+}
+
+// SupportsNPUVendor reports whether an engine's vendor restriction matches a
+// node NPU. Empty restrictions accept any vendor; an unknown node vendor does
+// not match a vendor-specific engine.
+func SupportsNPUVendor(engineVendors []string, nodeVendor string) bool {
+	if len(engineVendors) == 0 {
+		return true
+	}
+	nodeVendor = normalizeCapabilityVendor(nodeVendor)
+	if nodeVendor == "" {
+		return false
+	}
+	for _, vendor := range engineVendors {
+		if normalizeCapabilityVendor(vendor) == nodeVendor {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCapabilityVendor(vendor string) string {
+	return strings.ToLower(strings.TrimSpace(vendor))
 }
 
 func uniqueCapabilityValues(values ...[]string) []string {

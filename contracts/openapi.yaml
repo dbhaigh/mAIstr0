@@ -386,6 +386,7 @@ paths:
               schema: {$ref: "#/components/schemas/ShardGroup"}
         "400": {description: Invalid model profile, mode, or placement}
         "409": {description: A group for the model already exists or an operation is active}
+        "502": {description: A managed member could not be started or persisted}
         "503": {description: Required members or shard-group persistence are unavailable}
   /api/shards/{id}:
     parameters:
@@ -399,12 +400,15 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/ShardGroup"}
         "404": {description: Shard group does not exist}
+        "503": {description: Shard-group persistence is unavailable}
     delete:
       summary: Stop and remove a shard group
       responses:
         "204": {description: Shard group stopped and removed}
         "404": {description: Shard group does not exist}
         "409": {description: A shard-group operation is already active}
+        "502": {description: Member teardown or persisted group deletion failed}
+        "503": {description: Shard-group persistence is unavailable}
   /api/engines/managed:
     get:
       summary: List managed engine process status
@@ -425,7 +429,7 @@ paths:
       - $ref: "#/components/parameters/ID"
     post:
       summary: Start a configured managed engine
-      description: Launches the configured argv-only command and waits for readiness. vLLM requires shard_plan and is unsupported on native Windows.
+      description: Launches the configured argv-only command and waits for readiness. ggml-rpc-server remains on loopback and is reached through pinned mTLS TCP relays. vLLM requires a private VLLM_HOST_IP on an operator-trusted interface, or the explicit allow_insecure_shard_network override, and is unsupported on native Windows.
       security:
         - PairedOrchestrator: []
       requestBody:
@@ -435,10 +439,10 @@ paths:
             schema: {$ref: "#/components/schemas/ManagedEngineStartRequest"}
       responses:
         "200": {description: Engine is ready}
-        "400": {description: Invalid request or shard plan}
+        "400": {description: Invalid request, shard plan, or untrusted vLLM network preflight}
         "403": {description: Request is not from the current paired orchestrator}
         "404": {description: Managed engine is not configured}
-        "502": {description: Engine failed to start}
+        "502": {description: Engine or authenticated RPC relay failed to start}
         "501": {description: Engine is unsupported on this platform}
         "504": {description: Engine readiness timed out}
   /api/engines/managed/{id}/stop:
@@ -1003,6 +1007,10 @@ components:
         name: {type: string}
         url: {type: string}
         registry_url: {type: string}
+        validated_rpc:
+          type: boolean
+          default: false
+          description: Operator-only opt-in after testing this engine's RPC sharding; engine self-reports do not enable NPU shard membership.
         api_key:
           type: string
           writeOnly: true

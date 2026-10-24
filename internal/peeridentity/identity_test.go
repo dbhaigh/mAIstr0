@@ -266,7 +266,7 @@ func TestClientTransportPinChangeClosesPooledConnections(t *testing.T) {
 		t.Fatalf("initial pinned request returned %d", response.StatusCode)
 	}
 	clientIdentity.mu.RLock()
-	pooledConnections := len(clientIdentity.clientConns)
+	pooledConnections := len(clientIdentity.activeConns)
 	clientIdentity.mu.RUnlock()
 	if pooledConnections == 0 {
 		t.Fatal("initial request did not create a tracked connection")
@@ -280,7 +280,7 @@ func TestClientTransportPinChangeClosesPooledConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	clientIdentity.mu.RLock()
-	pooledConnections = len(clientIdentity.clientConns)
+	pooledConnections = len(clientIdentity.activeConns)
 	clientIdentity.mu.RUnlock()
 	if pooledConnections != 0 {
 		t.Fatalf("pin change left %d tracked connections open", pooledConnections)

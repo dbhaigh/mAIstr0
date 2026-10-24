@@ -19,20 +19,23 @@ import (
 	"unicode"
 
 	"github.com/maistr0/maistr0/internal/config"
+	enginepkg "github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/logging"
 )
 
 var (
-	ErrNotFound            = errors.New("managed engine not found")
-	ErrAlreadyRunning      = errors.New("managed engine is already running")
-	ErrUnsupportedPlatform = errors.New("managed engine is unsupported on this platform")
-	ErrInvalidShardPlan    = errors.New("invalid managed engine shard plan")
-	ErrReadinessTimeout    = errors.New("managed engine readiness timed out")
-	ErrProcessExited       = errors.New("managed engine exited before becoming ready")
-	ErrStart               = errors.New("managed engine could not be started")
-	ErrStop                = errors.New("managed engine could not be stopped")
-	ErrRestartLimit        = errors.New("managed engine restart limit exceeded")
-	ErrClosed              = errors.New("managed engine supervisor is closed")
+	ErrNotFound              = errors.New("managed engine not found")
+	ErrAlreadyRunning        = errors.New("managed engine is already running")
+	ErrUnsupportedPlatform   = errors.New("managed engine is unsupported on this platform")
+	ErrInvalidShardPlan      = errors.New("invalid managed engine shard plan")
+	ErrUntrustedShardNetwork = errors.New("managed engine shard network is not protected or trusted")
+	ErrRelayUnavailable      = errors.New("managed engine RPC relay is unavailable")
+	ErrReadinessTimeout      = errors.New("managed engine readiness timed out")
+	ErrProcessExited         = errors.New("managed engine exited before becoming ready")
+	ErrStart                 = errors.New("managed engine could not be started")
+	ErrStop                  = errors.New("managed engine could not be stopped")
+	ErrRestartLimit          = errors.New("managed engine restart limit exceeded")
+	ErrClosed                = errors.New("managed engine supervisor is closed")
 )
 
 const (
@@ -54,25 +57,32 @@ var (
 )
 
 type ShardPlan struct {
-	NNodes               int    `json:"nnodes"`
-	NodeRank             int    `json:"node_rank"`
-	MasterAddr           string `json:"master_addr"`
-	RPC                  string `json:"rpc,omitempty"`
-	TensorSplit          string `json:"tensor_split,omitempty"`
-	TensorParallelSize   int    `json:"tensor_parallel_size,omitempty"`
-	PipelineParallelSize int    `json:"pipeline_parallel_size,omitempty"`
+	NNodes               int              `json:"nnodes"`
+	NodeRank             int              `json:"node_rank"`
+	MasterAddr           string           `json:"master_addr"`
+	RPC                  string           `json:"rpc,omitempty"`
+	RPCRelays            []RPCRelayTarget `json:"rpc_relays,omitempty"`
+	TensorSplit          string           `json:"tensor_split,omitempty"`
+	TensorParallelSize   int              `json:"tensor_parallel_size,omitempty"`
+	PipelineParallelSize int              `json:"pipeline_parallel_size,omitempty"`
+}
+
+type RPCRelayTarget struct {
+	PeerID  string `json:"peer_id"`
+	Address string `json:"address"`
 }
 
 type Status struct {
-	ID           string     `json:"id"`
-	Kind         string     `json:"kind"`
-	State        string     `json:"state"`
-	PID          int        `json:"pid,omitempty"`
-	Endpoint     string     `json:"endpoint,omitempty"`
-	RestartCount int        `json:"restart_count"`
-	LastError    string     `json:"last_error,omitempty"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	Warnings     []string   `json:"warnings,omitempty"`
+	ID            string     `json:"id"`
+	Kind          string     `json:"kind"`
+	State         string     `json:"state"`
+	PID           int        `json:"pid,omitempty"`
+	Endpoint      string     `json:"endpoint,omitempty"`
+	RelayEndpoint string     `json:"relay_endpoint,omitempty"`
+	RestartCount  int        `json:"restart_count"`
+	LastError     string     `json:"last_error,omitempty"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	Warnings      []string   `json:"warnings,omitempty"`
 }
 
 type RestartPolicy struct {
@@ -86,19 +96,30 @@ type Options struct {
 	ProbeInterval    time.Duration
 	StopTimeout      time.Duration
 	Restart          RestartPolicy
+	NetworkAddresses NetworkAddressSource
+}
+
+type RPCRelayController interface {
+	StartWorker(context.Context, string, string) (string, error)
+	StartHead(context.Context, string, []RPCRelayTarget) ([]string, error)
+	Stop(context.Context, string) error
 }
 
 type Manager struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	options   Options
-	engines   map[string]*managedEngine
-	mu        sync.Mutex
-	closed    bool
-	wg        sync.WaitGroup
-	closeOnce sync.Once
-	closeDone chan struct{}
-	closeErr  error
+	ctx                       context.Context
+	cancel                    context.CancelFunc
+	options                   Options
+	engines                   map[string]*managedEngine
+	mu                        sync.Mutex
+	closed                    bool
+	wg                        sync.WaitGroup
+	closeOnce                 sync.Once
+	closeDone                 chan struct{}
+	closeErr                  error
+	relayController           RPCRelayController
+	trustedNetworkInterfaces  []string
+	allowInsecureShardNetwork bool
+	networkAddresses          NetworkAddressSource
 }
 
 type managedEngine struct {
@@ -110,6 +131,7 @@ type managedEngine struct {
 	command           *exec.Cmd
 	tree              processTree
 	done              chan struct{}
+	launchPlan        *ShardPlan
 	runGeneration     uint64
 	controlGeneration uint64
 	ready             bool
@@ -129,15 +151,21 @@ func New(cfg config.NodeConfig, options Options) (*Manager, error) {
 	options = normalizeOptions(options)
 	ctx, cancel := context.WithCancel(context.Background())
 	manager := &Manager{
-		ctx:       ctx,
-		cancel:    cancel,
-		options:   options,
-		engines:   make(map[string]*managedEngine, len(cfg.ManagedEngines)),
-		closeDone: make(chan struct{}),
+		ctx:                       ctx,
+		cancel:                    cancel,
+		options:                   options,
+		engines:                   make(map[string]*managedEngine, len(cfg.ManagedEngines)),
+		closeDone:                 make(chan struct{}),
+		trustedNetworkInterfaces:  append([]string(nil), cfg.TrustedNetworkInterfaces...),
+		allowInsecureShardNetwork: cfg.AllowInsecureShardNetwork,
+		networkAddresses:          options.NetworkAddresses,
 	}
 	for _, configured := range cfg.ManagedEngines {
 		entry := cloneManagedEngineConfig(configured)
 		status := Status{ID: entry.ID, Kind: string(entry.Kind), State: stateStopped, Endpoint: managedEndpoint(entry)}
+		if entry.Kind == config.ManagedEngineGGMLRPCServer {
+			status.RelayEndpoint = configuredRPCRelayEndpoint(cfg)
+		}
 		if warning := nonLoopbackRPCWarning(entry); warning != "" {
 			status.Warnings = []string{warning}
 			logging.FileWarnf("managed_engine", "%s", warning)
@@ -150,6 +178,72 @@ func New(cfg config.NodeConfig, options Options) (*Manager, error) {
 		}
 	}
 	return manager, nil
+}
+
+func (m *Manager) SetRPCRelayController(controller RPCRelayController) {
+	m.mu.Lock()
+	m.relayController = controller
+	m.mu.Unlock()
+}
+
+func (m *Manager) rpcRelayController() RPCRelayController {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.relayController
+}
+
+func (m *Manager) prepareLaunchPlan(ctx context.Context, engine *managedEngine, plan *ShardPlan) (*ShardPlan, error) {
+	launchPlan := cloneShardPlan(plan)
+	if engine.config.Kind != config.ManagedEngineLlamaServer || plan == nil || len(plan.RPCRelays) == 0 {
+		return launchPlan, nil
+	}
+	controller := m.rpcRelayController()
+	if controller == nil {
+		return nil, ErrRelayUnavailable
+	}
+	addresses, err := controller.StartHead(ctx, engine.config.ID, plan.RPCRelays)
+	if err != nil {
+		return nil, fmt.Errorf("%w: start local mTLS relay endpoints: %w", ErrRelayUnavailable, err)
+	}
+	if len(addresses) != len(plan.RPCRelays) {
+		_ = controller.Stop(context.Background(), engine.config.ID)
+		return nil, fmt.Errorf("%w: relay endpoint count does not match the shard plan", ErrRelayUnavailable)
+	}
+	for _, address := range addresses {
+		host, port, ok := splitEndpointHostPort(address)
+		if !ok || !isLoopback(host) {
+			_ = controller.Stop(context.Background(), engine.config.ID)
+			return nil, fmt.Errorf("%w: local relay must bind to loopback", ErrRelayUnavailable)
+		}
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 {
+			_ = controller.Stop(context.Background(), engine.config.ID)
+			return nil, fmt.Errorf("%w: local relay returned an invalid port", ErrRelayUnavailable)
+		}
+	}
+	launchPlan.RPC = strings.Join(addresses, ",")
+	launchPlan.RPCRelays = nil
+	return launchPlan, nil
+}
+
+func (m *Manager) stopRelay(ctx context.Context, id string) error {
+	controller := m.rpcRelayController()
+	if controller == nil {
+		return nil
+	}
+	if err := controller.Stop(ctx, id); err != nil {
+		return fmt.Errorf("stop managed engine RPC relay: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) markStartFailed(engine *managedEngine, err error) {
+	engine.mu.Lock()
+	engine.status.State = stateFailed
+	engine.status.LastError = startupErrorMessage(err)
+	engine.status.PID = 0
+	engine.launchPlan = nil
+	engine.mu.Unlock()
 }
 
 func normalizeOptions(options Options) Options {
@@ -173,6 +267,9 @@ func normalizeOptions(options Options) Options {
 	}
 	if options.Restart.MaxBackoff < options.Restart.InitialBackoff {
 		options.Restart.MaxBackoff = options.Restart.InitialBackoff
+	}
+	if options.NetworkAddresses == nil {
+		options.NetworkAddresses = systemNetworkAddressSource{}
 	}
 	return options
 }
@@ -206,6 +303,9 @@ func (m *Manager) Start(ctx context.Context, id string, plan *ShardPlan) error {
 	if err != nil {
 		return err
 	}
+	if engine.config.Kind == config.ManagedEngineGGMLRPCServer && m.rpcRelayController() == nil {
+		return ErrRelayUnavailable
+	}
 	if err := validatePlatformAndPlan(engine.config, plan); err != nil {
 		return err
 	}
@@ -226,19 +326,54 @@ func (m *Manager) Start(ctx context.Context, id string, plan *ShardPlan) error {
 	engine.status.RestartCount = 0
 	engine.mu.Unlock()
 
+	launchPlan, err := m.prepareLaunchPlan(ctx, engine, plan)
+	if err != nil {
+		m.markStartFailed(engine, err)
+		return err
+	}
+	engine.mu.Lock()
+	engine.launchPlan = launchPlan
+	engine.mu.Unlock()
+
 	runGeneration, done, err := m.launch(engine, controlGeneration, stateStarting)
 	if err != nil {
+		_ = m.stopRelay(context.Background(), id)
+		m.markStartFailed(engine, err)
 		return err
 	}
 	startupCtx, cancel := context.WithTimeout(ctx, m.options.ReadinessTimeout)
 	defer cancel()
 	if err := m.waitForReadiness(startupCtx, engine, runGeneration, done, plan); err != nil {
 		if stopErr := m.abortStartup(engine, runGeneration, err); stopErr != nil {
+			_ = m.stopRelay(context.Background(), id)
 			return errors.Join(err, stopErr)
 		}
+		_ = m.stopRelay(context.Background(), id)
 		return err
 	}
+	if engine.config.Kind == config.ManagedEngineGGMLRPCServer {
+		controller := m.rpcRelayController()
+		if controller == nil {
+			err := ErrRelayUnavailable
+			if stopErr := m.abortStartup(engine, runGeneration, err); stopErr != nil {
+				return errors.Join(err, stopErr)
+			}
+			return err
+		}
+		relayEndpoint, relayErr := controller.StartWorker(ctx, id, managedEndpoint(engine.config))
+		if relayErr != nil {
+			_ = m.stopRelay(context.Background(), id)
+			if stopErr := m.abortStartup(engine, runGeneration, relayErr); stopErr != nil {
+				return errors.Join(relayErr, stopErr)
+			}
+			return fmt.Errorf("%w: %w", ErrRelayUnavailable, relayErr)
+		}
+		engine.mu.Lock()
+		engine.status.RelayEndpoint = relayEndpoint
+		engine.mu.Unlock()
+	}
 	if !m.markReady(engine, runGeneration) {
+		_ = m.stopRelay(context.Background(), id)
 		return ErrProcessExited
 	}
 	return nil
@@ -267,6 +402,11 @@ func (m *Manager) Restart(ctx context.Context, id string, plan *ShardPlan) error
 		return err
 	}
 
+	launchPlan, err := m.prepareLaunchPlan(ctx, engine, plan)
+	if err != nil {
+		m.markStartFailed(engine, err)
+		return err
+	}
 	for attempt := 1; attempt <= m.options.Restart.MaxAttempts; attempt++ {
 		if attempt > 1 {
 			if err := waitBackoff(ctx, m.backoff(attempt-1)); err != nil {
@@ -276,6 +416,7 @@ func (m *Manager) Restart(ctx context.Context, id string, plan *ShardPlan) error
 		engine.mu.Lock()
 		engine.status.RestartCount = attempt
 		engine.shardPlan = cloneShardPlan(plan)
+		engine.launchPlan = cloneShardPlan(launchPlan)
 		engine.userStopped = false
 		engine.ready = false
 		engine.mu.Unlock()
@@ -289,6 +430,7 @@ func (m *Manager) Restart(ctx context.Context, id string, plan *ShardPlan) error
 	engine.status.State = stateFailed
 	engine.status.LastError = "restart limit exceeded"
 	engine.mu.Unlock()
+	_ = m.stopRelay(context.Background(), id)
 	return ErrRestartLimit
 }
 
@@ -308,7 +450,7 @@ func (m *Manager) startAttempt(ctx context.Context, engine *managedEngine, state
 	startupCtx, cancel := context.WithTimeout(ctx, m.options.ReadinessTimeout)
 	defer cancel()
 	engine.mu.Lock()
-	plan := cloneShardPlan(engine.shardPlan)
+	plan := cloneShardPlan(engine.launchPlan)
 	engine.mu.Unlock()
 	if err := m.waitForReadiness(startupCtx, engine, runGeneration, done, plan); err != nil {
 		if stopErr := m.abortStartup(engine, runGeneration, err); stopErr != nil {
@@ -344,7 +486,7 @@ func (m *Manager) launch(engine *managedEngine, controlGeneration uint64, state 
 		engine.mu.Unlock()
 		return 0, nil, ErrClosed
 	}
-	plan := cloneShardPlan(engine.shardPlan)
+	plan := cloneShardPlan(engine.launchPlan)
 	engine.mu.Unlock()
 	args, err := buildArgs(engine.config, plan)
 	if err != nil {
@@ -355,6 +497,37 @@ func (m *Manager) launch(engine *managedEngine, controlGeneration uint64, state 
 		return 0, nil, ErrStart
 	}
 	cmd := exec.Command(engine.config.BinaryPath, args...)
+	if engine.config.Template != "" {
+		template, ok := enginepkg.ManagedEngineTemplateFor(engine.config.Template)
+		if !ok {
+			_ = reader.Close()
+			_ = writer.Close()
+			return 0, nil, fmt.Errorf("%w: managed engine template is not available", ErrStart)
+		}
+		cmd.Env = applyTemplateEnvironment(os.Environ(), template.Environment)
+	}
+	if engine.config.Kind == config.ManagedEngineVLLM {
+		environment, insecure, err := vllmChildEnvironment(
+			engine.config,
+			m.trustedNetworkInterfaces,
+			m.allowInsecureShardNetwork,
+			m.networkAddresses,
+			os.Environ(),
+		)
+		if err != nil {
+			return 0, nil, fmt.Errorf("%w: %w", ErrUntrustedShardNetwork, err)
+		}
+		cmd.Env = environment
+		if insecure {
+			warning := "INSECURE SHARD NETWORK: vLLM distributed traffic is unencrypted and is using an untrusted interface because allow_insecure_shard_network is enabled"
+			engine.mu.Lock()
+			if !containsWarning(engine.status.Warnings, warning) {
+				engine.status.Warnings = append(engine.status.Warnings, warning)
+			}
+			engine.mu.Unlock()
+			logging.FileWarnf("managed_engine", "%s", warning)
+		}
+	}
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 
@@ -663,8 +836,9 @@ func (m *Manager) stop(engine *managedEngine, ctx context.Context) error {
 		engine.status.State = stateStopped
 		engine.status.PID = 0
 		engine.status.LastError = ""
+		engine.launchPlan = nil
 		engine.mu.Unlock()
-		return nil
+		return m.stopRelay(ctx, engine.config.ID)
 	}
 	engine.status.State = stateStopping
 	tree, done := engine.tree, engine.done
@@ -685,6 +859,9 @@ func (m *Manager) stop(engine *managedEngine, ctx context.Context) error {
 		engine.status.LastError = ""
 	}
 	engine.mu.Unlock()
+	if err := m.stopRelay(ctx, engine.config.ID); err != nil {
+		return err
+	}
 	logging.FileInfof("managed_engine", "managed engine %s stopped", engine.config.ID)
 	return nil
 }
@@ -853,6 +1030,7 @@ func cloneShardPlan(plan *ShardPlan) *ShardPlan {
 		return nil
 	}
 	copy := *plan
+	copy.RPCRelays = append([]RPCRelayTarget(nil), plan.RPCRelays...)
 	return &copy
 }
 
@@ -916,16 +1094,40 @@ func validatePlatformAndPlan(configured config.ManagedEngineConfig, plan *ShardP
 		return nil
 	}
 	if configured.Kind == config.ManagedEngineLlamaServer && plan != nil {
-		if plan.RPC == "" || plan.TensorSplit == "" || strings.ContainsAny(plan.RPC, " \t\r\n\x00") {
+		if plan.TensorSplit == "" || strings.ContainsAny(plan.RPC, " \t\r\n\x00") ||
+			(plan.RPC == "") == (len(plan.RPCRelays) == 0) {
 			return ErrInvalidShardPlan
 		}
-		for _, address := range strings.Split(plan.RPC, ",") {
-			host, port, err := net.SplitHostPort(address)
-			if err != nil || host == "" {
-				return ErrInvalidShardPlan
+		if plan.RPC != "" {
+			for _, address := range strings.Split(plan.RPC, ",") {
+				host, port, err := net.SplitHostPort(address)
+				if err != nil || host == "" || !isLoopback(host) {
+					return ErrInvalidShardPlan
+				}
+				if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+					return ErrInvalidShardPlan
+				}
 			}
-			if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
-				return ErrInvalidShardPlan
+		} else {
+			seenPeers := make(map[string]struct{}, len(plan.RPCRelays))
+			for _, target := range plan.RPCRelays {
+				if strings.TrimSpace(target.PeerID) == "" {
+					return ErrInvalidShardPlan
+				}
+				if _, exists := seenPeers[target.PeerID]; exists {
+					return ErrInvalidShardPlan
+				}
+				seenPeers[target.PeerID] = struct{}{}
+				host, port, err := net.SplitHostPort(target.Address)
+				if err != nil || host == "" {
+					return ErrInvalidShardPlan
+				}
+				if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+					return ErrInvalidShardPlan
+				}
+				if strings.ContainsAny(target.PeerID+target.Address, "\x00\r\n\t ") {
+					return ErrInvalidShardPlan
+				}
 			}
 		}
 		for _, part := range strings.Split(plan.TensorSplit, ",") {
@@ -1071,6 +1273,26 @@ func loopbackProbeHost(host string) string {
 	}
 }
 
+func applyTemplateEnvironment(base []string, overrides []enginepkg.TemplateEnvironment) []string {
+	environment := append([]string(nil), base...)
+	for _, override := range overrides {
+		prefix := override.Name + "="
+		replaced := false
+		for index, variable := range environment {
+			name, _, found := strings.Cut(variable, "=")
+			if found && strings.EqualFold(name, override.Name) {
+				environment[index] = prefix + override.Value
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			environment = append(environment, prefix+override.Value)
+		}
+	}
+	return environment
+}
+
 func buildArgs(configured config.ManagedEngineConfig, plan *ShardPlan) ([]string, error) {
 	if err := validatePlatformAndPlan(configured, plan); err != nil {
 		return nil, err
@@ -1103,10 +1325,22 @@ func buildArgs(configured config.ManagedEngineConfig, plan *ShardPlan) ([]string
 				args = append(args, "--threads", strconv.Itoa(options.Threads))
 			}
 		}
+		if template, ok := enginepkg.ManagedEngineTemplateFor(configured.Template); ok {
+			if template.LlamaServerDevice != "" {
+				args = append(args, "--device", template.LlamaServerDevice)
+			}
+			if template.LlamaServerParallelSeqs > 0 {
+				args = append(args, "--parallel", strconv.Itoa(template.LlamaServerParallelSeqs))
+			}
+			if template.LlamaServerNoKVOffload {
+				args = append(args, "-nkvo")
+			}
+		}
 		if plan != nil {
 			if plan.RPC != "" {
 				args = append(args, "--rpc", plan.RPC)
 			}
+
 			if plan.TensorSplit != "" {
 				args = append(args, "--tensor-split", plan.TensorSplit)
 			}

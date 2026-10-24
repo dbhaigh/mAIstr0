@@ -54,6 +54,7 @@ type NetworkLink struct {
 	Name      string `json:"name"`
 	SpeedMbps uint64 `json:"speed_mbps,omitempty"`
 	RDMA      bool   `json:"rdma,omitempty"`
+	Trusted   bool   `json:"trusted,omitempty"`
 }
 
 // Info describes the detected capabilities of the host machine.

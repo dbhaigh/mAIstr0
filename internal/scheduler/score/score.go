@@ -99,6 +99,14 @@ type Candidate struct {
 	matchedCapabilities    []string
 }
 
+// ModelEligibilityRejection explains why an NPU-backed model was excluded.
+type ModelEligibilityRejection struct {
+	NodeID  string   `json:"node_id"`
+	Model   string   `json:"model"`
+	Engine  string   `json:"engine,omitempty"`
+	Reasons []string `json:"reasons"`
+}
+
 // Model returns the selected model name.
 func (c Candidate) Model() string { return c.model }
 
@@ -176,7 +184,8 @@ func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 		}
 	}
 	for _, model := range node.Models {
-		if !node.EngineReady(model.Engine) || !modelMatchesSubtask(subtask, model) {
+		if !node.EngineReady(model.Engine) || !modelMatchesSubtask(subtask, model) ||
+			npuModelEligibilityIssues(node, model) != 0 {
 			continue
 		}
 
@@ -249,27 +258,243 @@ func acceleratorCompatibilityBonus(node cluster.NodeStatus, model engine.Model) 
 		if len(capabilities.OS) > 0 && !hasCapability(capabilities.OS, node.Hardware.OS) {
 			continue
 		}
-		if supportsNodeAccelerator(capabilities, node.Hardware) {
+		if strings.EqualFold(model.Device, "npu") {
+			if supportsNodeNPU(capabilities, node.Hardware) {
+				return bonus
+			}
+			continue
+		}
+		if supportsNodeGPU(capabilities, node.Hardware) {
 			return bonus
 		}
 	}
 	return 0
 }
 
-func supportsNodeAccelerator(capabilities engine.Capabilities, hw hardware.Info) bool {
+func supportsNodeGPU(capabilities engine.Capabilities, hw hardware.Info) bool {
 	if len(hw.Devices) == 0 {
-		return hw.HasGPU && engine.SupportsDeviceKind(capabilities.Devices, "gpu") ||
-			hw.HasNPU && engine.SupportsDeviceKind(capabilities.Devices, "npu")
+		return hw.HasGPU && engine.SupportsDeviceKind(capabilities.Devices, "gpu")
 	}
 	for _, device := range hw.Devices {
 		kind := strings.ToLower(strings.TrimSpace(device.Kind))
-		if (kind == "gpu" || kind == "npu") &&
+		if kind == "gpu" &&
 			engine.SupportsDeviceKind(capabilities.Devices, kind) &&
 			engine.BackendsOverlap(capabilities.Backends, device.Backends) {
 			return true
 		}
 	}
 	return false
+}
+
+func supportsNodeNPU(capabilities engine.Capabilities, hw hardware.Info) bool {
+	if len(hw.Devices) == 0 {
+		return hw.HasNPU && npuDeviceMatchesCapabilities(
+			hardware.Device{Kind: "npu", Vendor: hw.NPUVendor}, hw, capabilities,
+		)
+	}
+	for _, device := range hw.Devices {
+		if !engine.SupportsDeviceKind(capabilities.Devices, "npu") {
+			continue
+		}
+		if !npuDeviceMatchesCapabilities(device, hw, capabilities) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func npuDeviceMatchesCapabilities(device hardware.Device, hw hardware.Info, capabilities engine.Capabilities) bool {
+	if !strings.EqualFold(strings.TrimSpace(device.Kind), "npu") ||
+		!engine.SupportsDeviceKind(capabilities.Devices, "npu") {
+		return false
+	}
+	vendor := device.Vendor
+	if vendor == "" {
+		vendor = hw.NPUVendor
+	}
+	return engine.SupportsNPUVendor(capabilities.NPUVendors, vendor) &&
+		engine.BackendsOverlap(capabilities.Backends, device.Backends)
+}
+
+type npuEligibilityIssue uint16
+
+const (
+	npuIssueNoDevice npuEligibilityIssue = 1 << iota
+	npuIssueWrongVendorOrBackend
+	npuIssueMissingSize
+	npuIssueMemoryUnavailable
+	npuIssueDoesNotFit
+	npuIssueMissingQuantization
+	npuIssueUnsupportedQuantization
+	npuIssueMissingContextCap
+	npuIssueContextCapTooLarge
+)
+
+func npuModelEligibilityIssues(node cluster.NodeStatus, model engine.Model) npuEligibilityIssue {
+	if !strings.EqualFold(strings.TrimSpace(model.Device), "npu") {
+		return 0
+	}
+	hasNPU := node.Hardware.HasNPU
+	for _, device := range node.Hardware.Devices {
+		if strings.EqualFold(strings.TrimSpace(device.Kind), "npu") {
+			hasNPU = true
+			break
+		}
+	}
+	if !hasNPU {
+		return npuIssueNoDevice
+	}
+	capabilities := engine.Capabilities{}
+	for _, status := range node.Engines {
+		if strings.EqualFold(status.Name, model.Engine) {
+			capabilities = status.Capabilities
+			break
+		}
+	}
+	if len(capabilities.Devices) > 0 && !engine.SupportsDeviceKind(capabilities.Devices, "npu") {
+		return npuIssueWrongVendorOrBackend
+	}
+
+	var issues npuEligibilityIssue
+	matchingDevices, hasMemory, fits := false, false, false
+	if len(node.Hardware.Devices) == 0 {
+		if node.Hardware.HasNPU {
+			matchingDevices, hasMemory, fits = npuDeviceModelFit(
+				hardware.Device{Kind: "npu", Vendor: node.Hardware.NPUVendor},
+				node.Hardware, capabilities, model.SizeGB,
+			)
+		}
+	} else {
+		for _, device := range node.Hardware.Devices {
+			matches, hasFreeMemory, modelFits := npuDeviceModelFit(
+				device, node.Hardware, capabilities, model.SizeGB,
+			)
+			matchingDevices = matchingDevices || matches
+			hasMemory = hasMemory || hasFreeMemory
+			fits = fits || modelFits
+		}
+	}
+	if !matchingDevices {
+		issues |= npuIssueWrongVendorOrBackend
+	}
+
+	if model.SizeGB <= 0 {
+		issues |= npuIssueMissingSize
+	} else if matchingDevices {
+		switch {
+		case fits:
+		case !hasMemory:
+			issues |= npuIssueMemoryUnavailable
+		default:
+			issues |= npuIssueDoesNotFit
+		}
+	}
+
+	requiresQuantization := len(capabilities.Quantizations) > 0 || capabilities.PrimaryQuantization != ""
+	if requiresQuantization {
+		quantization := strings.TrimSpace(model.Quantization)
+		if quantization == "" {
+			issues |= npuIssueMissingQuantization
+		} else if !hasCapability(capabilities.Quantizations, quantization) &&
+			!strings.EqualFold(capabilities.PrimaryQuantization, quantization) {
+			issues |= npuIssueUnsupportedQuantization
+		}
+	}
+
+	if capabilities.RequiresContextCap && model.ContextLength <= 0 {
+		issues |= npuIssueMissingContextCap
+	}
+	if model.ContextLength > 0 && capabilities.MaxContextLength > 0 &&
+		model.ContextLength > capabilities.MaxContextLength {
+		issues |= npuIssueContextCapTooLarge
+	}
+	return issues
+}
+
+func npuDeviceModelFit(
+	device hardware.Device,
+	hw hardware.Info,
+	capabilities engine.Capabilities,
+	modelSizeGB float64,
+) (matches, hasMemory, fits bool) {
+	if !npuDeviceMatchesCapabilities(device, hw, capabilities) {
+		return false, false, false
+	}
+	memoryMB := device.FreeMemoryMB
+	if memoryMB == 0 {
+		memoryMB = device.MemoryMB
+	}
+	if memoryMB == 0 {
+		return true, false, false
+	}
+	return true, true, modelSizeGB > 0 && modelSizeGB <= float64(memoryMB)/1024
+}
+
+func explainNPUEligibilityIssues(issues npuEligibilityIssue, capabilities engine.Capabilities) []string {
+	var reasons []string
+	if issues&npuIssueNoDevice != 0 {
+		reasons = append(reasons, "node has no NPU device")
+	}
+	if issues&npuIssueWrongVendorOrBackend != 0 {
+		reasons = append(reasons, "node NPU vendor or backend is not supported by the engine")
+	}
+	if issues&npuIssueMissingSize != 0 {
+		reasons = append(reasons, "model size is unavailable")
+	}
+	if issues&npuIssueMemoryUnavailable != 0 {
+		reasons = append(reasons, "NPU memory capacity is unavailable")
+	}
+	if issues&npuIssueDoesNotFit != 0 {
+		reasons = append(reasons, "model does not fit in reported NPU memory")
+	}
+	if issues&npuIssueMissingQuantization != 0 {
+		reasons = append(reasons, "model quantization is unavailable")
+	}
+	if issues&npuIssueUnsupportedQuantization != 0 {
+		required := capabilities.PrimaryQuantization
+		if required == "" {
+			required = strings.Join(capabilities.Quantizations, ", ")
+		}
+		reasons = append(reasons, "model quantization is not supported by the engine (expected "+required+")")
+	}
+	if issues&npuIssueMissingContextCap != 0 {
+		reasons = append(reasons, "engine requires a reported context cap")
+	}
+	if issues&npuIssueContextCapTooLarge != 0 {
+		reasons = append(reasons, "model context cap exceeds the engine maximum")
+	}
+	return reasons
+}
+
+// ExplainNPUModelRejections reports NPU-specific exclusion reasons for models
+// considered by the scheduler. It is intended for failure explanations, not
+// the allocation-free scoring path.
+func ExplainNPUModelRejections(nodes []cluster.NodeStatus, subtask Subtask) []ModelEligibilityRejection {
+	var rejections []ModelEligibilityRejection
+	for _, node := range nodes {
+		for _, model := range node.Models {
+			if !node.EngineReady(model.Engine) || !modelMatchesSubtask(subtask, model) {
+				continue
+			}
+			issues := npuModelEligibilityIssues(node, model)
+			if issues == 0 {
+				continue
+			}
+			capabilities := engine.Capabilities{}
+			for _, status := range node.Engines {
+				if strings.EqualFold(status.Name, model.Engine) {
+					capabilities = status.Capabilities
+					break
+				}
+			}
+			rejections = append(rejections, ModelEligibilityRejection{
+				NodeID: node.ID, Model: model.Name, Engine: model.Engine,
+				Reasons: explainNPUEligibilityIssues(issues, capabilities),
+			})
+		}
+	}
+	return rejections
 }
 
 func matchedPreferredCapabilities(preferred, normalized, capabilities, tags []string, includeDetails bool) ([]string, int) {

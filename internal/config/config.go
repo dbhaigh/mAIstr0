@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/engine"
@@ -37,15 +38,17 @@ const (
 )
 
 type EngineConfig struct {
-	Name        string `json:"name"`
-	URL         string `json:"url"`
-	RegistryURL string `json:"registry_url,omitempty"`
-	APIKey      string `json:"api_key,omitempty"`
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	RegistryURL  string `json:"registry_url,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	ValidatedRPC bool   `json:"validated_rpc,omitempty"` // Operator opt-in after validating RPC sharding.
 }
 
 type NodeConfig struct {
 	NodeID                       string                `json:"node_id"`
 	ListenAddr                   string                `json:"listen_addr"`
+	RPCRelayListenAddr           string                `json:"rpc_relay_listen_addr"`
 	LogLevel                     string                `json:"log_level,omitempty"`
 	AdvertiseAddr                string                `json:"advertise_addr"`
 	OrchestratorAddr             string                `json:"orchestrator_addr"` // empty = auto-discover on the LAN
@@ -59,6 +62,8 @@ type NodeConfig struct {
 	ManagedEngineModelAllowlist  []string              `json:"managed_engine_model_allowlist,omitempty"`
 	SupportedShardModels         []string              `json:"supported_shard_models,omitempty"`
 	MaxLayersItCanHost           int                   `json:"max_layers_it_can_host,omitempty"`
+	TrustedNetworkInterfaces     []string              `json:"trusted_network_interfaces,omitempty"`
+	AllowInsecureShardNetwork    bool                  `json:"allow_insecure_shard_network,omitempty"`
 	DiscoveryEnabled             bool                  `json:"discovery_enabled"`
 	AutoOpenBrowser              bool                  `json:"auto_open_browser"`
 	TrayMode                     string                `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
@@ -74,6 +79,9 @@ func (cfg *NodeConfig) Normalize() {
 	cfg.LogLevel = normalizeLogLevel(cfg.LogLevel)
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = DefaultNodeConfig().ListenAddr
+	}
+	if cfg.RPCRelayListenAddr == "" {
+		cfg.RPCRelayListenAddr = DefaultNodeConfig().RPCRelayListenAddr
 	}
 	if cfg.MaxConcurrentTasks <= 0 {
 		cfg.explicitInvalidConcurrency = cfg.explicitInvalidConcurrency || cfg.MaxConcurrentTasks < 0
@@ -102,6 +110,9 @@ func (cfg *NodeConfig) Normalize() {
 		shardModels = append(shardModels, modelID)
 	}
 	cfg.SupportedShardModels = shardModels
+	for index := range cfg.TrustedNetworkInterfaces {
+		cfg.TrustedNetworkInterfaces[index] = strings.TrimSpace(cfg.TrustedNetworkInterfaces[index])
+	}
 	if cfg.TrayMode == "" {
 		cfg.TrayMode = "taskbar"
 	}
@@ -115,6 +126,15 @@ func (cfg NodeConfig) Validate() error {
 	if err := validateListenAddr(cfg.ListenAddr); err != nil {
 		violations = append(violations, fmt.Errorf("listen_addr: %w", err))
 	}
+	if err := validateListenAddr(cfg.RPCRelayListenAddr); err != nil {
+		violations = append(violations, fmt.Errorf("rpc_relay_listen_addr: %w", err))
+	} else {
+		_, port, _ := net.SplitHostPort(cfg.RPCRelayListenAddr)
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			violations = append(violations, errors.New("rpc_relay_listen_addr must use a fixed port between 1 and 65535"))
+		}
+	}
 	if cfg.MaxConcurrentTasks <= 0 || cfg.explicitInvalidConcurrency {
 		violations = append(violations, fmt.Errorf("max_concurrent_tasks must be greater than zero"))
 	}
@@ -123,6 +143,17 @@ func (cfg NodeConfig) Validate() error {
 	}
 	if len(cfg.SupportedShardModels) > 0 && cfg.MaxLayersItCanHost <= 0 {
 		violations = append(violations, errors.New("max_layers_it_can_host must be greater than zero when supported_shard_models is set"))
+	}
+	seenTrustedInterfaces := make(map[string]struct{}, len(cfg.TrustedNetworkInterfaces))
+	for index, name := range cfg.TrustedNetworkInterfaces {
+		if name == "" || strings.ContainsAny(name, "\x00\r\n") {
+			violations = append(violations, fmt.Errorf("trusted_network_interfaces[%d] must be a non-empty interface name", index))
+			continue
+		}
+		if _, exists := seenTrustedInterfaces[name]; exists {
+			violations = append(violations, fmt.Errorf("trusted_network_interfaces[%d] duplicates another interface", index))
+		}
+		seenTrustedInterfaces[name] = struct{}{}
 	}
 	if cfg.SyncMaxBytes < 1 || cfg.SyncMaxBytes > MaxSyncMaxBytes || cfg.explicitInvalidSyncMax {
 		violations = append(violations, fmt.Errorf("sync_max_bytes must be between 1 and %d", MaxSyncMaxBytes))
@@ -164,6 +195,7 @@ func (cfg NodeConfig) Validate() error {
 func DefaultNodeConfig() NodeConfig {
 	return NodeConfig{
 		ListenAddr:         ":7451",
+		RPCRelayListenAddr: ":7452",
 		LogLevel:           DefaultLogLevel,
 		AdvertiseAddr:      "",
 		OrchestratorAddr:   "",

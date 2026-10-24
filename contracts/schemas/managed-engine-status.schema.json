@@ -10,6 +10,7 @@
     "state": {"type": "string", "enum": ["stopped", "starting", "ready", "stopping", "restarting", "failed"]},
     "pid": {"type": "integer", "minimum": 0},
     "endpoint": {"type": "string"},
+    "relay_endpoint": {"type": "string", "description": "mTLS-protected llama.cpp RPC relay endpoint, when configured."},
     "restart_count": {"type": "integer", "minimum": 0},
     "last_error": {"type": "string"},
     "started_at": {"type": "string", "format": "date-time"},

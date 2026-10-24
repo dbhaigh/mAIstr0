@@ -56,7 +56,7 @@ type Identity struct {
 	pairingExpires  time.Time
 	pairingAttempts int
 	clientTransport *http.Transport
-	clientConns     map[*identityConn]struct{}
+	activeConns     map[*identityConn]struct{}
 }
 
 type identityConn struct {
@@ -69,7 +69,7 @@ func (c *identityConn) Close() error {
 	var err error
 	c.once.Do(func() {
 		c.identity.mu.Lock()
-		delete(c.identity.clientConns, c)
+		delete(c.identity.activeConns, c)
 		c.identity.mu.Unlock()
 		err = c.Conn.Close()
 	})
@@ -226,6 +226,129 @@ func (i *Identity) ServerTLSConfig() *tls.Config {
 	return config
 }
 
+// PinnedPeerServerTLSConfig requires a client certificate whose current
+// fingerprint is pinned by this identity.
+func (i *Identity) PinnedPeerServerTLSConfig() *tls.Config {
+	i.mu.RLock()
+	config := &tls.Config{
+		Certificates: []tls.Certificate{i.certificate},
+		ClientAuth:   tls.RequireAnyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+	i.mu.RUnlock()
+	config.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		certificate, err := i.currentIdentityCertificate()
+		if err != nil {
+			return nil, err
+		}
+		current := config.Clone()
+		current.GetConfigForClient = nil
+		current.Certificates = []tls.Certificate{*certificate}
+		return current, nil
+	}
+	config.VerifyConnection = func(state tls.ConnectionState) error {
+		if len(state.PeerCertificates) == 0 || !i.IsTrustedCertificate(state.PeerCertificates[0]) {
+			return errors.New("peeridentity: client certificate is not pinned to a paired cluster member")
+		}
+		return nil
+	}
+	return config
+}
+
+// PinnedClientTLSConfig authenticates this identity and accepts only a
+// currently pinned server certificate with the requested stable peer ID.
+func (i *Identity) PinnedClientTLSConfig(expectedID string) *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true, // The self-signed certificate is verified by its pin below.
+		MinVersion:         tls.VersionTLS13,
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return i.currentIdentityCertificate()
+		},
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("peeridentity: relay server did not present a certificate")
+			}
+			certificate := state.PeerCertificates[0]
+			if certificate.Subject.CommonName != expectedID {
+				return fmt.Errorf("peeridentity: relay server identity does not match expected peer %q", expectedID)
+			}
+			if !i.IsTrustedCertificate(certificate) {
+				return errors.New("peeridentity: relay server certificate is not pinned to a paired cluster member")
+			}
+			return nil
+		},
+	}
+}
+
+// DialPinned establishes an mTLS connection to a currently paired peer.
+func (i *Identity) DialPinned(ctx context.Context, network, address, expectedID string) (net.Conn, error) {
+	if strings.TrimSpace(expectedID) == "" {
+		return nil, errors.New("peeridentity: expected peer ID is required")
+	}
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second},
+		Config:    i.PinnedClientTLSConfig(expectedID),
+	}
+	connection, err := dialer.DialContext(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	tlsConnection, ok := connection.(*tls.Conn)
+	if !ok {
+		_ = connection.Close()
+		return nil, errors.New("peeridentity: pinned dial did not return a TLS connection")
+	}
+	state := tlsConnection.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		_ = connection.Close()
+		return nil, errors.New("peeridentity: relay server did not present a certificate")
+	}
+	peerCertificate := state.PeerCertificates[0]
+	i.mu.Lock()
+	peer, exists := i.trusted[expectedID]
+	if !exists || peer.Fingerprint != certificateFingerprint(peerCertificate) ||
+		!certificateCurrentlyValid(peerCertificate, time.Now()) {
+		i.mu.Unlock()
+		_ = connection.Close()
+		return nil, errors.New("peeridentity: relay server certificate is no longer pinned")
+	}
+	if i.activeConns == nil {
+		i.activeConns = make(map[*identityConn]struct{})
+	}
+	tracked := &identityConn{Conn: connection, identity: i}
+	i.activeConns[tracked] = struct{}{}
+	i.mu.Unlock()
+	return tracked, nil
+}
+
+// TrackPinnedPeerConnection registers an authenticated inbound or outbound
+// connection so pin changes can terminate traffic using a stale identity.
+func (i *Identity) TrackPinnedPeerConnection(certificate *x509.Certificate, connection net.Conn) (net.Conn, error) {
+	if certificate == nil || connection == nil {
+		return nil, errors.New("peeridentity: a pinned certificate and connection are required")
+	}
+	if !certificateCurrentlyValid(certificate, time.Now()) {
+		return nil, errors.New("peeridentity: peer certificate is outside its validity period")
+	}
+	id := certificate.Subject.CommonName
+	if id == "" {
+		return nil, errors.New("peeridentity: peer certificate has no identity")
+	}
+	i.mu.Lock()
+	peer, exists := i.trusted[id]
+	if !exists || peer.Fingerprint != certificateFingerprint(certificate) {
+		i.mu.Unlock()
+		return nil, errors.New("peeridentity: peer connection certificate is not currently pinned")
+	}
+	if i.activeConns == nil {
+		i.activeConns = make(map[*identityConn]struct{})
+	}
+	tracked := &identityConn{Conn: connection, identity: i}
+	i.activeConns[tracked] = struct{}{}
+	i.mu.Unlock()
+	return tracked, nil
+}
+
 // ClientTransport returns a transport that presents this identity and accepts
 // only server certificates pinned by a completed pairing.
 func (i *Identity) ClientTransport() *http.Transport {
@@ -247,10 +370,10 @@ func (i *Identity) ClientTransport() *http.Transport {
 			}
 			tracked := &identityConn{Conn: conn, identity: i}
 			i.mu.Lock()
-			if i.clientConns == nil {
-				i.clientConns = make(map[*identityConn]struct{})
+			if i.activeConns == nil {
+				i.activeConns = make(map[*identityConn]struct{})
 			}
-			i.clientConns[tracked] = struct{}{}
+			i.activeConns[tracked] = struct{}{}
 			i.mu.Unlock()
 			return tracked, nil
 		},
@@ -335,11 +458,11 @@ func (i *Identity) currentIdentityCertificate() (*tls.Certificate, error) {
 	return &certificate, nil
 }
 
-func (i *Identity) invalidateClientConnections() {
+func (i *Identity) invalidateConnections() {
 	i.mu.Lock()
 	transport := i.clientTransport
-	connections := make([]*identityConn, 0, len(i.clientConns))
-	for connection := range i.clientConns {
+	connections := make([]*identityConn, 0, len(i.activeConns))
+	for connection := range i.activeConns {
 		connections = append(connections, connection)
 	}
 	i.mu.Unlock()
@@ -462,7 +585,7 @@ func (i *Identity) TrustPeer(id, certificatePEM string) error {
 	err = i.persistLocked()
 	i.mu.Unlock()
 	if changed {
-		i.invalidateClientConnections()
+		i.invalidateConnections()
 	}
 	return err
 }
@@ -501,7 +624,7 @@ func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) er
 	err = i.persistLocked()
 	i.mu.Unlock()
 	if changed {
-		i.invalidateClientConnections()
+		i.invalidateConnections()
 	}
 	return err
 }
@@ -523,7 +646,7 @@ func (i *Identity) RemovePairedOrchestrators() error {
 	}
 	i.mu.Unlock()
 	if changed {
-		i.invalidateClientConnections()
+		i.invalidateConnections()
 	}
 	return err
 }
@@ -586,7 +709,7 @@ func (i *Identity) RemovePeer(id string) error {
 	err := i.persistLocked()
 	i.mu.Unlock()
 	if exists {
-		i.invalidateClientConnections()
+		i.invalidateConnections()
 	}
 	return err
 }

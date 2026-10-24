@@ -42,6 +42,7 @@ type engineComponent struct {
 	engineSnapshotGeneration  uint64
 	engineSnapshotHardwareGen uint64
 	engineSnapshotCacheValid  bool
+	operatorCapabilities      map[string]engine.Capabilities
 	// engineScanMu protects engineScanDone; detector calls run after releasing it.
 	engineScanMu   sync.Mutex
 	engineScanDone chan struct{}

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/shard"
 	"github.com/maistr0/maistr0/internal/workpool"
@@ -49,14 +51,16 @@ type ShardGroup struct {
 }
 
 type ShardGroupMember struct {
-	NodeID     string `json:"node_id"`
-	Address    string `json:"address"`
-	Role       string `json:"role"`
-	EngineID   string `json:"engine_id"`
-	EngineKind string `json:"engine_kind"`
-	Rank       int    `json:"rank,omitempty"`
-	MasterAddr string `json:"master_addr,omitempty"`
-	Started    bool   `json:"started,omitempty"`
+	NodeID            string `json:"node_id"`
+	Address           string `json:"address"`
+	Role              string `json:"role"`
+	EngineID          string `json:"engine_id"`
+	EngineKind        string `json:"engine_kind"`
+	Rank              int    `json:"rank,omitempty"`
+	MasterAddr        string `json:"master_addr,omitempty"`
+	Started           bool   `json:"started,omitempty"`
+	RPCRelayEndpoint  string `json:"rpc_relay_endpoint,omitempty"`
+	RPCBackendAddress string `json:"rpc_backend_address,omitempty"`
 }
 
 type CreateShardGroupRequest struct {
@@ -318,6 +322,16 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 	if err != nil {
 		return m.failCreate(id, err)
 	}
+	networkWarnings, err := shardPlanNetworkWarnings(plan, candidates)
+	if err != nil {
+		return m.failCreate(id, err)
+	}
+	plan.Rationale = append(plan.Rationale, networkWarnings...)
+	for _, rationale := range plan.Rationale {
+		if strings.HasPrefix(rationale, "WARNING:") {
+			logging.FileWarnf("shard", "%s", rationale)
+		}
+	}
 	members, err := buildShardMembers(plan, engineByNode, m.registry)
 	if err != nil {
 		return m.failCreate(id, err)
@@ -350,7 +364,7 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 			}
 		}
 		member := members[index]
-		status, startErr := m.engines.Start(ctx, member.Address, member.EngineID, memberStartPlan(plan, member))
+		status, startErr := m.engines.Start(ctx, member.Address, member.EngineID, memberStartPlan(plan, member, members))
 		if startErr != nil {
 			return m.failCreate(id, fmt.Errorf("start %s engine %s on node %s: %w", member.Role, member.EngineID, member.NodeID, startErr))
 		}
@@ -645,15 +659,19 @@ func (m *ShardManager) candidates(
 		capabilities := managedShardCapabilities(node, request.Mode)
 		rpcAddress := ""
 		if request.Mode == shard.ModeLlamaCPPRPC {
-			rpcAddress = rpcAddressForNode(modeEngine.Endpoint, node.Address, healthyCount == 1 || len(pinned) == 1)
+			rpcAddress = modeEngine.RelayEndpoint
 		} else if request.Mode == shard.ModeVLLMMP {
 			rpcAddress = advertisedEndpointAddress(modeEngine.Endpoint, node.Address)
 		}
+		rpcProtected := request.Mode != shard.ModeLlamaCPPRPC ||
+			validRemoteRPCRelayAddress(modeEngine.RelayEndpoint)
 		candidates = append(candidates, shard.CandidateNode{
 			ID: node.ID, OS: strings.ToLower(node.Hardware.OS),
-			RPCAddress: rpcAddress, Devices: append([]hardware.Device(nil), node.Hardware.Devices...),
-			NetworkLinks: append([]hardware.NetworkLink(nil), node.Hardware.NetworkLinks...),
-			Capabilities: capabilities,
+			RPCAddress: rpcAddress, RPCProtected: rpcProtected,
+			AllowInsecureShardNetwork: node.AllowInsecureShardNetwork,
+			Devices:                   append([]hardware.Device(nil), node.Hardware.Devices...),
+			NetworkLinks:              append([]hardware.NetworkLink(nil), node.Hardware.NetworkLinks...),
+			Capabilities:              capabilities,
 		})
 	}
 	for id := range pinned {
@@ -677,6 +695,75 @@ func (m *ShardManager) candidates(
 		}
 	}
 	return candidates, engineByNode, nil
+}
+
+func shardPlanNetworkWarnings(plan shard.ShardPlan, candidates []shard.CandidateNode) ([]string, error) {
+	byID := make(map[string]shard.CandidateNode, len(candidates))
+	for _, candidate := range candidates {
+		byID[candidate.ID] = candidate
+	}
+	var warnings []string
+	for _, planned := range plan.Nodes {
+		candidate, exists := byID[planned.NodeID]
+		if !exists {
+			return nil, &shard.Refusal{
+				Code:      shard.RefusalUntrustedNetwork,
+				Message:   fmt.Sprintf("shard plan selected unknown node %q; network security cannot be verified", planned.NodeID),
+				Rationale: []string{fmt.Sprintf("node %q is absent from the validated candidate snapshot", planned.NodeID)},
+			}
+		}
+		switch plan.Mode {
+		case shard.ModeLlamaCPPRPC:
+			if !candidate.RPCProtected || !validRemoteRPCRelayAddress(candidate.RPCAddress) {
+				return nil, &shard.Refusal{
+					Code:      shard.RefusalUntrustedNetwork,
+					Message:   fmt.Sprintf("node %q has no authenticated mTLS RPC relay", candidate.ID),
+					Rationale: []string{fmt.Sprintf("node %q was selected without a reachable mTLS-protected RPC relay", candidate.ID)},
+				}
+			}
+		case shard.ModeVLLMMP:
+			if !trustedNetworkLink(candidate) {
+				if !candidate.AllowInsecureShardNetwork {
+					return nil, &shard.Refusal{
+						Code:      shard.RefusalUntrustedNetwork,
+						Message:   fmt.Sprintf("node %q has no operator-trusted network interface for vllm-mp", candidate.ID),
+						Rationale: []string{fmt.Sprintf("node %q does not mark any distributed-traffic interface trusted", candidate.ID)},
+					}
+				}
+				warnings = append(warnings, fmt.Sprintf(
+					"WARNING: node %q permits unencrypted vllm-mp traffic on an untrusted network because allow_insecure_shard_network is enabled",
+					candidate.ID,
+				))
+			}
+		}
+	}
+	return warnings, nil
+}
+
+func trustedNetworkLink(candidate shard.CandidateNode) bool {
+	for _, link := range candidate.NetworkLinks {
+		if link.Trusted {
+			return true
+		}
+	}
+	return false
+}
+
+func validRemoteRPCRelayAddress(endpoint string) bool {
+	host, port, ok := endpointHostPort(endpoint)
+	if !ok {
+		return false
+	}
+	if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsLinkLocalUnicast()
+	}
+	return true
 }
 
 func managedShardCapabilities(node cluster.NodeStatus, mode shard.Mode) engine.Capabilities {
@@ -713,28 +800,6 @@ func appendUniqueString(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
-}
-
-func rpcAddressForNode(endpoint, nodeAddress string, allowLoopback bool) string {
-	host, port, ok := endpointHostPort(endpoint)
-	if !ok {
-		return ""
-	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	if strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback() {
-		if !allowLoopback {
-			return ""
-		}
-		return net.JoinHostPort(host, port)
-	}
-	if host == "0.0.0.0" || host == "::" {
-		advertised, err := url.Parse(nodeAddress)
-		if err != nil || advertised.Hostname() == "" {
-			return ""
-		}
-		host = advertised.Hostname()
-	}
-	return net.JoinHostPort(host, port)
 }
 
 func advertisedEndpointAddress(endpoint, nodeAddress string) string {
@@ -784,7 +849,8 @@ func buildShardMembers(
 			}
 			members = append(members, ShardGroupMember{
 				NodeID: node.NodeID, Role: "worker", EngineID: status.ID,
-				EngineKind: status.Kind,
+				EngineKind: status.Kind, RPCRelayEndpoint: status.RelayEndpoint,
+				RPCBackendAddress: status.Endpoint,
 			})
 		}
 		var head ShardGroupMember
@@ -854,13 +920,33 @@ func buildShardMembers(
 	return members, nil
 }
 
-func memberStartPlan(plan shard.ShardPlan, member ShardGroupMember) *supervisor.ShardPlan {
+func memberStartPlan(plan shard.ShardPlan, member ShardGroupMember, members []ShardGroupMember) *supervisor.ShardPlan {
 	switch plan.Mode {
 	case shard.ModeLlamaCPPRPC:
 		if member.Role != "head" {
 			return nil
 		}
-		return &supervisor.ShardPlan{RPC: plan.RPC, TensorSplit: plan.TensorSplit}
+		targets := make([]supervisor.RPCRelayTarget, 0, len(plan.Nodes))
+		for _, node := range plan.Nodes {
+			var worker *ShardGroupMember
+			for index := range members {
+				if members[index].NodeID == node.NodeID && members[index].Role == "worker" {
+					worker = &members[index]
+					break
+				}
+			}
+			if worker == nil {
+				return nil
+			}
+			target := supervisor.RPCRelayTarget{PeerID: worker.NodeID}
+			if worker.NodeID == member.NodeID {
+				target.Address = worker.RPCBackendAddress
+			} else {
+				target.Address = worker.RPCRelayEndpoint
+			}
+			targets = append(targets, target)
+		}
+		return &supervisor.ShardPlan{TensorSplit: plan.TensorSplit, RPCRelays: targets}
 	case shard.ModeVLLMMP:
 		if member.MasterAddr == "" || len(plan.Nodes) == 0 {
 			return nil

@@ -11,7 +11,7 @@
         "parameters": 7000000000,
         "layer_count": 32,
         "hidden_size": 4096,
-        "kv_heads": 32,
+        "kv_heads": 8,
         "head_dim": 128,
         "vocab_size": 32000,
         "quantization": "q4_0",
@@ -19,10 +19,14 @@
         "requested_context": 4096
       },
       "mode": "llamacpp-rpc",
-      "pinned_nodes": ["worker-1", "worker-2"]
+      "pinned_nodes": [
+        "worker-1",
+        "worker-2"
+      ]
     }
   },
   "expected_response": {
+    "status": 201,
     "schema": "shard-group.schema.json",
     "body": {
       "id": "shard-demo",
@@ -32,7 +36,7 @@
         "parameters": 7000000000,
         "layer_count": 32,
         "hidden_size": 4096,
-        "kv_heads": 32,
+        "kv_heads": 8,
         "head_dim": 128,
         "vocab_size": 32000,
         "quantization": "q4_0",
@@ -49,7 +53,7 @@
           "parameters": 7000000000,
           "layer_count": 32,
           "hidden_size": 4096,
-          "kv_heads": 32,
+          "kv_heads": 8,
           "head_dim": 128,
           "vocab_size": 32000,
           "quantization": "q4_0",
@@ -59,9 +63,10 @@
         "nodes": [
           {
             "node_id": "worker-1",
-            "rpc_address": "worker-1:50052",
+            "rpc_address": "192.0.2.1:7452",
             "start_layer": 0,
             "end_layer": 16,
+            "tensor_split_layers": 16,
             "devices": [
               {
                 "kind": "gpu",
@@ -70,19 +75,20 @@
                 "index": 0,
                 "start_layer": 0,
                 "end_layer": 16,
-                "weights_bytes": 1000,
-                "kv_cache_bytes": 1000,
-                "safety_margin_bytes": 1000,
-                "required_bytes": 3000,
-                "free_memory_bytes": 4000
+                "weights_bytes": 2000000000,
+                "kv_cache_bytes": 268435456,
+                "safety_margin_bytes": 536870912,
+                "required_bytes": 2805306368,
+                "free_memory_bytes": 8589934592
               }
             ]
           },
           {
             "node_id": "worker-2",
-            "rpc_address": "worker-2:50052",
+            "rpc_address": "192.0.2.2:7452",
             "start_layer": 16,
             "end_layer": 32,
+            "tensor_split_layers": 16,
             "devices": [
               {
                 "kind": "gpu",
@@ -91,42 +97,63 @@
                 "index": 0,
                 "start_layer": 16,
                 "end_layer": 32,
-                "weights_bytes": 1000,
-                "kv_cache_bytes": 1000,
-                "safety_margin_bytes": 1000,
-                "required_bytes": 3000,
-                "free_memory_bytes": 4000
+                "weights_bytes": 2000000000,
+                "kv_cache_bytes": 268435456,
+                "safety_margin_bytes": 536870912,
+                "required_bytes": 2805306368,
+                "free_memory_bytes": 8589934592
               }
             ]
           }
         ],
-        "rpc": "worker-1:50052,worker-2:50052",
-        "tensor_split": "1,1",
-        "rationale": ["Memory fit on both nodes."]
+        "rpc": "192.0.2.1:7452,192.0.2.2:7452",
+        "tensor_split": "16,16",
+        "rationale": [
+          "Memory fit on both nodes."
+        ]
       },
       "members": [
         {
           "node_id": "worker-1",
           "address": "https://worker-1:7451",
           "role": "worker",
-          "engine_id": "rpc-1",
+          "engine_id": "rpc",
           "engine_kind": "ggml-rpc-server",
-          "started": true
+          "started": true,
+          "rpc_relay_endpoint": "192.0.2.1:7452",
+          "rpc_backend_address": "127.0.0.1:50052"
         },
         {
           "node_id": "worker-2",
           "address": "https://worker-2:7451",
+          "role": "worker",
+          "engine_id": "rpc",
+          "engine_kind": "ggml-rpc-server",
+          "started": true,
+          "rpc_relay_endpoint": "192.0.2.2:7452",
+          "rpc_backend_address": "127.0.0.1:50052"
+        },
+        {
+          "node_id": "worker-1",
+          "address": "https://worker-1:7451",
           "role": "head",
-          "engine_id": "llama-head",
+          "engine_id": "head",
           "engine_kind": "llama-server",
           "started": true
         }
       ],
-      "pinned_nodes": ["worker-1", "worker-2"],
-      "rationale": ["Memory fit on both nodes."],
+      "pinned_nodes": [
+        "worker-1",
+        "worker-2"
+      ],
+      "rationale": [
+        "Memory fit on both nodes."
+      ],
       "created_at": "2025-01-02T03:04:05Z",
       "updated_at": "2025-01-02T03:04:05Z"
     }
   },
-  "normalization_rules": ["No generated IDs or timestamps are normalized in this static schema fixture."]
+  "normalization_rules": [
+    "Fixed IDs, addresses, and RFC3339 timestamps; generated from Go wire types."
+  ]
 }

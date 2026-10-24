@@ -203,6 +203,10 @@ func writeManagedEngineError(w http.ResponseWriter, err error) {
 		status, message = http.StatusNotFound, "managed engine not found"
 	case errors.Is(err, supervisor.ErrInvalidShardPlan):
 		status, message = http.StatusBadRequest, "invalid shard plan"
+	case errors.Is(err, supervisor.ErrUntrustedShardNetwork):
+		status, message = http.StatusBadRequest, "vLLM shard network preflight failed"
+	case errors.Is(err, supervisor.ErrRelayUnavailable):
+		status, message = http.StatusBadGateway, "authenticated RPC relay could not be started"
 	case errors.Is(err, supervisor.ErrUnsupportedPlatform):
 		status, message = http.StatusNotImplemented, "vllm managed engines are not supported on native Windows"
 	case errors.Is(err, supervisor.ErrAlreadyRunning):

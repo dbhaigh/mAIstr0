@@ -29,12 +29,14 @@ const (
 
 // CandidateNode is a caller-provided snapshot. Plan never probes or refreshes it.
 type CandidateNode struct {
-	ID           string                 `json:"id"`
-	OS           string                 `json:"os"`
-	RPCAddress   string                 `json:"rpc_address,omitempty"`
-	Devices      []hardware.Device      `json:"devices"`
-	NetworkLinks []hardware.NetworkLink `json:"network_links,omitempty"`
-	Capabilities engine.Capabilities    `json:"capabilities,omitempty"`
+	ID                        string                 `json:"id"`
+	OS                        string                 `json:"os"`
+	RPCAddress                string                 `json:"rpc_address,omitempty"`
+	RPCProtected              bool                   `json:"rpc_protected,omitempty"`
+	AllowInsecureShardNetwork bool                   `json:"allow_insecure_shard_network,omitempty"`
+	Devices                   []hardware.Device      `json:"devices"`
+	NetworkLinks              []hardware.NetworkLink `json:"network_links,omitempty"`
+	Capabilities              engine.Capabilities    `json:"capabilities,omitempty"`
 }
 
 // Policy configures a deterministic plan. A zero KV cache element size uses
@@ -59,6 +61,7 @@ const (
 	RefusalHeterogeneity      RefusalCode = "homogeneity_violated"
 	RefusalUnsupportedOS      RefusalCode = "unsupported_os"
 	RefusalLinkTooSlow        RefusalCode = "link_too_slow"
+	RefusalUntrustedNetwork   RefusalCode = "untrusted_network"
 )
 
 // Refusal is a typed, human-readable explanation that no valid plan was found.
@@ -215,9 +218,15 @@ func planLlamaCPPRPC(
 ) (ShardPlan, error) {
 	var resources []memoryDevice
 	var wholeModelNPUs []memoryDevice
+	unprotectedCandidate := false
+	otherCandidateRejection := false
 	rationale := make([]string, 0, len(nodes)*2)
 	for _, node := range nodes {
 		reason, supported := nodeModeRejection(node, string(ModeLlamaCPPRPC))
+		if supported && !node.RPCProtected {
+			reason, supported = "authenticated mTLS RPC relay is unavailable", false
+			unprotectedCandidate = true
+		}
 		if supported && strings.TrimSpace(node.RPCAddress) == "" {
 			reason, supported = "RPC address is missing", false
 		}
@@ -225,6 +234,9 @@ func planLlamaCPPRPC(
 			reason, supported = "RPC address contains a comma or whitespace separator", false
 		}
 		if !supported {
+			if reason != "authenticated mTLS RPC relay is unavailable" {
+				otherCandidateRejection = true
+			}
 			rationale = append(rationale, fmt.Sprintf("node %q rejected: %s", node.ID, reason))
 			continue
 		}
@@ -315,6 +327,13 @@ func planLlamaCPPRPC(
 	}
 
 	if len(resources) == 0 && len(wholeModelNPUs) == 0 {
+		if unprotectedCandidate && !otherCandidateRejection {
+			return ShardPlan{}, &Refusal{
+				Code:      RefusalUntrustedNetwork,
+				Message:   "llamacpp-rpc requires a pinned mTLS relay on every selected worker",
+				Rationale: append(rationale, "no candidate has an authenticated RPC relay endpoint"),
+			}
+		}
 		return ShardPlan{}, &Refusal{
 			Code:      RefusalNoCompatibleNodes,
 			Message:   "no nodes have a compatible device with known free memory for llamacpp-rpc",
@@ -467,6 +486,8 @@ func planVLLMMP(
 	rationale := make([]string, 0, len(nodes)*2)
 	var eligible []eligibleNode
 	var hasLinuxCandidate bool
+	untrustedNetworkRejected := false
+	otherCandidateAcceptedNetwork := false
 	for _, node := range nodes {
 		if !strings.EqualFold(strings.TrimSpace(node.OS), "linux") {
 			rationale = append(rationale, fmt.Sprintf(
@@ -478,6 +499,21 @@ func planVLLMMP(
 		if reason, ok := nodeModeRejection(node, string(ModeVLLMMP)); !ok {
 			rationale = append(rationale, fmt.Sprintf("node %q rejected: %s", node.ID, reason))
 			continue
+		}
+		if !hasTrustedNetworkLink(node) && !node.AllowInsecureShardNetwork {
+			untrustedNetworkRejected = true
+			rationale = append(rationale, fmt.Sprintf(
+				"node %q rejected: vllm-mp requires a trusted network interface; configure trusted_network_interfaces or explicitly allow insecure shard networking",
+				node.ID,
+			))
+			continue
+		}
+		otherCandidateAcceptedNetwork = true
+		if !hasTrustedNetworkLink(node) {
+			rationale = append(rationale, fmt.Sprintf(
+				"WARNING: node %q permits untrusted vllm-mp traffic because allow_insecure_shard_network is enabled",
+				node.ID,
+			))
 		}
 		var gpus []hardware.Device
 		for _, device := range sortedDevices(node.Devices) {
@@ -520,6 +556,9 @@ func planVLLMMP(
 		if !hasLinuxCandidate {
 			code = RefusalUnsupportedOS
 			message = "vllm-mp is supported only on Linux nodes"
+		} else if untrustedNetworkRejected && !otherCandidateAcceptedNetwork {
+			code = RefusalUntrustedNetwork
+			message = "vllm-mp requires an operator-trusted network interface on each node"
 		}
 		return ShardPlan{}, &Refusal{Code: code, Message: message, Rationale: rationale}
 	}
@@ -701,6 +740,9 @@ func minimumNodeLinkSpeed(nodes []eligibleNode) uint64 {
 	for _, candidate := range nodes {
 		fastest := uint64(0)
 		for _, link := range candidate.node.NetworkLinks {
+			if hasTrustedNetworkLink(candidate.node) && !link.Trusted {
+				continue
+			}
 			if link.SpeedMbps > fastest {
 				fastest = link.SpeedMbps
 			}
@@ -716,6 +758,15 @@ func minimumNodeLinkSpeed(nodes []eligibleNode) uint64 {
 		return 0
 	}
 	return minimum
+}
+
+func hasTrustedNetworkLink(node CandidateNode) bool {
+	for _, link := range node.NetworkLinks {
+		if link.Trusted {
+			return true
+		}
+	}
+	return false
 }
 
 func homogeneityViolation(nodes []eligibleNode) string {

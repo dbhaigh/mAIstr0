@@ -62,6 +62,15 @@ func engineDeviceMatchScore(capabilities engine.Capabilities, hw hardware.Info) 
 		if !engine.SupportsDeviceKind(capabilities.Devices, kind) {
 			continue
 		}
+		if kind == "npu" {
+			vendor := device.Vendor
+			if vendor == "" {
+				vendor = hw.NPUVendor
+			}
+			if !engine.SupportsNPUVendor(capabilities.NPUVendors, vendor) {
+				continue
+			}
+		}
 		if !engine.BackendsOverlap(capabilities.Backends, device.Backends) {
 			continue
 		}
@@ -78,7 +87,7 @@ func availableHardwareDevices(hw hardware.Info) []hardware.Device {
 		devices = append(devices, hardware.Device{Kind: "gpu"})
 	}
 	if hw.HasNPU && !hasHardwareDevice(devices, "npu") {
-		devices = append(devices, hardware.Device{Kind: "npu"})
+		devices = append(devices, hardware.Device{Kind: "npu", Vendor: hw.NPUVendor})
 	}
 	return devices
 }
@@ -168,6 +177,9 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 			} else {
 				status.Capabilities = engine.MergeCapabilities(status.Capabilities, capabilities)
 			}
+		}
+		if override, ok := c.operatorCapabilities[strings.ToLower(strings.TrimSpace(eng.Name()))]; ok {
+			status.Capabilities = engine.MergeCapabilities(status.Capabilities, override)
 		}
 		if len(listed) == 0 {
 			status.InventoryState = engine.ModelInventoryEmpty
@@ -295,6 +307,10 @@ func engineIdentity(eng engine.Engine) string {
 	return strings.ToLower(eng.Name()) + "\x00" + engineURL(eng)
 }
 
+func engineEndpointIdentity(eng engine.Engine) string {
+	return strings.TrimRight(strings.TrimSpace(engineURL(eng)), "/")
+}
+
 func (c *engineComponent) engineSnapshot() []engine.Engine {
 	hw, hardwareGeneration := c.telemetry.hardwareSnapshotVersioned()
 	statuses := c.engineCapabilityStatusSnapshot()
@@ -307,13 +323,23 @@ func (c *engineComponent) engineSnapshot() []engine.Engine {
 	} else {
 		engines = make([]engine.Engine, 0, len(c.engines)+len(c.detectedEngines))
 		seen := make(map[string]struct{}, len(c.engines)+len(c.detectedEngines))
-		for _, group := range [][]engine.Engine{c.engines, c.detectedEngines} {
+		configuredEndpoints := make(map[string]struct{}, len(c.engines))
+		for groupIndex, group := range [][]engine.Engine{c.engines, c.detectedEngines} {
 			for _, eng := range group {
+				endpoint := engineEndpointIdentity(eng)
+				if groupIndex == 1 && endpoint != "" {
+					if _, configured := configuredEndpoints[endpoint]; configured {
+						continue
+					}
+				}
 				key := engineIdentity(eng)
 				if _, ok := seen[key]; ok {
 					continue
 				}
 				seen[key] = struct{}{}
+				if groupIndex == 0 && endpoint != "" {
+					configuredEndpoints[endpoint] = struct{}{}
+				}
 				engines = append(engines, eng)
 			}
 		}

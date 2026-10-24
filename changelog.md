@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+## 0.0.23 - 2026-10-24
+
+### Added
+
+- Add fake llama.cpp RPC, llama-server, and vLLM headless process binaries and
+  integration coverage for managed group creation, streaming/non-streaming
+  router chat, killed workers, degraded/failed teardown, and rebuild.
+- Build the S3 supervisor and sharding fake binaries on Linux and Windows CI;
+  retain Linux race and govulncheck gates. Generate typed shard fixtures and
+  check all shard operations, schemas, and untracked fixture drift.
+- Document sharding lifecycle, engine/OS CPU/GPU/NPU support requirements,
+  threat boundaries, troubleshooting, and an entirely untested real-machine
+  hardware validation checklist.
+- Document additive RPC relay/backend member fields in the shard-group schema;
+  no route, persistence format, or configuration default changes.
+- Protect llama.cpp worker traffic with pinned mutual-TLS relays and require
+  trusted private interfaces for distributed vLLM traffic, with an explicit
+  insecure-network override and warnings.
+- Add the optional `llamacpp-xdna2-npu` managed-engine profile for the
+  enhanced XRT-backed llama.cpp build, including explicit XDNA device
+  selection, single-sequence operation, CPU fallback, and Q4NX deployment
+  guidance.
+
+### Changed
+
+- Split DeepSeek tools and harness execution/routing, and memory-store record,
+  performance, and synchronization responsibilities into files below 500
+  lines without changing public APIs, behavior, or bbolt encodings.
+
+### Fixed
+
+- Make Linux vLLM supervisor tests use valid model-ID configuration and wait
+  for child startup evidence rather than racing process readiness.
+
 ## 0.0.22 - 2026-10-22
 
 ### Added
@@ -7,6 +43,9 @@
 - Add an allow-list-backed node supervisor for llama-server, ggml-rpc-server,
   and headless vLLM workers, with paired-orchestrator lifecycle APIs, readiness
   checks, bounded restart backoff, and process-tree shutdown.
+- Add typed OpenVINO, Hexagon, and FastFlowLM XDNA 2 NPU profiles with
+  vendor-aware engine matching, NPU model eligibility explanations, and
+  operator-only RPC validation opt-in.
 
 ## 0.0.21 - 2026-10-22
 

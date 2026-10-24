@@ -20,6 +20,50 @@ in another language.
 - [`fixtures/scheduler/assignment.json`](./fixtures/scheduler/assignment.json)
   contains fixed node, model, and subtask inputs with the scheduler's exact
   assignments and score factors.
+- [`fixtures/shards/`](./fixtures/shards/) is generated from Go wire types for
+  both managed sharding modes, create/list/get/delete, and degraded/failed
+  snapshots. Each response includes its HTTP status and schema where it has
+  a body. A successful delete is `204` with no body.
+
+## Managed shard groups
+
+Managed groups are distinct from the protocol-v2 stage pipeline below.
+`POST /api/shards` accepts `CreateShardGroupRequest`: a model profile, mode
+(`llamacpp-rpc` or `vllm-mp`), and optional pinned node IDs. It returns `201`
+with a ready `ShardGroup`; invalid placement returns `400`, conflicting model
+or active operations `409`, missing capacity/members/persistence `503`, and
+upstream start failures `502`. `GET /api/shards` returns `{"groups":[]}`;
+`GET /api/shards/{id}` returns a group or `404`. Deletion stops the head before
+workers and returns `204`, or an error if teardown/persistence fails.
+
+Preserve the lifecycle values `planning`, `starting_workers`, `starting_head`,
+`ready`, `degraded`, `failed`, and `stopping`. Do not infer readiness from node
+heartbeats or a loaded persisted record. Member loss first degrades the group;
+the next health sweep tears down remaining members and fails it. Startup
+recovery verifies members and reserves capacity before restoring readiness.
+Rebuild creates a new group; there is no in-place rebuild route. Failed
+history may coexist with the new ready group for the same model.
+
+The transparent router uses the group's model name and sends inference to the
+head through `/api/engines/managed/{id}/proxy/{path...}`. Non-ready groups
+return `503`; one request at a time occupies the group's request slot.
+Preserve HTTP/SSE bodies and do not silently fall back to individual shards.
+
+Group members may include `rpc_relay_endpoint` (remote authenticated relay)
+and `rpc_backend_address` (local worker backend), plus vLLM `rank` and
+`master_addr`. Never treat the RPC backend address as a remote safe endpoint.
+Managed status exposes `relay_endpoint`. llama.cpp head start plans carry
+typed `rpc_relays` targets with `peer_id` and `address`; the supervisor converts
+them to local loopback relay endpoints. vLLM plans carry `nnodes`, `node_rank`,
+`master_addr`, and parallelism sizes; native Windows launch is unsupported.
+Node managed lifecycle/proxy operations require the pinned, paired **current**
+orchestrator, not merely any TLS client. vLLM distributed traffic additionally
+requires a trusted private interface or the explicit insecure override.
+
+Do not change bbolt bucket names/keys when porting this behavior; the fixture
+generator is a wire-format reference, not a database migration. See
+[network security](../README.md#distributed-shard-network-security) and the
+[troubleshooting guide](../docs/sharding-troubleshooting.md).
 
 ## Wire-format conventions
 
@@ -133,5 +177,7 @@ go vet ./...
 node --test web/app_test.js
 ```
 
-CI regenerates both fixture sets, checks that generation leaves no diff, and
-runs the focused contract tests before the complete Go test suite.
+CI regenerates all three fixture sets and fails on modified or newly generated
+untracked files under `contracts/fixtures/`. Contract tests check registered
+routes against OpenAPI, shard-operation fixture coverage, and request/response
+schemas, including generated Go member fields.

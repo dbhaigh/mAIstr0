@@ -98,6 +98,49 @@ func TestAssignRejectsUnassignableSubtasks(t *testing.T) {
 	}
 }
 
+func TestAssignExplainsRejectedNPUModel(t *testing.T) {
+	node := cluster.NodeStatus{
+		ID: "intel-npu", Address: "https://intel-npu", Healthy: true,
+		Hardware: hardware.Info{
+			HasNPU: true, NPUVendor: "intel-npu",
+			Devices: []hardware.Device{{
+				Kind: "npu", Vendor: "intel-npu", Backends: []string{"openvino"}, FreeMemoryMB: 2048,
+			}},
+		},
+		Engines: []engine.Status{{
+			Name: "openvino", Ready: true, ModelCount: 1,
+			Capabilities: engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{"openvino"},
+				NPUVendors: []string{"intel-npu"}, Quantizations: []string{"q4_0"},
+				PrimaryQuantization: "q4_0", RequiresContextCap: true,
+			},
+		}},
+		Models: []engine.Model{{
+			Name: "model", Engine: "openvino", Tags: []string{"general"},
+			Device: "npu", SizeGB: 4, Quantization: "q5_k",
+		}},
+	}
+	assignments, err := Assign([]Subtask{{ID: "npu-work", TaskType: "general"}}, []cluster.NodeStatus{node})
+	var unassignable *UnassignableSubtasksError
+	if len(assignments) != 0 || !errors.As(err, &unassignable) {
+		t.Fatalf("assignments = %+v, error = %v, want NPU eligibility refusal", assignments, err)
+	}
+	for _, reason := range []string{
+		"model does not fit in reported NPU memory",
+		"model quantization is not supported",
+		"engine requires a reported context cap",
+	} {
+		if !strings.Contains(err.Error(), reason) {
+			t.Errorf("scheduler error %q does not include %q", err, reason)
+		}
+	}
+	if len(unassignable.ModelRejections) != 1 ||
+		unassignable.ModelRejections[0].NodeID != node.ID ||
+		unassignable.ModelRejections[0].Model != "model" {
+		t.Fatalf("structured model rejections = %+v", unassignable.ModelRejections)
+	}
+}
+
 func TestAssignAllowsGeneralCapableModelForSpecificTask(t *testing.T) {
 	assignments, err := Assign([]Subtask{{ID: "sub-code", TaskType: "code"}}, []cluster.NodeStatus{{
 		ID: "general-node", Address: "http://node", Healthy: true,

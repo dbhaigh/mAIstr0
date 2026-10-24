@@ -24,9 +24,11 @@ jobs:
         with:
           node-version: 22
       - name: Check contract drift
+        shell: bash
         run: |
           go generate ./contracts ./internal/scheduler
           git diff --exit-code -- contracts/fixtures
+          test -z "$(git ls-files --others --exclude-standard -- contracts/fixtures)"
           go test ./contracts
       - name: Run Go tests
         if: runner.os == 'Windows'
@@ -72,6 +74,30 @@ jobs:
           args: check
       - name: Test dashboard
         run: node --test web/app_test.js
+
+  shard-fakes:
+    name: Build sharding process fixtures (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build S3 supervisor and sharding fake binaries
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/shard-fakes"
+          suffix=""
+          if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
+          go build -o "$RUNNER_TEMP/shard-fakes/supervisor$suffix" ./internal/nodeagent/supervisor/testdata/fakeengine
+          for fake in fakerpc fakellama fakevllm; do
+            go build -o "$RUNNER_TEMP/shard-fakes/$fake$suffix" "./internal/integration/testdata/$fake"
+          done
 
   lint:
     name: golangci-lint

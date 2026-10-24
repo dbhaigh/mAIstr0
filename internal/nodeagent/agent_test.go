@@ -353,6 +353,74 @@ func TestPrioritizeEnginesByCapabilitiesAndReadiness(t *testing.T) {
 	}
 }
 
+func TestNPUEngineCapabilitiesMatchHardwareVendor(t *testing.T) {
+	tests := []struct {
+		name    string
+		vendor  string
+		backend string
+	}{
+		{name: "Intel OpenVINO", vendor: "intel-npu", backend: "openvino"},
+		{name: "AMD XDNA", vendor: "amd-npu", backend: "xdna"},
+		{name: "Qualcomm Hexagon", vendor: "qualcomm-npu", backend: "hexagon"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			capabilities := engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{test.backend},
+				NPUVendors: []string{test.vendor},
+			}
+			hardwareInfo := hardware.Info{HasNPU: true, NPUVendor: test.vendor, Devices: []hardware.Device{
+				{Kind: "npu", Vendor: test.vendor, Backends: []string{test.backend}},
+			}}
+			if got := engineDeviceMatchScore(capabilities, hardwareInfo); got != deviceKindPriority("npu") {
+				t.Fatalf("matching NPU score = %d, want %d", got, deviceKindPriority("npu"))
+			}
+			mismatchedVendor := "qualcomm-npu"
+			if test.vendor == mismatchedVendor {
+				mismatchedVendor = "intel-npu"
+			}
+			hardwareInfo.NPUVendor = mismatchedVendor
+			hardwareInfo.Devices[0].Vendor = mismatchedVendor
+			if got := engineDeviceMatchScore(capabilities, hardwareInfo); got != 0 {
+				t.Fatalf("mismatched NPU vendor score = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestValidatedRPCCapabilityRequiresOperatorOptIn(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		set  bool
+		want bool
+	}{
+		{name: "default is disabled"},
+		{name: "operator opt-in", set: true, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			component := &engineComponent{
+				engines: []engine.Engine{
+					capabilityTestEngine{
+						Engine: &pullTestEngine{name: "llamacpp"},
+						capabilities: engine.Capabilities{
+							Devices: []string{"npu"}, SupportsSharding: []string{"llamacpp-rpc"},
+						},
+					},
+				},
+				telemetry: &telemetryComponent{},
+				state:     &agentState{},
+				operatorCapabilities: map[string]engine.Capabilities{
+					"llamacpp": {ValidatedRPC: test.set},
+				},
+			}
+			_, statuses := component.inspectInventory()
+			if len(statuses) != 1 || statuses[0].Capabilities.ValidatedRPC != test.want {
+				t.Fatalf("engine status capabilities = %+v, want ValidatedRPC=%t", statuses, test.want)
+			}
+		})
+	}
+}
+
 func TestRefreshDetectedEnginesFindsNewEngineAlongsideExistingOne(t *testing.T) {
 	detected := []engine.Engine{&pullTestEngine{name: "ollama"}}
 	agent := mustNewTestAgentWithEngineDetector(t, config.NodeConfig{

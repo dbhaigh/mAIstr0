@@ -85,6 +85,83 @@ func TestShardManagerCleansUpPartialStartFailure(t *testing.T) {
 	}
 }
 
+func TestShardManagerRejectsCustomPlanWithoutPinnedRPCRelay(t *testing.T) {
+	manager, _, engines, capacity, _ := newTestShardManager(t, "")
+	engines.mu.Lock()
+	status := engines.statuses["https://node-2:7451"]["rpc-2"]
+	status.RelayEndpoint = ""
+	engines.statuses["https://node-2:7451"]["rpc-2"] = status
+	engines.mu.Unlock()
+
+	group, err := manager.Create(context.Background(), testShardRequest())
+	if err == nil {
+		t.Fatal("Create returned no error for a plan containing an unprotected worker")
+	}
+	if group.State != ShardGroupFailed {
+		t.Fatalf("group state = %q, want failed", group.State)
+	}
+	if len(engines.events) != 0 {
+		t.Fatalf("unprotected plan started engines: %v", engines.events)
+	}
+	if capacity.reservations != 0 {
+		t.Fatalf("unprotected plan reserved capacity %d times", capacity.reservations)
+	}
+}
+
+func TestShardManagerRejectsUntrustedShardPlans(t *testing.T) {
+	tests := []struct {
+		name       string
+		plan       shard.ShardPlan
+		candidate  shard.CandidateNode
+		wantRefuse bool
+		wantWarn   bool
+	}{
+		{
+			name: "llamacpp requires protected relay",
+			plan: shard.ShardPlan{Mode: shard.ModeLlamaCPPRPC, Nodes: []shard.NodePlan{{NodeID: "node"}}},
+			candidate: shard.CandidateNode{
+				ID: "node", RPCAddress: "192.0.2.1:7452", RPCProtected: false,
+			},
+			wantRefuse: true,
+		},
+		{
+			name: "vllm requires trusted network",
+			plan: shard.ShardPlan{Mode: shard.ModeVLLMMP, Nodes: []shard.NodePlan{{NodeID: "node"}}},
+			candidate: shard.CandidateNode{
+				ID: "node", NetworkLinks: []hardware.NetworkLink{{Name: "eth0"}},
+			},
+			wantRefuse: true,
+		},
+		{
+			name: "explicit insecure vllm override warns",
+			plan: shard.ShardPlan{Mode: shard.ModeVLLMMP, Nodes: []shard.NodePlan{{NodeID: "node"}}},
+			candidate: shard.CandidateNode{
+				ID: "node", AllowInsecureShardNetwork: true,
+				NetworkLinks: []hardware.NetworkLink{{Name: "eth0"}},
+			},
+			wantWarn: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			warnings, err := shardPlanNetworkWarnings(test.plan, []shard.CandidateNode{test.candidate})
+			if test.wantRefuse {
+				var refusal *shard.Refusal
+				if !errors.As(err, &refusal) || refusal.Code != shard.RefusalUntrustedNetwork {
+					t.Fatalf("shardPlanNetworkWarnings() error = %v, want untrusted-network refusal", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("shardPlanNetworkWarnings() error = %v", err)
+			}
+			if test.wantWarn && (len(warnings) != 1 || !bytes.Contains([]byte(warnings[0]), []byte("WARNING:"))) {
+				t.Fatalf("warnings = %v, want prominent warning", warnings)
+			}
+		})
+	}
+}
+
 func TestShardManagerMarksLostMemberDegradedThenFailed(t *testing.T) {
 	manager, registry, engines, capacity, _ := newTestShardManager(t, "")
 	group, err := manager.Create(context.Background(), testShardRequest())
@@ -413,11 +490,11 @@ type testManagedEngines struct {
 func newTestManagedEngines() *testManagedEngines {
 	return &testManagedEngines{statuses: map[string]map[string]supervisor.Status{
 		"https://node-1:7451": {
-			"rpc-1":      {ID: "rpc-1", Kind: "ggml-rpc-server", State: "stopped", Endpoint: "tcp://127.0.0.1:50052"},
+			"rpc-1":      {ID: "rpc-1", Kind: "ggml-rpc-server", State: "stopped", Endpoint: "tcp://127.0.0.1:50052", RelayEndpoint: "tcp://192.0.2.11:7452"},
 			"llama-head": {ID: "llama-head", Kind: "llama-server", State: "stopped", Endpoint: "http://127.0.0.1:8080"},
 		},
 		"https://node-2:7451": {
-			"rpc-2": {ID: "rpc-2", Kind: "ggml-rpc-server", State: "stopped", Endpoint: "tcp://127.0.0.1:50052"},
+			"rpc-2": {ID: "rpc-2", Kind: "ggml-rpc-server", State: "stopped", Endpoint: "tcp://127.0.0.1:50052", RelayEndpoint: "tcp://192.0.2.12:7452"},
 		},
 	}}
 }

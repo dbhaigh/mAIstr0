@@ -57,7 +57,8 @@
             "properties": {
               "name": {"type": "string"},
               "speed_mbps": {"type": "integer", "minimum": 0},
-              "rdma": {"type": "boolean"}
+              "rdma": {"type": "boolean"},
+              "trusted": {"type": "boolean"}
             },
             "additionalProperties": true
           }
@@ -66,10 +67,11 @@
       },
       "additionalProperties": true
     },
-    "models": {"type": ["array", "null"], "items": {"type": "object", "required": ["name", "engine", "tags"], "properties": {"name": {"type": "string"}, "engine": {"type": "string"}, "tags": {"type": ["array", "null"], "items": {"type": "string"}}, "protocols": {"type": "array", "items": {"type": "string"}}, "size_gb": {"type": "number"}, "context_length": {"type": "integer", "minimum": 0}, "device": {"type": "string", "enum": ["cpu", "gpu", "npu"]}}, "additionalProperties": true}},
+    "models": {"type": ["array", "null"], "items": {"type": "object", "required": ["name", "engine", "tags"], "properties": {"name": {"type": "string"}, "engine": {"type": "string"}, "tags": {"type": ["array", "null"], "items": {"type": "string"}}, "protocols": {"type": "array", "items": {"type": "string"}}, "size_gb": {"type": "number"}, "context_length": {"type": "integer", "minimum": 0}, "device": {"type": "string", "enum": ["cpu", "gpu", "npu"]}, "quantization": {"type": "string"}}, "additionalProperties": true}},
     "engines": {"type": "array", "items": {"$ref": "engine-status.schema.json"}},
     "supported_shard_models": {"type": "array", "items": {"type": "string"}},
     "max_layers_it_can_host": {"type": "integer", "minimum": 0},
+    "allow_insecure_shard_network": {"type": "boolean"},
     "current_stage_assignments": {"type": "integer", "minimum": 0},
     "capabilities": {"type": "array", "items": {"type": "string"}},
     "gpu_history": {"type": "array", "items": {"type": "object", "required": ["timestamp", "available", "utilization_percent"], "properties": {"timestamp": {"type": "string", "format": "date-time"}, "available": {"type": "boolean"}, "utilization_percent": {"type": "integer"}}, "additionalProperties": true}},

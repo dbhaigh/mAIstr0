@@ -1,0 +1,13 @@
+{
+  "name": "delete-shard-group",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/shards/{id}"
+  },
+  "expected_response": {
+    "status": 204
+  },
+  "normalization_rules": [
+    "Fixed IDs, addresses, and RFC3339 timestamps; generated from Go wire types."
+  ]
+}

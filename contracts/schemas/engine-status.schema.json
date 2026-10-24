@@ -13,8 +13,12 @@
       "properties": {
         "devices": {"type": "array", "items": {"type": "string", "enum": ["cpu", "gpu", "npu"]}},
         "backends": {"type": "array", "items": {"type": "string"}},
+        "npu_vendors": {"type": "array", "items": {"type": "string"}},
         "quantizations": {"type": "array", "items": {"type": "string"}},
+        "primary_quantization": {"type": "string"},
+        "modalities": {"type": "array", "items": {"type": "string"}},
         "max_parallel_seqs": {"type": "integer", "minimum": 0},
+        "max_context_length": {"type": "integer", "minimum": 0},
         "requires_context_cap": {"type": "boolean"},
         "supports_sharding": {"type": "array", "items": {"type": "string", "enum": ["llamacpp-rpc", "vllm-mp", "vllm-ray"]}},
         "homogeneous_only": {"type": "boolean"},

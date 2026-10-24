@@ -347,6 +347,9 @@ func detectLinuxNPUDevices(probe deviceProbe) []Device {
 			readProbeFile(probe, filepath.Join(devicePath, "name")),
 		)
 		uevent := readProbeFile(probe, filepath.Join(devicePath, "uevent"))
+		if vendor == "" {
+			vendor = npuVendor(name + " " + uevent)
+		}
 		driver := driverFromUEvent(uevent)
 		if name == "" {
 			if vendor == "intel-npu" {
@@ -622,6 +625,9 @@ func npuVendor(text string) string {
 			return match.vendor
 		}
 	}
+	if strings.Contains(value, "ryzen ai") || strings.Contains(value, "xdna") {
+		return "amd-npu"
+	}
 	if hasToken(value, "ipu") {
 		return "intel-npu"
 	}
@@ -643,6 +649,8 @@ func npuVendorFromPCI(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "0x8086", "8086":
 		return "intel-npu"
+	case "0x1022", "1022":
+		return "amd-npu"
 	case "0x17cb", "17cb":
 		return "qualcomm-npu"
 	case "0x1e60", "1e60":
@@ -660,6 +668,8 @@ func npuBackends(vendor string) []string {
 		return []string{"openvino", "directml"}
 	case "qualcomm-npu":
 		return []string{"hexagon", "qnn"}
+	case "amd-npu":
+		return []string{"xdna"}
 	case "huawei-npu":
 		return []string{"cann"}
 	case "hailo-npu":

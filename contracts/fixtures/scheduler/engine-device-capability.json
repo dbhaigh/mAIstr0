@@ -25,6 +25,7 @@
               "vendor": "huawei",
               "name": "Ascend 910",
               "index": 0,
+              "free_memory_mb": 8192,
               "backends": [
                 "cann"
               ]
@@ -39,6 +40,7 @@
             "tags": [
               "general"
             ],
+            "size_gb": 4,
             "device": "npu"
           }
         ],
@@ -74,6 +76,7 @@
         "tags": [
           "general"
         ],
+        "size_gb": 4,
         "device": "npu"
       }
     ],
@@ -110,8 +113,9 @@
           "load_penalty": 0,
           "gpu_utilization_penalty": 0,
           "npu_utilization_penalty": 0,
-          "estimated_completion_seconds": 3.5276684147527875,
-          "estimated_tokens_per_second": 9.071147352221454,
+          "estimated_completion_seconds": 2.8666666666666667,
+          "estimated_tokens_per_second": 12,
+          "model_size_gb": 4,
           "learned_bias": 0,
           "telemetry_fresh": false
         }

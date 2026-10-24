@@ -374,14 +374,38 @@ func TestAcceleratorCompatibilityBonusUsesEngineCapabilities(t *testing.T) {
 		{
 			name: "NPU backend match",
 			hardware: hardware.Info{Devices: []hardware.Device{
-				{Kind: "npu", Backends: []string{"cann"}},
+				{Kind: "npu", Vendor: "huawei-npu", FreeMemoryMB: 8192, Backends: []string{"cann"}},
 			}},
 			status: engine.Status{
 				Name: "engine", Ready: true, ModelCount: 1,
 				Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"cann"}},
 			},
-			model:     engine.Model{Engine: "engine"},
+			model:     engine.Model{Engine: "engine", Device: "npu", SizeGB: 2},
 			wantBonus: acceleratorModelBonus,
+		},
+		{
+			name: "NPU bonus requires reported NPU execution",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "npu", Vendor: "huawei-npu", FreeMemoryMB: 8192, Backends: []string{"cann"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"cann"}},
+			},
+			model: engine.Model{Engine: "engine", SizeGB: 2},
+		},
+		{
+			name: "NPU vendor mismatch",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "npu", Vendor: "qualcomm-npu", FreeMemoryMB: 8192, Backends: []string{"hexagon"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{
+					Devices: []string{"npu"}, Backends: []string{"openvino"}, NPUVendors: []string{"intel-npu"},
+				},
+			},
+			model: engine.Model{Engine: "engine", Device: "npu", SizeGB: 2},
 		},
 		{
 			name: "device kind mismatch",
@@ -434,6 +458,103 @@ func TestAcceleratorCompatibilityBonusUsesEngineCapabilities(t *testing.T) {
 				t.Fatalf("acceleratorCompatibilityBonus() = %v, want %v", got, test.wantBonus)
 			}
 		})
+	}
+}
+
+func TestNPUModelEligibilityMatchesDocumentedVendorProfiles(t *testing.T) {
+	tests := []struct {
+		name         string
+		vendor       string
+		backend      string
+		capabilities engine.Capabilities
+	}{
+		{
+			name:   "Intel OpenVINO",
+			vendor: "intel-npu", backend: "openvino",
+			capabilities: engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{"openvino"},
+				NPUVendors: []string{"intel-npu"}, Quantizations: []string{"q4_0"},
+				PrimaryQuantization: "q4_0", MaxParallelSeqs: 1, RequiresContextCap: true,
+				MaxContextLength: 8192, Modalities: []string{"text"},
+			},
+		},
+		{
+			name:   "Qualcomm Hexagon",
+			vendor: "qualcomm-npu", backend: "hexagon",
+			capabilities: engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{"hexagon"},
+				NPUVendors: []string{"qualcomm-npu"}, Quantizations: []string{"q4_0"},
+			},
+		},
+		{
+			name:   "AMD XDNA 2",
+			vendor: "amd-npu", backend: "xdna",
+			capabilities: engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{"xdna"},
+				NPUVendors: []string{"amd-npu"}, MaxContextLength: 262144,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			node := scoreNode(engine.Model{
+				Name: "model", Engine: "npu-engine", Device: "npu",
+				SizeGB: 2, ContextLength: 4096, Quantization: "Q4_0",
+			})
+			node.Hardware = hardware.Info{HasNPU: true, NPUVendor: test.vendor, Devices: []hardware.Device{
+				{Kind: "npu", Vendor: test.vendor, Backends: []string{test.backend}, FreeMemoryMB: 4096},
+			}}
+			node.Engines = []engine.Status{{
+				Name: "npu-engine", Ready: true, ModelCount: 1, Capabilities: test.capabilities,
+			}}
+			if _, ok := Prepare(node, Subtask{TaskType: "general"}); !ok {
+				t.Fatalf("documented NPU profile was rejected: %+v", ExplainNPUModelRejections(
+					[]cluster.NodeStatus{node}, Subtask{TaskType: "general"},
+				))
+			}
+			if got := acceleratorCompatibilityBonus(node, node.Models[0]); got != acceleratorModelBonus {
+				t.Fatalf("NPU compatibility bonus = %v, want %v", got, acceleratorModelBonus)
+			}
+		})
+	}
+}
+
+func TestNPUModelRejectionExplanationIncludesFitQuantizationAndContext(t *testing.T) {
+	node := scoreNode(engine.Model{
+		Name: "model", Engine: "openvino", Device: "npu",
+		SizeGB: 8, ContextLength: 16384, Quantization: "q5_k",
+	})
+	node.Hardware = hardware.Info{
+		HasNPU: true, NPUVendor: "intel-npu",
+		Devices: []hardware.Device{{
+			Kind: "npu", Vendor: "intel-npu", Backends: []string{"openvino"}, FreeMemoryMB: 4096,
+		}},
+	}
+	node.Engines = []engine.Status{{
+		Name: "openvino", Ready: true, ModelCount: 1,
+		Capabilities: engine.Capabilities{
+			Devices: []string{"npu"}, Backends: []string{"openvino"}, NPUVendors: []string{"intel-npu"},
+			Quantizations: []string{"q4_0"}, PrimaryQuantization: "q4_0",
+			RequiresContextCap: true, MaxContextLength: 8192,
+		},
+	}}
+	subtask := Subtask{TaskType: "general"}
+	if _, ok := Prepare(node, subtask); ok {
+		t.Fatal("model exceeding NPU constraints was eligible")
+	}
+	rejections := ExplainNPUModelRejections([]cluster.NodeStatus{node}, subtask)
+	if len(rejections) != 1 {
+		t.Fatalf("rejections = %+v, want one model explanation", rejections)
+	}
+	explanation := strings.Join(rejections[0].Reasons, "; ")
+	for _, reason := range []string{
+		"model does not fit in reported NPU memory",
+		"model quantization is not supported",
+		"model context cap exceeds the engine maximum",
+	} {
+		if !strings.Contains(explanation, reason) {
+			t.Errorf("explanation %q does not include %q", explanation, reason)
+		}
 	}
 }
 

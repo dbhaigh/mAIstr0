@@ -5,10 +5,13 @@
     "path": "/api/shards"
   },
   "expected_response": {
+    "status": 200,
     "schema": "shard-group-list.schema.json",
     "body": {
       "groups": []
     }
   },
-  "normalization_rules": ["No generated values are present in the empty group list."]
+  "normalization_rules": [
+    "Fixed IDs, addresses, and RFC3339 timestamps; generated from Go wire types."
+  ]
 }

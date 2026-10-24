@@ -22,6 +22,7 @@ type Model struct {
 	SizeGB        float64  `json:"size_gb,omitempty"`
 	ContextLength int      `json:"context_length,omitempty"`
 	Device        string   `json:"device,omitempty"`
+	Quantization  string   `json:"quantization,omitempty"`
 	Members       []string `json:"members,omitempty"`
 }
 
@@ -51,7 +52,8 @@ func ProtocolsForEngine(name string) []string {
 	switch name {
 	case "ollama":
 		return []string{"ollama", "openai"}
-	case "lmstudio", "llamacpp", "vllm", "fastflowlm", "tgi", "localai", "mlx", "sglang", "openai":
+	case "lmstudio", "llamacpp", TemplateLlamaCPPOpenVINONPU, TemplateLlamaCPPHexagonNPU, TemplateLlamaCPPXDNA2NPU,
+		"vllm", "fastflowlm", TemplateFastFlowLMXDNA2, "tgi", "localai", "mlx", "sglang", "openai":
 		return []string{"openai"}
 	default:
 		return nil
@@ -195,6 +197,8 @@ func NewConfiguredWithAPIKey(name, baseURL, apiKey string) Engine {
 			return &LlamaCPP{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
 		}
 		return NewLlamaCPP(baseURL)
+	case TemplateLlamaCPPOpenVINONPU, TemplateLlamaCPPHexagonNPU, TemplateLlamaCPPXDNA2NPU:
+		return &LlamaCPP{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
 	case "vllm":
 		if apiKey != "" {
 			return newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)
@@ -210,6 +214,8 @@ func NewConfiguredWithAPIKey(name, baseURL, apiKey string) Engine {
 			return &FastFlowLM{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
 		}
 		return NewFastFlowLM(baseURL)
+	case TemplateFastFlowLMXDNA2:
+		return &FastFlowLM{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
 	case "tgi", "localai", "mlx", "sglang", "openai":
 		return newOpenAICompatibleEngine(baseURL, name)
 	default:

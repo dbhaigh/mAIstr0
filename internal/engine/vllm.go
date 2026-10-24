@@ -63,6 +63,9 @@ func (v *VLLM) defaultCapabilities() Capabilities {
 	if v.Name() == "mlx" {
 		return Capabilities{OS: []string{"darwin"}}
 	}
+	if template, ok := ManagedEngineTemplateFor(v.Name()); ok {
+		return template.Capabilities
+	}
 	return Capabilities{}
 }
 
@@ -94,11 +97,11 @@ func (v *VLLM) ProbeCapabilities(ctx context.Context) (Capabilities, error) {
 		Backends           []string `json:"backends"`
 		Quantizations      []string `json:"quantizations"`
 		MaxParallelSeqs    int      `json:"max_parallel_seqs"`
+		MaxContextLength   int      `json:"max_context_length"`
 		RequiresContextCap bool     `json:"requires_context_cap"`
 		SupportsSharding   []string `json:"supports_sharding"`
 		HomogeneousOnly    bool     `json:"homogeneous_only"`
 		OperatingSystems   []string `json:"os"`
-		ValidatedRPC       bool     `json:"validated_rpc"`
 	}
 	if err := json.Unmarshal(data, &version); err != nil {
 		var versionString string
@@ -113,10 +116,11 @@ func (v *VLLM) ProbeCapabilities(ctx context.Context) (Capabilities, error) {
 	capabilities = MergeCapabilities(capabilities, Capabilities{
 		Devices: version.Devices, Backends: version.Backends,
 		Quantizations: version.Quantizations, MaxParallelSeqs: version.MaxParallelSeqs,
+		MaxContextLength:   version.MaxContextLength,
 		RequiresContextCap: version.RequiresContextCap,
 		SupportsSharding:   append(version.SupportsSharding, "vllm-mp"),
 		HomogeneousOnly:    true,
-		OS:                 version.OperatingSystems, ValidatedRPC: version.ValidatedRPC,
+		OS:                 version.OperatingSystems,
 	})
 	if version.RayVersion != "" {
 		capabilities.SupportsSharding = uniqueCapabilityValues(capabilities.SupportsSharding, []string{"vllm-ray"})
@@ -205,6 +209,7 @@ func (v *VLLM) ListModels() ([]Model, error) {
 			SizeBytes      int64   `json:"size_bytes"`
 			ModelSizeBytes int64   `json:"model_size_bytes"`
 			Device         string  `json:"device"`
+			Quantization   string  `json:"quantization"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -223,6 +228,7 @@ func (v *VLLM) ListModels() ([]Model, error) {
 		models = append(models, Model{
 			Name: item.ID, Engine: v.Name(), Tags: inferTags(item.ID),
 			SizeGB: sizeGB, ContextLength: item.MaxModelLen, Device: NormalizeDeviceKind(item.Device),
+			Quantization: strings.ToLower(strings.TrimSpace(item.Quantization)),
 		})
 	}
 	return models, nil

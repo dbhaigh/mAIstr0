@@ -31,6 +31,21 @@ tests. Run the race suite on a supported Linux environment:
 go test -race ./...
 ```
 
+The managed sharding process test builds three small Go fake binaries and
+exercises the real planner, process supervisor, health sweeps, router, and
+rebuild without GPUs:
+
+```sh
+go test ./internal/integration -run TestManagedShardProcessLifecycle -count=1 -v
+```
+
+It uses fixture node HTTP/relay adapters, not a real tensor protocol or an
+authentication test. llama.cpp lifecycle runs on Windows and Linux; managed
+vLLM lifecycle runs only on Linux (no native Windows support). CI separately
+builds these binaries and the S3 supervisor fake because Go's `./...` excludes
+`testdata` packages. Hardware compatibility and throughput require the
+[real-machine checklist](./hardware-validation.md).
+
 The native Windows race runtime can fail before tests start because
 ThreadSanitizer cannot allocate shadow memory (error 87). See the CI race job
 for the supported Linux gate. Ubuntu 24.04 WSL has also had an intermittent

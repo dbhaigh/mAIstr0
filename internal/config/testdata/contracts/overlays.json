@@ -2,6 +2,7 @@
   "node": {
     "node_id": "worker-17",
     "listen_addr": ":7451",
+    "rpc_relay_listen_addr": ":7452",
     "log_level": "info",
     "advertise_addr": "",
     "orchestrator_addr": "",

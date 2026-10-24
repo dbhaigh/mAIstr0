@@ -60,17 +60,19 @@ func main() {
 		ID: "npu-worker", Address: "https://npu-worker", Healthy: true,
 		Hardware: hardware.Info{
 			Score: 20, HasNPU: true,
-			Devices: []hardware.Device{{Kind: "npu", Vendor: "huawei", Name: "Ascend 910", Backends: []string{"cann"}}},
+			Devices: []hardware.Device{{
+				Kind: "npu", Vendor: "huawei", Name: "Ascend 910", FreeMemoryMB: 8192, Backends: []string{"cann"},
+			}},
 		},
 		Engines: []engine.Status{{
 			Name: "runtime", Ready: true, ModelCount: 1,
 			Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"cann"}},
 		}},
 		Models: []engine.Model{{
-			Name: "npu-model", Engine: "runtime", Tags: []string{"general"}, Device: "npu",
+			Name: "npu-model", Engine: "runtime", Tags: []string{"general"}, Device: "npu", SizeGB: 4,
 		}},
 	}}, []engine.Model{{
-		Name: "npu-model", Engine: "runtime", Tags: []string{"general"}, Device: "npu",
+		Name: "npu-model", Engine: "runtime", Tags: []string{"general"}, Device: "npu", SizeGB: 4,
 	}}, []scheduler.Subtask{{
 		ID: "infer", Description: "Run inference", Role: "worker", TaskType: "general",
 	}})

@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,6 +45,8 @@ type Agent struct {
 	generateIdempotency *generateIdempotencyCache
 	statusReporter      *statusComponent
 	managedEngines      *supervisor.Manager
+	rpcRelays           *rpcRelayManager
+	rpcRelayMu          sync.Mutex
 }
 
 type peerDispatchJob struct {
@@ -145,6 +148,13 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 	telemetry := newTelemetryComponent(hw)
 	executor := newExecutorComponent(cfg.MaxConcurrentTasks, state)
 	engines := newEngineComponent(configuredEngines, detector, telemetry, state)
+	engines.operatorCapabilities = make(map[string]engine.Capabilities)
+	for _, configured := range cfg.Engines {
+		if configured.ValidatedRPC {
+			key := strings.ToLower(strings.TrimSpace(configured.Name))
+			engines.operatorCapabilities[key] = engine.Capabilities{ValidatedRPC: true}
+		}
+	}
 	identity := newIdentityComponent()
 	events := hub.New()
 	link := newOrchestratorLink(state, identity, telemetry, engines, tasks, events)
@@ -211,6 +221,9 @@ func (a *Agent) Close() error {
 	if a.managedEngines != nil {
 		closeErr = errors.Join(closeErr, a.managedEngines.Close())
 	}
+	if a.rpcRelays != nil {
+		closeErr = errors.Join(closeErr, a.rpcRelays.Close())
+	}
 	if a.orchestratorLink.tasks != nil {
 		closeErr = errors.Join(closeErr, a.orchestratorLink.tasks.Close())
 	}
@@ -226,23 +239,37 @@ func (a *Agent) Memory() memory.Store { return a.mem }
 
 // InitializeIdentity loads the node's persistent TLS identity before serving.
 func (a *Agent) InitializeIdentity() error {
-	if a.identityComponent.Initialized() {
-		return nil
+	if !a.identityComponent.Initialized() {
+		if err := a.identityComponent.initialize(a.cfg.NodeID, a.cfg.MemoryPath, a.cfg.AdvertiseAddr); err != nil {
+			return err
+		}
+		transport, err := a.identityComponent.clientTransport()
+		if err != nil {
+			return err
+		}
+		a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: transport}
+		a.memorySyncClient = &http.Client{
+			Timeout:   time.Duration(a.cfg.SyncTimeoutSeconds) * time.Second,
+			Transport: transport,
+		}
+		a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: transport}
+		a.streamClient = &http.Client{Transport: transport}
 	}
-	if err := a.identityComponent.initialize(a.cfg.NodeID, a.cfg.MemoryPath, a.cfg.AdvertiseAddr); err != nil {
-		return err
+	a.rpcRelayMu.Lock()
+	defer a.rpcRelayMu.Unlock()
+	if a.rpcRelays == nil {
+		relays, err := newRPCRelayManager(
+			a.identityComponent.identity,
+			a.cfg.NodeID,
+			a.cfg.RPCRelayListenAddr,
+			a.cfg.AdvertiseAddr,
+		)
+		if err != nil {
+			return fmt.Errorf("initialize RPC relay: %w", err)
+		}
+		a.rpcRelays = relays
+		a.managedEngines.SetRPCRelayController(relays)
 	}
-	transport, err := a.identityComponent.clientTransport()
-	if err != nil {
-		return err
-	}
-	a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: transport}
-	a.memorySyncClient = &http.Client{
-		Timeout:   time.Duration(a.cfg.SyncTimeoutSeconds) * time.Second,
-		Transport: transport,
-	}
-	a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: transport}
-	a.streamClient = &http.Client{Transport: transport}
 	return nil
 }
 
