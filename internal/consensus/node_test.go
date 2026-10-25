@@ -145,11 +145,15 @@ func TestDynamicVoterMembershipAndLastVoterProtection(t *testing.T) {
 	leader = waitForClusterLeader(t, nodes)
 	waitForVoterCount(t, leader, 3)
 
-	removedID := nodes[2].ID()
-	if err := leader.RemoveVoter(context.Background(), removedID); err != nil {
-		t.Fatalf("remove voter %s: %v", removedID, err)
+	// Remove a follower; the leader is elected dynamically and may be any node.
+	var removedID string
+	for _, node := range nodes {
+		if node != leader {
+			removedID = node.ID()
+			break
+		}
 	}
-	leader = waitForClusterLeader(t, nodes)
+	leader = removeVoterTolerantOfLeaderChange(t, nodes, removedID)
 	waitForVoterCount(t, leader, 2)
 	configuration, err := leader.Configuration(context.Background())
 	if err != nil {
@@ -164,10 +168,7 @@ func TestDynamicVoterMembershipAndLastVoterProtection(t *testing.T) {
 	if secondID == "" {
 		t.Fatal("two-voter configuration did not include a second member")
 	}
-	if err := leader.RemoveVoter(context.Background(), secondID); err != nil {
-		t.Fatalf("remove second voter: %v", err)
-	}
-	leader = waitForClusterLeader(t, nodes)
+	leader = removeVoterTolerantOfLeaderChange(t, nodes, secondID)
 	waitForVoterCount(t, leader, 1)
 	if err := leader.RemoveVoter(context.Background(), leader.ID()); !errors.Is(err, ErrLastVoter) {
 		t.Fatalf("removing last voter error = %v, want %v", err, ErrLastVoter)
@@ -234,6 +235,38 @@ func TestPartitionedMinorityCannotCommitMutations(t *testing.T) {
 	}
 	if found {
 		t.Fatalf("minority mutation appeared in majority state: %q", value)
+	}
+}
+
+// removeVoterTolerantOfLeaderChange removes id through the current leader.
+// Slow runners can lose leadership while the configuration change commits, so
+// the outcome is unknown; retry through the new leader, and accept
+// ErrMemberNotFound once an earlier ambiguous attempt may have committed.
+func removeVoterTolerantOfLeaderChange(t *testing.T, nodes []*Node, id string) *Node {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	ambiguous := false
+	for {
+		leader := waitForClusterLeader(t, nodes)
+		err := leader.RemoveVoter(context.Background(), id)
+		switch {
+		case err == nil:
+			leader = waitForClusterLeader(t, nodes)
+			if leader.ID() != id {
+				return leader
+			}
+			ambiguous = true
+		case ambiguous && errors.Is(err, ErrMemberNotFound):
+			return leader
+		case errors.Is(err, raft.ErrLeadershipLost), errors.Is(err, ErrNotLeader),
+			errors.Is(err, raft.ErrLeadershipTransferInProgress):
+			ambiguous = true
+		default:
+			t.Fatalf("remove voter %s: %v", id, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("remove voter %s: leadership kept changing: %v", id, err)
+		}
 	}
 }
 
