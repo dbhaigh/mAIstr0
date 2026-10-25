@@ -20,8 +20,9 @@ replacement for review or CI.
   The branch incorporates GitHub main's merge commit `9531014`; local validation
   is recorded below, while remote CI remains an independent gate.
 - Go 1.27.3 is installed in the WSL user's home directory for local Linux race
-  validation. Native Windows race builds currently fail in cgo; older Windows
-  configurations also failed with ThreadSanitizer error 87.
+  validation. Native Windows race tests pass through `build\test-race.ps1`,
+  which works around compiler DLLs shadowed in `PATH`. Older Windows
+  configurations failed with ThreadSanitizer error 87.
 
 ## Current architecture
 

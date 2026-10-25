@@ -47,10 +47,12 @@ go build ./cmd/maistr0
 node --test web/app_test.js
 ```
 
-Run `go test -race ./...` on a supported Linux environment when changing
-concurrent code. Windows may fail before tests start because ThreadSanitizer
-cannot allocate shadow memory (error 87); Ubuntu 24.04 WSL has also had an
-intermittent node-agent test failure without a race report. See
+Run the race detector when changing concurrent code: `./build/test-race.sh` on
+Linux/macOS or `.\build\test-race.ps1` on Windows. The Windows script fixes
+`PATH` for the run when another directory shadows the MinGW compiler's DLLs
+(`cc1.exe` exit `0xC0000139`). Older Windows setups may still fail with
+ThreadSanitizer error 87; Ubuntu 24.04 WSL has also had an intermittent
+node-agent test failure without a race report. See
 [docs/development.md](./docs/development.md) for the recorded limitations and
 CI race job.
 

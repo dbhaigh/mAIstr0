@@ -2,3 +2,6 @@
 **/testdata/contracts/*.json text eol=lf
 **/testdata/golden/*.json text eol=lf
 contracts/fixtures/**/*.json text eol=lf
+
+# Shell scripts must keep LF endings to run under sh/bash.
+*.sh text eol=lf

@@ -25,11 +25,20 @@ node --test web/app_test.js
 ```
 
 The Go suite includes contract, integration, and deterministic simulated-engine
-tests. Run the race suite on a supported Linux environment:
+tests. The race detector needs cgo and a working C compiler. Run it with the
+helper scripts, which accept optional packages and `go test` flags (default
+`./...`):
 
 ```sh
-go test -race ./...
+./build/test-race.sh            # Linux/macOS
 ```
+
+```powershell
+.\build\test-race.ps1           # Windows (PowerShell 5.1 or 7)
+.\build\test-race.ps1 -CheckOnly
+.\build\test-race.ps1 ./internal/hub -count=1
+```
+
 
 The managed sharding process test builds three small Go fake binaries and
 exercises the real planner, process supervisor, health sweeps, router, and
@@ -46,11 +55,33 @@ builds these binaries and the S3 supervisor fake because Go's `./...` excludes
 `testdata` packages. Hardware compatibility and throughput require the
 [real-machine checklist](./hardware-validation.md).
 
-The native Windows race runtime can fail before tests start because
-ThreadSanitizer cannot allocate shadow memory (error 87). See the CI race job
-for the supported Linux gate. Ubuntu 24.04 WSL has also had an intermittent
-node-agent test failure without a race report; use the Linux CI result to
-separate an environment flake from a race finding.
+### Native Windows race tests
+
+Native Windows race tests pass with Go 1.27.3 and MSYS2 MinGW-w64 GCC. The
+common failure is not a missing compiler but DLL shadowing: GCC's `cc1.exe`
+loads runtime DLLs (`libgcc_s_seh-1.dll`, `libgmp-10.dll`,
+`libwinpthread-1.dll`, `zlib1.dll`, `libzstd.dll`, …) through `PATH`. If another
+application's directory that ships older copies, such as
+`C:\Program Files\Multipass\bin`, comes earlier in `PATH`, `cc1.exe` exits with
+`0xC0000139` (entry point not found) and Go reports only
+`runtime/cgo: ... exit status 2` or a C compiler failure.
+
+`build\test-race.ps1` detects this. It locates the compiler from `go env CC` or
+common MSYS2 paths, compiles and runs a small C program, and, if the inherited
+`PATH` fails, puts the compiler directory first for that run only. It lists
+the directories that shadow compiler DLLs. To make plain
+`go test -race` work, move the compiler's `bin` directory (for example
+`C:\msys64\mingw64\bin`) ahead of those directories in your user or system
+`PATH`. Windows searches the machine `PATH` before the user `PATH`.
+
+Older Windows configurations also failed before tests started because
+ThreadSanitizer could not allocate shadow memory (error 87); treat that as an
+environment limitation, not a pass. The CI race job on Linux remains the
+release gate. Ubuntu 24.04 WSL has also had an intermittent node-agent test
+failure without a race report; use the Linux CI result to separate an
+environment flake from a race finding.
+
+### Race tests in WSL
 
 For a user-local WSL installation, run the Linux toolchain rather than the
 Windows executable inherited through `PATH`. The local validation environment
@@ -62,8 +93,6 @@ wsl.exe -d Ubuntu --cd "$((Get-Location).Path)" -- bash -lc '~/.local/go1.27.3/b
 ```
 
 Substitute your installation path or set the Linux `PATH` to your installation.
-Native Windows currently also fails before race tests start when its cgo tool
-cannot build; this is not a passing race check.
 
 ## Background work and performance feedback
 

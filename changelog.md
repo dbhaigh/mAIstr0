@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Development
+
+- Added `build/test-race.ps1` and `build/test-race.sh` to run the race detector.
+  On Windows, the script finds the
+  MinGW compiler and works around DLL shadowing in `PATH` (for example, older
+  DLLs in `C:\Program Files\Multipass\bin` that crash `cc1.exe` with
+  `0xC0000139`), so native Windows race tests run without changing
+  system settings.
+
 ## 0.0.24.2
 
 Released: 2026-10-25.
