@@ -3,6 +3,7 @@ package score
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,7 +237,12 @@ func TestScoreFactorsTable(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, factors := Score(test.node, test.subtask, test.load, test.pending, test.exp, test.cfg, now)
-			if got != test.want || !reflect.DeepEqual(factors, test.factors) {
+			legacyFactors := factors
+			legacyFactors.EstimatedCompletionSeconds = 0
+			legacyFactors.EstimatedTokensPerSecond = 0
+			legacyFactors.ModelSizeGB = 0
+			legacyFactors.LatencyScore = 0
+			if got != test.want || !reflect.DeepEqual(legacyFactors, test.factors) {
 				t.Fatalf("Score() = (%v, %+v), want (%v, %+v)", got, factors, test.want, test.factors)
 			}
 			candidate, ok := Prepare(test.node, test.subtask)
@@ -250,7 +256,49 @@ func TestScoreFactorsTable(t *testing.T) {
 				t.Fatalf("ScorePrepared() = (%v, %+v), want Score() result (%v, %+v)",
 					preparedScore, preparedFactors, got, factors)
 			}
+			fastCandidate, ok := PrepareWithCapabilitiesForScoring(test.node, test.subtask, test.node.EffectiveCapabilities())
+			if !ok {
+				t.Fatal("eligible test candidate was rejected by PrepareWithCapabilitiesForScoring")
+			}
+			if fastScore := ScorePreparedValue(
+				test.node, test.subtask, fastCandidate, test.load, test.pending, test.exp, test.cfg, now,
+			); fastScore != got {
+				t.Fatalf("ScorePreparedValue() = %v, want Score() score %v", fastScore, got)
+			}
 		})
+	}
+}
+
+func TestScoreReportsCompletionEstimateAndRoutingPreference(t *testing.T) {
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	node := scoreNode(engine.Model{Name: "m", Tags: []string{"general", "high-quality"}, SizeGB: 8})
+	node.ActiveTasks = 1
+	subtask := Subtask{
+		TaskType: "general", Description: strings.Repeat("d", 160),
+		ExpectedOutput: strings.Repeat("o", 80), RoutingPreference: "latency",
+	}
+	scoreValue, factors := Score(
+		node, subtask, 3, 0, Experience{TokensPerSecond: 4}, DefaultScoringConfig(), now,
+	)
+	if math.Abs(factors.EstimatedCompletionSeconds-45.4) > 1e-9 {
+		t.Fatalf("estimated completion = %v, want 45.4 seconds", factors.EstimatedCompletionSeconds)
+	}
+	if factors.EstimatedTokensPerSecond != 4 || factors.ModelSizeGB != 8 {
+		t.Fatalf("cost factors = %+v, want measured throughput 4 tokens/s and model size 8 GB", factors)
+	}
+	if math.Abs(factors.LatencyScore-30.0/46.4) > 1e-9 {
+		t.Fatalf("latency score = %v, want %v", factors.LatencyScore, 30.0/46.4)
+	}
+
+	subtask.RoutingPreference = "quality"
+	qualityScore, qualityFactors := Score(
+		node, subtask, 3, 0, Experience{TokensPerSecond: 4}, DefaultScoringConfig(), now,
+	)
+	if qualityFactors.LatencyScore != 0 || qualityFactors.ModelQualityScore != 2*factors.ModelQualityScore {
+		t.Fatalf("quality preference factors = %+v, latency factors = %+v", qualityFactors, factors)
+	}
+	if scoreValue == qualityScore {
+		t.Fatal("routing preference did not affect the candidate score")
 	}
 }
 
@@ -300,6 +348,213 @@ func TestScoreRejectsIneligibleModels(t *testing.T) {
 				t.Fatalf("Score() = (%v, %+v), want (-Inf, zero factors)", got, factors)
 			}
 		})
+	}
+}
+
+func TestAcceleratorCompatibilityBonusUsesEngineCapabilities(t *testing.T) {
+	tests := []struct {
+		name      string
+		hardware  hardware.Info
+		status    engine.Status
+		model     engine.Model
+		wantBonus float64
+	}{
+		{
+			name: "GPU backend match",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu", Backends: []string{"cuda"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}},
+			},
+			model:     engine.Model{Engine: "engine", Tags: []string{"fast"}},
+			wantBonus: acceleratorModelBonus + acceleratorSmallModelBonus,
+		},
+		{
+			name: "NPU backend match",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "npu", Vendor: "huawei-npu", FreeMemoryMB: 8192, Backends: []string{"cann"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"cann"}},
+			},
+			model:     engine.Model{Engine: "engine", Device: "npu", SizeGB: 2},
+			wantBonus: acceleratorModelBonus,
+		},
+		{
+			name: "NPU bonus requires reported NPU execution",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "npu", Vendor: "huawei-npu", FreeMemoryMB: 8192, Backends: []string{"cann"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"cann"}},
+			},
+			model: engine.Model{Engine: "engine", SizeGB: 2},
+		},
+		{
+			name: "NPU vendor mismatch",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "npu", Vendor: "qualcomm-npu", FreeMemoryMB: 8192, Backends: []string{"hexagon"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{
+					Devices: []string{"npu"}, Backends: []string{"openvino"}, NPUVendors: []string{"intel-npu"},
+				},
+			},
+			model: engine.Model{Engine: "engine", Device: "npu", SizeGB: 2},
+		},
+		{
+			name: "device kind mismatch",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu", Backends: []string{"cuda"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"npu"}},
+			},
+			model: engine.Model{Engine: "engine"},
+		},
+		{
+			name: "backend mismatch",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu", Backends: []string{"rocm"}},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}},
+			},
+			model: engine.Model{Engine: "engine"},
+		},
+		{
+			name: "engine not ready",
+			hardware: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu"},
+			}},
+			status: engine.Status{
+				Name: "engine", Ready: false, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"gpu"}},
+			},
+			model: engine.Model{Engine: "engine"},
+		},
+		{
+			name:     "legacy hardware flags still match",
+			hardware: hardware.Info{HasGPU: true},
+			status: engine.Status{
+				Name: "engine", Ready: true, ModelCount: 1,
+				Capabilities: engine.Capabilities{Devices: []string{"gpu"}},
+			},
+			model:     engine.Model{Engine: "engine"},
+			wantBonus: acceleratorModelBonus,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			node := cluster.NodeStatus{Hardware: test.hardware, Engines: []engine.Status{test.status}}
+			if got := acceleratorCompatibilityBonus(node, test.model); got != test.wantBonus {
+				t.Fatalf("acceleratorCompatibilityBonus() = %v, want %v", got, test.wantBonus)
+			}
+		})
+	}
+}
+
+func TestNPUModelEligibilityMatchesDocumentedVendorProfiles(t *testing.T) {
+	tests := []struct {
+		name         string
+		vendor       string
+		backend      string
+		capabilities engine.Capabilities
+	}{
+		{
+			name:   "Intel OpenVINO",
+			vendor: "intel-npu", backend: "openvino",
+			capabilities: engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{"openvino"},
+				NPUVendors: []string{"intel-npu"}, Quantizations: []string{"q4_0"},
+				PrimaryQuantization: "q4_0", MaxParallelSeqs: 1, RequiresContextCap: true,
+				MaxContextLength: 8192, Modalities: []string{"text"},
+			},
+		},
+		{
+			name:   "Qualcomm Hexagon",
+			vendor: "qualcomm-npu", backend: "hexagon",
+			capabilities: engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{"hexagon"},
+				NPUVendors: []string{"qualcomm-npu"}, Quantizations: []string{"q4_0"},
+			},
+		},
+		{
+			name:   "AMD XDNA 2",
+			vendor: "amd-npu", backend: "xdna",
+			capabilities: engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{"xdna"},
+				NPUVendors: []string{"amd-npu"}, MaxContextLength: 262144,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			node := scoreNode(engine.Model{
+				Name: "model", Engine: "npu-engine", Device: "npu",
+				SizeGB: 2, ContextLength: 4096, Quantization: "Q4_0",
+			})
+			node.Hardware = hardware.Info{HasNPU: true, NPUVendor: test.vendor, Devices: []hardware.Device{
+				{Kind: "npu", Vendor: test.vendor, Backends: []string{test.backend}, FreeMemoryMB: 4096},
+			}}
+			node.Engines = []engine.Status{{
+				Name: "npu-engine", Ready: true, ModelCount: 1, Capabilities: test.capabilities,
+			}}
+			if _, ok := Prepare(node, Subtask{TaskType: "general"}); !ok {
+				t.Fatalf("documented NPU profile was rejected: %+v", ExplainNPUModelRejections(
+					[]cluster.NodeStatus{node}, Subtask{TaskType: "general"},
+				))
+			}
+			if got := acceleratorCompatibilityBonus(node, node.Models[0]); got != acceleratorModelBonus {
+				t.Fatalf("NPU compatibility bonus = %v, want %v", got, acceleratorModelBonus)
+			}
+		})
+	}
+}
+
+func TestNPUModelRejectionExplanationIncludesFitQuantizationAndContext(t *testing.T) {
+	node := scoreNode(engine.Model{
+		Name: "model", Engine: "openvino", Device: "npu",
+		SizeGB: 8, ContextLength: 16384, Quantization: "q5_k",
+	})
+	node.Hardware = hardware.Info{
+		HasNPU: true, NPUVendor: "intel-npu",
+		Devices: []hardware.Device{{
+			Kind: "npu", Vendor: "intel-npu", Backends: []string{"openvino"}, FreeMemoryMB: 4096,
+		}},
+	}
+	node.Engines = []engine.Status{{
+		Name: "openvino", Ready: true, ModelCount: 1,
+		Capabilities: engine.Capabilities{
+			Devices: []string{"npu"}, Backends: []string{"openvino"}, NPUVendors: []string{"intel-npu"},
+			Quantizations: []string{"q4_0"}, PrimaryQuantization: "q4_0",
+			RequiresContextCap: true, MaxContextLength: 8192,
+		},
+	}}
+	subtask := Subtask{TaskType: "general"}
+	if _, ok := Prepare(node, subtask); ok {
+		t.Fatal("model exceeding NPU constraints was eligible")
+	}
+	rejections := ExplainNPUModelRejections([]cluster.NodeStatus{node}, subtask)
+	if len(rejections) != 1 {
+		t.Fatalf("rejections = %+v, want one model explanation", rejections)
+	}
+	explanation := strings.Join(rejections[0].Reasons, "; ")
+	for _, reason := range []string{
+		"model does not fit in reported NPU memory",
+		"model quantization is not supported",
+		"model context cap exceeds the engine maximum",
+	} {
+		if !strings.Contains(explanation, reason) {
+			t.Errorf("explanation %q does not include %q", explanation, reason)
+		}
 	}
 }
 

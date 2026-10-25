@@ -1,6 +1,7 @@
 package syncinterval
 
 import (
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -11,6 +12,8 @@ var intervals = [...]time.Duration{
 	30 * time.Second,
 	60 * time.Second,
 }
+
+const DebounceInterval = 500 * time.Millisecond
 
 // Backoff selects a polling interval based on watermark progress.
 type Backoff struct {
@@ -56,6 +59,62 @@ func Wait(interval time.Duration, changes <-chan struct{}) bool {
 	case <-timer.C:
 		return false
 	}
+}
+
+// WaitDebounced waits for a change signal to remain quiet for debounce, or
+// returns false when the heartbeat interval expires without a change.
+func WaitDebounced(interval, debounce time.Duration, changes <-chan struct{}, refresh func() <-chan struct{}) bool {
+	heartbeat := time.NewTimer(interval)
+	defer heartbeat.Stop()
+	var heartbeatC <-chan time.Time = heartbeat.C
+	var debounceTimer *time.Timer
+	currentChanges := changes
+
+	for {
+		var debounceC <-chan time.Time
+		if debounceTimer != nil {
+			debounceC = debounceTimer.C
+		}
+		select {
+		case <-currentChanges:
+			if refresh != nil {
+				currentChanges = refresh()
+			}
+			if debounce <= 0 {
+				return true
+			}
+			if debounceTimer == nil {
+				debounceTimer = time.NewTimer(debounce)
+			} else {
+				if !debounceTimer.Stop() {
+					select {
+					case <-debounceTimer.C:
+					default:
+					}
+				}
+				debounceTimer.Reset(debounce)
+			}
+		case <-debounceC:
+			return true
+		case <-heartbeatC:
+			if debounceTimer == nil {
+				return false
+			}
+			heartbeatC = nil
+		}
+	}
+}
+
+// Jitter varies heartbeat intervals by up to ten percent in either direction.
+func Jitter(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return interval
+	}
+	radius := int64(interval / 10)
+	if radius == 0 {
+		return interval
+	}
+	return interval + time.Duration(rand.Int63n(radius*2+1)-radius)
 }
 
 // Signal broadcasts a change to all current waiters. A caller should capture

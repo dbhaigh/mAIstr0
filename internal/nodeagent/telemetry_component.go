@@ -8,6 +8,33 @@ import (
 )
 
 const hardwareProbeInterval = 5 * time.Second
+const hardwareTelemetryStaleAfter = 30 * time.Second
+
+type hardwareUsageSample struct {
+	gpuUtilization  int
+	gpuFreeMemory   uint64
+	gpuAvailable    bool
+	npuUtilization  int
+	npuAvailable    bool
+	cpuUtilization  int
+	cpuAvailable    bool
+	memoryUsage     int
+	memoryAvailable bool
+	runtimeDevices  []hardware.Device
+	runtimeProbe    bool
+}
+
+func currentHardwareUsage() hardwareUsageSample {
+	gpuUtilization, gpuFreeMemory, gpuAvailable := hardware.CurrentGPUUsage()
+	npuUtilization, npuAvailable := hardware.CurrentNPUUsage()
+	cpuUtilization, cpuAvailable, memoryUsage, memoryAvailable := hardware.CurrentSystemUsage()
+	return hardwareUsageSample{
+		gpuUtilization: gpuUtilization, gpuFreeMemory: gpuFreeMemory, gpuAvailable: gpuAvailable,
+		npuUtilization: npuUtilization, npuAvailable: npuAvailable,
+		cpuUtilization: cpuUtilization, cpuAvailable: cpuAvailable,
+		memoryUsage: memoryUsage, memoryAvailable: memoryAvailable,
+	}
+}
 
 func fastScore(hw hardware.Info) float64 {
 	return cluster.FastScore(hw)
@@ -28,47 +55,103 @@ func (c *telemetryComponent) hardwareSnapshot() hardware.Info {
 }
 
 func (c *telemetryComponent) hardwareSnapshotVersioned() (hardware.Info, uint64) {
+	c.refreshHardwareUsageIfStale()
 	c.hwMu.RLock()
 	defer c.hwMu.RUnlock()
 	return c.hw, c.hwGeneration
 }
 
-func (c *telemetryComponent) hardwareUsageLoop() {
-	refresh := func() {
-		utilization, freeMemoryMB, available := hardware.CurrentGPUUsage()
-		npuUtilization, npuAvailable := hardware.CurrentNPUUsage()
-		cpuUtilization, cpuAvailable, memoryUsage, memoryAvailable := hardware.CurrentSystemUsage()
-		sample := hardware.GPUUsageSample{
-			Timestamp: time.Now().UTC(), Available: available, Utilization: utilization,
-		}
-		systemSample := hardware.SystemUsageSample{
-			Timestamp: time.Now().UTC(), CPUAvailable: cpuAvailable, CPUUtilization: cpuUtilization,
-			MemoryAvailable: memoryAvailable, MemoryUtilization: memoryUsage,
-		}
-		npuSample := hardware.NPUUsageSample{
-			Timestamp: time.Now().UTC(), Available: npuAvailable, Utilization: npuUtilization,
-		}
-		c.hwMu.Lock()
-		c.hw.GPUStatsAvailable = available
-		c.hw.GPUUtilization = utilization
-		c.hw.GPUMemoryFreeMB = freeMemoryMB
-		c.gpuHistory = appendGPUUsageSample(c.gpuHistory, sample)
-		c.hw.NPUStatsAvailable = npuAvailable
-		c.hw.NPUUtilization = npuUtilization
-		c.npuHistory = appendNPUUsageSample(c.npuHistory, npuSample)
-		c.hw.CPUStatsAvailable = cpuAvailable
-		c.hw.CPUUtilization = cpuUtilization
-		c.hw.MemoryStatsAvailable = memoryAvailable
-		c.hw.MemoryUsage = memoryUsage
-		c.systemHistory = appendSystemUsageSample(c.systemHistory, systemSample)
-		c.hwGeneration++
-		c.hwMu.Unlock()
+func (c *telemetryComponent) hardwareTelemetryStale(now time.Time) bool {
+	c.hwMu.RLock()
+	if len(c.gpuHistory) == 0 {
+		c.hwMu.RUnlock()
+		return false
 	}
-	refresh()
+	lastUpdated := c.gpuHistory[len(c.gpuHistory)-1].Timestamp
+	c.hwMu.RUnlock()
+	return lastUpdated.IsZero() || lastUpdated.After(now) || now.Sub(lastUpdated) > hardwareTelemetryStaleAfter
+}
+
+func (c *telemetryComponent) refreshHardwareUsageIfStale() {
+	if c.hardwareUsageProbe == nil || !c.hardwareTelemetryStale(time.Now()) {
+		return
+	}
+	c.hwRefreshMu.Lock()
+	defer c.hwRefreshMu.Unlock()
+	if c.hardwareTelemetryStale(time.Now()) {
+		c.recordHardwareUsage(c.hardwareUsageProbe())
+	}
+}
+
+func (c *telemetryComponent) refreshHardwareUsage() {
+	if c.hardwareUsageProbe == nil {
+		return
+	}
+	c.hwRefreshMu.Lock()
+	defer c.hwRefreshMu.Unlock()
+	c.recordHardwareUsage(c.hardwareUsageProbe())
+}
+
+func (c *telemetryComponent) recordHardwareUsage(usage hardwareUsageSample) {
+	now := time.Now().UTC()
+	sample := hardware.GPUUsageSample{
+		Timestamp: now, Available: usage.gpuAvailable, Utilization: usage.gpuUtilization,
+	}
+	systemSample := hardware.SystemUsageSample{
+		Timestamp: now, CPUAvailable: usage.cpuAvailable, CPUUtilization: usage.cpuUtilization,
+		MemoryAvailable: usage.memoryAvailable, MemoryUtilization: usage.memoryUsage,
+	}
+	npuSample := hardware.NPUUsageSample{
+		Timestamp: now, Available: usage.npuAvailable, Utilization: usage.npuUtilization,
+	}
+	c.hwMu.Lock()
+	c.hw.GPUStatsAvailable = usage.gpuAvailable
+	c.hw.GPUUtilization = usage.gpuUtilization
+	c.hw.GPUMemoryFreeMB = usage.gpuFreeMemory
+	if usage.runtimeProbe {
+		c.hw.Devices = hardware.ApplyRuntimeDevices(c.hw.Devices, c.runtimeDevices)
+		c.hw.Devices = hardware.ApplyRuntimeDevices(c.hw.Devices, usage.runtimeDevices)
+		c.runtimeDevices = append(c.runtimeDevices[:0], usage.runtimeDevices...)
+		for i := range c.runtimeDevices {
+			c.runtimeDevices[i].FreeMemoryMB = 0
+		}
+		for _, device := range usage.runtimeDevices {
+			switch device.Kind {
+			case "gpu":
+				c.hw.HasGPU = true
+				if c.hw.GPUVendor == "" {
+					c.hw.GPUVendor = device.Vendor
+				}
+			case "npu":
+				c.hw.HasNPU = true
+				if c.hw.NPUVendor == "" {
+					c.hw.NPUVendor = device.Vendor
+				}
+			}
+			if device.Kind == "gpu" && device.FreeMemoryMB > c.hw.GPUMemoryFreeMB {
+				c.hw.GPUMemoryFreeMB = device.FreeMemoryMB
+			}
+		}
+	}
+	c.gpuHistory = appendGPUUsageSample(c.gpuHistory, sample)
+	c.hw.NPUStatsAvailable = usage.npuAvailable
+	c.hw.NPUUtilization = usage.npuUtilization
+	c.npuHistory = appendNPUUsageSample(c.npuHistory, npuSample)
+	c.hw.CPUStatsAvailable = usage.cpuAvailable
+	c.hw.CPUUtilization = usage.cpuUtilization
+	c.hw.MemoryStatsAvailable = usage.memoryAvailable
+	c.hw.MemoryUsage = usage.memoryUsage
+	c.systemHistory = appendSystemUsageSample(c.systemHistory, systemSample)
+	c.hwGeneration++
+	c.hwMu.Unlock()
+}
+
+func (c *telemetryComponent) hardwareUsageLoop() {
+	c.refreshHardwareUsage()
 	ticker := time.NewTicker(hardwareProbeInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		refresh()
+		c.refreshHardwareUsage()
 	}
 }
 

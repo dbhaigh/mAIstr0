@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/config"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
@@ -180,12 +184,24 @@ func (c *peerComponent) peerAddress(id string) (string, bool) {
 // proxy forwards the incoming request's method/body to addr+path and
 // copies the response straight back to the caller.
 func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path string) {
-	body, err := io.ReadAll(r.Body)
+	bodyLimit := httpx.ControlJSONBodyBytes
+	if path == "/api/memory/sync" {
+		bodyLimit = c.state.configSnapshot().SyncMaxBytes
+		if bodyLimit <= 0 {
+			bodyLimit = config.DefaultSyncMaxBytes
+		}
+	} else if strings.Contains(path, "/chat") ||
+		strings.Contains(path, "/dialogues") ||
+		strings.Contains(path, "/peer/converse") ||
+		strings.HasSuffix(path, "/execute") {
+		bodyLimit = httpx.InferenceJSONBodyBytes
+	}
+	body, err := httpx.ReadBody(w, r, bodyLimit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	req, err := http.NewRequest(r.Method, addr+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, addr+path, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -201,8 +217,28 @@ func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path
 
 	client := c.peerHTTP()
 	taskSubmission := r.Method == http.MethodPost && path == "/api/tasks"
-	if taskSubmission || strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
+	membershipMutation := r.Method == http.MethodPost && strings.HasPrefix(path, "/api/shards/") && strings.HasSuffix(path, "/members")
+	workerInstallation := r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/engines/managed/install-worker") || strings.HasSuffix(r.URL.Path, "/engines/managed/download-model"))
+	shardMutation := r.Method != http.MethodGet && (r.URL.Path == "/api/shards" || strings.HasPrefix(r.URL.Path, "/api/shards/"))
+	if taskSubmission || workerInstallation || shardMutation || strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
 		client = c.dispatchClient
+	}
+	if shardMutation {
+		shardClient := *client
+		shardClient.Timeout = 15 * time.Minute
+		client = &shardClient
+	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/engines/managed/download-model") {
+		modelClient := *client
+		modelClient.Timeout = time.Hour
+		client = &modelClient
+	}
+	if taskSubmission || membershipMutation {
+		// Planning and membership drains follow the orchestrator's generation
+		// budget. The incoming caller can still cancel the request.
+		taskClient := *client
+		taskClient.Timeout = 0
+		client = &taskClient
 	}
 
 	resp, err := client.Do(req)
@@ -219,22 +255,9 @@ func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	if flusher, ok := w.(http.Flusher); ok {
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := resp.Body.Read(buf)
-			if n > 0 {
-				_, _ = w.Write(buf[:n])
-				flusher.Flush()
-			}
-			if readErr != nil {
-				break
-			}
-		}
-		return
+	if err := httpx.NewStreamWriter(w).Copy(resp.Body, nil); err != nil {
+		logging.Errorf("nodeagent", "nodeagent: peer proxy response stream failed: %v", err)
 	}
-
-	_, _ = io.Copy(w, resp.Body)
 }
 
 func (s *agentState) peersSnapshot() []cluster.NodeStatus {

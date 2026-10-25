@@ -70,3 +70,41 @@ func TestWaitWakesOnSignal(t *testing.T) {
 		t.Fatal("change signal did not wake Wait promptly")
 	}
 }
+
+func TestWaitDebouncedRefreshesSignalChannel(t *testing.T) {
+	var signal Signal
+	changes := signal.Changes()
+	done := make(chan bool, 1)
+	started := time.Now()
+	go func() {
+		done <- WaitDebounced(time.Second, 40*time.Millisecond, changes, signal.Changes)
+	}()
+	signal.Notify()
+	second := time.AfterFunc(20*time.Millisecond, signal.Notify)
+	defer second.Stop()
+
+	select {
+	case changed := <-done:
+		if !changed {
+			t.Fatal("debounced wait returned for the heartbeat")
+		}
+		if elapsed := time.Since(started); elapsed < 50*time.Millisecond {
+			t.Fatalf("debounced wait returned too soon after a second signal: %s", elapsed)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("debounced wait did not finish after changes settled")
+	}
+}
+
+func TestJitterStaysWithinTenPercent(t *testing.T) {
+	const interval = 10 * time.Second
+	for range 100 {
+		got := Jitter(interval)
+		if got < 9*time.Second || got > 11*time.Second {
+			t.Fatalf("Jitter(%s) = %s, outside +/-10%%", interval, got)
+		}
+	}
+	if got := Jitter(0); got != 0 {
+		t.Fatalf("Jitter(0) = %s, want 0", got)
+	}
+}

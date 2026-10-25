@@ -57,6 +57,8 @@ func main() {
 		rules := jsonNormalizationRules
 		if strings.HasPrefix(name, "compat-") && strings.Contains(name, "-stream") {
 			rules = streamNormalizationRules
+		} else if strings.HasSuffix(name, "-page-empty") {
+			rules = []string{"No generated values are present in the empty page response."}
 		}
 		encoded, err := json.MarshalIndent(fixture{
 			Name: name, Request: request, ExpectedResponse: expected, NormalizationRules: rules,
@@ -94,6 +96,10 @@ func phase1Requests() map[string]request {
 			Method: "POST", Path: "/v1/messages",
 			Body: jsonBody(`{"model":"simulated-general","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`),
 		},
+		"compat-anthropic-messages-invalid": {
+			Method: "POST", Path: "/v1/messages",
+			Body: jsonBody(`{"model":"simulated-general","max_tokens":0,"messages":[{"role":"user","content":"hello"}]}`),
+		},
 		"compat-anthropic-messages-stream": {
 			Method: "POST", Path: "/v1/messages",
 			Body: jsonBody(`{"model":"simulated-general","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hello"}]}`),
@@ -102,6 +108,10 @@ func phase1Requests() map[string]request {
 			Method: "POST", Path: "/api/chat",
 			Body: jsonBody(`{"model":"simulated-general","messages":[{"role":"user","content":"hello"}],"stream":false}`),
 		},
+		"compat-ollama-chat-invalid": {
+			Method: "POST", Path: "/api/chat",
+			Body: jsonBody(`{"messages":[],"stream":false}`),
+		},
 		"compat-ollama-chat-stream": {
 			Method: "POST", Path: "/api/chat",
 			Body: jsonBody(`{"model":"simulated-general","stream":true,"messages":[{"role":"user","content":"hello"}]}`),
@@ -109,6 +119,10 @@ func phase1Requests() map[string]request {
 		"compat-ollama-generate": {
 			Method: "POST", Path: "/api/generate",
 			Body: jsonBody(`{"model":"simulated-general","prompt":"hello","stream":false}`),
+		},
+		"compat-ollama-generate-invalid": {
+			Method: "POST", Path: "/api/generate",
+			Body: jsonBody(`{"prompt":"","stream":false}`),
 		},
 		"compat-ollama-generate-stream": {
 			Method: "POST", Path: "/api/generate",
@@ -119,9 +133,22 @@ func phase1Requests() map[string]request {
 			Method: "POST", Path: "/v1/chat/completions",
 			Body: jsonBody(`{"model":"simulated-general","messages":[{"role":"user","content":"hello"}]}`),
 		},
+		"compat-openai-chat-invalid": {
+			Method: "POST", Path: "/v1/chat/completions",
+			Body: jsonBody(`{"messages":[]}`),
+		},
 		"compat-openai-chat-stream": {
 			Method: "POST", Path: "/v1/chat/completions",
 			Body: jsonBody(`{"model":"simulated-general","stream":true,"messages":[{"role":"user","content":"hello"}]}`),
+		},
+		"memory-dialogues-page-empty": {
+			Method: "GET", Path: "/api/memory/dialogues?page_size=50",
+		},
+		"memory-experiences-page-empty": {
+			Method: "GET", Path: "/api/memory/experiences?page_size=50&q=empty",
+		},
+		"memory-facts-page-empty": {
+			Method: "GET", Path: "/api/memory/facts?page_size=50",
 		},
 		"system-status": {Method: "GET", Path: "/api/status"},
 		"task-approved": {
@@ -140,6 +167,10 @@ func phase1Requests() map[string]request {
 			Method: "GET", Path: "/api/tasks/{id}/checkpoints",
 			Setup: "Create and complete a task, then read its checkpoints.",
 		},
+		"task-checkpoints-terminal-completion": {
+			Method: "GET", Path: "/api/tasks/{id}/checkpoints",
+			Setup: "Complete a single-subtask task, wait for its terminal state, then confirm its completed checkpoint is persisted.",
+		},
 		"task-checkpoints-initial": {
 			Method: "GET", Path: "/api/tasks/{id}/checkpoints",
 			Setup: "Create a task and read its initial checkpoint history.",
@@ -155,6 +186,22 @@ func phase1Requests() map[string]request {
 		"task-create-heuristic": {
 			Method: "POST", Path: "/api/tasks",
 			Body: jsonBody(`{"description":"Summarize this report"}`),
+		},
+		"task-create-auto": {
+			Method: "POST", Path: "/api/tasks",
+			Body: jsonBody(`{"description":"Research the subject then summarize the findings","plan_mode":"auto"}`),
+		},
+		"task-get-auto": {
+			Method: "GET", Path: "/api/tasks/{id}",
+			Setup: "POST an auto-planned task and wait for completion.",
+		},
+		"task-auto-plan-failure": {
+			Method: "POST", Path: "/api/tasks",
+			Body: jsonBody(`{"description":"Research the subject","plan_mode":"auto"}`),
+		},
+		"task-restart-recovery": {
+			Method: "GET", Path: "/api/tasks/{id}",
+			Setup: "Seed a running task with an in-flight subtask, restart the orchestrator, then GET the task.",
 		},
 		"task-dependencies": {
 			Method: "GET", Path: "/api/tasks/{id}",
@@ -179,6 +226,13 @@ func phase1Requests() map[string]request {
 		"task-invalid-plan": {
 			Method: "POST", Path: "/api/tasks",
 			Body: jsonBody(`{"description":"Missing dependency","subtasks":[{"id":"work","description":"Work","depends_on":["missing"]}]}`),
+		},
+		"task-invalid-cycle": {
+			Method: "POST", Path: "/api/tasks",
+			Body: jsonBody(`{"description":"Cyclic task","graph":{"nodes":{"a":{"id":"a","description":"A","task_type":"","tags":null,"depends_on":["b"]},"b":{"id":"b","description":"B","task_type":"","tags":null,"depends_on":["a"]}},"edges":[{"from":"b","to":"a"},{"from":"a","to":"b"}]}}`),
+		},
+		"task-list-page-empty": {
+			Method: "GET", Path: "/api/tasks?page_size=50&q=empty",
 		},
 		"task-list": {Method: "GET", Path: "/api/tasks", Setup: "Create and complete a heuristic task first."},
 		"task-no-healthy-nodes": {

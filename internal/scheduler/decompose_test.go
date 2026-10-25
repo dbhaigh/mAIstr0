@@ -1,10 +1,14 @@
 package scheduler
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func TestDecomposeSplitsCommonSentenceEndingsAndKeepsUniqueIDs(t *testing.T) {
 	description := "Summarize the report. Translate the result? Calculate the total!"
-	subtasks := Decompose(description)
+	subtasks := DecomposeV1(description)
 	if len(subtasks) != 3 {
 		t.Fatalf("Decompose returned %d subtasks, want 3: %+v", len(subtasks), subtasks)
 	}
@@ -21,8 +25,19 @@ func TestDecomposeSplitsCommonSentenceEndingsAndKeepsUniqueIDs(t *testing.T) {
 	}
 }
 
+func TestIDForIsUniqueAcrossExtendedRange(t *testing.T) {
+	seen := make(map[string]bool, 64)
+	for i := 0; i < 64; i++ {
+		id := idFor(i)
+		if seen[id] {
+			t.Fatalf("idFor(%d) returned duplicate ID %q", i, id)
+		}
+		seen[id] = true
+	}
+}
+
 func TestDecomposeRecognizesExplicitDependencies(t *testing.T) {
-	subtasks := Decompose("Research the topic. Then write a summary. Calculate a separate total.")
+	subtasks := DecomposeV1("Research the topic. Then write a summary. Calculate a separate total.")
 	if len(subtasks) != 3 {
 		t.Fatalf("Decompose returned %d subtasks, want 3", len(subtasks))
 	}
@@ -31,6 +46,28 @@ func TestDecomposeRecognizesExplicitDependencies(t *testing.T) {
 	}
 	if len(subtasks[2].DependsOn) != 0 {
 		t.Fatalf("independent subtask should remain parallelizable: %+v", subtasks[2])
+	}
+}
+
+func TestDecomposeLargeEnumerationKeepsSynthesisWithinPlanLimit(t *testing.T) {
+	options := make([]string, 70)
+	for i := range options {
+		options[i] = fmt.Sprintf("Option-%02d", i)
+	}
+
+	subtasks := Decompose("Review these options: " + strings.Join(options, ", "))
+	if len(subtasks) != maxHeuristicPlanSubtasks {
+		t.Fatalf("Decompose returned %d subtasks, want %d", len(subtasks), maxHeuristicPlanSubtasks)
+	}
+	if !subtasks[len(subtasks)-1].Synthesis {
+		t.Fatal("large fan-out plan is missing its final synthesis subtask")
+	}
+	if !strings.Contains(subtasks[len(subtasks)-2].Description, "Option-62") ||
+		!strings.Contains(subtasks[len(subtasks)-2].Description, "Option-69") {
+		t.Fatalf("compacted subtask did not preserve the remaining options: %q", subtasks[len(subtasks)-2].Description)
+	}
+	if _, err := ValidatePlan(subtasks); err != nil {
+		t.Fatalf("large fan-out plan is invalid: %v", err)
 	}
 }
 

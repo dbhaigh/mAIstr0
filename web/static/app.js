@@ -57,6 +57,7 @@ const statModels = document.getElementById("stat-models");
 const statLoad = document.getElementById("stat-load");
 const statMemory = document.getElementById("stat-memory");
 const statVersion = document.getElementById("stat-version");
+const connectionStatus = document.getElementById("connection-status");
 const persistenceWarning = document.getElementById("persistence-warning");
 const navTabs = document.querySelectorAll(".nav-tab");
 const tabContents = document.querySelectorAll(".tab-content");
@@ -103,7 +104,17 @@ const dashboardState = {
     promptShown: false,
     dialogAutoOpened: false
   },
+  connection: {
+    connected: false,
+    lastSyncAt: null
+  },
   capacity: null,
+  modelInventory: [],
+  pipelinePlans: [],
+  shardGroups: [],
+  shardGroupsError: "",
+  discovery: [],
+  buildVersion: "",
   fullTaskHistoryLoaded: false
 };
 const taskHistoryPage = {
@@ -138,17 +149,503 @@ let contextNode = null;
 const nodeProperties = /* @__PURE__ */ new Map();
 let terminalNode = null;
 let terminalDialogueId = null;
-navTabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
-    navTabs.forEach((t) => t.classList.remove("active"));
-    tabContents.forEach((c) => c.classList.remove("active"));
-    tab.classList.add("active");
-    const target = document.getElementById(tab.dataset.tab);
-    if (target) target.classList.add("active");
-    if (tab.dataset.tab === "memory-tab") refreshMemory();
-    if (tab.dataset.tab === "cluster-tab") void refresh();
+(function(root, factory) {
+  const viewModel = factory();
+  if (typeof module === "object" && module.exports) module.exports = viewModel;
+  root.dashboardViewModel = viewModel;
+})(globalThis, () => {
+  function engineInventoryState(engine) {
+    const knownStates = ["unknown", "available", "empty", "error"];
+    if (knownStates.includes(engine?.inventory_state)) return engine.inventory_state;
+    if (!engine?.last_checked_at) return "unknown";
+    if (!engine.ready) return "error";
+    return Number(engine.model_count) > 0 ? "available" : "empty";
+  }
+  function engineInventoryLabel(state) {
+    switch (state) {
+      case "available":
+        return "Inventory available";
+      case "empty":
+        return "Reachable · no models";
+      case "error":
+        return "Check failed";
+      default:
+        return "Not checked";
+    }
+  }
+  function formatNodeHardware(node) {
+    const hardware = node.hardware || {};
+    const parts = [];
+    if (hardware.os || hardware.arch) parts.push([hardware.os, hardware.arch].filter(Boolean).join("/"));
+    if (hardware.cpu_cores) parts.push(`${hardware.cpu_cores} CPU cores`);
+    if (hardware.total_ram_mb) parts.push(`${(hardware.total_ram_mb / 1024).toFixed(1)} GB RAM`);
+    if (hardware.has_gpu) {
+      parts.push(`${hardware.gpu_vendor || "GPU"}${hardware.gpu_stats_available ? ` · ${hardware.gpu_utilization_percent}% busy` : ""}`);
+    }
+    if (hardware.has_npu) {
+      parts.push(`${hardware.npu_vendor || "NPU"}${hardware.npu_stats_available ? ` · ${hardware.npu_utilization_percent}% busy` : ""}`);
+    }
+    return parts.length ? parts.join(" · ") : "Hardware details unavailable";
+  }
+  function dashboardStatusViewModel(snapshot, nodes, capacity) {
+    const nodeCount = snapshot.member_count ?? nodes.filter((node) => node.healthy).length;
+    let modelCount = 0;
+    let activeLoad = 0;
+    if (Array.isArray(capacity?.nodes)) {
+      for (const node of capacity.nodes) {
+        if (!node.healthy) continue;
+        activeLoad += Number(node.active) || 0;
+      }
+    } else {
+      for (const node of nodes) {
+        if (!node.healthy) continue;
+        activeLoad += node.active_tasks || 0;
+      }
+    }
+    for (const node of nodes) {
+      if (!node.healthy) continue;
+      modelCount += (node.models || []).length;
+    }
+    const dispatch = capacity?.global_dispatch;
+    return {
+      nodeCount,
+      modelCount,
+      activeLoad,
+      loadLabel: dispatch ? `Active Load: ${activeLoad} · Dispatch ${dispatch.active_slots}/${dispatch.global_limit} · Queue ${dispatch.queue_depth}` : `Active Load: ${activeLoad}`,
+      memoryLabel: snapshot.memory ? `Memory: ${snapshot.memory.total_experiences || 0} · ${Math.round((snapshot.memory.success_rate || 0) * 100)}%` : null,
+      buildVersion: snapshot.build_version || null
+    };
+  }
+  function taskHistoryCountLabel(visibleCount, totalCount) {
+    if (totalCount === 0) return "0 tasks";
+    return `Showing ${visibleCount} of ${totalCount} ${totalCount === 1 ? "task" : "tasks"}`;
+  }
+  function pairingPINViewModel(status) {
+    const hasPIN = Boolean(status?.pin);
+    return {
+      visible: status?.role === "orchestrator",
+      hasPIN,
+      pinText: status?.pin || "Expired",
+      regenerateText: hasPIN ? "Generate / replace pairing PIN" : "Generate pairing PIN",
+      expiryText: status?.expires_at ? `Expires ${new Date(status.expires_at).toLocaleTimeString()}. The PIN can be used once.` : "No active PIN. Generate a new PIN to pair another node.",
+      stateText: hasPIN ? "Share the PIN and HTTPS address only with the node you intend to add." : "No active PIN. Generate one to add or re-pair a node."
+    };
+  }
+  return Object.freeze({
+    dashboardStatusViewModel,
+    engineInventoryLabel,
+    engineInventoryState,
+    formatNodeHardware,
+    pairingPINViewModel,
+    taskHistoryCountLabel
   });
 });
+(function(root, factory) {
+  const snapshot = factory(root);
+  if (typeof module === "object" && module.exports) module.exports = snapshot;
+  root.dashboardSnapshot = snapshot;
+})(globalThis, (root) => {
+  function hashSnapshot(serialized) {
+    let hash = 2166136261;
+    for (let i = 0; i < serialized.length; i++) {
+      hash ^= serialized.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+  function createSnapshotScheduler(onSnapshot, options = {}) {
+    const requestFrame = options.requestAnimationFrameImpl || root.requestAnimationFrame?.bind(root) || ((callback) => root.setTimeout(callback, 0));
+    const cancelFrame = options.cancelAnimationFrameImpl || root.cancelAnimationFrame?.bind(root) || root.clearTimeout?.bind(root);
+    let pending = null;
+    let lastHash = null;
+    let lastSerialized = null;
+    let scheduled = false;
+    let frameID = null;
+    const flush = () => {
+      scheduled = false;
+      frameID = null;
+      const update = pending;
+      pending = null;
+      if (!update || update.hash === lastHash && update.serialized === lastSerialized) return;
+      lastHash = update.hash;
+      lastSerialized = update.serialized;
+      onSnapshot(update.snapshot);
+    };
+    return Object.freeze({
+      enqueue(snapshot) {
+        const serialized = JSON.stringify(snapshot);
+        const hash = hashSnapshot(serialized);
+        if (hash === lastHash && serialized === lastSerialized || pending && hash === pending.hash && serialized === pending.serialized) return false;
+        pending = { snapshot, serialized, hash };
+        if (!scheduled) {
+          scheduled = true;
+          frameID = requestFrame(flush);
+        }
+        return true;
+      },
+      cancel() {
+        if (scheduled && cancelFrame && frameID !== null) cancelFrame(frameID);
+        pending = null;
+        scheduled = false;
+        frameID = null;
+      },
+      flush
+    });
+  }
+  function mergeTaskSnapshot(currentTasks, incomingTasks, complete, fullTaskHistoryLoaded) {
+    const tasks = incomingTasks || [];
+    if (complete) return { tasks, fullTaskHistoryLoaded: true };
+    if (!fullTaskHistoryLoaded) return { tasks, fullTaskHistoryLoaded: false };
+    const merged = new Map((currentTasks || []).map((task) => [task.id, task]));
+    for (const task of tasks) merged.set(task.id, task);
+    return {
+      tasks: [...merged.values()].sort(
+        (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+      ),
+      fullTaskHistoryLoaded: true
+    };
+  }
+  function connectDashboardEvents(onSnapshot, options = {}) {
+    const EventSourceImpl = options.EventSourceImpl || root.EventSource;
+    const onError = options.onError || ((error) => root.console.error(error));
+    const onConnectionChange = options.onConnectionChange || (() => {
+    });
+    const scheduler = createSnapshotScheduler((snapshot) => {
+      try {
+        onSnapshot(snapshot);
+      } catch (error) {
+        onError(error);
+      }
+    }, options);
+    const eventSource = new EventSourceImpl("/api/events");
+    eventSource.onopen = () => onConnectionChange(true);
+    eventSource.onerror = () => onConnectionChange(false);
+    eventSource.onmessage = (event) => {
+      try {
+        scheduler.enqueue(JSON.parse(event.data));
+      } catch (error) {
+        onError(error);
+      }
+    };
+    return eventSource;
+  }
+  return Object.freeze({ connectDashboardEvents, createSnapshotScheduler, hashSnapshot, mergeTaskSnapshot });
+});
+(function(root, factory) {
+  const dom = factory(root);
+  if (typeof module === "object" && module.exports) module.exports = dom;
+  root.dashboardDOM = dom;
+})(globalThis, (root) => {
+  const keyedState = /* @__PURE__ */ new WeakMap();
+  const virtualState = /* @__PURE__ */ new WeakMap();
+  function patchKeyedChildren(container, items, options) {
+    if (!container || !options || typeof options.renderItem !== "function") return;
+    const keyOf = options.keyOf || ((item) => item.id);
+    const signatureOf = options.signatureOf || JSON.stringify;
+    const previous = keyedState.get(container) || /* @__PURE__ */ new Map();
+    const desired = new Set(items.map((item, index) => String(keyOf(item, index))));
+    for (const [key, entry] of previous) {
+      if (!desired.has(key)) {
+        entry.nodes.forEach((node) => node.remove());
+        previous.delete(key);
+      }
+    }
+    let cursor = container.firstElementChild;
+    const next = /* @__PURE__ */ new Map();
+    for (const [index, item] of items.entries()) {
+      const key = String(keyOf(item, index));
+      const signature = signatureOf(item, index);
+      let entry = previous.get(key);
+      if (entry && entry.signature !== signature) {
+        while (cursor && entry.nodes.includes(cursor)) cursor = cursor.nextElementSibling;
+        entry.nodes.forEach((node) => node.remove());
+        entry = null;
+      }
+      if (!entry) {
+        const rendered = options.renderItem(item, index);
+        const nodes = Array.isArray(rendered) ? rendered : [rendered];
+        for (const node of nodes) {
+          node.dataset.renderKey = key;
+          container.insertBefore(node, cursor);
+        }
+        entry = { signature, nodes };
+      } else {
+        for (const node of entry.nodes) {
+          if (node !== cursor) container.insertBefore(node, cursor);
+          cursor = node.nextElementSibling;
+        }
+      }
+      if (!entry.nodes.length) continue;
+      if (entry.nodes[0].parentNode === container) {
+        cursor = entry.nodes[entry.nodes.length - 1].nextElementSibling;
+      }
+      next.set(key, entry);
+    }
+    keyedState.set(container, next);
+  }
+  function getVirtualRange(items, scrollTop, viewportHeight, options = {}) {
+    const estimate = Math.max(1, options.estimateHeight || 96);
+    const overscan = Math.max(0, options.overscan ?? 6);
+    const heightOf = options.heightOf || (() => estimate);
+    if (!items.length) return { start: 0, end: 0, top: 0, bottom: 0 };
+    const offsets = new Array(items.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < items.length; i++) {
+      offsets[i + 1] = offsets[i] + Math.max(1, heightOf(items[i], i) || estimate);
+    }
+    const findIndex = (offset) => {
+      let low = 0;
+      let high = items.length;
+      while (low < high) {
+        const middle = low + high >>> 1;
+        if (offsets[middle + 1] <= offset) low = middle + 1;
+        else high = middle;
+      }
+      return low;
+    };
+    const first = findIndex(Math.max(0, scrollTop));
+    const last = findIndex(Math.max(0, scrollTop) + Math.max(1, viewportHeight));
+    const start = Math.max(0, first - overscan);
+    const end = Math.min(items.length, last + overscan + 1);
+    return {
+      start,
+      end,
+      top: offsets[start],
+      bottom: offsets[items.length] - offsets[end]
+    };
+  }
+  function renderVirtualList(container, items, options) {
+    if (!container || !options || typeof options.renderItem !== "function") return;
+    let state = virtualState.get(container);
+    if (!state) {
+      const top = document.createElement("div");
+      const content = document.createElement("div");
+      const bottom = document.createElement("div");
+      top.className = "virtual-list-spacer virtual-list-spacer-top";
+      bottom.className = "virtual-list-spacer virtual-list-spacer-bottom";
+      content.className = "virtual-list-items";
+      top.setAttribute("aria-hidden", "true");
+      bottom.setAttribute("aria-hidden", "true");
+      container.replaceChildren(top, content, bottom);
+      container.classList.add("virtual-list-container");
+      state = { top, content, bottom, items: [], options, frame: 0, heights: /* @__PURE__ */ new Map(), observer: null };
+      state.onScroll = () => {
+        if (state.frame) return;
+        const raf = root.requestAnimationFrame || ((callback) => root.setTimeout(callback, 16));
+        state.frame = raf(() => {
+          state.frame = 0;
+          renderVirtualList(container, state.items, state.options);
+        });
+      };
+      container.addEventListener("scroll", state.onScroll, { passive: true });
+      if (typeof root.ResizeObserver === "function") {
+        state.observer = new root.ResizeObserver((entries) => {
+          let changed = false;
+          for (const entry of entries) {
+            const key = entry.target.dataset.renderKey;
+            const height = entry.contentRect.height;
+            if (key && Number.isFinite(height) && height > 0 && Math.abs((state.heights.get(key) || 0) - height) > 1) {
+              state.heights.set(key, height);
+              changed = true;
+            }
+          }
+          if (changed) state.onScroll();
+        });
+      }
+      virtualState.set(container, state);
+    }
+    container.setAttribute("aria-busy", "false");
+    state.items = items;
+    state.options = options;
+    const keyOf = options.keyOf || ((item, index) => item.id ?? index);
+    const heightOf = (item, index) => state.heights.get(String(keyOf(item, index))) || options.estimateHeight || 96;
+    const threshold = options.threshold || 40;
+    const range = items.length > threshold ? getVirtualRange(items, container.scrollTop, container.clientHeight || 600, {
+      estimateHeight: options.estimateHeight,
+      overscan: options.overscan,
+      heightOf
+    }) : { start: 0, end: items.length, top: 0, bottom: 0 };
+    const visible = items.slice(range.start, range.end);
+    const signatureOf = options.signatureOf || JSON.stringify;
+    state.top.style.height = `${range.top}px`;
+    state.bottom.style.height = `${range.bottom}px`;
+    state.top.hidden = range.top === 0;
+    state.bottom.hidden = range.bottom === 0;
+    patchKeyedChildren(state.content, visible, {
+      keyOf: (item, index) => keyOf(item, range.start + index),
+      signatureOf,
+      renderItem: (item, index) => options.renderItem(item, range.start + index)
+    });
+    state.observer?.disconnect();
+    state.content.querySelectorAll(":scope > [data-render-key]").forEach((node) => state.observer?.observe(node));
+  }
+  function resetVirtualList(container, options = {}) {
+    if (!container) return;
+    const state = virtualState.get(container);
+    if (state) {
+      state.items = [];
+      state.options = { ...options, keyOf: (node) => node.dataset.virtualKey, renderItem: (node) => node };
+      state.heights.clear();
+      container.scrollTop = 0;
+      renderVirtualList(container, [], state.options);
+      return;
+    }
+    container.scrollTop = 0;
+    renderVirtualList(container, [], {
+      ...options,
+      keyOf: (node) => node.dataset.virtualKey,
+      signatureOf: (node) => node.dataset.virtualSignature || "",
+      renderItem: (node) => node
+    });
+  }
+  function appendVirtualListItem(container, node) {
+    let state = virtualState.get(container);
+    if (!state) {
+      resetVirtualList(container);
+      state = virtualState.get(container);
+    }
+    if (!node.dataset.virtualKey) node.dataset.virtualKey = `virtual-${state.items.length}`;
+    state.items = [...state.items, node];
+    const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 48;
+    renderVirtualList(container, state.items, state.options);
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
+  }
+  function removeVirtualListItem(container, node) {
+    const state = virtualState.get(container);
+    if (!state) {
+      node.remove();
+      return;
+    }
+    state.items = state.items.filter((item) => item !== node);
+    state.heights.delete(node.dataset.virtualKey);
+    renderVirtualList(container, state.items, state.options);
+  }
+  function renderSkeleton(container, count = 3) {
+    if (!container) return;
+    const state = virtualState.get(container);
+    if (state) {
+      state.observer?.disconnect();
+      if (state.frame) {
+        const cancel = root.cancelAnimationFrame || root.clearTimeout;
+        cancel?.call(root, state.frame);
+      }
+      container.removeEventListener("scroll", state.onScroll);
+      virtualState.delete(container);
+      keyedState.delete(state.content);
+    }
+    container.setAttribute("aria-busy", "true");
+    const placeholders = Array.from({ length: count }, (_, index) => {
+      const card = document.createElement("div");
+      card.className = "skeleton-card";
+      card.setAttribute("aria-hidden", "true");
+      card.innerHTML = `<span class="skeleton skeleton-heading"></span><span class="skeleton"></span><span class="skeleton skeleton-short"></span>`;
+      card.dataset.skeletonIndex = String(index);
+      return card;
+    });
+    container.replaceChildren(...placeholders);
+  }
+  return Object.freeze({
+    appendVirtualListItem,
+    getVirtualRange,
+    patchKeyedChildren,
+    renderSkeleton,
+    removeVirtualListItem,
+    renderVirtualList,
+    resetVirtualList
+  });
+});
+(function(root, factory) {
+  const format = factory();
+  if (typeof module === "object" && module.exports) module.exports = format;
+  root.dashboardFormat = format;
+  Object.assign(root, {
+    escapeHtml: format.escapeHtml,
+    formatBytes: format.formatBytes,
+    formatRelativeTime: format.formatRelativeTime,
+    formatTimestamp: format.formatTimestamp
+  });
+})(globalThis, () => {
+  function escapeHtml2(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[character]);
+  }
+  function formatBytes2(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value < 0) return "0 B";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+  function formatRelativeTime2(value) {
+    if (!value) return "time unavailable";
+    const timestamp = new Date(value).getTime();
+    if (!Number.isFinite(timestamp)) return "time unavailable";
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1e3));
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return new Date(timestamp).toLocaleDateString();
+  }
+  function formatTimestamp2(label, value) {
+    if (!value) return `<span class="task-time-unavailable">${escapeHtml2(label)} unavailable</span>`;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return `<span class="task-time-unavailable">${escapeHtml2(label)} unavailable</span>`;
+    }
+    return `<time datetime="${escapeHtml2(value)}">${escapeHtml2(label)} ${escapeHtml2(date.toLocaleString())}</time>`;
+  }
+  return Object.freeze({ escapeHtml: escapeHtml2, formatBytes: formatBytes2, formatRelativeTime: formatRelativeTime2, formatTimestamp: formatTimestamp2 });
+});
+function wirePrimaryTabs(tabs, panels) {
+  const tabList = tabs[0]?.closest('[role="tablist"]');
+  if (tabList) tabList.setAttribute("role", "tablist");
+  const selectTab = (tab) => {
+    tabs.forEach((item) => {
+      const active = item === tab;
+      item.classList.toggle("active", active);
+      item.setAttribute("role", "tab");
+      item.setAttribute("aria-controls", item.dataset.tab);
+      item.setAttribute("aria-selected", String(active));
+      item.tabIndex = active ? 0 : -1;
+    });
+    panels.forEach((panel) => {
+      const active = panel.id === tab.dataset.tab;
+      panel.classList.toggle("active", active);
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tab.id);
+      panel.hidden = !active;
+    });
+    activateDashboardTab(tab.dataset.tab);
+  };
+  tabs.forEach((tab, index) => {
+    const target = document.getElementById(tab.dataset.tab);
+    if (!tab.id) tab.id = `dashboard-${tab.dataset.tab}-tab`;
+    if (target) {
+      target.setAttribute("role", "tabpanel");
+      target.setAttribute("aria-labelledby", tab.id);
+      target.hidden = !tab.classList.contains("active");
+    }
+    tab.tabIndex = tab.classList.contains("active") ? 0 : -1;
+    tab.addEventListener("click", () => selectTab(tab));
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      selectTab(tabs[nextIndex]);
+      tabs[nextIndex].focus();
+    });
+  });
+}
+wirePrimaryTabs(navTabs, tabContents);
 function wireWorkspaceTabs(tabs, panels) {
   const selectTab = (tab) => {
     const targetID = tab.getAttribute("aria-controls");
@@ -163,6 +660,7 @@ function wireWorkspaceTabs(tabs, panels) {
       panel.classList.toggle("active", active);
       panel.hidden = !active;
     });
+    activateWorkspacePanel(targetID);
   };
   tabs.forEach((tab, index) => {
     tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
@@ -198,7 +696,19 @@ function openPairingDialog(node = null) {
   if (pairingStatus) pairingStatus.textContent = "";
   const title = document.getElementById("pairing-title-node");
   const description = document.getElementById("pairing-dialog-description");
-  if (node) {
+  if (node?.joinOrchestrator) {
+    const pairingStatus2 = dashboardState.pairing.status;
+    const alreadyPairedWithTarget = pairingStatus2?.joined && pairingStatus2.orchestrator_id === node.id;
+    if (title) title.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}'s cluster` : `Join ${node.id}'s cluster`;
+    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. A PIN is only needed when joining across subnets.`;
+    if (pairingAddressField) pairingAddressField.hidden = false;
+    if (pairingAddress) {
+      pairingAddress.required = true;
+      pairingAddress.value = node.peer_addr || node.address || "";
+    }
+    if (pairingCode) pairingCode.value = "";
+    if (pairingConnectButton) pairingConnectButton.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}` : "Join cluster";
+  } else if (node) {
     const invitation = Boolean(node.discovered);
     if (title) title.textContent = invitation ? `Pair ${node.id} with this cluster` : `Re-pair ${node.id} with this cluster`;
     if (description) description.textContent = invitation ? `Send a pairing invitation to ${node.address}. The node must confirm locally before it joins.` : "Enter this cluster's HTTPS address and an active one-use PIN. The selected node must be online and already trusted by this cluster.";
@@ -246,19 +756,17 @@ async function loadPairingStatus() {
     }
     dashboardState.pairing.status = status;
     if (status.role === "orchestrator") {
-      if (pairingPinView) pairingPinView.hidden = false;
+      const pinViewModel = dashboardViewModel.pairingPINViewModel(status);
+      if (pairingPinView) pairingPinView.hidden = !pinViewModel.visible;
       if (pairingNodeConnect) pairingNodeConnect.hidden = true;
       if (pairingInstructions) pairingInstructions.textContent = "Nodes on the same subnet join this cluster automatically. Nodes on different subnets can join using a one-use PIN generated here.";
-      const hasPIN = Boolean(status.pin);
       if (pairingPinRegenerateBtn) {
-        pairingPinRegenerateBtn.textContent = hasPIN ? "Generate / replace pairing PIN" : "Generate pairing PIN";
+        pairingPinRegenerateBtn.textContent = pinViewModel.regenerateText;
       }
       if (pairingAddressDisplay) pairingAddressDisplay.textContent = status.address || "HTTPS address unavailable";
-      if (pairingPin) pairingPin.textContent = status.pin || "Expired";
-      if (pairingPinExpiry) {
-        pairingPinExpiry.textContent = status.expires_at ? `Expires ${new Date(status.expires_at).toLocaleTimeString()}. The PIN can be used once.` : "No active PIN. Generate a new PIN to pair another node.";
-      }
-      if (pairingState) pairingState.textContent = hasPIN ? "Share the PIN and HTTPS address only with the node you intend to add." : "No active PIN. Generate one to add or re-pair a node.";
+      if (pairingPin) pairingPin.textContent = pinViewModel.pinText;
+      if (pairingPinExpiry) pairingPinExpiry.textContent = pinViewModel.expiryText;
+      if (pairingState) pairingState.textContent = pinViewModel.stateText;
       return;
     }
     if (status.role === "node") {
@@ -344,6 +852,7 @@ async function activateAgentTab(harness) {
     const active = tab.dataset.agent === harness;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
     tab.disabled = true;
   });
   setAgentConsoleMode(harness);
@@ -357,6 +866,7 @@ async function activateAgentTab(harness) {
       applyAgentBackend(backend);
       await loadAgentTools();
     }
+    await loadClusterModels();
     const sessions = sessionsForHarness(harness);
     const rememberedID = activeSessionIds.get(harness);
     const sessionID = sessions.some((session) => session.id === rememberedID) ? rememberedID : sessions[0]?.id;
@@ -371,6 +881,7 @@ async function activateAgentTab(harness) {
       const active = tab.dataset.agent === previousMode;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
     });
   } finally {
     agentTabs.forEach((tab) => {
@@ -427,14 +938,31 @@ function activateDirectChat() {
     const active = tab.dataset.agent === "direct";
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
   });
   setAgentConsoleMode("direct");
   chatInput?.focus();
 }
 agentTabs.forEach((tab) => {
+  tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
   tab.addEventListener("click", () => {
     if (tab.dataset.agent === "direct") activateDirectChat();
     else activateAgentTab(tab.dataset.agent);
+  });
+  tab.addEventListener("keydown", (event) => {
+    const tabs = Array.from(agentTabs);
+    const index = tabs.indexOf(tab);
+    let nextIndex;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    const next = tabs[nextIndex];
+    next.focus();
+    if (next.dataset.agent === "direct") activateDirectChat();
+    else void activateAgentTab(next.dataset.agent);
   });
 });
 pairingConnectForm?.addEventListener("submit", async (event) => {
@@ -444,15 +972,20 @@ pairingConnectForm?.addEventListener("submit", async (event) => {
   pairingStatus.textContent = "Connecting securely…";
   try {
     const node = dashboardState.pairing.targetNode;
-    const invitation = Boolean(node?.discovered);
-    const endpoint = invitation ? `/api/discovery/${encodeURIComponent(node.id)}/pairing/invite` : node ? `/api/nodes/${encodeURIComponent(node.id)}/pairing/connect` : "/api/pairing/connect";
+    const joiningOrchestrator = Boolean(node?.joinOrchestrator);
+    const invitation = Boolean(node?.discovered && !joiningOrchestrator);
+    const endpoint = invitation ? `/api/discovery/${encodeURIComponent(node.id)}/pairing/invite` : joiningOrchestrator ? "/api/pairing/connect" : node ? `/api/nodes/${encodeURIComponent(node.id)}/pairing/connect` : "/api/pairing/connect";
     const result = await fetchJSON(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(invitation ? { pin: pairingCode.value.trim() } : { address: pairingAddress.value.trim(), pin: pairingCode.value.trim() })
+      body: JSON.stringify(invitation ? { pin: pairingCode.value.trim() } : {
+        address: pairingAddress.value.trim(),
+        pin: pairingCode.value.trim(),
+        ...joiningOrchestrator ? { orchestrator_id: node.id } : {}
+      })
     });
     pairingCode.value = "";
-    pairingStatus.textContent = invitation ? `Invitation sent to ${node.id}. Confirm it on the node to complete pairing.` : node ? `${node.id} paired with this cluster.` : `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}. Connecting to the cluster…`;
+    pairingStatus.textContent = invitation ? `Invitation sent to ${node.id}. Confirm it on the node to complete pairing.` : joiningOrchestrator ? `Connected to ${result.orchestrator_id}. Waiting for cluster registration…` : node ? `${node.id} paired with this cluster.` : `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}. Connecting to the cluster…`;
     if (invitation && pairingState) {
       pairingState.textContent = `Invitation sent to ${node.id}; waiting for confirmation on that node.`;
     }
@@ -744,7 +1277,9 @@ agentHarnessSelect?.addEventListener("change", async () => {
   const requested = agentHarnessSelect.value;
   await activateAgentTab(requested);
 });
+let clusterModelsLoaded = false;
 async function loadClusterModels() {
+  if (clusterModelsLoaded) return;
   try {
     const models = await fetchJSON("/api/agent/models");
     if (!agentModelSelect) return;
@@ -760,6 +1295,7 @@ async function loadClusterModels() {
       if (m.name === currentVal) opt.selected = true;
       agentModelSelect.appendChild(opt);
     }
+    clusterModelsLoaded = true;
   } catch (err) {
     console.error("failed to load cluster models", err);
   }
@@ -871,14 +1407,12 @@ async function deleteSession(id) {
 }
 function renderChatMessages(session) {
   if (!chatMessagesEl) return;
-  chatMessagesEl.innerHTML = "";
+  dashboardDOM.resetVirtualList(chatMessagesEl, { estimateHeight: 140, threshold: 50, overscan: 6 });
   if (!session || !session.messages || session.messages.length === 0) {
-    chatMessagesEl.innerHTML = `
-        <div class="welcome-card">
-          <h2>What would you like to orchestrate?</h2>
-          <p>Ask a question or give a task to your local cluster.</p>
-        </div>
-      `;
+    const welcome = document.createElement("div");
+    welcome.className = "welcome-card";
+    welcome.innerHTML = "<h2>What would you like to orchestrate?</h2><p>Ask a question or give a task to your local cluster.</p>";
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, welcome);
     return;
   }
   for (const msg of session.messages) {
@@ -886,51 +1420,18 @@ function renderChatMessages(session) {
   }
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
-function formatNodeHardware(node) {
-  const hardware = node.hardware || {};
-  const parts = [];
-  if (hardware.os || hardware.arch) parts.push([hardware.os, hardware.arch].filter(Boolean).join("/"));
-  if (hardware.cpu_cores) parts.push(`${hardware.cpu_cores} CPU cores`);
-  if (hardware.total_ram_mb) parts.push(`${(hardware.total_ram_mb / 1024).toFixed(1)} GB RAM`);
-  if (hardware.has_gpu) {
-    parts.push(`${hardware.gpu_vendor || "GPU"}${hardware.gpu_stats_available ? ` · ${hardware.gpu_utilization_percent}% busy` : ""}`);
-  }
-  if (hardware.has_npu) {
-    parts.push(`${hardware.npu_vendor || "NPU"}${hardware.npu_stats_available ? ` · ${hardware.npu_utilization_percent}% busy` : ""}`);
-  }
-  return parts.length ? parts.join(" · ") : "Hardware details unavailable";
-}
-function engineInventoryState(engine) {
-  const knownStates = ["unknown", "available", "empty", "error"];
-  if (knownStates.includes(engine?.inventory_state)) return engine.inventory_state;
-  if (!engine?.last_checked_at) return "unknown";
-  if (!engine.ready) return "error";
-  return Number(engine.model_count) > 0 ? "available" : "empty";
-}
-function engineInventoryLabel(state) {
-  switch (state) {
-    case "available":
-      return "Inventory available";
-    case "empty":
-      return "Reachable · no models";
-    case "error":
-      return "Check failed";
-    default:
-      return "Not checked";
-  }
-}
 function engineStatusSummaryMarkup(engines) {
   if (!Array.isArray(engines) || !engines.length) {
     return '<span class="engine-status-empty">No engines reported</span>';
   }
   return `<div class="engine-status-summary" aria-label="Inference engine status">${engines.map((engine) => {
-    const state = engineInventoryState(engine);
+    const state = dashboardViewModel.engineInventoryState(engine);
     const count = Math.max(0, Number(engine.model_count) || 0);
     const countLabel = state === "error" ? `${count} known` : `${count} model${count === 1 ? "" : "s"}`;
-    const title = engine.last_error ? `${engine.name}: ${engine.last_error}` : `${engine.name}: ${engineInventoryLabel(state)}`;
+    const title = engine.last_error ? `${engine.name}: ${engine.last_error}` : `${engine.name}: ${dashboardViewModel.engineInventoryLabel(state)}`;
     return `<span class="engine-status-chip ${state}" title="${escapeHtml(title)}">
       <strong>${escapeHtml(engine.name || "Unknown engine")}</strong>
-      <span>${escapeHtml(engineInventoryLabel(state))} · ${countLabel}</span>
+      <span>${escapeHtml(dashboardViewModel.engineInventoryLabel(state))} · ${countLabel}</span>
     </span>`;
   }).join("")}</div>`;
 }
@@ -941,7 +1442,7 @@ function engineStatusDetailsMarkup(engines) {
   return `<section class="engine-inventory-details" aria-label="Inference engine inventory">
     <h4>Inference engine inventory</h4>
     ${engines.map((engine) => {
-    const state = engineInventoryState(engine);
+    const state = dashboardViewModel.engineInventoryState(engine);
     const checkedAt = engine.last_checked_at ? new Date(engine.last_checked_at) : null;
     const successfulAt = engine.last_successful_at ? new Date(engine.last_successful_at) : null;
     const checkedLabel = checkedAt && Number.isFinite(checkedAt.getTime()) ? checkedAt.toLocaleString() : "Not checked";
@@ -951,7 +1452,7 @@ function engineStatusDetailsMarkup(engines) {
     return `<article class="engine-inventory-row ${state}">
         <div class="engine-inventory-heading">
           <strong>${escapeHtml(engine.name || "Unknown engine")}</strong>
-          <span class="engine-inventory-state">${escapeHtml(engineInventoryLabel(state))}</span>
+          <span class="engine-inventory-state">${escapeHtml(dashboardViewModel.engineInventoryLabel(state))}</span>
           <span>${count} known model${count === 1 ? "" : "s"}</span>
         </div>
         <small>Last checked: ${escapeHtml(checkedLabel)} · Last successful inventory: ${escapeHtml(successfulLabel)}</small>
@@ -973,7 +1474,7 @@ function nodeContextDetailsMarkup(node, expanded) {
   return `<details class="overview-node-context"${expanded ? " open" : ""}>
     <summary>Hardware, engines &amp; models</summary>
     <div class="overview-node-context-body">
-      <div>${escapeHtml(formatNodeHardware(node))}</div>
+      <div>${escapeHtml(dashboardViewModel.formatNodeHardware(node))}</div>
       <div>Active tasks: ${Number(node.active_tasks) || 0}${score}</div>
       ${engineStatusSummaryMarkup(node.engines)}
       ${engineStatusDetailsMarkup(node.engines)}
@@ -981,21 +1482,151 @@ function nodeContextDetailsMarkup(node, expanded) {
     </div>
   </details>`;
 }
+function isClusterStatusQuestion(text) {
+  const query = text.toLowerCase();
+  const subject = /\b(cluster|nodes?|workers?|orchestrators?|peers?|engines?|models?|llms?|gpus?|npus?|cpus?|ram|vram|memory|hardware|capacity|telemetry|shards?|pipelines?|tasks?|queues?|versions?|leader|leadership|maistr0|network)\b/.test(query);
+  const read = /^(?:(?:hi|hello|please)[,.! ]+)*(?:what|which|who|where|when|why|how|is|are|do|does|can|could|would|has|have|show|list|tell|check|inspect|describe|compare|report|status|cluster)\b/.test(query.trim()) || /\b(status|health|inventory|available|online|offline|running|common|shared|same)\b/.test(query);
+  const capability = /^(?:what|which|can|could|does|do|is|are)\b/.test(query.trim()) && (/\b(enough|support|capable|able)\b/.test(query) || /\b(?:can|could)\s+(?:(?:the|this|my|our)\s+)?(?:cluster|nodes?|workers?|hardware|gpus?|npus?|cpus?|i)\b/.test(query));
+  const mutation = /\b(install|uninstall|download|pull|delete|remove|restart|reboot|stop|start|kill|deploy|configure|change|update|upgrade|enable|disable|create|build|write|implement|schedule|dispatch|benchmark|test|fix|repair|optimize|optimise)\b/.test(query) || /\brun\b/.test(query) && !capability;
+  return subject && read && !mutation;
+}
+async function answerClusterStatusQuestion(nodes) {
+  const sources = [
+    ["/api/cluster/health", "Capacity and telemetry"],
+    ["/api/status", "Orchestrator status"],
+    ["/api/shards", "Shard groups"],
+    ["/api/tasks?page_size=50", "Recent tasks"],
+    ["/api/version", "Build version"]
+  ];
+  const results = await Promise.allSettled(sources.map(([url]) => fetchJSON(url)));
+  const data = {};
+  const errors = [];
+  results.forEach((result, index) => {
+    const [url, label] = sources[index];
+    if (result.status === "fulfilled") {
+      if (url.startsWith("/api/tasks") && Array.isArray(result.value)) {
+        data[url] = { items: result.value.slice(0, 50), has_more: result.value.length > 50 };
+      } else if (!result.value || typeof result.value !== "object" || Array.isArray(result.value)) {
+        errors.push(`${label} unavailable: invalid API response`);
+      } else {
+        data[url] = result.value;
+      }
+    } else {
+      errors.push(`${label} unavailable: ${result.reason.message}`);
+    }
+  });
+  return formatClusterStatusAnswer(nodes, data, errors);
+}
+function formatClusterStatusAnswer(nodes, data, errors = []) {
+  const health = data["/api/cluster/health"];
+  const status = data["/api/status"];
+  const shardList = data["/api/shards"];
+  const taskPage = data["/api/tasks?page_size=50"];
+  const online = nodes.filter((node) => node.healthy);
+  const offline = nodes.filter((node) => !node.healthy);
+  const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
+  const number = (value, suffix = "") => typeof value === "number" && Number.isFinite(value) ? `${value}${suffix}` : "unknown";
+  const utilization = (available, value) => available ? number(value ?? 0, "%") : "unknown";
+  const lines = [
+    "Live cluster status (read-only; no LLM planner or task dispatch).",
+    "These are reported snapshots, not fresh engine probes. Model names identify advertised models, not verified identical weights or revisions.",
+    `Nodes: ${online.length} online, ${offline.length} offline, ${nodes.length} registered.`
+  ];
+  const modelNames = (node) => new Set((node.models || []).map((model) => model.name).filter(Boolean));
+  const inventoryUnknown = (node) => !node.healthy || (node.engines || []).some((engine) => !engine.ready || !["available", "empty"].includes(dashboardViewModel.engineInventoryState(engine)));
+  const intersection = (members) => {
+    if (!members.length) return [];
+    return [...modelNames(members[0])].filter((name) => members.every((node) => modelNames(node).has(name))).sort();
+  };
+  const common = intersection(online);
+  if (!nodes.length) {
+    lines.push("No registered nodes; common models cannot be determined.");
+  } else if (nodes.some(inventoryUnknown)) {
+    lines.push("Models available on ALL registered nodes: unknown; at least one node is offline or has an unavailable engine/inventory.");
+  } else {
+    lines.push(`Models reported on ALL ${nodes.length} registered nodes: ${common.length ? common.join(", ") : "none"}.`);
+  }
+  if (online.length) {
+    lines.push(`Common advertised model names across ${online.length} online node(s): ${common.length ? common.join(", ") : "none"}.`);
+    if (online.some(inventoryUnknown)) lines.push("Online model inventory is incomplete; common names above are not a readiness guarantee.");
+    if (online.length === 1) lines.push("Only one node is online; this does not establish multi-node model availability.");
+  }
+  const capacity = new Map((health?.nodes || []).map((node) => [node.node_id, node]));
+  for (const node of sorted) {
+    const hardware = node.hardware || {};
+    const load = capacity.get(node.id);
+    lines.push("", `${node.id}: ${node.healthy ? "online" : "OFFLINE"}${node.leader ? ", leader" : ""}; version ${node.version || "unknown"}.`);
+    lines.push(`  Address: ${node.address || "unknown"}; OS: ${hardware.os || "unknown"}/${hardware.arch || "unknown"}.`);
+    lines.push(`  Last seen: ${node.last_seen || "unknown"}; telemetry: ${load?.telemetry_state || "unknown"}; sampled at ${node.telemetry_at || "unknown"}.`);
+    lines.push(`  CPU: ${number(hardware.cpu_cores)} cores; utilization: ${utilization(hardware.cpu_stats_available, hardware.cpu_utilization_percent)}.`);
+    lines.push(`  RAM: ${number(hardware.total_ram_mb, " MiB")}; utilization: ${utilization(hardware.memory_stats_available, hardware.memory_usage_percent)}.`);
+    lines.push(`  GPU: ${hardware.has_gpu ? hardware.gpu_vendor || "detected" : "not reported"}; utilization: ${utilization(hardware.gpu_stats_available, hardware.gpu_utilization_percent)}; free memory: ${number(hardware.gpu_memory_free_mb, " MiB")}.`);
+    lines.push(`  NPU: ${hardware.has_npu ? hardware.npu_vendor || "detected" : "not reported"}; utilization: ${utilization(hardware.npu_stats_available, hardware.npu_utilization_percent)}.`);
+    for (const device of hardware.devices || []) {
+      lines.push(`  Device ${device.kind}:${device.index} ${device.name || device.vendor || ""}: memory ${number(device.memory_mb, " MiB")}, free ${number(device.free_memory_mb, " MiB")} (omitted memory is unknown).`);
+    }
+    for (const link of hardware.network_links || []) {
+      lines.push(`  Network ${link.name}: ${number(link.speed_mbps, " Mbps")}; trusted ${link.trusted === true ? "yes" : "not reported"}; RDMA ${link.rdma === true ? "yes" : "not reported"}.`);
+    }
+    lines.push(`  Tasks: ${number(node.active_tasks)} active; capacity: ${number(load?.remaining)} remaining / ${number(load?.max)} slots.`);
+    lines.push(`  Default model: ${node.default_model || "not set"}.`);
+    const models = [...modelNames(node)].sort();
+    lines.push(`  ${inventoryUnknown(node) ? "Last reported models (availability unconfirmed)" : "Reported models"}: ${models.length ? models.join(", ") : "none reported"}.`);
+    const engines = node.engines || [];
+    lines.push(`  Engines: ${engines.length ? engines.map((engine) => `${engine.name}: ${engine.ready ? "ready" : "not ready"}, inventory ${dashboardViewModel.engineInventoryState(engine)}${engine.last_error ? `, error ${engine.last_error}` : ""}`).join("; ") : node.version ? "none configured or detected" : "readiness not reported (legacy node)"}.`);
+    if (node.version_error) lines.push(`  Version warning: ${node.version_error}`);
+  }
+  if (status) {
+    lines.push("", `Orchestrator: ${status.role || "unknown role"}; mode ${status.mode || "full"}; version ${data["/api/version"]?.version || "unknown"}.`);
+    lines.push(`Persistence: ${status.persistence?.available === true ? "available" : status.persistence?.available === false ? "unavailable" : "not reported"}${status.persistence?.warning ? `; ${status.persistence.warning}` : ""}.`);
+  }
+  if (health) {
+    const dispatch = health.global_dispatch || {};
+    lines.push("", `Dispatch: ${number(dispatch.active_slots)} active slots / ${number(dispatch.global_limit)} limit; ${number(dispatch.queue_depth)} queued; ${number(dispatch.active_workers)} active workers.`);
+    const engines = health.engine_readiness || {};
+    lines.push(`Engine readiness: ${number(engines.ready_engines)} / ${number(engines.total_engines)} ready.`);
+    const telemetry = health.telemetry_freshness || {};
+    lines.push(`Telemetry: ${number(telemetry.fresh_nodes)} fresh, ${number(telemetry.stale_nodes)} stale, ${number(telemetry.unavailable_nodes)} unavailable.`);
+    for (const warning of health.warnings || []) lines.push(`Warning: ${warning}`);
+  }
+  if (Array.isArray(shardList?.groups)) {
+    lines.push("", `Shard groups: ${shardList.groups.length}.`);
+    for (const group of shardList.groups) {
+      lines.push(`  ${group.id}: ${group.model?.name || "unknown model"}, ${group.mode}, ${group.state}${group.error ? `; ${group.error}` : ""}.`);
+      lines.push(`  Members: ${(group.members || []).map((member) => `${member.node_id}/${member.engine_id} (${member.role})`).join(", ") || "none"}.`);
+    }
+  } else if (shardList) {
+    errors = [...errors, "Shard groups unavailable: invalid API response"];
+  }
+  if (Array.isArray(taskPage?.items)) {
+    lines.push("", `Recent tasks: ${taskPage.items.length}${taskPage.has_more ? " (more history available in Tasks)" : ""}.`);
+    for (const task of taskPage.items) lines.push(`  ${task.id}: ${task.status}; updated ${task.updated_at || "unknown"}.`);
+  } else if (taskPage) {
+    errors = [...errors, "Recent tasks unavailable: invalid API response"];
+  }
+  if (errors.length) lines.push("", "Incomplete status:", ...errors);
+  return lines.join("\n");
+}
 function renderDirectMessages() {
   if (!chatMessagesEl) return;
-  chatMessagesEl.innerHTML = "";
+  dashboardDOM.resetVirtualList(chatMessagesEl, { estimateHeight: 140, threshold: 50, overscan: 6 });
   if (!directMessages.length) {
-    chatMessagesEl.innerHTML = `
-      <div class="welcome-card">
-        <h2>The mAIstr0 awaits your command</h2>
-      </div>
-    `;
+    const welcome = document.createElement("div");
+    welcome.className = "welcome-card";
+    welcome.innerHTML = "<h2>The mAIstr0 awaits your command</h2>";
+    dashboardDOM.appendVirtualListItem(chatMessagesEl, welcome);
     return;
   }
   for (const message of directMessages) {
     appendMessageToChat({ ...message, coordinator: "mAIstr0" });
   }
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+function appendChatItem(node) {
+  for (const welcome of chatMessagesEl.querySelectorAll(".welcome-card")) {
+    dashboardDOM.removeVirtualListItem(chatMessagesEl, welcome);
+  }
+  dashboardDOM.appendVirtualListItem(chatMessagesEl, node);
 }
 function appendMessageToChat(msg) {
   if (!chatMessagesEl) return;
@@ -1036,7 +1667,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
       </div>
       ${bodyHTML}
     `;
-    chatMessagesEl.appendChild(card);
+    appendChatItem(card);
     return;
   }
   const msgDiv = document.createElement("div");
@@ -1074,7 +1705,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
     ${toolsHTML}
     ${contentHTML}
   `;
-  chatMessagesEl.appendChild(msgDiv);
+  appendChatItem(msgDiv);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 function formatDirectTaskDispatch(task) {
@@ -1093,19 +1724,27 @@ function formatDirectTaskDispatch(task) {
 }
 async function dispatchDirectTask(description) {
   if (!description || isSending) return;
+  const statusQuestion = isClusterStatusQuestion(description);
   isSending = true;
   if (sendMsgBtn) sendMsgBtn.disabled = true;
   if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
   agentTabs.forEach((tab) => {
     tab.disabled = true;
   });
-  if (chatStatus) chatStatus.textContent = "Planning against live capabilities and routing to suitable nodes…";
+  if (chatStatus) chatStatus.textContent = statusQuestion ? "Reading live cluster status…" : "Planning against live capabilities and routing to suitable nodes…";
   directMessages.push({ role: "user", content: description });
   appendMessageToChat({ role: "user", content: description });
   chatInput.value = "";
   try {
     const nodes = await fetchJSON("/api/nodes/all");
     if (!Array.isArray(nodes)) throw new Error("Could not load the current cluster inventory.");
+    if (statusQuestion) {
+      const summary2 = await answerClusterStatusQuestion(nodes);
+      directMessages.push({ role: "assistant", content: summary2 });
+      appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: summary2 });
+      if (chatStatus) chatStatus.textContent = "";
+      return;
+    }
     if (!nodes.some((node) => node.healthy)) {
       throw new Error("No healthy cluster nodes are available to plan or run this task.");
     }
@@ -1120,7 +1759,7 @@ async function dispatchDirectTask(description) {
     if (chatStatus) chatStatus.textContent = "";
     void refresh();
   } catch (err) {
-    const message = `Task dispatch failed: ${err.message}`;
+    const message = `${statusQuestion ? "Cluster status failed" : "Task dispatch failed"}: ${err.message}`;
     directMessages.push({ role: "assistant", content: message });
     appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: message });
     if (chatStatus) chatStatus.textContent = message;
@@ -1219,13 +1858,13 @@ function handleStreamEvent(event) {
     const thoughtBox = document.createElement("div");
     thoughtBox.className = "thought-box";
     thoughtBox.innerHTML = `💭 <strong>Step ${event.step || 1}:</strong> ${escapeHtml(event.content)}`;
-    chatMessagesEl.appendChild(thoughtBox);
+    appendChatItem(thoughtBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "node_output" && event.output) {
     const outputBox = document.createElement("div");
     outputBox.className = "node-output-box";
     outputBox.innerHTML = `<strong>Orchestrator coordinator output · ${escapeHtml(event.node_id || "node")} · ${escapeHtml(event.model || "")}</strong><pre>${escapeHtml(event.output)}</pre>`;
-    chatMessagesEl.appendChild(outputBox);
+    appendChatItem(outputBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "tool_call" && event.tool_call) {
     if (chatStatus) chatStatus.textContent = `⚡ Spreading work: Calling tool ${event.tool_call.name}...`;
@@ -1233,7 +1872,7 @@ function handleStreamEvent(event) {
     appendMessageToChat({ role: "tool", tool_response: event.tool_resp });
   } else if (event.type === "final_message" && event.message) {
     if (streamingAssistantEl) {
-      streamingAssistantEl.remove();
+      dashboardDOM.removeVirtualListItem(chatMessagesEl, streamingAssistantEl);
       streamingAssistantEl = null;
     }
     appendMessageToChat(event.message);
@@ -1247,7 +1886,7 @@ function handleStreamEvent(event) {
       const bubble2 = document.createElement("div");
       bubble2.className = "msg-bubble";
       streamingAssistantEl.append(meta, bubble2);
-      chatMessagesEl.appendChild(streamingAssistantEl);
+      appendChatItem(streamingAssistantEl);
     }
     const bubble = streamingAssistantEl.querySelector(".msg-bubble");
     if (bubble) bubble.textContent += event.content;
@@ -1302,6 +1941,9 @@ promptChips.forEach((chip) => {
   });
 });
 async function refreshMemory() {
+  dashboardDOM.renderSkeleton(factsList, 2);
+  dashboardDOM.renderSkeleton(experiencesList, 3);
+  dashboardDOM.renderSkeleton(transcriptsList, 2);
   try {
     const query = memorySearch?.value.trim() || "";
     const experienceURL = query ? `/api/memory/experiences?q=${encodeURIComponent(query)}` : "/api/memory/experiences";
@@ -1371,6 +2013,7 @@ async function loadMoreMemoryHistory(name) {
 }
 function appendMemoryLoadMore(container, name, hasMore, loading) {
   if (!container || !hasMore) return;
+  container.querySelector(".history-load-more")?.remove();
   const button = document.createElement("button");
   button.className = "icon-button history-load-more";
   button.type = "button";
@@ -1407,75 +2050,99 @@ function renderLearning(insights) {
 }
 function renderFacts(facts, hasMore = false, loading = false) {
   if (!factsList) return;
-  factsList.innerHTML = "";
-  if (!facts || facts.length === 0) {
-    factsList.innerHTML = '<p style="color:var(--muted)">Nothing remembered yet.</p>';
-    appendMemoryLoadMore(factsList, "facts", hasMore, loading);
-    return;
-  }
-  for (const f of facts) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
+  const items = facts?.length ? facts : [{ key: "__empty", scope: "__empty" }];
+  factsList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(factsList, items, {
+    keyOf: (fact) => `${fact.scope || "cluster"}|${fact.key}`,
+    signatureOf: JSON.stringify,
+    estimateHeight: 140,
+    threshold: 30,
+    renderItem: (f) => {
+      if (f.scope === "__empty") {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "Nothing remembered yet.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
       <h3>${escapeHtml(f.key)} <span class="badge healthy">${escapeHtml(f.scope || "cluster")}</span></h3>
       <div class="row"><span>${escapeHtml(f.value)}</span></div>
       <div class="row"><span>Source</span><span>${escapeHtml(f.source || "unknown")}</span></div>
       <div class="row"><span>Recalled</span><span>${f.hits || 0}×</span></div>
       <button class="icon-button" data-forget="${escapeHtml(f.key)}" data-scope="${escapeHtml(f.scope || "cluster")}">Forget</button>
-    `;
-    card.querySelector("[data-forget]")?.addEventListener("click", async (e) => {
-      const key = e.target.dataset.forget;
-      const scope = e.target.dataset.scope;
-      await fetch(`/api/memory/facts/${encodeURIComponent(key)}?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
-      refreshMemory();
-    });
-    factsList.appendChild(card);
-  }
+      `;
+      card.querySelector("[data-forget]")?.addEventListener("click", async (e) => {
+        const key = e.target.dataset.forget;
+        const scope = e.target.dataset.scope;
+        await fetch(`/api/memory/facts/${encodeURIComponent(key)}?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
+        refreshMemory();
+      });
+      return card;
+    }
+  });
   appendMemoryLoadMore(factsList, "facts", hasMore, loading);
 }
 function renderExperiences(experiences, hasMore = false, loading = false) {
   if (!experiencesList) return;
-  experiencesList.innerHTML = "";
-  if (!experiences || experiences.length === 0) {
-    experiencesList.innerHTML = '<p style="color:var(--muted)">No matching experience recorded.</p>';
-    appendMemoryLoadMore(experiencesList, "experiences", hasMore, loading);
-    return;
-  }
-  for (const e of experiences) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
+  const items = experiences?.length ? experiences : [{ id: "__empty", empty: true }];
+  experiencesList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(experiencesList, items, {
+    keyOf: (item) => item.id || `${item.created_at || ""}|${item.description || ""}`,
+    signatureOf: JSON.stringify,
+    estimateHeight: 200,
+    threshold: 25,
+    renderItem: (e) => {
+      if (e.empty) {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No matching experience recorded.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
       <h3>${escapeHtml(e.kind || "task")} <span class="badge ${e.success ? "completed" : "failed"}">${e.success ? "success" : "failed"}</span></h3>
       <div class="row"><span>${escapeHtml(e.description || "")}</span></div>
       <div class="row"><span>${escapeHtml(e.node_id || "-")} / ${escapeHtml(e.model || "-")}</span><span>${e.duration_ms || 0}ms</span></div>
       <div class="row"><span>When</span><span>${new Date(e.created_at).toLocaleString()}</span></div>
       ${e.output ? `<div class="subtask-output">${escapeHtml(e.output.slice(0, 600))}</div>` : ""}
       ${e.error ? `<div class="subtask-output" style="border-color:var(--bad)">${escapeHtml(e.error)}</div>` : ""}
-    `;
-    experiencesList.appendChild(card);
-  }
+      `;
+      return card;
+    }
+  });
   appendMemoryLoadMore(experiencesList, "experiences", hasMore, loading);
 }
 function renderTranscripts(dialogues, hasMore = false, loading = false) {
   if (!transcriptsList) return;
-  transcriptsList.innerHTML = "";
-  if (!dialogues || dialogues.length === 0) {
-    transcriptsList.innerHTML = '<p style="color:var(--muted)">No stored conversations yet.</p>';
-    appendMemoryLoadMore(transcriptsList, "dialogues", hasMore, loading);
-    return;
-  }
-  for (const d of dialogues) {
-    const card = document.createElement("div");
-    card.className = "card";
-    const turns = (d.turns || []).slice(-6).map((t) => `<div class="node-msg"><strong>${escapeHtml(t.speaker)}:</strong> ${escapeHtml((t.content || "").slice(0, 400))}</div>`).join("");
-    card.innerHTML = `
+  const items = dialogues?.length ? dialogues : [{ id: "__empty", empty: true }];
+  transcriptsList.querySelector(".history-load-more")?.remove();
+  dashboardDOM.renderVirtualList(transcriptsList, items, {
+    keyOf: (dialogue) => dialogue.id,
+    signatureOf: JSON.stringify,
+    estimateHeight: 240,
+    threshold: 20,
+    renderItem: (d) => {
+      if (d.empty) {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No stored conversations yet.";
+        return empty;
+      }
+      const card = document.createElement("div");
+      card.className = "card";
+      const turns = (d.turns || []).slice(-6).map((t) => `<div class="node-msg"><strong>${escapeHtml(t.speaker)}:</strong> ${escapeHtml((t.content || "").slice(0, 400))}</div>`).join("");
+      card.innerHTML = `
       <h3>${escapeHtml(d.id)} <span class="badge healthy">${(d.turns || []).length} turns</span></h3>
       <div class="row"><span>Participants</span><span>${escapeHtml((d.participants || []).join(", "))}</span></div>
       ${d.topic ? `<div class="row"><span>Topic</span><span>${escapeHtml(d.topic)}</span></div>` : ""}
       ${turns}
-    `;
-    transcriptsList.appendChild(card);
-  }
+      `;
+      return card;
+    }
+  });
   appendMemoryLoadMore(transcriptsList, "dialogues", hasMore, loading);
 }
 factForm?.addEventListener("submit", async (e) => {
@@ -1653,16 +2320,6 @@ const SUBTASK_STATES = /* @__PURE__ */ new Set(["pending", "running", "completed
 function knownStatus(status, states) {
   return states.has(status) ? status : "unknown";
 }
-function formatRelativeTime(value) {
-  if (!value) return "time unavailable";
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return "time unavailable";
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1e3));
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return new Date(timestamp).toLocaleDateString();
-}
 function nodeAssignments(tasks) {
   const assigned = /* @__PURE__ */ new Map();
   for (const task of tasks || []) {
@@ -1719,28 +2376,45 @@ function renderOverview(nodes, tasks, peers, parts = {}) {
     const expandedNodeIDs = new Set(
       [...overviewNodes.querySelectorAll(".overview-node-context[open]")].map((details) => details.closest("[data-node-id]")?.dataset.nodeId).filter(Boolean)
     );
-    overviewNodes.innerHTML = displayNodes.length ? displayNodes.map((node) => {
-      const capacity = capacityByNode.get(node.id);
-      const active = capacity?.active ?? node.active_tasks ?? 0;
-      const capacityLabel = capacity ? ` · ${capacity.remaining}/${capacity.max} slots free` : "";
-      const nodeTasks = assignments.get(node.id) || [];
-      const state = node.discovered ? "discovered" : node.healthy ? "online" : "offline";
-      const status = node.discovered ? "available · not paired" : state;
-      const lastSeen = node.last_seen ? `${node.discovered ? "Seen" : "Last seen"} ${formatRelativeTime(node.last_seen)}` : "Last seen unavailable";
-      return `<article class="overview-node ${state}" data-node-id="${escapeHtml(node.id)}">
-            <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
-            <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
-            <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${active} active tasks${capacityLabel} · ${(node.models || []).length} models`}</div>
-            <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
-            <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
-            ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
-            ${node.discovered ? "" : nodeContextDetailsMarkup(node, expandedNodeIDs.has(node.id))}
-          </article>`;
-    }).join("") : '<p class="overview-empty">No known cluster members.</p>';
-    const nodesByID = new Map(displayNodes.map((node) => [node.id, node]));
-    overviewNodes.querySelectorAll("[data-node-id]").forEach((card) => {
-      const node = nodesByID.get(card.dataset.nodeId);
-      if (node) attachNodeContextMenu(card, node);
+    const nodeItems = displayNodes.length ? displayNodes : [{ id: "__empty", empty: true }];
+    dashboardDOM.patchKeyedChildren(overviewNodes, nodeItems, {
+      keyOf: (item) => item.id,
+      signatureOf: (item) => item.empty ? "empty" : JSON.stringify({
+        node: item,
+        capacity: capacityByNode.get(item.id),
+        assignments: assignments.get(item.id),
+        leaderID,
+        expanded: expandedNodeIDs.has(item.id)
+      }),
+      renderItem: (node) => {
+        if (node.empty) {
+          const empty = document.createElement("p");
+          empty.className = "overview-empty";
+          empty.textContent = "No known cluster members.";
+          return empty;
+        }
+        const capacity = capacityByNode.get(node.id);
+        const active = capacity?.active ?? node.active_tasks ?? 0;
+        const capacityLabel = capacity ? ` · ${capacity.remaining}/${capacity.max} slots free` : "";
+        const nodeTasks = assignments.get(node.id) || [];
+        const state = node.discovered ? "discovered" : node.healthy ? "online" : "offline";
+        const status = node.discovered ? "available · not paired" : state;
+        const lastSeen = node.last_seen ? `${node.discovered ? "Seen" : "Last seen"} ${formatRelativeTime(node.last_seen)}` : "Last seen unavailable";
+        const card = document.createElement("article");
+        card.className = `overview-node ${state}`;
+        card.dataset.nodeId = node.id;
+        card.innerHTML = `
+          <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
+          <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
+          <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${active} active tasks${capacityLabel} · ${(node.models || []).length} models`}</div>
+          <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
+          <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
+          ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
+          ${node.discovered ? "" : nodeContextDetailsMarkup(node, expandedNodeIDs.has(node.id))}
+        `;
+        if (!node.discovered) attachNodeContextMenu(card, node);
+        return card;
+      }
     });
   }
   if (parts.peers !== false && clusterPeers) {
@@ -1762,87 +2436,438 @@ overviewActivity?.addEventListener("click", (event) => {
   node.classList.add("highlighted");
   setTimeout(() => node.classList.remove("highlighted"), 1200);
 });
+const shardSetupDialog = document.getElementById("shard-group-setup-dialog");
+const shardSetupNodes = document.getElementById("shard-group-setup-nodes");
+const shardSetupMode = document.getElementById("shard-group-setup-mode");
+const shardSetupSource = document.getElementById("shard-group-setup-source");
+const shardSetupModel = document.getElementById("shard-group-setup-model");
+const shardSetupHead = document.getElementById("shard-group-setup-head");
+const shardSetupContext = document.getElementById("shard-group-setup-context");
+const shardSetupStatus = document.getElementById("shard-group-setup-status");
+const shardSetupCreate = document.getElementById("shard-group-setup-create");
+let shardSetupProfiles = /* @__PURE__ */ new Map();
+let shardSetupInventory = /* @__PURE__ */ new Map();
+let shardSetupGeneration = 0;
+let shardSetupPending = false;
+let shardSetupInventoryLoading = false;
+let shardSetupHeadModels = /* @__PURE__ */ new Map();
+function openShardGroupWizard(nodeID) {
+  if (!shardSetupDialog) return;
+  const node = dashboardState.nodes.find((item) => item.id === nodeID);
+  if (!node?.healthy) return;
+  shardSetupProfiles = /* @__PURE__ */ new Map();
+  shardSetupInventory = /* @__PURE__ */ new Map();
+  shardSetupPending = false;
+  shardSetupInventoryLoading = true;
+  shardSetupMode.value = "llamacpp-rpc";
+  shardSetupSource.value = "official";
+  shardSetupContext.value = "4096";
+  shardSetupHead.innerHTML = "";
+  renderShardSetupNodes(nodeID, true);
+  shardSetupDialog.showModal();
+  return loadShardSetupInventory();
+}
+function renderShardSetupNodes(selectedNodeID, reset = false) {
+  const selected = reset ? /* @__PURE__ */ new Set([selectedNodeID]) : new Set(
+    [...shardSetupDialog.querySelectorAll("[data-node-id]:checked")].map((input) => input.dataset.nodeId)
+  );
+  const nodes = dashboardState.nodes.filter((node) => node.healthy);
+  shardSetupNodes.innerHTML = nodes.length ? nodes.map((node) => {
+    const eligibility = shardSetupNodeEligibility(
+      node.id,
+      shardSetupInventory,
+      shardSetupMode.value,
+      shardSetupInventoryLoading
+    );
+    const checked = selected.has(node.id) && (eligibility.eligible || shardSetupInventoryLoading);
+    const freeMemory = (node.hardware?.devices || []).filter((device) => device.kind === "gpu" || device.kind === "npu").reduce((total, device) => total + Number(device.free_memory_mb || 0), 0);
+    const memory = freeMemory > 0 ? `${(freeMemory / 1024).toFixed(1)} GB free device memory` : "No measured free accelerator memory; cannot receive layers";
+    return `
+        <label class="shard-node-option ${eligibility.eligible ? "" : "unavailable"}">
+          <input type="checkbox" data-node-id="${escapeHtml(node.id)}" ${checked ? "checked" : ""} ${eligibility.eligible ? "" : "disabled"} />
+          <span><strong>${escapeHtml(node.id)}</strong><small>${escapeHtml(memory)}</small><small>${escapeHtml(eligibility.reason)}</small></span>
+        </label>`;
+  }).join("") : '<p class="setup-empty">No healthy nodes are available.</p>';
+  shardSetupNodes.querySelectorAll("[data-node-id]").forEach((input) => {
+    input.addEventListener("change", () => void loadShardSetupModels());
+  });
+}
+function shardSetupNodeEligibility(nodeID, inventory, mode, inventoryLoading = false) {
+  if (inventoryLoading || !inventory.has(nodeID)) {
+    return { eligible: false, reason: "Checking managed engines…" };
+  }
+  const status = inventory.get(nodeID);
+  if (status.error) {
+    return { eligible: false, reason: `Managed engine check failed: ${status.error}` };
+  }
+  const engines = status.engines || [];
+  const requiredKind = mode === "vllm-mp" ? "vllm" : "ggml-rpc-server";
+  if (!engines.some((engine) => engine.kind?.toLowerCase() === requiredKind)) {
+    if (mode === "llamacpp-rpc") {
+      return { eligible: true, reason: "RPC worker will download and install automatically when selected" };
+    }
+    return { eligible: false, reason: `No configured ${requiredKind}` };
+  }
+  if (mode === "llamacpp-rpc" && !engines.some((engine) => engine.kind?.toLowerCase() === "llama-server")) {
+    return { eligible: true, reason: "Worker ready; a selected node also needs llama-server" };
+  }
+  return { eligible: true, reason: "Managed worker ready" };
+}
+async function loadShardSetupInventory() {
+  const generation = ++shardSetupGeneration;
+  const nodes = dashboardState.nodes.filter((node) => node.healthy);
+  shardSetupInventoryLoading = true;
+  shardSetupInventory = /* @__PURE__ */ new Map();
+  renderShardSetupNodes();
+  shardSetupModel.innerHTML = '<option value="">Checking worker engines…</option>';
+  shardSetupModel.disabled = true;
+  shardSetupCreate.disabled = true;
+  shardSetupStatus.textContent = "Checking managed engines on healthy nodes…";
+  const inventory = await Promise.all(nodes.map(async (node) => {
+    try {
+      const engines = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/engines/managed`);
+      if (!Array.isArray(engines)) throw new Error("managed-engine response was not an array");
+      return { nodeID: node.id, engines };
+    } catch (error) {
+      return { nodeID: node.id, error: error.message, engines: [] };
+    }
+  }));
+  if (generation !== shardSetupGeneration) return;
+  shardSetupInventory = new Map(inventory.map(({ nodeID, ...status }) => [nodeID, status]));
+  shardSetupInventoryLoading = false;
+  renderShardSetupNodes();
+  return loadShardSetupModels();
+}
+async function loadShardSetupModels() {
+  if (shardSetupPending) return;
+  const generation = ++shardSetupGeneration;
+  const nodeIDs = [...shardSetupDialog.querySelectorAll("[data-node-id]:checked")].map((input) => input.dataset.nodeId);
+  const mode = shardSetupMode.value;
+  const installationWarnings = [];
+  shardSetupProfiles = /* @__PURE__ */ new Map();
+  shardSetupHeadModels = /* @__PURE__ */ new Map();
+  shardSetupHead.disabled = true;
+  shardSetupModel.innerHTML = '<option value="">Loading compatible models…</option>';
+  shardSetupModel.disabled = true;
+  shardSetupCreate.disabled = true;
+  shardSetupStatus.textContent = "Reading model metadata from managed engines…";
+  if (shardSetupInventoryLoading) {
+    shardSetupStatus.textContent = "Checking managed engines on healthy nodes…";
+    return;
+  }
+  if (!nodeIDs.length) {
+    shardSetupModel.innerHTML = '<option value="">Select at least one node</option>';
+    shardSetupStatus.textContent = mode === "vllm-mp" ? "Select nodes with configured vLLM workers. Automatic vLLM installation is not supported." : "Select workers. Missing RPC workers download and install automatically from the selected release source.";
+    return;
+  }
+  const inventory = nodeIDs.map((nodeID) => ({
+    nodeID,
+    ...shardSetupInventory.get(nodeID)
+  }));
+  if (mode === "llamacpp-rpc") {
+    shardSetupStatus.textContent = "Installing missing RPC workers and checking idle installations for updates…";
+    const installations = await Promise.all(inventory.map(async (item) => {
+      const worker = item.engines?.find((engine) => engine.kind?.toLowerCase() === "ggml-rpc-server");
+      if (item.error || worker && worker.id !== "maistr0-auto-rpc") return null;
+      try {
+        const result = await fetchJSON(
+          `/api/nodes/${encodeURIComponent(item.nodeID)}/engines/managed/install-worker`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: shardSetupSource.value })
+          }
+        );
+        if (!Array.isArray(result?.engines)) throw new Error("worker installer did not return engine inventory");
+        item.engines = result.engines;
+        if (Array.isArray(result.devices)) {
+          const node = dashboardState.nodes.find((node2) => node2.id === item.nodeID);
+          if (node) node.hardware = { ...node.hardware, devices: result.devices };
+        }
+        return result.warning ? `${item.nodeID}: ${result.warning}` : null;
+      } catch (error) {
+        item.error = `Worker installation failed: ${error.message}`;
+        return null;
+      }
+    }));
+    if (generation !== shardSetupGeneration) return;
+    for (const item of inventory) {
+      if (!item.error) shardSetupInventory.set(item.nodeID, { engines: item.engines });
+    }
+    renderShardSetupNodes();
+    installationWarnings.push(...installations.filter(Boolean));
+  }
+  const requiredKind = mode === "vllm-mp" ? "vllm" : "ggml-rpc-server";
+  const unavailable = inventory.filter(
+    ({ nodeID, engines }) => !engines?.some((engine) => engine.kind?.toLowerCase() === requiredKind)
+  );
+  const failedInventory = inventory.filter((item) => item.error);
+  if (unavailable.length || failedInventory.length) {
+    const details = [
+      ...unavailable.map(({ nodeID }) => `${nodeID} has no configured ${requiredKind}`),
+      ...failedInventory.map(({ nodeID, error }) => `${nodeID}: ${error}`)
+    ];
+    shardSetupModel.innerHTML = '<option value="">No compatible model setup</option>';
+    shardSetupStatus.textContent = details.join("; ");
+    return;
+  }
+  if (mode === "llamacpp-rpc") {
+    return loadShardSetupHeadModels(inventory, generation, installationWarnings);
+  }
+  const profileEngines = inventory.map((item) => ({
+    nodeID: item.nodeID,
+    engine: item.engines.find((entry) => entry.kind?.toLowerCase() === "vllm")
+  }));
+  if (!profileEngines.length) {
+    shardSetupModel.innerHTML = '<option value="">No model head is configured</option>';
+    shardSetupStatus.textContent = "No vLLM engine is configured on every selected node.";
+    return;
+  }
+  async function loadShardSetupHeadModels(inventory2, generation2, warnings) {
+    const previous2 = shardSetupHead.value;
+    shardSetupHead.innerHTML = inventory2.map(({ nodeID }) => `<option value="${escapeHtml(nodeID)}">${escapeHtml(nodeID)}</option>`).join("");
+    if (inventory2.some((item) => item.nodeID === previous2)) shardSetupHead.value = previous2;
+    shardSetupHead.disabled = false;
+    const head = inventory2.find((item) => item.nodeID === shardSetupHead.value);
+    if (!head) return;
+    const candidates2 = [];
+    const errors = [...warnings];
+    for (const engine of head.engines.filter((entry) => entry.kind === "llama-server" && entry.id !== "maistr0-auto-head")) {
+      try {
+        const profile = await fetchJSON(`/api/nodes/${encodeURIComponent(head.nodeID)}/engines/managed/${encodeURIComponent(engine.id)}/profile?requested_context=4096`);
+        if (!validShardModelProfile(profile)) throw new Error("incomplete managed model profile");
+        candidates2.push({ key: `engine:${engine.id}`, nodeID: head.nodeID, engineID: engine.id, profile });
+      } catch (error) {
+        errors.push(`${head.nodeID}: ${engine.id}: ${error.message}`);
+      }
+    }
+    const operatorHead = head.engines.some((entry) => entry.kind === "llama-server" && entry.id !== "maistr0-auto-head");
+    if (!operatorHead && head.engines.some((entry) => entry.id === "maistr0-auto-rpc")) {
+      try {
+        const result = await fetchJSON(`/api/nodes/${encodeURIComponent(head.nodeID)}/engines/managed/head-models?requested_context=4096`);
+        if (!Array.isArray(result?.models) || !Array.isArray(result?.warnings)) throw new Error("invalid local model inventory");
+        errors.push(...result.warnings);
+        for (const model of result.models) {
+          if (validShardModelProfile(model.profile)) {
+            candidates2.push({ key: `local:${model.id}`, nodeID: head.nodeID, localID: model.id, profile: model.profile });
+          }
+        }
+      } catch (error) {
+        errors.push(`${head.nodeID}: local model discovery failed: ${error.message}`);
+      }
+    } else if (!operatorHead && candidates2.length === 0) {
+      errors.push("This node has an operator-configured RPC worker. Configure a matching managed llama-server head or choose an automatically installed worker node.");
+    }
+    if (generation2 !== shardSetupGeneration) return;
+    shardSetupHeadModels = new Map(candidates2.map((entry) => [entry.key, entry]));
+    shardSetupProfiles = new Map(candidates2.map((entry) => [entry.key, entry.profile]));
+    shardSetupModel.innerHTML = candidates2.length ? candidates2.map((entry) => `<option value="${escapeHtml(entry.key)}">${escapeHtml(entry.profile.name)} · ${entry.localID ? "local GGUF" : "managed head"} · ${entry.profile.layer_count} layers · ${formatBytes(entry.profile.file_size_bytes || entry.profile.weights_size_bytes)}</option>`).join("") : '<option value="">No compatible local model found on this head</option>';
+    shardSetupModel.disabled = candidates2.length === 0;
+    shardSetupCreate.disabled = candidates2.length === 0;
+    shardSetupStatus.textContent = [
+      candidates2.length ? "Choose a model. Local Ollama/LM Studio GGUF models configure the installed llama-server automatically when creating the group." : "No readable GGUF model found. Choose another head node or install a GGUF model in Ollama/LM Studio on this node first.",
+      ...errors
+    ].join(" ");
+  }
+  const profilesByEngine = await Promise.all(profileEngines.map(async ({ nodeID, engine }) => {
+    try {
+      const profile = await fetchJSON(
+        `/api/nodes/${encodeURIComponent(nodeID)}/engines/managed/${encodeURIComponent(engine.id)}/profile?requested_context=4096`
+      );
+      return { nodeID, profile };
+    } catch (error) {
+      return { nodeID, error: `${engine.id}: ${error.message}` };
+    }
+  }));
+  if (generation !== shardSetupGeneration) return;
+  const usable = profilesByEngine.filter((item) => item.profile && validShardModelProfile(item.profile));
+  const profileErrors = profilesByEngine.filter((item) => item.error).map((item) => `${item.nodeID}: ${item.error}`);
+  if (!usable.length) {
+    shardSetupModel.innerHTML = '<option value="">No readable model metadata</option>';
+    shardSetupStatus.textContent = profileErrors.length ? profileErrors.join("; ") : "Configured models are missing dimensions or a measurable weight size.";
+    return;
+  }
+  const profilesByNode = new Map(usable.map((item) => [item.nodeID, item.profile]));
+  const first = profilesByNode.get(nodeIDs[0]);
+  const matching = first && nodeIDs.every((nodeID) => sameShardModelProfile(first, profilesByNode.get(nodeID)));
+  const candidates = matching ? [first] : [];
+  shardSetupProfiles = new Map(candidates.map((profile) => [profile.name, profile]));
+  const previous = shardSetupModel.value;
+  shardSetupModel.innerHTML = candidates.length ? candidates.map((profile) => `<option value="${escapeHtml(profile.name)}">${escapeHtml(profile.name)} · ${profile.layer_count} layers · ${formatBytes(profile.weights_size_bytes || profile.file_size_bytes)}</option>`).join("") : '<option value="">No compatible model across selected nodes</option>';
+  if (candidates.some((profile) => profile.name === previous)) shardSetupModel.value = previous;
+  shardSetupModel.disabled = candidates.length === 0;
+  shardSetupCreate.disabled = candidates.length === 0;
+  shardSetupStatus.textContent = candidates.length ? [
+    `${candidates.length} model${candidates.length === 1 ? "" : "s"} have readable metadata. Placement will use current free device memory and a safety margin.`,
+    ...installationWarnings
+  ].join(" ") : [
+    "The selected nodes must have the same configured vLLM model and matching profile metadata.",
+    ...profileErrors
+  ].join(" ");
+}
+function validShardModelProfile(profile) {
+  return Boolean(
+    profile && typeof profile.name === "string" && profile.name.trim() && Number.isInteger(profile.layer_count) && profile.layer_count > 0 && Number.isInteger(profile.hidden_size) && profile.hidden_size > 0 && Number.isInteger(profile.kv_heads) && profile.kv_heads > 0 && Number.isInteger(profile.head_dim) && profile.head_dim > 0 && (Number(profile.weights_size_bytes) > 0 || Number(profile.file_size_bytes) > 0)
+  );
+}
+function sameShardModelProfile(left, right) {
+  return Boolean(right && left.name.toLowerCase() === right.name.toLowerCase() && left.architecture === right.architecture && left.parameters === right.parameters && left.layer_count === right.layer_count && left.hidden_size === right.hidden_size && left.kv_heads === right.kv_heads && left.head_dim === right.head_dim && left.vocab_size === right.vocab_size && left.quantization === right.quantization && (left.weights_size_bytes || left.file_size_bytes) === (right.weights_size_bytes || right.file_size_bytes));
+}
+async function createShardGroupFromWizard(event) {
+  event.preventDefault();
+  if (shardSetupPending) return;
+  const nodeIDs = [...shardSetupDialog.querySelectorAll("[data-node-id]:checked")].map((input) => input.dataset.nodeId);
+  const selectedProfile = shardSetupProfiles.get(shardSetupModel.value);
+  const requestedContext = Number(shardSetupContext.value);
+  if (!nodeIDs.length || !selectedProfile || !Number.isInteger(requestedContext) || requestedContext < 1 || requestedContext > 1 << 20) {
+    shardSetupStatus.textContent = "Choose healthy nodes, a model with readable metadata, and a valid context length.";
+    return;
+  }
+  const model = { ...selectedProfile, requested_context: requestedContext };
+  const mode = shardSetupMode.value;
+  const selectedHead = shardSetupHeadModels.get(shardSetupModel.value);
+  shardSetupPending = true;
+  shardSetupCreate.disabled = true;
+  shardSetupStatus.textContent = "Planning memory-aware placement and starting managed engines…";
+  try {
+    let headEngineID = selectedHead?.engineID;
+    if (selectedHead?.localID) {
+      shardSetupStatus.textContent = `Configuring model head on ${selectedHead.nodeID}…`;
+      const head = await fetchJSON(`/api/nodes/${encodeURIComponent(selectedHead.nodeID)}/engines/managed/configure-head`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: selectedHead.localID, requested_context: requestedContext })
+      });
+      if (!head?.id) throw new Error("model head configuration did not return an engine ID");
+      headEngineID = head.id;
+    }
+    const group = await fetchJSON("/api/shards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        mode,
+        pinned_nodes: nodeIDs,
+        ...selectedHead ? { head_node_id: selectedHead.nodeID, head_engine_id: headEngineID } : {}
+      })
+    });
+    if (!group || group.state !== "ready") throw new Error("the API did not confirm a ready shard group");
+    dashboardState.shardGroups = [
+      ...dashboardState.shardGroups.filter((existing) => existing.id !== group.id),
+      group
+    ];
+    dashboardState.shardGroupsError = "";
+    const allocations = (group.plan?.nodes || []).map((entry) => `${entry.node_id}: layers ${entry.start_layer}–${entry.end_layer}`).join("; ");
+    shardSetupStatus.textContent = `Shard group ready: ${group.id}${allocations ? ` · ${allocations}` : ""}`;
+    renderShardGroups();
+    void refreshShardGroups();
+  } catch (error) {
+    shardSetupStatus.textContent = `Shard group creation failed: ${error.message}`;
+    shardSetupCreate.disabled = false;
+  } finally {
+    shardSetupPending = false;
+  }
+}
+shardSetupMode?.addEventListener("change", () => {
+  renderShardSetupNodes();
+  if (!shardSetupInventoryLoading) void loadShardSetupModels();
+});
+shardSetupSource?.addEventListener("change", () => {
+  if (!shardSetupInventoryLoading) void loadShardSetupModels();
+});
+shardSetupHead?.addEventListener("change", () => void loadShardSetupModels());
+shardSetupCreate?.addEventListener("click", createShardGroupFromWizard);
+shardSetupDialog?.addEventListener("close", () => {
+  shardSetupGeneration++;
+  shardSetupPending = false;
+});
 function renderNodes(nodes) {
   dashboardState.nodes = nodes || [];
   if (!nodesList) return;
-  nodesList.innerHTML = "";
   if (!nodes || nodes.length === 0) {
-    nodesList.innerHTML = '<p style="color:var(--muted)">No nodes registered yet.</p>';
+    dashboardDOM.patchKeyedChildren(nodesList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No nodes registered yet.";
+        return empty;
+      }
+    });
     return;
   }
   const ordered = sortNodesByCapability(nodes);
   const leaderID = ordered.find((n) => n.leader)?.id;
   const fastestID = ordered.reduce((best, node) => !best || node.fast_score > best.fast_score || node.fast_score === best.fast_score && node.id < best.id ? node : best, null)?.id;
-  for (const n of ordered) {
-    const card = document.createElement("div");
-    card.className = "card" + (n.id === leaderID ? " leader" : "");
-    const modelTags = (n.models || []).map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`).join("");
-    const nodeActions = n.healthy ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
-         <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
-         <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>` : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
-    card.innerHTML = `
-      <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
-      ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
-      <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ""}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ""}</div>
-      ${engineStatusSummaryMarkup(n.engines)}
-      <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
-      <div class="row"><span>OS / Arch</span><span>${escapeHtml(n.hardware.os)}/${escapeHtml(n.hardware.arch)}</span></div>
-      <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
-      <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
-      ${nodeAcceleratorMarkup(n)}
-      ${resourceHistoryMarkup(n)}
-      ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
-      <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
-      <div class="row"><span>Score</span><span>${n.hardware.score.toFixed(1)}</span></div>
-      <div class="row"><span>Fast score</span><span>${(n.fast_score || 0).toFixed(1)}</span></div>
-      <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
-      <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
-      ${nodeActions}
-      <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
-    `;
-    nodesList.appendChild(card);
-    card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
-    card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
-    attachNodeContextMenu(card, n);
-    card.querySelectorAll(".model-tag-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const nodeId = btn.dataset.node;
-        const model = btn.dataset.model;
-        btn.textContent = "⏳ Testing…";
-        try {
-          const res = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/${encodeURIComponent(model)}/test`, { method: "POST" });
-          if (res.healthy) {
-            btn.textContent = `✓ ${model} (${res.duration_ms}ms)`;
-          } else {
-            btn.textContent = `✗ ${model} (err)`;
-          }
-        } catch (e) {
-          btn.textContent = `✗ ${model}`;
+  dashboardDOM.patchKeyedChildren(nodesList, ordered, {
+    keyOf: (node) => node.id,
+    signatureOf: (node) => JSON.stringify({
+      node,
+      modelPanelOpen: modelPanelOpen.has(node.id),
+      modelPanel: lastFetchedModels.get(node.id)
+    }),
+    renderItem: (n) => {
+      const card = document.createElement("div");
+      card.className = "card" + (n.id === leaderID ? " leader" : "");
+      const modelTags = (n.models || []).map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`).join("");
+      const nodeActions = n.healthy ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
+           <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
+           <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>` : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
+      card.innerHTML = `
+        <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
+        ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
+        <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ""}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ""}</div>
+        ${engineStatusSummaryMarkup(n.engines)}
+        <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
+        <div class="row"><span>OS / Arch</span><span>${escapeHtml(n.hardware.os)}/${escapeHtml(n.hardware.arch)}</span></div>
+        <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
+        <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
+        ${nodeAcceleratorMarkup(n)}
+        ${resourceHistoryMarkup(n)}
+        ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
+        <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
+        <div class="row"><span>Score</span><span>${n.hardware.score.toFixed(1)}</span></div>
+        <div class="row"><span>Fast score</span><span>${(n.fast_score || 0).toFixed(1)}</span></div>
+        <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
+        <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
+        ${nodeActions}
+        <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
+      `;
+      card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
+      card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
+      card.querySelector(".model-config-toggle")?.addEventListener("click", () => {
+        if (modelPanelOpen.has(n.id)) {
+          modelPanelOpen.delete(n.id);
+          lastFetchedModels.delete(n.id);
+        } else {
+          modelPanelOpen.add(n.id);
         }
-        setTimeout(() => {
-          btn.textContent = `⚡ ${model}`;
-        }, 3500);
+        renderNodes(nodes);
       });
-    });
-    if (modelPanelOpen.has(n.id)) {
-      if (lastFetchedModels.has(n.id)) {
-        renderModelPanel(n.id, lastFetchedModels.get(n.id), n.engines);
-      } else {
-        loadModelPanel(n.id);
+      card.querySelectorAll(".model-tag-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const nodeId = btn.dataset.node;
+          const model = btn.dataset.model;
+          btn.textContent = "⏳ Testing…";
+          try {
+            const res = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/${encodeURIComponent(model)}/test`, { method: "POST" });
+            btn.textContent = res.healthy ? `✓ ${model} (${res.duration_ms}ms)` : `✗ ${model} (err)`;
+          } catch {
+            btn.textContent = `✗ ${model}`;
+          }
+          setTimeout(() => {
+            btn.textContent = `⚡ ${model}`;
+          }, 3500);
+        });
+      });
+      attachNodeContextMenu(card, n);
+      if (modelPanelOpen.has(n.id)) {
+        if (lastFetchedModels.has(n.id)) renderModelPanel(n.id, lastFetchedModels.get(n.id), n.engines);
+        else loadModelPanel(n.id);
       }
+      return card;
     }
-  }
-  nodesList.querySelectorAll(".model-config-toggle").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const nodeId = btn.dataset.node;
-      if (modelPanelOpen.has(nodeId)) {
-        modelPanelOpen.delete(nodeId);
-        lastFetchedModels.delete(nodeId);
-      } else {
-        modelPanelOpen.add(nodeId);
-      }
-      renderNodes(nodes);
-    });
   });
 }
 function renderSetupNodes(nodes) {
@@ -1853,15 +2878,26 @@ function renderSetupNodes(nodes) {
     setupNodeSummary.textContent = `${online} online · ${ordered.length - online} offline · ${ordered.length} total`;
   }
   if (!ordered.length) {
-    setupNodeList.innerHTML = '<p class="setup-empty">No cluster members are registered yet. Pair a node to add it to the cluster.</p>';
+    dashboardDOM.patchKeyedChildren(setupNodeList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "setup-empty";
+        empty.textContent = "No cluster members are registered yet. Pair a node to add it to the cluster.";
+        return empty;
+      }
+    });
     return;
   }
-  setupNodeList.innerHTML = "";
-  for (const node of ordered) {
-    const online = Boolean(node.healthy);
-    const card = document.createElement("article");
-    card.className = `setup-node-card ${online ? "online" : "offline"}`;
-    card.innerHTML = `
+  dashboardDOM.patchKeyedChildren(setupNodeList, ordered, {
+    keyOf: (node) => node.id,
+    signatureOf: JSON.stringify,
+    renderItem: (node) => {
+      const online = Boolean(node.healthy);
+      const card = document.createElement("article");
+      card.className = `setup-node-card ${online ? "online" : "offline"}`;
+      card.innerHTML = `
       <div class="setup-node-heading">
         <div><h4>${escapeHtml(node.id)}</h4><span class="panel-caption">${escapeHtml(node.address || "Address unavailable")}</span></div>
         <span class="setup-node-status ${online ? "online" : "offline"}"><span class="legend-dot ${online ? "online" : "offline"}"></span>${online ? "Online" : "Offline"}</span>
@@ -1871,10 +2907,11 @@ function renderSetupNodes(nodes) {
         <span>${node.active_tasks || 0} active tasks</span>
         ${online ? "" : `<span>Last seen ${escapeHtml(node.last_seen ? formatRelativeTime(node.last_seen) : "unknown")}</span>`}
       </div>`;
-    card.insertAdjacentHTML("beforeend", engineStatusSummaryMarkup(node.engines));
-    attachNodeContextMenu(card, node);
-    setupNodeList.appendChild(card);
-  }
+      card.insertAdjacentHTML("beforeend", engineStatusSummaryMarkup(node.engines));
+      attachNodeContextMenu(card, node);
+      return card;
+    }
+  });
 }
 async function openNodeTerminal(node) {
   terminalNode = node;
@@ -2052,22 +3089,34 @@ function showNodeMenu(x, y) {
   const properties = menu.querySelector("[data-action=properties]");
   const pairing = menu.querySelector("[data-action=pair]");
   const nodeIsDiscovered = Boolean(contextNode.discovered);
+  const joiningOrchestrator = Boolean(contextNode.joinOrchestrator);
   if (properties) {
-    properties.textContent = `Configure ${contextNode.id}`;
-    properties.disabled = !contextNode.healthy || nodeIsDiscovered;
+    properties.textContent = joiningOrchestrator ? "Configure host properties" : `Configure ${contextNode.id}`;
+    properties.disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
   }
   if (pairing) {
-    pairing.textContent = nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
+    const currentOrchestrator = dashboardState.pairing.status?.orchestrator_id === contextNode.id;
+    pairing.textContent = joiningOrchestrator ? dashboardState.pairing.status?.joined && currentOrchestrator ? `Re-pair with ${contextNode.id}` : `Join ${contextNode.id}'s cluster` : nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
     pairing.disabled = !contextNode.healthy;
   }
-  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered;
+  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
   menu.hidden = false;
   const bounds = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
   menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
 }
 function attachNodeContextMenu(element, node) {
+  element.addEventListener("click", (event) => {
+    if (!event.ctrlKey || !node.healthy || event.target.closest("button, input, select, textarea, a")) return;
+    event.preventDefault();
+    openShardGroupWizard(node.id);
+  });
   element.addEventListener("contextmenu", (event) => {
+    if (event.ctrlKey && node.healthy) {
+      event.preventDefault();
+      if (!document.getElementById("shard-group-setup-dialog")?.open) openShardGroupWizard(node.id);
+      return;
+    }
     event.preventDefault();
     contextNode = node;
     showNodeMenu(event.clientX, event.clientY);
@@ -2199,11 +3248,295 @@ async function saveModelPanel(nodeId) {
     if (statusEl) statusEl.textContent = "Error: " + err.message;
   }
 }
+const pipelineModelList = document.getElementById("pipeline-model-list");
+const pipelineActionStatus = document.getElementById("pipeline-action-status");
+const pipelineActions = /* @__PURE__ */ new Map();
+let pipelineActionMessage = "";
+function renderPipelineDashboard(models, pipelines) {
+  if (!pipelineModelList) return;
+  const focusedModel = pipelineModelList.contains(document.activeElement) ? document.activeElement?.dataset?.reshardModel : "";
+  const plansByModel = new Map((pipelines || []).map((pipeline) => [pipeline.model_id, pipeline]));
+  const entries = models || [];
+  pipelineModelList.innerHTML = entries.length ? entries.map((model) => pipelineModelCard(model, plansByModel.get(model.model_id))).join("") : '<p class="setup-empty">No models are currently advertised by the cluster.</p>';
+  if (pipelineActionStatus) pipelineActionStatus.textContent = pipelineActionMessage;
+  pipelineModelList.querySelectorAll("[data-reshard-model]").forEach((button) => {
+    button.addEventListener("click", () => requestPipelineReshard(button.dataset.reshardModel));
+  });
+  if (focusedModel) {
+    [...pipelineModelList.querySelectorAll("[data-reshard-model]")].find((button) => button.dataset.reshardModel === focusedModel)?.focus();
+  }
+}
+function pipelineModelCard(model, pipeline) {
+  const sharded = model.kind === "sharded";
+  const state = pipelineActions.get(model.model_id);
+  const nodes = (model.nodes || []).map(escapeHtml).join(", ");
+  const status = pipeline?.status || "not_placed";
+  const plan = pipeline?.plan;
+  const stages = pipeline?.stages || [];
+  const stageMarkup = stages.length ? `<div class="pipeline-stage-list">${stages.map(pipelineStageMarkup).join("")}</div>` : `<p class="pipeline-empty">${sharded ? "No placement yet. Reshard to place and load stages." : "Whole-model execution."}</p>`;
+  const shardedDetails = sharded ? `
+      <div class="row"><span>Pipeline</span><span class="badge ${status === "ready" ? "healthy" : status === "degraded" ? "unhealthy" : "unknown"}">${escapeHtml(status.replaceAll("_", " "))}</span></div>
+      ${plan ? `<div class="row"><span>Plan version</span><span>${plan.plan_version}</span></div>` : ""}
+      ${stageMarkup}
+      <button type="button" class="primary-btn pipeline-reshard-button" data-reshard-model="${escapeHtml(model.model_id)}" ${state?.pending ? "disabled" : ""}>${state?.pending ? "Placing / loading…" : "Reshard / Reload stages"}</button>
+    ` : `<div class="row"><span>Available on</span><span>${nodes || "No node reported"}</span></div>`;
+  return `
+    <article class="card pipeline-model-card">
+      <h3>${escapeHtml(model.model_id)} <span class="badge ${sharded ? "online" : "unknown"}">${sharded ? "Sharded" : "Whole"}</span></h3>
+      ${shardedDetails}
+      ${state?.message ? `<p class="pipeline-action-message">${escapeHtml(state.message)}</p>` : ""}
+    </article>
+  `;
+}
+function pipelineStageMarkup(stage) {
+  const ready = stage.status === "ready";
+  const utilization = Number.isFinite(stage.utilization_percent) ? `${stage.active}/${stage.capacity} slots · ${stage.utilization_percent.toFixed(0)}%` : `${stage.active} active · capacity unavailable`;
+  const transfer = Number.isFinite(stage.activation_transfer_ms) ? `${stage.activation_transfer_ms.toFixed(1)} ms · ${formatBytes(stage.activation_bytes || 0)}` : "No activation transfer recorded";
+  return `
+    <div class="pipeline-stage">
+      <div class="pipeline-stage-heading">
+        <strong>Stage ${stage.stage + 1} · ${escapeHtml(stage.node_id)}</strong>
+        <span class="badge ${ready ? "healthy" : "unhealthy"}">${escapeHtml(stage.status)}</span>
+      </div>
+      <div class="row"><span>Layers</span><span>${stage.start_layer}–${stage.end_layer}</span></div>
+      <div class="row"><span>Engine</span><span>${escapeHtml(stage.engine)}</span></div>
+      <div class="row"><span>Stage utilization</span><span>${utilization}</span></div>
+      ${stage.stage > 0 ? `<div class="row"><span>Activation transfer</span><span>${transfer}</span></div>` : ""}
+    </div>
+  `;
+}
+async function requestPipelineReshard(modelID) {
+  const current = pipelineActions.get(modelID) || {};
+  if (current.pending) return;
+  pipelineActions.set(modelID, { pending: true, message: "" });
+  pipelineActionMessage = `Recomputing placement and loading stages for ${modelID}…`;
+  renderPipelineDashboard(dashboardState.modelInventory, dashboardState.pipelinePlans);
+  try {
+    const result = await fetchJSON(`/api/pipelines/${encodeURIComponent(modelID)}/reshard`, { method: "POST" });
+    const planVersion = result?.plan?.plan_version;
+    const message = planVersion ? `Placement ${planVersion} for ${modelID} is loaded.` : `Placement for ${modelID} is loaded.`;
+    pipelineActions.set(modelID, { pending: false, message });
+    pipelineActionMessage = message;
+  } catch (error) {
+    const message = `Reshard failed for ${modelID}: ${error.message}`;
+    pipelineActions.set(modelID, { pending: false, message });
+    pipelineActionMessage = message;
+  }
+  renderPipelineDashboard(dashboardState.modelInventory, dashboardState.pipelinePlans);
+}
+const shardGroupList = document.getElementById("shard-group-list");
+const shardGroupStatus = document.getElementById("shard-group-status");
+const refreshShardGroupsButton = document.getElementById("refresh-shard-groups");
+const deletingShardGroups = /* @__PURE__ */ new Set();
+const shardGroupActions = /* @__PURE__ */ new Map();
+let shardMemberEditor = "";
+let shardMemberSelection = null;
+function renderShardGroups(groups = dashboardState.shardGroups) {
+  if (!shardGroupList) return;
+  shardGroupList.innerHTML = groups.length ? groups.map(shardGroupCard).join("") : '<p class="setup-empty">No shard groups are currently configured.</p>';
+  if (shardGroupStatus) {
+    shardGroupStatus.textContent = dashboardState.shardGroupsError || `${groups.length} shard ${groups.length === 1 ? "group" : "groups"}`;
+  }
+}
+function shardGroupCard(group) {
+  const statusClass = group.state === "ready" ? "healthy" : group.state === "failed" || group.state === "degraded" ? "unhealthy" : "unknown";
+  const members = (group.members || []).map((member) => `
+    <div class="pipeline-stage">
+      <div class="pipeline-stage-heading">
+        <strong>${escapeHtml(member.role)} · ${escapeHtml(member.node_id)}</strong>
+        <span class="badge ${member.started ? "healthy" : "unknown"}">${escapeHtml(member.engine_kind)}</span>
+      </div>
+      <div class="row"><span>Engine</span><span>${escapeHtml(member.engine_id)}</span></div>
+      ${Number.isInteger(member.rank) ? `<div class="row"><span>Rank</span><span>${member.rank}</span></div>` : ""}
+    </div>
+  `).join("");
+  const rationale = group.plan?.rationale?.length ? group.plan.rationale : group.rationale || [];
+  const rationaleMarkup = rationale.length ? `<ul>${rationale.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : '<p class="pipeline-empty">No placement rationale was recorded.</p>';
+  const actions = group.state === "ready" || group.state === "degraded" ? ["stop", "restart"] : group.state === "stopped" || group.state === "failed" ? ["start", "restart"] : [];
+  const busy = deletingShardGroups.has(group.id) || shardGroupActions.has(group.id);
+  const actionMarkup = actions.map(
+    (action) => `<button type="button" class="btn-secondary" data-shard-group="${escapeHtml(group.id)}" data-shard-action="${action}" ${busy ? "disabled" : ""}>${action[0].toUpperCase() + action.slice(1)}</button>`
+  ).join(" ");
+  return `
+    <article class="card pipeline-model-card">
+      <h3>${escapeHtml(group.model?.name || group.id)} <span class="badge ${statusClass}">${escapeHtml(group.state)}</span></h3>
+      <div class="row"><span>Group</span><span>${escapeHtml(group.id)}</span></div>
+      <div class="row"><span>Mode</span><span>${escapeHtml(group.mode)}</span></div>
+      ${group.error ? `<p class="pipeline-action-message">${escapeHtml(group.error)}</p>` : ""}
+      ${actionMarkup}
+      ${actions.length ? `<button type="button" class="btn-secondary" data-edit-shard-members="${escapeHtml(group.id)}" ${busy ? "disabled" : ""}>Edit members</button>` : ""}
+      ${shardMemberEditor === group.id ? shardMemberEditorMarkup(group, busy) : ""}
+      ${shardGroupActions.has(group.id) ? `<p role="status">${escapeHtml(shardGroupActions.get(group.id))} in progress…</p>` : ""}
+      ${group.state === "failed" ? `<button type="button" class="btn-secondary" data-delete-shard-group="${escapeHtml(group.id)}" ${busy ? "disabled" : ""}>${deletingShardGroups.has(group.id) ? "Deleting…" : "Delete failed group"}</button>` : ""}
+      <div class="pipeline-stage-list">${members || '<p class="pipeline-empty">No members are recorded.</p>'}</div>
+      <strong>Plan rationale</strong>
+      ${rationaleMarkup}
+    </article>
+  `;
+}
+function shardMemberEditorMarkup(group, busy) {
+  const head = (group.members || []).find((member) => member.role === "head")?.node_id;
+  const selected = shardMemberSelection || new Set(group.pinned_nodes?.length ? group.pinned_nodes : (group.members || []).map((member) => member.node_id));
+  const nodes = new Map(dashboardState.nodes.map((node) => [node.id, node]));
+  for (const id of selected) if (!nodes.has(id)) nodes.set(id, { id, healthy: false });
+  return `<fieldset data-shard-members-editor="${escapeHtml(group.id)}" ${busy ? "disabled" : ""}>
+    <legend>Member nodes</legend>
+    <p>Changing members drains inference and reloads the model. The model head must remain selected.</p>
+    ${[...nodes.values()].map((node) => `<label class="shard-node-option">
+      <input type="checkbox" data-shard-member="${escapeHtml(node.id)}" ${selected.has(node.id) ? "checked" : ""} ${node.id === head || !node.healthy && !selected.has(node.id) ? "disabled" : ""}>
+      <span>${escapeHtml(node.id)}${node.id === head ? " (model head)" : ""}${node.healthy ? "" : " (offline)"}</span>
+    </label>`).join("")}
+    <button type="button" data-apply-shard-members="${escapeHtml(group.id)}">Apply and reload</button>
+    <button type="button" data-cancel-shard-members="${escapeHtml(group.id)}">Cancel</button>
+  </fieldset>`;
+}
+async function applyShardMembers(id) {
+  const group = dashboardState.shardGroups.find((entry) => entry.id === id);
+  if (!group || shardGroupActions.has(id) || deletingShardGroups.has(id)) return;
+  const editor = [...shardGroupList.querySelectorAll("[data-shard-members-editor]")].find((entry) => entry.dataset.shardMembersEditor === id);
+  if (!editor) return;
+  const nodeIDs = [...editor.querySelectorAll("[data-shard-member]:checked")].map((input) => input.dataset.shardMember);
+  if (!nodeIDs.length) {
+    dashboardState.shardGroupsError = "Select at least one shard member.";
+    renderShardGroups();
+    return;
+  }
+  shardGroupActions.set(id, "Updating membership");
+  dashboardState.shardGroupsError = "";
+  renderShardGroups();
+  let message = "";
+  try {
+    if (group.mode === "llamacpp-rpc") {
+      for (const nodeID of nodeIDs) {
+        const engines = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeID)}/engines/managed`);
+        if (!Array.isArray(engines)) throw new Error(`Invalid engine inventory from ${nodeID}`);
+        if (!engines.some((engine) => engine.kind?.toLowerCase() === "ggml-rpc-server")) {
+          await fetchJSON(`/api/nodes/${encodeURIComponent(nodeID)}/engines/managed/install-worker`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: "official" })
+          });
+        }
+      }
+    }
+    const updated = await fetchJSON(`/api/shards/${encodeURIComponent(id)}/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node_ids: nodeIDs })
+    });
+    if (updated?.id !== id || !updated.state) throw new Error("Invalid membership response");
+    dashboardState.shardGroups = dashboardState.shardGroups.map((entry) => entry.id === id ? updated : entry);
+    shardMemberEditor = "";
+  } catch (error) {
+    message = `Unable to change shard members: ${error.message}`;
+    console.error("shard membership update failed", error);
+    await refreshShardGroups();
+  } finally {
+    shardGroupActions.delete(id);
+    if (message) dashboardState.shardGroupsError = message;
+    renderShardGroups();
+  }
+}
+async function deleteFailedShardGroup(id) {
+  const group = dashboardState.shardGroups.find((entry) => entry.id === id);
+  if (!group || group.state !== "failed" || deletingShardGroups.has(id) || shardGroupActions.has(id)) return;
+  deletingShardGroups.add(id);
+  dashboardState.shardGroupsError = "";
+  renderShardGroups();
+  try {
+    await fetchJSON(`/api/shards/${encodeURIComponent(id)}`, { method: "DELETE" });
+    dashboardState.shardGroups = dashboardState.shardGroups.filter((entry) => entry.id !== id);
+  } catch (error) {
+    dashboardState.shardGroupsError = `Unable to delete shard group ${id}: ${error.message}`;
+    console.error("shard group deletion failed", error);
+  } finally {
+    deletingShardGroups.delete(id);
+    renderShardGroups();
+  }
+}
+async function runShardGroupAction(id, action) {
+  const group = dashboardState.shardGroups.find((entry) => entry.id === id);
+  if (!group || deletingShardGroups.has(id) || shardGroupActions.has(id)) return;
+  const allowed = group.state === "ready" || group.state === "degraded" ? ["stop", "restart"] : group.state === "stopped" || group.state === "failed" ? ["start", "restart"] : [];
+  if (!allowed.includes(action)) return;
+  shardGroupActions.set(id, action);
+  dashboardState.shardGroupsError = "";
+  renderShardGroups();
+  let actionError = "";
+  try {
+    const updated = await fetchJSON(`/api/shards/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+    if (!updated || updated.id !== id || !updated.state) throw new Error("response did not include the updated shard group");
+    dashboardState.shardGroups = dashboardState.shardGroups.map((entry) => entry.id === id ? updated : entry);
+  } catch (error) {
+    actionError = `Unable to ${action} shard group ${id}: ${error.message}`;
+    console.error("shard group action failed", error);
+    await refreshShardGroups();
+  } finally {
+    if (actionError) dashboardState.shardGroupsError = actionError;
+    shardGroupActions.delete(id);
+    renderShardGroups();
+  }
+}
+shardGroupList?.addEventListener("click", (event) => {
+  const edit = event.target.closest("[data-edit-shard-members]");
+  if (edit) {
+    shardMemberEditor = edit.dataset.editShardMembers;
+    shardMemberSelection = null;
+    renderShardGroups();
+    return;
+  }
+  if (event.target.closest("[data-cancel-shard-members]")) {
+    shardMemberEditor = "";
+    shardMemberSelection = null;
+    renderShardGroups();
+    return;
+  }
+  const apply = event.target.closest("[data-apply-shard-members]");
+  if (apply) {
+    void applyShardMembers(apply.dataset.applyShardMembers);
+    return;
+  }
+  const action = event.target.closest("[data-shard-action]");
+  if (action) {
+    void runShardGroupAction(action.dataset.shardGroup, action.dataset.shardAction);
+    return;
+  }
+  const button = event.target.closest("[data-delete-shard-group]");
+  if (button) void deleteFailedShardGroup(button.dataset.deleteShardGroup);
+});
+async function refreshShardGroups() {
+  if (!shardGroupList) return;
+  if (shardGroupStatus) shardGroupStatus.textContent = "Refreshing shard groups…";
+  try {
+    const response = await fetchJSON("/api/shards");
+    if (!Array.isArray(response?.groups)) throw new Error("response did not include a groups array");
+    dashboardState.shardGroups = response.groups;
+    dashboardState.shardGroupsError = "";
+  } catch (error) {
+    dashboardState.shardGroupsError = `Unable to load shard groups: ${error.message}`;
+    console.error("shard group refresh failed", error);
+  }
+  renderShardGroups();
+}
+refreshShardGroupsButton?.addEventListener("click", () => void refreshShardGroups());
+shardGroupList?.addEventListener("change", (event) => {
+  if (!event.target.matches("[data-shard-member]")) return;
+  const editor = event.target.closest("[data-shard-members-editor]");
+  shardMemberSelection = new Set([...editor.querySelectorAll("[data-shard-member]:checked")].map((input) => input.dataset.shardMember));
+});
 function renderRouting(nodes, tasks) {
   if (!routingList) return;
-  routingList.innerHTML = "";
   if (!nodes || nodes.length === 0) {
-    routingList.innerHTML = '<p style="color:var(--muted)">No nodes registered yet.</p>';
+    dashboardDOM.patchKeyedChildren(routingList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No nodes registered yet.";
+        return empty;
+      }
+    });
     return;
   }
   const byNode = new Map(nodes.map((n) => [n.id, {
@@ -2234,15 +3567,18 @@ function renderRouting(nodes, tasks) {
     if ((b.node.active_tasks || 0) !== (a.node.active_tasks || 0)) return (b.node.active_tasks || 0) - (a.node.active_tasks || 0);
     return b.running + b.pending - (a.running + a.pending);
   });
-  for (const { node, pending, running, completed, failed, cancelled, unknown, recent } of workload) {
-    const card = document.createElement("div");
-    card.className = "card";
-    const total = pending + running + completed + failed + cancelled + unknown;
-    const pct = (n) => total === 0 ? 0 : Math.round(n / total * 100);
-    const recentHTML = recent.length ? recent.map(
-      (r) => `<div class="row"><span>${r.taskId}/${r.subtaskId} (${r.taskType}) &rarr; ${escapeHtml(r.model)}</span><span class="badge ${r.status}">${r.status}</span></div>`
-    ).join("") : '<p style="color:var(--muted);font-size:0.8rem">No jobs routed yet.</p>';
-    card.innerHTML = `
+  dashboardDOM.patchKeyedChildren(routingList, workload, {
+    keyOf: (item) => item.node.id,
+    signatureOf: JSON.stringify,
+    renderItem: ({ node, pending, running, completed, failed, cancelled, unknown, recent }) => {
+      const card = document.createElement("div");
+      card.className = "card";
+      const total = pending + running + completed + failed + cancelled + unknown;
+      const pct = (n) => total === 0 ? 0 : Math.round(n / total * 100);
+      const recentHTML = recent.length ? recent.map(
+        (r) => `<div class="row"><span>${r.taskId}/${r.subtaskId} (${r.taskType}) &rarr; ${escapeHtml(r.model)}</span><span class="badge ${r.status}">${r.status}</span></div>`
+      ).join("") : '<p style="color:var(--muted);font-size:0.8rem">No jobs routed yet.</p>';
+      card.innerHTML = `
       <h3>${escapeHtml(node.id)} <span class="badge ${node.healthy ? "healthy" : "unhealthy"}">${node.active_tasks} active</span></h3>
       <div class="workload-bar" role="img" aria-label="${pending} pending, ${running} running, ${completed} completed, ${failed} failed, ${cancelled} cancelled">
         <div class="workload-seg workload-pending" style="width:${pct(pending)}%"></div>
@@ -2259,8 +3595,9 @@ function renderRouting(nodes, tasks) {
       <h4>Recent jobs</h4>
       ${recentHTML}
     `;
-    routingList.appendChild(card);
-  }
+      return card;
+    }
+  });
 }
 function visibleNetworkPeers(peers, nodes, pairingStatus2) {
   const visible = new Map((peers || []).map((peer) => [peer.id, peer]));
@@ -2288,84 +3625,181 @@ function visibleNetworkPeers(peers, nodes, pairingStatus2) {
 }
 function renderDiscovery(peers) {
   if (!discoveryList) return;
-  discoveryList.innerHTML = "";
   const ordered = visibleNetworkPeers(peers, dashboardState.nodes, dashboardState.pairing.status);
   if (ordered.length === 0) {
-    discoveryList.innerHTML = '<p style="color:var(--muted)">No visible nodes found on the local network yet.</p>';
+    dashboardDOM.patchKeyedChildren(discoveryList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No visible nodes found on the local network yet.";
+        return empty;
+      }
+    });
     return;
   }
-  for (const p of ordered) {
-    const card = document.createElement("div");
-    card.className = "card";
-    const associated = p.role === "node" ? p.orchestrator_id || "Not announced" : p.role === "orchestrator" ? "self" : "Not elected";
-    const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
-    const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
-    card.innerHTML = `
+  dashboardDOM.patchKeyedChildren(discoveryList, ordered, {
+    keyOf: (peer) => peer.id,
+    signatureOf: (peer) => JSON.stringify({
+      peer,
+      pairing: dashboardState.pairing.status,
+      member: dashboardState.nodes.find((node) => node.id === peer.id)
+    }),
+    renderItem: (p) => {
+      const card = document.createElement("div");
+      card.className = "card";
+      const associated = p.role === "node" ? p.orchestrator_id || "Not announced" : p.role === "orchestrator" ? dashboardState.pairing.status?.role === "node" ? p.id === dashboardState.pairing.status.orchestrator_id ? "current orchestrator" : "available to join" : "self" : "Not elected";
+      const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
+      const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
+      const joinOrchestrator = p.role === "orchestrator" && dashboardState.pairing.status?.role === "node" && !p.local;
+      const orchestratorTarget = joinOrchestrator ? {
+        id: p.id,
+        role: p.role,
+        address: p.peer_addr || "",
+        peer_addr: p.peer_addr,
+        healthy: true,
+        discovered: true,
+        joinOrchestrator: true
+      } : null;
+      const alreadyJoined = dashboardState.pairing.status?.joined && dashboardState.pairing.status.orchestrator_id === p.id;
+      const joinLabel = alreadyJoined ? `Re-pair with ${p.id}` : dashboardState.pairing.status?.joined ? `Switch to ${p.id}'s cluster` : `Join ${p.id}'s cluster`;
+      card.innerHTML = `
       <h3>${escapeHtml(p.id)} <span class="badge healthy">${escapeHtml(p.role)}</span></h3>
       <div class="row"><span>Address</span><span>${escapeHtml(p.peer_addr || p.http_addr || "Address unavailable")}</span></div>
       ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
       <div class="row"><span>Associated orchestrator</span><span>${escapeHtml(associated)}</span></div>
       <div class="row"><span>Last seen</span><span>${p.local ? "This device" : p.last_seen ? new Date(p.last_seen).toLocaleTimeString() : "Online in cluster"}</span></div>
+      ${orchestratorTarget ? `<button type="button" class="discovery-join-orchestrator" data-action="join-orchestrator" ${p.peer_addr ? "" : "disabled"}>${escapeHtml(joinLabel)}</button>` : ""}
     `;
-    discoveryList.appendChild(card);
-    if (p.role === "node") {
-      attachNodeContextMenu(card, member || {
-        id: p.id,
-        address: p.peer_addr || p.http_addr,
-        healthy: true,
-        discovered: !p.local,
-        last_seen: p.last_seen,
-        models: [],
-        active_tasks: 0,
-        hardware: {}
-      });
+      if (p.role === "node") {
+        attachNodeContextMenu(card, member || {
+          id: p.id,
+          address: p.peer_addr || p.http_addr,
+          healthy: true,
+          discovered: !p.local,
+          last_seen: p.last_seen,
+          models: [],
+          active_tasks: 0,
+          hardware: {}
+        });
+      } else if (orchestratorTarget) {
+        card.querySelector("[data-action=join-orchestrator]")?.addEventListener("click", () => {
+          openPairingDialog(orchestratorTarget);
+        });
+        attachNodeContextMenu(card, orchestratorTarget);
+      }
+      return card;
     }
-  }
+  });
 }
 function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
-  const expandedTaskIds = new Set(
-    Array.from(container.querySelectorAll?.(".task-details-row:not([hidden])") || []).map((item) => item.dataset.taskId).filter(Boolean)
-  );
-  container.innerHTML = "";
+  let state = container.__taskTableState;
+  if (!state) {
+    const table = document.createElement("table");
+    table.className = "task-history-table";
+    table.innerHTML = `
+      <thead><tr>
+        <th scope="col"><span class="sr-only">Expand</span></th>
+        <th scope="col">Task</th>
+        <th scope="col">Task ID</th>
+        <th scope="col">Steps</th>
+        <th scope="col">Status</th>
+      </tr></thead>
+    `;
+    const rows = document.createElement("tbody");
+    table.appendChild(rows);
+    container.innerHTML = "";
+    container.appendChild(table);
+    state = {
+      table,
+      rows,
+      expanded: /* @__PURE__ */ new Set(),
+      heights: /* @__PURE__ */ new Map(),
+      tasks: [],
+      frame: 0,
+      idPrefix,
+      linkNodes
+    };
+    state.onScroll = () => {
+      if (state.frame) return;
+      const raf = globalThis.requestAnimationFrame || ((callback) => setTimeout(callback, 16));
+      state.frame = raf(() => {
+        state.frame = 0;
+        renderTaskHistoryTable(container, state.tasks, state.idPrefix, state.linkNodes);
+      });
+    };
+    container.addEventListener?.("scroll", state.onScroll, { passive: true });
+    container.__taskTableState = state;
+  }
+  state.tasks = tasks;
+  container.setAttribute?.("aria-busy", "false");
+  state.idPrefix = idPrefix;
+  state.linkNodes = linkNodes;
+  const virtualized = tasks.length > 80;
+  const range = virtualized ? dashboardDOM.getVirtualRange(tasks, container.scrollTop || 0, container.clientHeight || 600, {
+    estimateHeight: 64,
+    overscan: 8,
+    heightOf: (task) => state.heights.get(task.id) || 64
+  }) : { start: 0, end: tasks.length, top: 0, bottom: 0 };
+  if (virtualized && !state.topSpacer) {
+    const createSpacer = () => {
+      const spacer = document.createElement("tbody");
+      spacer.className = "task-virtual-spacer";
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 5;
+      cell.setAttribute("aria-hidden", "true");
+      row.appendChild(cell);
+      spacer.appendChild(row);
+      return { spacer, cell };
+    };
+    state.topSpacer = createSpacer();
+    state.bottomSpacer = createSpacer();
+    state.table.insertBefore(state.topSpacer.spacer, state.rows);
+    state.table.appendChild(state.bottomSpacer.spacer);
+  }
+  if (state.topSpacer) {
+    state.topSpacer.spacer.hidden = range.top === 0;
+    state.topSpacer.cell.style.height = `${range.top}px`;
+    state.bottomSpacer.spacer.hidden = range.bottom === 0;
+    state.bottomSpacer.cell.style.height = `${range.bottom}px`;
+  }
   const validStatuses = /* @__PURE__ */ new Set(["pending", "running", "synthesizing", "awaiting_approval", "completed", "failed", "cancelled"]);
-  const formatTimestamp = (label, value) => {
-    if (!value) return `<span class="task-time-unavailable">${escapeHtml(label)} unavailable</span>`;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return `<span class="task-time-unavailable">${escapeHtml(label)} unavailable</span>`;
-    }
-    return `<time datetime="${escapeHtml(value)}">${escapeHtml(label)} ${escapeHtml(date.toLocaleString())}</time>`;
-  };
-  const table = document.createElement("table");
-  table.className = "task-history-table";
-  table.innerHTML = `
-    <thead><tr>
-      <th scope="col"><span class="sr-only">Expand</span></th>
-      <th scope="col">Task</th>
-      <th scope="col">Task ID</th>
-      <th scope="col">Steps</th>
-      <th scope="col">Status</th>
-    </tr></thead>
-  `;
-  const tbody = document.createElement("tbody");
-  table.appendChild(tbody);
-  container.appendChild(table);
-  for (const [index, t] of tasks.entries()) {
-    const status = validStatuses.has(t.status) ? t.status : "unknown";
-    const isExpanded = expandedTaskIds.has(t.id);
-    const detailsId = `${idPrefix}-details-${index}`;
-    const subtasks = t.subtasks || [];
-    const completedCount = subtasks.filter((subtask) => subtask.status === "completed").length;
-    const subtaskHTML = subtasks.map((s) => {
-      const subtaskStatus = validStatuses.has(s.status) ? s.status : "unknown";
-      const subtask = s.subtask || {};
-      const node = s.node_id ? linkNodes ? `<button class="activity-assignment" type="button" data-target-node="${escapeHtml(s.node_id)}">${escapeHtml(s.node_id)}</button>` : escapeHtml(s.node_id) : "Unassigned";
-      const attempts = Array.isArray(s.attempts) ? s.attempts : [];
-      const attemptTimestamps = attempts.length ? attempts.map((attempt, attemptIndex) => {
-        const attemptNumber = Number(attempt.number) || attemptIndex + 1;
-        return `<div class="task-step-attempt"><strong>Attempt ${attemptNumber}</strong>${formatTimestamp("Started", attempt.started_at)}${attempt.finished_at ? formatTimestamp("Finished", attempt.finished_at) : ""}</div>`;
-      }).join("") : `<div class="task-step-attempt"><span>Not dispatched</span>${formatTimestamp("Task created", t.created_at)}</div>`;
-      return `
+  dashboardDOM.patchKeyedChildren(state.rows, tasks.slice(range.start, range.end), {
+    keyOf: (task) => task.id,
+    signatureOf: (task) => JSON.stringify({ task, idPrefix, linkNodes }),
+    renderItem: (t, visibleIndex) => {
+      const index = range.start + visibleIndex;
+      const status = validStatuses.has(t.status) ? t.status : "unknown";
+      const isExpanded = state.expanded.has(t.id);
+      const detailsId = `${idPrefix}-details-${index}`;
+      const subtasks = t.subtasks || [];
+      const completedCount = subtasks.filter((subtask) => subtask.status === "completed").length;
+      const subtaskHTML = subtasks.map((s) => {
+        const subtaskStatus = validStatuses.has(s.status) ? s.status : "unknown";
+        const subtask = s.subtask || {};
+        const node = s.node_id ? linkNodes ? `<button class="activity-assignment" type="button" data-target-node="${escapeHtml(s.node_id)}">${escapeHtml(s.node_id)}</button>` : escapeHtml(s.node_id) : "Unassigned";
+        const attempts = Array.isArray(s.attempts) ? s.attempts : [];
+        const attemptTimestamps = attempts.length ? attempts.map((attempt, attemptIndex) => {
+          const attemptNumber = Number(attempt.number) || attemptIndex + 1;
+          const attemptStatus = typeof attempt.status === "string" ? attempt.status : "unknown";
+          const durationMs = Number(attempt.duration_ms);
+          const details = [
+            `<strong>Attempt ${attemptNumber} · ${escapeHtml(attemptStatus)}</strong>`,
+            attempt.id ? `<span>Attempt ID: ${escapeHtml(attempt.id)}</span>` : "",
+            attempt.request_id ? `<span>Request ID: ${escapeHtml(attempt.request_id)}</span>` : "",
+            attempt.node_id ? `<span>Node: ${escapeHtml(attempt.node_id)}</span>` : "",
+            attempt.model ? `<span>Model: ${escapeHtml(attempt.model)}</span>` : "",
+            attempt.engine ? `<span>Engine: ${escapeHtml(attempt.engine)}</span>` : "",
+            attempt.failure_class ? `<span>Failure: ${escapeHtml(attempt.failure_class)}</span>` : "",
+            attempt.http_status ? `<span>HTTP ${escapeHtml(attempt.http_status)}</span>` : "",
+            Number.isFinite(durationMs) && durationMs >= 0 ? `<span>Duration: ${durationMs} ms</span>` : "",
+            attempt.error ? `<span>Error: ${escapeHtml(attempt.error)}</span>` : ""
+          ].join("");
+          return `<div class="task-step-attempt">${details}${formatTimestamp("Started", attempt.started_at)}${formatTimestamp("Finished", attempt.finished_at)}</div>`;
+        }).join("") : `<div class="task-step-attempt"><span>Not dispatched</span>${formatTimestamp("Task created", t.created_at)}</div>`;
+        return `
         <article class="task-step">
           <div class="task-step-heading"><strong>${escapeHtml(subtask.id || "Subtask")}</strong><span class="badge ${subtaskStatus}">${escapeHtml(subtaskStatus.replaceAll("_", " "))}</span></div>
           <div class="task-step-target">${escapeHtml(subtask.role || subtask.task_type || "Task step")} · ${escapeHtml(subtask.task_type || "general")} · ${node} / ${escapeHtml(s.model || "No model")}</div>
@@ -2376,23 +3810,23 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
           ${s.output ? `<div class="subtask-output-wrap"><button class="copy-output-btn" type="button" data-copy-output="${encodeURIComponent(s.output)}">Copy output</button><pre class="subtask-output">${escapeHtml(s.output)}</pre></div>` : ""}
         </article>
       `;
-    }).join("");
-    const item = document.createElement("tr");
-    item.className = `task-history-row task-history-row-${status}`;
-    item.dataset.taskId = t.id;
-    item.innerHTML = `
+      }).join("");
+      const item = document.createElement("tr");
+      item.className = `task-history-row task-history-row-${status}`;
+      item.dataset.taskId = t.id;
+      item.innerHTML = `
       <td><button class="task-expand-btn" type="button" aria-expanded="${isExpanded}" aria-controls="${detailsId}" aria-label="Show details for ${escapeHtml(t.description || t.id)}"><span class="task-expand-icon" aria-hidden="true">›</span></button></td>
       <td><span class="task-history-title" title="${escapeHtml(t.description || t.id)}">${escapeHtml(t.description || t.id)}</span><span class="task-history-timestamp">${formatTimestamp("Created", t.created_at)}</span></td>
       <td><span class="task-history-id" title="${escapeHtml(t.id)}">${escapeHtml(t.id)}</span></td>
       <td>${subtasks.length ? `${completedCount} / ${subtasks.length}` : "—"}</td>
       <td><span class="badge ${status}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
     `;
-    const detailsRow = document.createElement("tr");
-    detailsRow.id = detailsId;
-    detailsRow.className = "task-details-row";
-    detailsRow.dataset.taskId = t.id;
-    detailsRow.hidden = !isExpanded;
-    detailsRow.innerHTML = `
+      const detailsRow = document.createElement("tr");
+      detailsRow.id = detailsId;
+      detailsRow.className = "task-details-row";
+      detailsRow.dataset.taskId = t.id;
+      detailsRow.hidden = !isExpanded;
+      detailsRow.innerHTML = `
       <td colspan="5"><div class="task-details-content">
       <div class="task-menu-meta">
         ${formatTimestamp("Created", t.created_at)}
@@ -2409,53 +3843,71 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
       ${t.result ? `<section class="task-result"><h4>Final result</h4><pre class="subtask-output">${escapeHtml(t.result)}</pre></section>` : ""}
       </div></td>
     `;
-    tbody.appendChild(item);
-    tbody.appendChild(detailsRow);
-    const expandButton = item.querySelector(".task-expand-btn");
-    expandButton?.addEventListener("click", () => {
-      detailsRow.hidden = !detailsRow.hidden;
-      expandButton.setAttribute("aria-expanded", String(!detailsRow.hidden));
-      expandButton.setAttribute("aria-label", `${detailsRow.hidden ? "Show" : "Hide"} details for ${t.description || t.id}`);
-    });
-    detailsRow.querySelector(".resume-task-btn")?.addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/resume`, { method: "POST" });
-      } catch (err) {
-        button.disabled = false;
-        if (submitStatus) submitStatus.textContent = `Unable to resume ${t.id}: ${err.message}`;
-      }
-    });
-    detailsRow.querySelector(".cancel-task-btn")?.addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
-      } catch (err) {
-        if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err.message}`;
-      }
-    });
-    detailsRow.querySelector(".approve-task-btn")?.addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/approve`, { method: "POST" });
-      } catch (err) {
-        button.disabled = false;
-        if (submitStatus) submitStatus.textContent = `Unable to approve ${t.id}: ${err.message}`;
-      }
-    });
-    detailsRow.querySelectorAll("[data-copy-output]").forEach((button) => {
-      button.addEventListener("click", () => copyText(decodeURIComponent(button.dataset.copyOutput), button));
-    });
-  }
+      const expandButton = item.querySelector(".task-expand-btn");
+      expandButton?.addEventListener("click", () => {
+        detailsRow.hidden = !detailsRow.hidden;
+        if (detailsRow.hidden) state.expanded.delete(t.id);
+        else state.expanded.add(t.id);
+        expandButton.setAttribute("aria-expanded", String(!detailsRow.hidden));
+        expandButton.setAttribute("aria-label", `${detailsRow.hidden ? "Show" : "Hide"} details for ${t.description || t.id}`);
+        const height = (item.getBoundingClientRect?.().height || 0) + (detailsRow.hidden ? 0 : detailsRow.getBoundingClientRect?.().height || 0);
+        if (height > 0) state.heights.set(t.id, height);
+      });
+      detailsRow.querySelector(".resume-task-btn")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/resume`, { method: "POST" });
+        } catch (err) {
+          button.disabled = false;
+          if (submitStatus) submitStatus.textContent = `Unable to resume ${t.id}: ${err.message}`;
+        }
+      });
+      detailsRow.querySelector(".cancel-task-btn")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
+        } catch (err) {
+          if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err.message}`;
+        }
+      });
+      detailsRow.querySelector(".approve-task-btn")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/approve`, { method: "POST" });
+        } catch (err) {
+          button.disabled = false;
+          if (submitStatus) submitStatus.textContent = `Unable to approve ${t.id}: ${err.message}`;
+        }
+      });
+      detailsRow.querySelectorAll("[data-copy-output]").forEach((button) => {
+        button.addEventListener("click", () => copyText(decodeURIComponent(button.dataset.copyOutput), button));
+      });
+      return [item, detailsRow];
+    }
+  });
+  state.rows.querySelectorAll?.(".task-history-row").forEach((row) => {
+    const details = row.nextElementSibling;
+    const height = (row.getBoundingClientRect?.().height || 0) + (details && !details.hidden ? details.getBoundingClientRect?.().height || 0 : 0);
+    if (height > 0) state.heights.set(row.dataset.taskId, height);
+  });
 }
 function renderTasks(tasks, hasMore = false, loading = false) {
   if (!tasksList) return;
+  tasksList.querySelector?.(".history-load-more")?.remove();
+  tasksList.setAttribute?.("aria-busy", String(loading));
   if (!tasks || tasks.length === 0) {
+    tasksList.__taskTableState?.table.remove?.();
+    delete tasksList.__taskTableState;
+    if (loading) {
+      dashboardDOM.renderSkeleton(tasksList, 3);
+      if (taskHistoryCount) taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(0, 0);
+      return;
+    }
     tasksList.innerHTML = '<p class="task-history-empty">No tasks submitted yet.</p>';
-    if (taskHistoryCount) taskHistoryCount.textContent = "0 tasks";
+    if (taskHistoryCount) taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(0, 0);
     appendTaskHistoryLoadMore(hasMore, loading);
     return;
   }
@@ -2487,9 +3939,11 @@ function renderTasks(tasks, hasMore = false, loading = false) {
     (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
   );
   if (taskHistoryCount) {
-    taskHistoryCount.textContent = `Showing ${orderedTasks.length} of ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
+    taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(orderedTasks.length, tasks.length);
   }
   if (orderedTasks.length === 0) {
+    tasksList.__taskTableState?.table.remove?.();
+    delete tasksList.__taskTableState;
     tasksList.innerHTML = '<p class="task-history-empty">No tasks match the selected filters.</p>';
     appendTaskHistoryLoadMore(hasMore, loading);
     return;
@@ -2533,20 +3987,28 @@ ${s.output || s.error || ""}`)
   ].join("\n")).join("\n\n");
 }
 copyTasksBtn?.addEventListener("click", () => copyAllTaskResults());
-function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = s;
-  return div.innerHTML;
+function updateConnectionStatus() {
+  if (!connectionStatus) return;
+  const state = dashboardState.connection;
+  const lastSync = state.lastSyncAt ? new Date(state.lastSyncAt).toLocaleTimeString() : "not yet";
+  connectionStatus.dataset.connected = String(state.connected);
+  connectionStatus.textContent = `${state.connected ? "Connected" : "Reconnecting"} · Last sync ${lastSync}`;
+}
+const loadedDashboardPanels = /* @__PURE__ */ new Set(["agent-tab"]);
+function markDashboardSynced() {
+  dashboardState.connection.lastSyncAt = Date.now();
+  updateConnectionStatus();
 }
 async function refresh() {
+  if (!document.getElementById("cluster-tab")?.classList.contains("active")) return;
   try {
     const [nodes, peers, build] = await Promise.all([
       fetchJSON("/api/nodes/all"),
       fetchJSON("/api/discovery"),
       fetchJSON("/api/version")
     ]);
-    await refreshTaskHistory();
     applySnapshot({ nodes, tasks: dashboardState.tasks || [], discovery: peers, build_version: build.version });
+    markDashboardSynced();
   } catch (err) {
     console.error(err);
   }
@@ -2678,55 +4140,37 @@ async function refreshDiscovery() {
     console.error("local network refresh failed", err);
   }
 }
-setInterval(refreshDiscovery, 5e3);
-function applySnapshot(snap) {
-  if (snap.complete_tasks) {
-    dashboardState.tasks = snap.tasks || [];
-    dashboardState.fullTaskHistoryLoaded = true;
-  } else if (dashboardState.fullTaskHistoryLoaded) {
-    const merged = new Map((dashboardState.tasks || []).map((task) => [task.id, task]));
-    for (const task of snap.tasks || []) merged.set(task.id, task);
-    dashboardState.tasks = [...merged.values()].sort(
-      (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
-    );
-  } else {
-    dashboardState.tasks = snap.tasks || [];
+setInterval(() => {
+  if (loadedDashboardPanels.has("discovery-panel") && document.getElementById("cluster-tab")?.classList.contains("active") && document.getElementById("discovery-panel")?.classList.contains("active")) {
+    void refreshDiscovery();
   }
+}, 5e3);
+function applySnapshot(snap) {
+  const taskSnapshot = dashboardSnapshot.mergeTaskSnapshot(
+    dashboardState.tasks,
+    snap.tasks,
+    snap.complete_tasks,
+    dashboardState.fullTaskHistoryLoaded
+  );
+  dashboardState.tasks = taskSnapshot.tasks;
+  dashboardState.fullTaskHistoryLoaded = taskSnapshot.fullTaskHistoryLoaded;
   mergeLiveTaskHistory(snap.tasks || []);
   dashboardState.nodes = snap.nodes || [];
+  if (Array.isArray(snap.discovery)) dashboardState.discovery = snap.discovery;
+  if (snap.build_version) dashboardState.buildVersion = snap.build_version;
+  if (Array.isArray(snap.model_inventory)) dashboardState.modelInventory = snap.model_inventory;
+  if (Array.isArray(snap.pipeline_plans)) dashboardState.pipelinePlans = snap.pipeline_plans;
   if (snap.cluster_health) dashboardState.capacity = snap.cluster_health;
   const capacityByNode = new Map(
     (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node])
   );
-  const nodeCount = snap.member_count ?? dashboardState.nodes.filter((node) => node.healthy).length;
-  updateClusterTitle(nodeCount);
-  if (statNodes) statNodes.textContent = `Nodes: ${nodeCount}`;
-  let modelCount = 0;
-  let activeLoad = 0;
-  if (Array.isArray(dashboardState.capacity?.nodes)) {
-    for (const node of dashboardState.capacity.nodes) {
-      if (!node.healthy) continue;
-      activeLoad += Number(node.active) || 0;
-    }
-  } else {
-    for (const n of dashboardState.nodes) {
-      if (!n.healthy) continue;
-      activeLoad += n.active_tasks || 0;
-    }
-  }
-  for (const n of dashboardState.nodes) {
-    if (!n.healthy) continue;
-    modelCount += (n.models || []).length;
-  }
-  if (statModels) statModels.textContent = `Models: ${modelCount}`;
-  if (statLoad) {
-    const dispatch = dashboardState.capacity?.global_dispatch;
-    statLoad.textContent = dispatch ? `Active Load: ${activeLoad} · Dispatch ${dispatch.active_slots}/${dispatch.global_limit} · Queue ${dispatch.queue_depth}` : `Active Load: ${activeLoad}`;
-  }
-  if (statMemory && snap.memory) {
-    statMemory.textContent = `Memory: ${snap.memory.total_experiences || 0} · ${Math.round((snap.memory.success_rate || 0) * 100)}%`;
-  }
-  if (statVersion && snap.build_version) statVersion.textContent = snap.build_version;
+  const status = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState.nodes, dashboardState.capacity);
+  updateClusterTitle(status.nodeCount);
+  if (statNodes) statNodes.textContent = `Nodes: ${status.nodeCount}`;
+  if (statModels) statModels.textContent = `Models: ${status.modelCount}`;
+  if (statLoad) statLoad.textContent = status.loadLabel;
+  if (statMemory && status.memoryLabel) statMemory.textContent = status.memoryLabel;
+  if (statVersion && status.buildVersion) statVersion.textContent = status.buildVersion;
   const nodeState = dashboardState.nodes.map((node) => ({
     id: node.id,
     version: node.version,
@@ -2834,17 +4278,20 @@ function applySnapshot(snap) {
     nodes: overviewNodeSignature !== window.lastOverviewNodeSignature,
     peers: peerSignature !== window.lastOverviewPeerSignature
   };
-  if (overviewParts.activity || overviewParts.nodes || overviewParts.peers) {
+  if (loadedDashboardPanels.has("cluster-overview-panel") && (overviewParts.activity || overviewParts.nodes || overviewParts.peers)) {
     renderOverview(dashboardState.nodes, dashboardState.tasks, snap.discovery || [], overviewParts);
     window.lastActivitySignature = activitySignature;
     window.lastOverviewNodeSignature = overviewNodeSignature;
     window.lastOverviewPeerSignature = peerSignature;
     overviewChanged = true;
   }
-  if (nodeSignature !== window.lastNodeSignature) {
+  if (loadedDashboardPanels.has("nodes-panel") && nodeSignature !== window.lastNodeSignature) {
     renderNodes(dashboardState.nodes);
-    renderSetupNodes(dashboardState.nodes);
     window.lastNodeSignature = nodeSignature;
+  }
+  if (loadedDashboardPanels.has("setup-nodes-panel") && nodeSignature !== window.lastSetupNodeSignature) {
+    renderSetupNodes(dashboardState.nodes);
+    window.lastSetupNodeSignature = nodeSignature;
   }
   const routingSignature = JSON.stringify({
     nodes: nodeState.map((node) => ({ id: node.id, healthy: node.healthy, active_tasks: node.active_tasks })),
@@ -2854,19 +4301,57 @@ function applySnapshot(snap) {
       subtasks: task.subtasks
     }))
   });
-  if (routingSignature !== window.lastRoutingSignature) {
+  if (loadedDashboardPanels.has("routing-panel") && routingSignature !== window.lastRoutingSignature) {
     renderRouting(dashboardState.nodes, dashboardState.tasks);
     window.lastRoutingSignature = routingSignature;
   }
-  if (peerSignature !== window.lastPeerSignature) {
+  const pipelineSignature = JSON.stringify({
+    models: dashboardState.modelInventory,
+    plans: dashboardState.pipelinePlans
+  });
+  if (loadedDashboardPanels.has("routing-panel") && pipelineSignature !== window.lastPipelineSignature) {
+    renderPipelineDashboard(dashboardState.modelInventory, dashboardState.pipelinePlans);
+    window.lastPipelineSignature = pipelineSignature;
+  }
+  if (loadedDashboardPanels.has("discovery-panel") && peerSignature !== window.lastPeerSignature) {
     renderDiscovery(snap.discovery || []);
     window.lastPeerSignature = peerSignature;
   }
-  if (taskSignature !== window.lastTaskSignature) {
+  if (loadedDashboardPanels.has("tasks-panel") && taskSignature !== window.lastTaskSignature) {
     renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, taskHistoryPage.loading);
     window.lastTaskSignature = taskSignature;
   }
   if (overviewChanged) refreshOverviewTimes();
+}
+function activateDashboardTab(tabID) {
+  if (tabID === "memory-tab") {
+    loadedDashboardPanels.add(tabID);
+    void refreshMemory();
+    return;
+  }
+  if (tabID !== "cluster-tab") return;
+  const selected = Array.from(clusterWorkspaceTabs).find((tab) => tab.getAttribute("aria-selected") === "true");
+  activateWorkspacePanel(selected?.getAttribute("aria-controls") || "cluster-overview-panel");
+  void refresh();
+}
+function activateWorkspacePanel(panelID) {
+  if (panelID.startsWith("overview-")) loadedDashboardPanels.add("cluster-overview-panel");
+  if (panelID.startsWith("setup-")) loadedDashboardPanels.add("setup-panel");
+  loadedDashboardPanels.add(panelID);
+  applySnapshot({
+    nodes: dashboardState.nodes,
+    tasks: dashboardState.tasks,
+    discovery: dashboardState.discovery,
+    model_inventory: dashboardState.modelInventory,
+    pipeline_plans: dashboardState.pipelinePlans,
+    cluster_health: dashboardState.capacity,
+    build_version: dashboardState.buildVersion
+  });
+  if (panelID === "setup-readiness-panel") void checkSetupReadiness();
+  if (panelID === "setup-catalog-panel") void loadModelCatalog();
+  if (panelID === "tasks-panel") void refreshTaskHistory(true);
+  if (panelID === "discovery-panel") void refreshDiscovery();
+  if (panelID === "routing-panel") void refreshShardGroups();
 }
 function refreshOverviewTimes() {
   overviewNodes?.querySelectorAll("[data-last-seen]").forEach((label) => {
@@ -2875,14 +4360,15 @@ function refreshOverviewTimes() {
 }
 setInterval(refreshOverviewTimes, 15e3);
 function connectEvents() {
-  const es = new EventSource("/api/events");
-  es.onmessage = (evt) => {
-    try {
-      applySnapshot(JSON.parse(evt.data));
-    } catch (err) {
-      console.error(err);
+  dashboardSnapshot.connectDashboardEvents((snapshot) => {
+    markDashboardSynced();
+    applySnapshot(snapshot);
+  }, {
+    onConnectionChange: (connected) => {
+      dashboardState.connection.connected = connected;
+      updateConnectionStatus();
     }
-  };
+  });
 }
 submitBtn?.addEventListener("click", async () => {
   const description = taskInput.value.trim();
@@ -2913,10 +4399,107 @@ setInterval(refreshPersistenceStatus, 3e4);
 setInterval(() => {
   if (document.getElementById("cluster-tab")?.classList.contains("active")) {
     void refresh();
+    if (document.getElementById("routing-panel")?.classList.contains("active")) {
+      void refreshShardGroups();
+    }
   }
 }, 15e3);
-loadClusterModels();
-refresh();
-checkSetupReadiness();
-loadModelCatalog();
 connectEvents();
+const VIEW_STATE_KEY = "maistr0.viewState";
+const DIRECT_CHAT_KEY = "maistr0.directChat";
+const MAX_SAVED_DIRECT_MESSAGES = 100;
+const SUB_TAB_SELECTOR = ".cluster-workspace-tab, .setup-tab, .overview-tab";
+const refreshViewBtn = document.getElementById("refresh-view-btn");
+function readSessionJSON(key) {
+  try {
+    return JSON.parse(globalThis.sessionStorage?.getItem(key) || "null");
+  } catch {
+    return null;
+  }
+}
+function writeSessionJSON(key, value) {
+  try {
+    globalThis.sessionStorage?.setItem(key, JSON.stringify(value));
+  } catch {
+  }
+}
+function captureViewState() {
+  return {
+    primary: document.querySelector(".nav-tab.active")?.id || "",
+    agent: document.querySelector(".agent-tab.active")?.dataset.agent || "direct",
+    subTabs: [...document.querySelectorAll(SUB_TAB_SELECTOR)].filter((tab) => tab.id && tab.getAttribute("aria-selected") === "true").map((tab) => tab.id)
+  };
+}
+function savedDirectMessages(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((message) => message && ["user", "assistant"].includes(message.role) && typeof message.content === "string").map((message) => ({ role: message.role, content: message.content })).slice(-MAX_SAVED_DIRECT_MESSAGES);
+}
+function saveViewState() {
+  writeSessionJSON(VIEW_STATE_KEY, captureViewState());
+  writeSessionJSON(DIRECT_CHAT_KEY, savedDirectMessages(directMessages));
+}
+function selectSavedTab(id) {
+  const tab = id ? document.getElementById(id) : null;
+  if (tab?.getAttribute("role") === "tab" && tab.getAttribute("aria-selected") !== "true") tab.click();
+}
+function restoreViewState() {
+  const messages = savedDirectMessages(readSessionJSON(DIRECT_CHAT_KEY));
+  if (messages.length) {
+    directMessages = messages;
+    if (activeChatMode === "direct") renderDirectMessages();
+  }
+  const saved = readSessionJSON(VIEW_STATE_KEY);
+  if (!saved || typeof saved !== "object") return;
+  for (const id of Array.isArray(saved.subTabs) ? saved.subTabs : []) selectSavedTab(id);
+  selectSavedTab(saved.primary);
+  if (saved.agent && saved.agent !== "direct") {
+    document.querySelector(`.agent-tab[data-agent="${CSS.escape(saved.agent)}"]`)?.click();
+  }
+}
+function activeSubPanel(selector) {
+  return document.querySelector(`${selector}[aria-selected="true"]`)?.getAttribute("aria-controls") || "";
+}
+async function refreshActiveView() {
+  for (const key of Object.keys(window)) {
+    if (/^last\w*Signature$/.test(key)) window[key] = void 0;
+  }
+  const primary = document.querySelector(".nav-tab.active")?.dataset.tab;
+  if (primary === "memory-tab") return refreshMemory();
+  if (primary === "agent-tab") {
+    if (activeChatMode === "direct") {
+      renderDirectMessages();
+      return;
+    }
+    if (activeSessionId) await selectSession(activeSessionId);
+    return;
+  }
+  if (primary !== "cluster-tab") return;
+  const work = [refresh()];
+  const panel = activeSubPanel(".cluster-workspace-tab");
+  if (panel === "tasks-panel") work.push(refreshTaskHistory(true));
+  if (panel === "discovery-panel") work.push(refreshDiscovery());
+  if (panel === "routing-panel") work.push(refreshShardGroups());
+  if (panel === "setup-panel") {
+    const setupPanel = activeSubPanel(".setup-tab");
+    if (setupPanel === "pairing-panel") work.push(loadPairingStatus());
+    if (setupPanel === "setup-readiness-panel") work.push(checkSetupReadiness());
+    if (setupPanel === "setup-catalog-panel") work.push(loadModelCatalog());
+  }
+  await Promise.allSettled(work);
+}
+refreshViewBtn?.addEventListener("click", async () => {
+  if (refreshViewBtn.disabled) return;
+  refreshViewBtn.disabled = true;
+  refreshViewBtn.textContent = "↻ Refreshing…";
+  try {
+    await refreshActiveView();
+    markDashboardSynced();
+  } catch (err) {
+    console.error("refreshing the active view failed", err);
+  } finally {
+    refreshViewBtn.disabled = false;
+    refreshViewBtn.textContent = "↻ Refresh view";
+  }
+});
+window.addEventListener("pagehide", saveViewState);
+restoreViewState();

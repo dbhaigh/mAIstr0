@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/managed-engine-start.schema.json",
+  "title": "ManagedEngineStartRequest",
+  "type": "object",
+  "properties": {
+    "shard_plan": {
+      "type": "object",
+      "properties": {
+        "nnodes": {"type": "integer", "minimum": 0, "maximum": 1024},
+        "node_rank": {"type": "integer", "minimum": 0, "maximum": 1023},
+        "master_addr": {"type": "string"},
+        "rpc": {"type": "string"},
+        "rpc_relays": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["peer_id", "address"],
+            "properties": {
+              "peer_id": {"type": "string", "minLength": 1},
+              "address": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "tensor_split": {"type": "string"},
+        "tensor_parallel_size": {"type": "integer", "minimum": 0},
+        "pipeline_parallel_size": {"type": "integer", "minimum": 0}
+      },
+      "anyOf": [
+        {
+          "required": ["nnodes", "node_rank", "master_addr"],
+          "properties": {
+            "nnodes": {"minimum": 1},
+            "master_addr": {"minLength": 1}
+          }
+        },
+        {"required": ["rpc", "tensor_split"]},
+        {"required": ["rpc_relays", "tensor_split"]}
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

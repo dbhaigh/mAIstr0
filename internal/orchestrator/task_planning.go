@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"strings"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -18,12 +19,13 @@ import (
 )
 
 type createTaskRequest struct {
-	Description     string               `json:"description"`
-	Subtasks        []scheduler.Subtask  `json:"subtasks,omitempty"`
-	Graph           *scheduler.TaskGraph `json:"graph,omitempty"`
-	PlanMode        string               `json:"plan_mode,omitempty"`
-	RequireReview   bool                 `json:"require_review,omitempty"`
-	RequireApproval bool                 `json:"require_approval,omitempty"`
+	Description       string               `json:"description"`
+	Subtasks          []scheduler.Subtask  `json:"subtasks,omitempty"`
+	Graph             *scheduler.TaskGraph `json:"graph,omitempty"`
+	PlanMode          string               `json:"plan_mode,omitempty"`
+	RoutingPreference string               `json:"routing_preference,omitempty"`
+	RequireReview     bool                 `json:"require_review,omitempty"`
+	RequireApproval   bool                 `json:"require_approval,omitempty"`
 }
 
 type taskScheduler interface {
@@ -45,13 +47,20 @@ type plannerModel interface {
 	callNodeGenerateWithOptionsContext(context.Context, string, string, string, float64, int) (string, error)
 }
 
+type taskModelProvisioner interface {
+	provision(context.Context, []scheduler.Subtask) error
+}
+
 type taskPlanner struct {
-	scheduler  taskScheduler
-	tasks      taskStore
-	dispatch   taskDispatcher
-	model      plannerModel
-	nodes      func() []cluster.NodeStatus
-	experience scheduler.Experience
+	scheduler   taskScheduler
+	tasks       taskStore
+	dispatch    taskDispatcher
+	model       plannerModel
+	metrics     *operationalMetrics
+	nodes       func() []cluster.NodeStatus
+	experience  scheduler.Experience
+	provisioner taskModelProvisioner
+	planCache   taskPlanCache
 }
 
 type taskPlannerAPI interface {
@@ -80,6 +89,15 @@ func newTaskPlanner(
 	}
 }
 
+func (p *taskPlanner) assign(subtasks []scheduler.Subtask, nodes []cluster.NodeStatus) ([]scheduler.Assignment, error) {
+	started := time.Now()
+	assignments, err := p.scheduler.AssignWithExperience(subtasks, nodes, p.experience)
+	if p.metrics != nil {
+		p.metrics.recordAssignment(time.Since(started))
+	}
+	return assignments, err
+}
+
 func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmgr.Task, error) {
 	return s.plannerPort().createTask(ctx, req)
 }
@@ -92,13 +110,18 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 	if strings.TrimSpace(req.Description) == "" {
 		return nil, apperr.Invalid(errors.New("description is required"))
 	}
+	routingPreference, err := normalizeRoutingPreference(req.RoutingPreference)
+	if err != nil {
+		return nil, apperr.Invalid(err)
+	}
 	subtasks := req.Subtasks
 	graph := req.Graph
 	planMode := strings.ToLower(strings.TrimSpace(req.PlanMode))
 	modelPlanned := planMode == "auto"
+	heuristicGenerated := false
 
 	switch planMode {
-	case "", "heuristic":
+	case "", "heuristic", "heuristic_v1":
 		if graph != nil {
 			if err := graph.Validate(); err != nil {
 				return nil, apperr.Invalid(fmt.Errorf("invalid task graph: %w", err))
@@ -109,7 +132,12 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 			}
 			subtasks = sorted
 		} else if len(subtasks) == 0 {
-			subtasks = scheduler.Decompose(req.Description)
+			if planMode == "heuristic_v1" {
+				subtasks = scheduler.DecomposeV1(req.Description)
+			} else {
+				subtasks = scheduler.Decompose(req.Description)
+			}
+			heuristicGenerated = true
 			var err error
 			graph, err = scheduler.TaskGraphFromSubtasks(subtasks)
 			if err != nil {
@@ -133,10 +161,10 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 		graph = plannedGraph
 		subtasks = plannedSubtasks
 	default:
-		return nil, apperr.Invalid(errors.New("plan_mode must be heuristic or auto"))
+		return nil, apperr.Invalid(errors.New("plan_mode must be auto, heuristic, or heuristic_v1"))
 	}
 
-	subtasks, err := scheduler.ValidatePlan(subtasks)
+	subtasks, err = scheduler.ValidatePlan(subtasks)
 	if err != nil {
 		if modelPlanned {
 			return nil, apperr.UpstreamError(err)
@@ -157,9 +185,44 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 			}
 		}
 	}
-	assignments, err := p.scheduler.AssignWithExperience(subtasks, p.nodes(), p.experience)
+	for i := range subtasks {
+		if !heuristicGenerated {
+			subtasks[i].Synthesis = false
+		}
+		if routingPreference != "" {
+			subtasks[i].RoutingPreference = routingPreference
+		}
+		if graph != nil {
+			if node, exists := graph.Nodes[subtasks[i].ID]; exists {
+				node.Synthesis = subtasks[i].Synthesis
+				node.RoutingPreference = subtasks[i].RoutingPreference
+				graph.Nodes[subtasks[i].ID] = node
+			}
+		}
+	}
+	assignments, err := p.assign(subtasks, p.nodes())
 	if err != nil {
-		return nil, apperr.UnavailableError(err)
+		var unassignable *scheduler.UnassignableSubtasksError
+		if p.provisioner == nil || !errors.As(err, &unassignable) {
+			return nil, apperr.UnavailableError(err)
+		}
+		unassignableIDs := make(map[string]bool, len(unassignable.SubtaskIDs))
+		for _, id := range unassignable.SubtaskIDs {
+			unassignableIDs[id] = true
+		}
+		missing := make([]scheduler.Subtask, 0, len(unassignableIDs))
+		for _, subtask := range subtasks {
+			if unassignableIDs[subtask.ID] {
+				missing = append(missing, subtask)
+			}
+		}
+		if provisionErr := p.provisioner.provision(ctx, missing); provisionErr != nil {
+			return nil, apperr.UnavailableError(fmt.Errorf("%w; automatic model provisioning failed: %v", err, provisionErr))
+		}
+		assignments, err = p.assign(subtasks, p.nodes())
+		if err != nil {
+			return nil, apperr.UnavailableError(fmt.Errorf("task remained unassignable after model provisioning: %w", err))
+		}
 	}
 	if len(assignments) != len(subtasks) {
 		return nil, apperr.UnavailableError(errors.New("scheduler returned an incomplete assignment"))
@@ -170,7 +233,7 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 	}
 	for _, assignment := range assignments {
 		if err := p.dispatch.submitDispatch(task.ID, assignment); err != nil {
-			log.Printf("orchestrator: could not queue subtask %s: %v", assignment.Subtask.ID, err)
+			logging.Errorf("orchestrator", "orchestrator: could not queue subtask %s: %v", assignment.Subtask.ID, err)
 			p.tasks.CompleteSubtask(task.ID, assignment.Subtask.ID, "", err)
 		}
 	}
@@ -232,12 +295,38 @@ func addReviewerSubtask(subtasks []scheduler.Subtask) []scheduler.Subtask {
 }
 
 func (p *taskPlanner) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
+	key := normalizedPlanCacheKey(description)
+	if graph, subtasks, ok := p.planCache.get(key); ok {
+		return graph, subtasks, nil
+	}
+	graph, subtasks, err := p.planSubtasksUncached(ctx, description)
+	if err != nil {
+		return nil, nil, err
+	}
+	subtasks, err = scheduler.ValidatePlan(subtasks)
+	if err != nil {
+		return nil, nil, apperr.UpstreamError(fmt.Errorf("planner task validation: %w", err))
+	}
+	for _, subtask := range subtasks {
+		if _, exists := graph.Nodes[subtask.ID]; exists {
+			graph.Nodes[subtask.ID] = subtask.Clone()
+		}
+	}
+	p.planCache.put(key, graph, subtasks)
+	return graph, subtasks, nil
+}
+
+func (p *taskPlanner) planSubtasksUncached(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
 	planning := scheduler.Subtask{ID: "plan", Description: "Create a workflow plan", TaskType: "general"}
 	nodes := p.nodes()
 	failedModels := make(map[string]map[string]struct{})
 	var lastModelErr error
-	var output string
+	var lastPlanErr error
+	provisionAttempted := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, apperr.UpstreamError(err)
+		}
 		candidates := make([]cluster.NodeStatus, len(nodes))
 		for i, node := range nodes {
 			candidates[i] = node
@@ -251,12 +340,23 @@ func (p *taskPlanner) planSubtasks(ctx context.Context, description string) (*sc
 				}
 			}
 		}
-		assignments, err := p.scheduler.AssignWithExperience([]scheduler.Subtask{planning}, candidates, p.experience)
+		assignments, err := p.assign([]scheduler.Subtask{planning}, candidates)
 		if err != nil {
+			if !provisionAttempted && lastModelErr == nil && lastPlanErr == nil && p.provisioner != nil {
+				provisionAttempted = true
+				if provisionErr := p.provisioner.provision(ctx, []scheduler.Subtask{planning}); provisionErr != nil {
+					return nil, nil, apperr.UnavailableError(fmt.Errorf("select planning model: %w; ensure a normal model is available or a shard group is ready (failed groups cannot run tasks); automatic model acquisition failed: %v", err, provisionErr))
+				}
+				nodes = p.nodes()
+				continue
+			}
+			if lastPlanErr != nil {
+				return nil, nil, lastPlanErr
+			}
 			if lastModelErr != nil {
 				return nil, nil, apperr.UpstreamError(fmt.Errorf("all planning model attempts failed: %w", lastModelErr))
 			}
-			wrapped := fmt.Errorf("select planning model: %w", err)
+			wrapped := fmt.Errorf("select planning model: %w; ensure a normal model is available or a shard group is ready (failed groups cannot run tasks)", err)
 			var unassignable *scheduler.UnassignableSubtasksError
 			if errors.Is(err, scheduler.ErrNoHealthyNodes) || errors.As(err, &unassignable) {
 				return nil, nil, apperr.UnavailableError(wrapped)
@@ -275,68 +375,49 @@ or this shape:
 
 Use only these roles: researcher, analyst, coder, writer, reviewer, summarizer, translator, general.
 Use task_type values supported by a local model registry when relevant: code, summarize, translate, math, vision, creative, general.
-Supported capability tags: researcher, coder, long-context, vision, math, fast, high-quality.
+Supported capability tags: researcher, coder, writer, summarizer, translator, long-context, vision, math, fast, high-quality.
+Use required_capabilities only for essential model or hardware requirements, not the task's role. Ordinary writing, poetry, and summaries can use a general text model with required_capabilities [].
 Make independent tasks parallel; add depends_on only when a task genuinely needs another task's result. Keep the plan focused, use 1-8 tasks, and set expected_output for each task. Use output_format json and required_fields only when the result must be machine-readable. JSON output gets one corrective retry by default; use max_retries 0 for plain-text output and at most 2 for any task.
 User request:
 %s`, strings.TrimSpace(description))
-		output, err = p.model.callNodeGenerateWithOptionsContext(ctx, assignment.Address, assignment.Model, prompt, 0.1, 2048)
-		if err == nil {
-			break
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, apperr.UpstreamError(err)
+			}
+			output, modelErr := p.model.callNodeGenerateWithOptionsContext(ctx, assignment.Address, assignment.Model, prompt, 0.1, 2048)
+			if err := ctx.Err(); err != nil {
+				return nil, nil, apperr.UpstreamError(err)
+			}
+			if modelErr != nil {
+				lastModelErr = fmt.Errorf("planning model %s on node %s: %w", assignment.Model, assignment.NodeID, modelErr)
+				break
+			}
+			graph, subtasks, planErr := decodeTaskPlan(output)
+			if planErr == nil {
+				return graph, subtasks, nil
+			}
+			lastPlanErr = planErr
+			logging.Warnf("orchestrator", "planning model %s on node %s returned an invalid plan (attempt %d of 2)", assignment.Model, assignment.NodeID, attempt+1)
+			// Do not echo untrusted model output, which can contain private data.
+			prompt += "\nYour previous response was not a valid executable plan. Return only the requested JSON object, without reasoning, commentary, or markdown. Include 1-8 tasks with unique IDs, nonempty descriptions, and valid acyclic dependencies."
 		}
-		lastModelErr = fmt.Errorf("planning model %s on node %s: %w", assignment.Model, assignment.NodeID, err)
 		if ctx.Err() != nil {
-			return nil, nil, apperr.UpstreamError(lastModelErr)
+			return nil, nil, apperr.UpstreamError(ctx.Err())
 		}
 		if failedModels[assignment.NodeID] == nil {
 			failedModels[assignment.NodeID] = make(map[string]struct{})
 		}
 		failedModels[assignment.NodeID][assignment.Model] = struct{}{}
 	}
+}
 
-	var err error
-	payload, err := extractJSONObject(output)
-	if err != nil {
-		return nil, nil, apperr.UpstreamError(fmt.Errorf("planning model returned invalid JSON: %w", err))
+func normalizeRoutingPreference(value string) (string, error) {
+	preference := strings.ToLower(strings.TrimSpace(value))
+	if preference == "" || preference == scheduler.RoutingPreferenceQuality ||
+		preference == scheduler.RoutingPreferenceLatency {
+		return preference, nil
 	}
-	var raw struct {
-		Graph    *scheduler.TaskGraph         `json:"graph,omitempty"`
-		Nodes    map[string]scheduler.Subtask `json:"nodes,omitempty"`
-		Edges    []scheduler.Edge             `json:"edges,omitempty"`
-		Subtasks []scheduler.Subtask          `json:"subtasks,omitempty"`
-	}
-	if err := json.Unmarshal(payload, &raw); err != nil {
-		return nil, nil, apperr.UpstreamError(fmt.Errorf("decode planner response: %w", err))
-	}
-
-	var graph *scheduler.TaskGraph
-	if raw.Graph != nil && len(raw.Graph.Nodes) > 0 {
-		graph = raw.Graph
-	} else if len(raw.Nodes) > 0 {
-		graph = &scheduler.TaskGraph{
-			Nodes: raw.Nodes,
-			Edges: raw.Edges,
-		}
-	} else if len(raw.Subtasks) > 0 {
-		var err error
-		graph, err = scheduler.TaskGraphFromSubtasks(raw.Subtasks)
-		if err != nil {
-			return nil, nil, apperr.UpstreamError(fmt.Errorf("build graph from planner subtasks: %w", err))
-		}
-	} else {
-		return nil, nil, apperr.UpstreamError(errors.New("planner response contains neither graph nor subtasks"))
-	}
-
-	if len(graph.Nodes) > 8 {
-		return nil, nil, apperr.UpstreamError(errors.New("planning model returned more than 8 subtasks"))
-	}
-	if err := graph.Validate(); err != nil {
-		return nil, nil, apperr.UpstreamError(fmt.Errorf("planner graph validation: %w", err))
-	}
-	sorted, err := graph.TopologicalSort()
-	if err != nil {
-		return nil, nil, apperr.UpstreamError(fmt.Errorf("planner graph sort: %w", err))
-	}
-	return graph, sorted, nil
+	return "", errors.New("routing_preference must be quality or latency")
 }
 
 func extractJSONObject(output string) ([]byte, error) {

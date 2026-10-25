@@ -7,17 +7,155 @@
   "properties": {
     "node_id": {"type": "string"},
     "listen_addr": {"type": "string"},
+    "rpc_relay_listen_addr": {"type": "string", "default": ":7452", "description": "TCP listener for the mTLS-authenticated llama.cpp RPC relay."},
+    "log_level": {"type": "string", "enum": ["debug", "info", "warn", "error"], "default": "info"},
     "advertise_addr": {"type": "string"},
     "orchestrator_addr": {"type": "string"},
     "max_concurrent_tasks": {"type": "integer"},
+    "sync_max_bytes": {"type": "integer", "minimum": 1, "maximum": 268435456, "default": 67108864},
+    "sync_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 600},
     "pairing_pin": {"type": "string"},
     "disabled_models": {"type": ["array", "null"], "items": {"type": "string"}},
     "default_model": {"type": "string"},
-    "engines": {"type": "array", "items": {"type": "object", "required": ["name", "url"], "properties": {"name": {"type": "string"}, "url": {"type": "string"}, "registry_url": {"type": "string"}}, "additionalProperties": true}},
+    "engines": {"type": "array", "items": {"type": "object", "required": ["name", "url"], "properties": {    "name": {"type": "string", "description": "Use llamacpp-openvino-npu, llamacpp-hexagon-npu, llamacpp-xdna2-npu, or fastflowlm-xdna2 for the documented NPU profiles."}, "url": {"type": "string"}, "registry_url": {"type": "string"}, "api_key": {"type": "string", "description": "Optional bearer token for supported OpenAI-compatible engines; never returned by APIs or config dumps."}, "validated_rpc": {"type": "boolean", "default": false, "description": "Operator-only opt-in after testing this engine's RPC sharding; engine self-reports do not enable NPU shard membership."}}, "additionalProperties": true}},
+    "managed_engines": {"type": "array", "items": {"$ref": "#/$defs/ManagedEngine"}},
+    "managed_engine_binary_allowlist": {"type": "array", "description": "Absolute directories in which managed engine executables are allowed.", "items": {"type": "string", "minLength": 1}},
+    "managed_engine_model_allowlist": {"type": "array", "description": "Absolute directories from which managed engines may load local model files or directories.", "items": {"type": "string", "minLength": 1}},
+    "supported_shard_models": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "max_layers_it_can_host": {"type": "integer", "minimum": 0},
+    "trusted_network_interfaces": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Interface names trusted for unencrypted vLLM distributed traffic; use a WireGuard interface or isolated VLAN."},
+    "allow_insecure_shard_network": {"type": "boolean", "default": false, "description": "Explicitly permits vLLM distributed traffic on an untrusted interface and emits a prominent warning."},
     "discovery_enabled": {"type": "boolean"},
     "auto_open_browser": {"type": "boolean"},
     "tray_mode": {"type": "string", "enum": ["taskbar", "hidden"]},
     "memory_path": {"type": "string"}
   },
-  "additionalProperties": true
+  "allOf": [
+    {
+      "if": {"properties": {"supported_shard_models": {"minItems": 1}}},
+      "then": {"properties": {"max_layers_it_can_host": {"type": "integer", "minimum": 1}}}
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "ManagedEngine": {
+      "type": "object",
+      "required": ["id", "kind", "binary_path"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "kind": {"type": "string", "enum": ["llama-server", "ggml-rpc-server", "vllm"]},
+        "binary_path": {"type": "string", "minLength": 1, "description": "Absolute native executable path, resolved inside managed_engine_binary_allowlist."},
+        "model_path": {"type": "string", "minLength": 1, "description": "Optional absolute local model path, resolved inside managed_engine_model_allowlist."},
+        "model_id": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Model identifier passed as one argv value."},
+        "template": {"type": "string", "enum": ["llamacpp-openvino-npu", "llamacpp-hexagon-npu", "llamacpp-xdna2-npu"], "description": "Applies fixed backend environment, device, and safe launch options from the built-in typed llama-server template catalog."},
+        "options": {"$ref": "#/$defs/ManagedEngineOptions"}
+      },
+      "oneOf": [
+        {"required": ["model_path"], "not": {"required": ["model_id"]}},
+        {"required": ["model_id"], "not": {"required": ["model_path"]}},
+        {"not": {"anyOf": [{"required": ["model_path"]}, {"required": ["model_id"]}]}}
+      ],
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"enum": ["llama-server", "vllm"]}}},
+          "then": {
+            "oneOf": [
+              {"required": ["model_path"], "not": {"required": ["model_id"]}},
+              {"required": ["model_id"], "not": {"required": ["model_path"]}}
+            ]
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "llama-server"}}},
+          "then": {"properties": {"options": {"oneOf": [{"type": "object", "maxProperties": 0}, {"$ref": "#/$defs/LlamaServerManagedOptions"}]}}}
+        },
+        {
+          "if": {"required": ["template"], "properties": {"template": {"enum": ["llamacpp-openvino-npu", "llamacpp-xdna2-npu"]}}},
+          "then": {
+            "properties": {
+              "options": {
+                "type": "object",
+                "required": ["llama_server"],
+                "properties": {
+                  "llama_server": {
+                    "type": "object",
+                    "required": ["context_size"],
+                    "properties": {"context_size": {"type": "integer", "minimum": 1}}
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "ggml-rpc-server"}}},
+          "then": {"properties": {"options": {"oneOf": [{"type": "object", "maxProperties": 0}, {"$ref": "#/$defs/GGMLRPCServerManagedOptions"}]}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "vllm"}}},
+          "then": {"properties": {"options": {"oneOf": [{"type": "object", "maxProperties": 0}, {"$ref": "#/$defs/VLLMManagedOptions"}]}}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "ManagedEngineOptions": {
+      "oneOf": [
+        {"type": "object", "maxProperties": 0},
+        {"$ref": "#/$defs/LlamaServerManagedOptions"},
+        {"$ref": "#/$defs/GGMLRPCServerManagedOptions"},
+        {"$ref": "#/$defs/VLLMManagedOptions"}
+      ]
+    },
+    "LlamaServerManagedOptions": {
+      "type": "object",
+      "properties": {
+        "llama_server": {
+          "type": "object",
+          "properties": {
+            "host": {"type": "string"},
+            "port": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "0 selects the engine default port."},
+            "context_size": {"type": "integer", "minimum": 0},
+            "gpu_layers": {"type": "integer", "minimum": 0},
+            "threads": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["llama_server"],
+      "additionalProperties": false
+    },
+    "GGMLRPCServerManagedOptions": {
+      "type": "object",
+      "properties": {
+        "ggml_rpc_server": {
+          "type": "object",
+          "properties": {
+            "bind_address": {"type": "string"},
+            "port": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "0 selects the engine default port."},
+            "allow_remote_bind": {"type": "boolean", "description": "Deprecated compatibility field. ggml-rpc-server is always restricted to loopback; remote binds are rejected."}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["ggml_rpc_server"],
+      "additionalProperties": false
+    },
+    "VLLMManagedOptions": {
+      "type": "object",
+      "properties": {
+        "vllm": {
+          "type": "object",
+          "properties": {
+            "host": {"type": "string"},
+            "host_ip": {"type": "string", "description": "Optional VLLM_HOST_IP override; must be assigned to an active private interface listed in trusted_network_interfaces unless insecure networking is explicitly allowed."},
+            "port": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "0 selects the engine default port."},
+            "tensor_parallel_size": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["vllm"],
+      "additionalProperties": false
+    }
+  }
 }

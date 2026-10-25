@@ -17,10 +17,18 @@ controls. Existing full-list API responses remain available when paging
 parameters are omitted, and the dashboard keeps live task updates merged into
 the currently loaded task pages.
 
-These source modules are assembled in a stable order and bundled as one
-classic script. This keeps the existing browser loading and `web.StaticFiles`
-embed contract unchanged; the browser does not load modules or require Node.
-`static/app.js` is generated output.
+The ES-module entry point bundles the source as a classic script so the
+existing browser loading and `web.StaticFiles` embed contract stays unchanged;
+the browser does not load modules or require Node. The build emits stable
+`static/app.js` and `static/style.css` paths for compatibility, plus
+content-hashed JS/CSS assets referenced by `static/index.html`. It also writes
+precompressed gzip and Brotli sidecars. The embedded handler negotiates those
+encodings, uses ETags, and applies immutable caching to hashed assets.
+
+SSE snapshots are coalesced into animation frames and identical snapshots are
+skipped. Keyed list updates preserve stable DOM nodes; long task, memory, and
+chat histories are windowed, and inactive dashboard panels defer their
+initial loading until activated.
 
 From the repository root, install the build dependency and regenerate the
 embedded asset with:

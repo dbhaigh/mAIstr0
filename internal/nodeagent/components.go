@@ -34,7 +34,7 @@ type engineComponent struct {
 	detectedEngines []engine.Engine
 	detectedSeenAt  map[string]time.Time
 	// enginesMu protects configured/detected engines and the generation-keyed ordered snapshot cache.
-	// When both scan locks are needed, engineScanMu precedes enginesMu; engine calls happen without enginesMu held.
+	// Engine calls happen without this lock held.
 	enginesMu sync.RWMutex
 	// engineSnapshotCache is invalidated on engine scans/configuration and reused until hwGeneration changes.
 	engineGeneration          uint64
@@ -42,8 +42,10 @@ type engineComponent struct {
 	engineSnapshotGeneration  uint64
 	engineSnapshotHardwareGen uint64
 	engineSnapshotCacheValid  bool
-	// engineScanMu serializes detector calls and updates; if both scan locks are needed, it precedes enginesMu.
+	operatorCapabilities      map[string]engine.Capabilities
+	// engineScanMu protects engineScanDone; detector calls run after releasing it.
 	engineScanMu   sync.Mutex
+	engineScanDone chan struct{}
 	engineDetector func() []engine.Engine
 	lastEngineScan time.Time
 	telemetry      interface {
@@ -56,9 +58,11 @@ type engineComponent struct {
 		setModelConfig(map[string]bool, string)
 	}
 
-	// refreshMu serializes inventory refresh and invalidation; its order is refreshMu -> modelMu -> agentState.mu.
-	refreshMu sync.Mutex
-	// modelMu protects reported inventory; never acquire refreshMu while holding it.
+	// refreshMu protects refresh coordination and generation; it is never held during engine calls.
+	refreshMu                sync.Mutex
+	refreshDone              chan struct{}
+	modelInventoryGeneration uint64
+	// modelMu protects reported inventory; refresh coordination may acquire it after refreshMu.
 	modelMu         sync.Mutex
 	reportedModels  []ModelState
 	reportedEngines []engine.Status
@@ -68,12 +72,15 @@ type engineComponent struct {
 type telemetryComponent struct {
 	// hwMu protects the latest hardware snapshot, its generation, and telemetry histories.
 	// It is a leaf lock; probes and consumers run after releasing it.
-	hwMu          sync.RWMutex
-	hw            hardware.Info
-	hwGeneration  uint64
-	gpuHistory    []hardware.GPUUsageSample
-	npuHistory    []hardware.NPUUsageSample
-	systemHistory []hardware.SystemUsageSample
+	hwMu               sync.RWMutex
+	hwRefreshMu        sync.Mutex
+	hw                 hardware.Info
+	hwGeneration       uint64
+	gpuHistory         []hardware.GPUUsageSample
+	npuHistory         []hardware.NPUUsageSample
+	systemHistory      []hardware.SystemUsageSample
+	hardwareUsageProbe func() hardwareUsageSample
+	runtimeDevices     []hardware.Device
 }
 
 type identityComponent struct {
@@ -93,11 +100,14 @@ type orchestratorLink struct {
 		Initialized() bool
 		CertificatePEM() string
 		BootstrapTransport() *http.Transport
+		BootstrapTransportForID(string) *http.Transport
 		TrustPeer(string, string) error
 		TrustPeerDetails(string, string, string, string) error
 		TrustedIDs() []string
+		TrustedPeers() map[string]string
 		RemovePeer(string) error
 		IsTrustedID(string) bool
+		IsTrustedOrchestratorID(string) bool
 	}
 	telemetry interface{ hardwareSnapshot() hardware.Info }
 	models    interface {
@@ -111,13 +121,16 @@ type orchestratorLink struct {
 	}
 	tasks          *taskmgr.Manager
 	events         *hub.Hub
+	syncer         *syncerComponent
 	statusSnapshot func() statusResponse
 	currentTasks   func() []*taskmgr.Task
+	heartbeat      *HeartbeatMonitor
 	// orchMu protects the current and co-located orchestrator identities and address; it is not nested with joinedMu or pairingInviteMu.
-	orchMu              sync.RWMutex
-	orchestratorAddr    string
-	orchestratorID      string
-	localOrchestratorID string
+	orchMu                sync.RWMutex
+	orchestratorAddr      string
+	orchestratorID        string
+	localOrchestratorID   string
+	electionCandidateAddr string
 	// joinedMu protects registration state and is not held across registration or network calls.
 	joinedMu sync.Mutex
 	joined   bool
@@ -231,7 +244,7 @@ func newEngineComponent(
 }
 
 func newTelemetryComponent(hw hardware.Info) *telemetryComponent {
-	return &telemetryComponent{hw: hw}
+	return &telemetryComponent{hw: hw, hardwareUsageProbe: currentHardwareUsage}
 }
 
 func newIdentityComponent() *identityComponent {
@@ -244,11 +257,14 @@ func newOrchestratorLink(
 		Initialized() bool
 		CertificatePEM() string
 		BootstrapTransport() *http.Transport
+		BootstrapTransportForID(string) *http.Transport
 		TrustPeer(string, string) error
 		TrustPeerDetails(string, string, string, string) error
 		TrustedIDs() []string
+		TrustedPeers() map[string]string
 		RemovePeer(string) error
 		IsTrustedID(string) bool
+		IsTrustedOrchestratorID(string) bool
 	},
 	telemetry interface{ hardwareSnapshot() hardware.Info },
 	models interface {
@@ -259,9 +275,11 @@ func newOrchestratorLink(
 	events *hub.Hub,
 ) *orchestratorLink {
 	cfg := state.configSnapshot()
-	return &orchestratorLink{
-		peerClient:       &http.Client{Timeout: 5 * time.Second},
-		memorySyncClient: &http.Client{Timeout: memorySyncTimeout},
+	link := &orchestratorLink{
+		peerClient: &http.Client{Timeout: 5 * time.Second},
+		memorySyncClient: &http.Client{
+			Timeout: time.Duration(cfg.SyncTimeoutSeconds) * time.Second,
+		},
 		streamClient:     &http.Client{},
 		orchestratorAddr: cfg.OrchestratorAddr,
 		configState:      state,
@@ -272,6 +290,19 @@ func newOrchestratorLink(
 		tasks:            tasks,
 		events:           events,
 	}
+	link.heartbeat = newHeartbeatMonitor(
+		link.getOrchestratorAddr,
+		link.heartbeatOrchestratorID,
+		func(ctx context.Context, address string) error {
+			return statusProbe(link.peerClient)(ctx, address)
+		},
+		func(id string) {
+			if id != "" && link.discoveryListener != nil {
+				link.discoveryListener.IncludePeer(id)
+			}
+		},
+	)
+	return link
 }
 
 func newExecutorComponent(maxConcurrentTasks int, state *agentState) *executorComponent {

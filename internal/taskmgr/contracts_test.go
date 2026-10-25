@@ -1,14 +1,12 @@
 package taskmgr
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/testutil"
 )
 
 var updateTaskContracts = flag.Bool("update", false, "update task manager contract golden files")
@@ -83,25 +81,6 @@ func TestRestartRecoveryContract(t *testing.T) {
 
 func assertTaskGolden(t *testing.T, name string, value any) {
 	t.Helper()
-	actual, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	actual = append(actual, '\n')
 	path := filepath.Join("testdata", "contracts", name)
-	if *updateTaskContracts {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, actual, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	expected, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read task contract %s (use -update to create it): %v", path, err)
-	}
-	if !bytes.Equal(actual, expected) {
-		t.Errorf("task contract %s changed\n--- got ---\n%s\n--- want ---\n%s", name, actual, expected)
-	}
+	testutil.AssertJSONGolden(t, path, value, *updateTaskContracts)
 }

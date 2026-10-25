@@ -30,29 +30,44 @@ func (m *Manager) Context(id string) (context.Context, bool) {
 // Wait blocks until the task reaches a terminal state or ctx is cancelled.
 func (m *Manager) Wait(ctx context.Context, id string) (*Task, error) {
 	for {
-		m.mu.RLock()
-		t, ok := m.tasks[id]
+		snapshot, changed, ok := m.waitSnapshot(id)
 		if !ok {
-			m.mu.RUnlock()
 			return nil, fmt.Errorf("taskmgr: task %s not found", id)
 		}
-		snapshot := cloneTask(t)
-		switch t.Status {
+		switch snapshot.Status {
 		case StatusCompleted, StatusFailed, StatusCancelled:
-			m.mu.RUnlock()
 			return snapshot, nil
 		case StatusAwaitingApproval:
-			m.mu.RUnlock()
 			return snapshot, errors.New("task is awaiting human approval")
 		}
-		changed := t.changed
-		m.mu.RUnlock()
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-changed:
 		}
 	}
+}
+
+// waitSnapshot serializes terminal-state reads with durable task updates so
+// Wait cannot report completion before the corresponding checkpoint is saved.
+func (m *Manager) waitSnapshot(id string) (*Task, <-chan struct{}, bool) {
+	m.persistGate.RLock()
+	defer m.persistGate.RUnlock()
+
+	m.mu.RLock()
+	t, ok := m.tasks[id]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, nil, false
+	}
+
+	t.persistMu.Lock()
+	defer t.persistMu.Unlock()
+	m.mu.RLock()
+	snapshot := cloneTask(t)
+	changed := t.changed
+	m.mu.RUnlock()
+	return snapshot, changed, true
 }
 
 func (m *Manager) All() []*Task {
@@ -69,6 +84,20 @@ func (m *Manager) All() []*Task {
 		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 	return out
+}
+
+// ActiveCount returns the number of tasks that have not reached a terminal state.
+func (m *Manager) ActiveCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	active := 0
+	for _, task := range m.tasks {
+		switch task.Status {
+		case StatusPending, StatusRunning, StatusSynthesis, StatusAwaitingApproval:
+			active++
+		}
+	}
+	return active
 }
 
 // PendingAssignmentsByNode returns the number of waiting subtask assignments

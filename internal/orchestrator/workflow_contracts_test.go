@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -21,6 +20,7 @@ import (
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/maistr0/maistr0/internal/testutil"
 )
 
 var updateOrchestratorContracts = flag.Bool("update", false, "update orchestrator contract golden files")
@@ -30,6 +30,7 @@ var (
 	contractTimestamp    = regexp.MustCompile(`"created_at":"[^"]+"`)
 	contractCreated      = regexp.MustCompile(`"created":\d+`)
 	contractDuration     = regexp.MustCompile(`("(?:total_duration|duration)":)\d+`)
+	contractCycleNode    = regexp.MustCompile(`(dependency cycle at )[^\n]+`)
 )
 
 type contractExecuteRequest struct {
@@ -81,6 +82,39 @@ func newSimulatedContractWorker(t *testing.T, srv *Server, onExecute func(contra
 	t.Cleanup(worker.Close)
 	srv.registry.Upsert(cluster.NodeStatus{
 		ID: "simulated-worker", Address: worker.URL, Healthy: true, DefaultModel: "simulated-general",
+		Models: []engine.Model{{
+			Name: "simulated-general", Engine: "simulated", Tags: []string{"chat", "general"},
+		}},
+	})
+	return worker
+}
+
+func newPlanningContractWorker(t *testing.T, srv *Server, planOutput string) *httptest.Server {
+	t.Helper()
+	simulated := engine.NewSimulated()
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/generate":
+			writeContractWorkerOutput(w, planOutput, r.URL.Query().Get("stream") == "true")
+		case "/execute":
+			var request contractExecuteRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			output, err := simulated.GenerateWithOptions(r.Context(), request.Model, request.Prompt, engine.GenerationOptions{})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeContractWorkerOutput(w, output, false)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(worker.Close)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "simulated-planner", Address: worker.URL, Healthy: true, DefaultModel: "simulated-general",
 		Models: []engine.Model{{
 			Name: "simulated-general", Engine: "simulated", Tags: []string{"chat", "general"},
 		}},
@@ -164,6 +198,47 @@ func TestTaskCreateHTTPContracts(t *testing.T) {
 	}
 }
 
+func TestAutoPlanHTTPContracts(t *testing.T) {
+	const plan = `{"subtasks":[{"id":"research","description":"Research the subject","role":"researcher","task_type":"general","expected_output":"Evidence"},{"id":"summary","description":"Summarize the findings","role":"summarizer","task_type":"summarize","depends_on":["research"],"expected_output":"A concise summary"}]}`
+
+	t.Run("planned task", func(t *testing.T) {
+		srv := newTestServer(t)
+		newPlanningContractWorker(t, srv, plan)
+		srv.tasks.SetFinalizer(func(context.Context, *taskmgr.Task) (string, error) {
+			return "automatically planned result", nil
+		})
+
+		create := serveContractRequest(srv.Mux(), http.MethodPost, "/api/tasks",
+			`{"description":"Research the subject then summarize the findings","plan_mode":"auto"}`)
+		if create.Code != http.StatusAccepted {
+			t.Fatalf("POST /api/tasks with plan_mode auto returned %d: %s", create.Code, create.Body.String())
+		}
+		assertOrchestratorGolden(t, "task-create-auto.json", create, false)
+
+		var created taskmgr.Task
+		if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+			t.Fatal(err)
+		}
+		waitForCompletedTask(t, srv, created.ID)
+		get := serveContractRequest(srv.Mux(), http.MethodGet, "/api/tasks/"+created.ID, "")
+		if get.Code != http.StatusOK {
+			t.Fatalf("GET auto-planned task returned %d: %s", get.Code, get.Body.String())
+		}
+		assertOrchestratorGolden(t, "task-get-auto.json", get, false)
+	})
+
+	t.Run("planner failure", func(t *testing.T) {
+		srv := newTestServer(t)
+		newPlanningContractWorker(t, srv, "not a plan")
+		response := serveContractRequest(srv.Mux(), http.MethodPost, "/api/tasks",
+			`{"description":"Research the subject","plan_mode":"auto"}`)
+		if response.Code != http.StatusBadGateway {
+			t.Fatalf("POST /api/tasks with invalid model plan returned %d: %s", response.Code, response.Body.String())
+		}
+		assertOrchestratorGolden(t, "task-auto-plan-failure.json", response, false)
+	})
+}
+
 func TestCompletedTaskCheckpointContract(t *testing.T) {
 	srv := newTestServer(t)
 	newSimulatedContractWorker(t, srv, nil)
@@ -192,9 +267,9 @@ func TestCompletedTaskCheckpointContract(t *testing.T) {
 	}
 	latest := checkpoints[len(checkpoints)-1]
 	if latest.Status != taskmgr.StatusCompleted {
-		t.Skipf("BUG: task Wait reported completed before the final checkpoint became visible; latest checkpoint status is %q", latest.Status)
+		t.Fatalf("task Wait reported completed before the final checkpoint became visible; latest checkpoint status is %q", latest.Status)
 	}
-	assertOrchestratorGolden(t, "task-checkpoints-completed.json", response, false)
+	assertOrchestratorGolden(t, "task-checkpoints-terminal-completion.json", response, false)
 }
 
 func TestTaskResumeHTTPContract(t *testing.T) {
@@ -237,6 +312,52 @@ func TestTaskResumeHTTPContract(t *testing.T) {
 	}
 	assertOrchestratorGolden(t, "task-resume.json", response, false)
 	waitForCompletedTask(t, srv, task.ID)
+}
+
+func TestInterruptedTaskRecoveryHTTPContract(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orchestrator.db")
+	manager, err := taskmgr.OpenManager(path+".tasks", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managerOpen := true
+	t.Cleanup(func() {
+		if managerOpen {
+			_ = manager.Close()
+		}
+	})
+
+	task, err := manager.CreateChecked("Interrupted workflow", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{
+			ID: "work", Description: "Perform the work", Role: "general", TaskType: "general",
+		},
+		NodeID: "simulated-worker", Address: "http://simulated-worker", Model: "simulated-general", Engine: "simulated",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	managerOpen = false
+
+	restarted, err := NewWithMemoryAndHarness(path, "deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := restarted.Close(); err != nil {
+			t.Errorf("close restarted server: %v", err)
+		}
+	})
+	response := serveContractRequest(restarted.Mux(), http.MethodGet, "/api/tasks/"+task.ID, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET recovered task returned %d: %s", response.Code, response.Body.String())
+	}
+	assertOrchestratorGolden(t, "task-restart-recovery.json", response, false)
 }
 
 func TestTaskDependencyReviewAndApprovalContracts(t *testing.T) {
@@ -484,6 +605,28 @@ func TestCompatibilityAPIContracts(t *testing.T) {
 	}
 }
 
+func TestCompatibilityErrorContracts(t *testing.T) {
+	srv := newTestServer(t)
+	mux := srv.Mux()
+	tests := []struct {
+		name, path, body string
+	}{
+		{"openai-chat-invalid", "/v1/chat/completions", `{"messages":[]}`},
+		{"ollama-chat-invalid", "/api/chat", `{"messages":[],"stream":false}`},
+		{"ollama-generate-invalid", "/api/generate", `{"prompt":"","stream":false}`},
+		{"anthropic-messages-invalid", "/v1/messages", `{"model":"simulated-general","max_tokens":0,"messages":[{"role":"user","content":"hello"}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := serveContractRequest(mux, http.MethodPost, test.path, test.body)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("%s returned %d, want 400: %s", test.path, response.Code, response.Body.String())
+			}
+			assertOrchestratorGolden(t, "compat-"+test.name+".json", response, false)
+		})
+	}
+}
+
 func serveContractRequest(mux *http.ServeMux, method, path, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	response := httptest.NewRecorder()
@@ -598,7 +741,7 @@ func assertOrchestratorGolden(t *testing.T, name string, response *httptest.Resp
 		decoder := json.NewDecoder(bytes.NewReader(response.Body.Bytes()))
 		decoder.UseNumber()
 		if err := decoder.Decode(&body); err != nil {
-			body = response.Body.String()
+			body = normalizeOrchestratorContractValue(response.Body.String(), "body")
 		} else {
 			body = normalizeOrchestratorContractValue(body, "")
 		}
@@ -610,27 +753,8 @@ func assertOrchestratorGolden(t *testing.T, name string, response *httptest.Resp
 	}{
 		Status: response.Code, ContentType: response.Header().Get("Content-Type"), Body: body,
 	}
-	actual, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	actual = append(actual, '\n')
 	path := filepath.Join("testdata", "contracts", name)
-	if *updateOrchestratorContracts {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, actual, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	expected, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read orchestrator contract %s (use -update to create it): %v", path, err)
-	}
-	if !bytes.Equal(actual, expected) {
-		t.Errorf("orchestrator contract %s changed\n--- got ---\n%s\n--- want ---\n%s", name, actual, expected)
-	}
+	testutil.AssertJSONGolden(t, path, value, *updateOrchestratorContracts)
 }
 
 func normalizeOrchestratorContractValue(value any, key string) any {
@@ -651,7 +775,7 @@ func normalizeOrchestratorContractValue(value any, key string) any {
 			case "sequence":
 				typed[field] = json.Number("0")
 			case "score_factors":
-				// Scheduler goldens lock down exact scoring; API values vary with load and learned history.
+				// Scheduler goldens assert exact scores; API estimates vary with load and learned history.
 				typed[field] = normalizeOrchestratorContractValue(nested, field)
 			default:
 				typed[field] = normalizeOrchestratorContractValue(nested, field)
@@ -667,6 +791,7 @@ func normalizeOrchestratorContractValue(value any, key string) any {
 		if (key == "id" || key == "task_id") && strings.HasPrefix(typed, "task-") {
 			return "<TASK_ID>"
 		}
+		typed = contractCycleNode.ReplaceAllString(typed, `${1}<SUBTASK_ID>`)
 		if key == "id" && strings.HasPrefix(typed, "cp-task-") {
 			return "<CHECKPOINT_ID>"
 		}
@@ -680,7 +805,8 @@ func normalizeOrchestratorContractValue(value any, key string) any {
 		}
 		if strings.Contains(key, "score") || key == "active_tasks" || key == "queued_tasks" ||
 			key == "pending_dependents" || key == "capacity_penalty" || key == "load_penalty" ||
-			key == "learned_bias" {
+			key == "learned_bias" || key == "estimated_completion_seconds" ||
+			key == "estimated_tokens_per_second" || key == "model_size_gb" {
 			return json.Number("0")
 		}
 		return typed

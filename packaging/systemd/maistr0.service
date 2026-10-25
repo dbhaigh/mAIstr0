@@ -1,0 +1,17 @@
+[Unit]
+Description=mAIstr0 local-first LLM orchestrator and worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/maistr0 --role auto --no-browser
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target

@@ -1,7 +1,9 @@
 package orchestrator
 
 import (
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,8 +11,69 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
+
+func TestTaskListSyncNegotiatesEmptyAndGzip(t *testing.T) {
+	srv := newTestServer(t)
+	for _, test := range []struct {
+		version int
+		status  int
+	}{
+		{version: memory.SyncPageProtocolVersion, status: http.StatusOK},
+		{version: memory.SyncProtocolVersion, status: http.StatusNoContent},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
+		if err := memory.SetSyncHeadersVersion(request.Header, nil, test.version); err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		srv.Mux().ServeHTTP(response, request)
+		if response.Code != test.status {
+			t.Fatalf("protocol %d empty task status = %d, want %d", test.version, response.Code, test.status)
+		}
+		version, _, err := memory.ReadSyncHeaders(response.Header())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version != test.version {
+			t.Fatalf("protocol %d task response version = %d", test.version, version)
+		}
+	}
+
+	if _, err := srv.tasks.CreateChecked(strings.Repeat("task-data ", 300), nil); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
+	if err := memory.SetSyncHeadersVersion(request.Header, nil, memory.SyncProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept-Encoding", "gzip")
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if got := response.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("task sync Content-Encoding = %q, want gzip", got)
+	}
+	reader, err := gzip.NewReader(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var tasks []*taskmgr.Task
+	if err := json.Unmarshal(body, &tasks); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("decoded task count = %d, want 1", len(tasks))
+	}
+}
 
 func TestSyncTaskHistoryImportsAndReplicatesCompleteHistory(t *testing.T) {
 	peerTasks := taskmgr.NewManager()
@@ -43,6 +106,7 @@ func TestSyncTaskHistoryImportsAndReplicatesCompleteHistory(t *testing.T) {
 		tasks:    taskmgr.NewManager(),
 		nodeClient: &nodeClient{
 			client: peer.Client(),
+			sync:   peer.Client(),
 		},
 	}
 	server.registry.Upsert(cluster.NodeStatus{ID: "worker", Address: peer.URL})
@@ -100,6 +164,7 @@ func TestTaskListDoesNotWaitForPeerHistoryRecovery(t *testing.T) {
 		tasks:    taskmgr.NewManager(),
 		nodeClient: &nodeClient{
 			client: peer.Client(),
+			sync:   peer.Client(),
 		},
 	}
 	server.registry.Upsert(cluster.NodeStatus{ID: "worker", Address: peer.URL})

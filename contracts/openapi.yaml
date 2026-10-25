@@ -6,6 +6,8 @@ info:
     HTTP routes exposed by both the orchestrator and node agent. Server-specific
     route registrations are listed in x-maistr0-registered-routes and checked
     against the Go mux registration source by contracts/contracts_test.go.
+    Node engine configuration accepts an optional api_key for bearer
+    authentication; that secret is write-only and is never returned by APIs.
 servers:
   - url: https://localhost:7450
     description: Orchestrator
@@ -21,6 +23,116 @@ paths:
   /execute:
     post:
       responses: {"200": {description: Execute a subtask}}
+  /stage/load:
+    post:
+      description: Load a contiguous model stage on this node; cluster requests require the existing trusted mTLS identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/StageAssignment"}
+      responses:
+        "200": {description: Stage loaded}
+        "400": {description: Invalid stage assignment}
+        "404": {description: Model is unavailable on this node}
+        "409": {description: Conflicting stage assignment}
+        "501": {description: Selected engine does not support stages}
+        "502": {description: Local stage engine failed to load the stage}
+  /stage/open:
+    post:
+      description: Open request-local state (including stage-local KV cache) for a protocol-v2 pipeline request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PipelineStageControlRequest"}
+      responses:
+        "200": {description: Stage request opened}
+        "400": {description: Invalid control request}
+        "404": {description: Stage is not loaded}
+        "409": {description: Stage capacity is unavailable or request conflicts}
+        "501": {description: Engine does not support protocol-v2 stages}
+  /stage/prefill:
+    post:
+      description: Prefill a protocol-v2 stage. Request metadata is encoded in a length-prefixed binary envelope; activation tensor bytes follow its JSON header.
+      requestBody:
+        required: true
+        content:
+          application/vnd.maistr0.pipeline-stage-v2:
+            schema: {type: string, format: binary}
+            x-maistr0-header-schema: {$ref: "#/components/schemas/PipelineStageMessage"}
+      responses:
+        "200":
+          description: Prefill result in the same binary envelope format
+          content:
+            application/vnd.maistr0.pipeline-stage-v2:
+              schema: {type: string, format: binary}
+              x-maistr0-header-schema: {$ref: "#/components/schemas/PipelineStageMessage"}
+        "400": {description: Invalid prefill message}
+        "404": {description: Stage request is not open}
+        "502": {description: Stage inference failed}
+  /stage/decode:
+    post:
+      description: Execute one token decode step using request-local KV state and the previous stage activation.
+      requestBody:
+        required: true
+        content:
+          application/vnd.maistr0.pipeline-stage-v2:
+            schema: {type: string, format: binary}
+            x-maistr0-header-schema: {$ref: "#/components/schemas/PipelineStageMessage"}
+      responses:
+        "200":
+          description: Decode result in the same binary envelope format
+          content:
+            application/vnd.maistr0.pipeline-stage-v2:
+              schema: {type: string, format: binary}
+              x-maistr0-header-schema: {$ref: "#/components/schemas/PipelineStageMessage"}
+        "400": {description: Invalid decode message}
+        "404": {description: Stage request is not open}
+        "502": {description: Stage inference failed}
+  /stage/close:
+    post:
+      description: Release request-local KV state and the stage capacity slot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PipelineStageControlRequest"}
+      responses:
+        "200": {description: Stage request closed}
+        "400": {description: Invalid control request}
+        "404": {description: Stage request is not open}
+  /stage/forward:
+    post:
+      description: Stream a prompt or activation through a loaded stage. Non-final stages return activation frames; final stages return text-token frames. Cluster requests require the existing trusted mTLS identity.
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema: {$ref: "#/components/schemas/StageForwardFrame"}
+      responses:
+        "200":
+          description: Newline-delimited activation or token frames followed by completion or error
+          content:
+            application/x-ndjson:
+              schema: {$ref: "#/components/schemas/StageForwardFrame"}
+        "400": {description: Invalid forward stream}
+        "404": {description: Stage is not loaded}
+        "409": {description: Stage is unavailable or assignment conflicts}
+  /stage/unload:
+    post:
+      description: Unload a contiguous model stage from this node; cluster requests require the existing trusted mTLS identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/StageAssignment"}
+      responses:
+        "200": {description: Stage unloaded}
+        "400": {description: Invalid stage assignment}
+        "404": {description: Stage is not loaded}
+        "409": {description: Stage is currently unavailable}
+        "502": {description: Local stage engine failed to unload the stage}
   /generate:
     post:
       responses: {"200": {description: Generate text on the node}}
@@ -97,7 +209,12 @@ paths:
       responses: {"200": {description: Submit work to the orchestrator}}
   /tasks:
     get:
-      responses: {"200": {description: List tasks}}
+      description: >
+        Protocol v3 sync requests may receive 204 with watermarks when no task
+        changes are available. Gzip is negotiated with Accept-Encoding.
+      responses:
+        "200": {description: List tasks or task-sync data}
+        "204": {description: No task changes for a protocol v3 sync request}
     post:
       responses: {"200": {description: Create a task}}
   /tasks/{id}:
@@ -112,15 +229,20 @@ paths:
       responses: {"200": {description: Cancel a task}}
   /tasks/sync:
     post:
-      responses: {"200": {description: Synchronize task history}}
+      responses: {"204": {description: Synchronize task history}}
   /tasks/replica:
     post:
-      responses: {"200": {description: Apply a task replica}}
+      responses: {"204": {description: Apply a task replica}}
   /memory/sync:
     get:
-      responses: {"200": {description: Get peer memory sync data}}
+      description: >
+        Protocol v3 sync requests may receive 204 with watermarks when no
+        memory changes are available. Gzip is negotiated with Accept-Encoding.
+      responses:
+        "200": {description: Get peer memory sync data}
+        "204": {description: No memory changes for a protocol v3 sync request}
     post:
-      responses: {"200": {description: Apply peer memory sync data}}
+      responses: {"204": {description: Apply peer memory sync data}}
   /peer/message:
     post:
       responses: {"200": {description: Handle a peer message}}
@@ -144,6 +266,12 @@ paths:
   /api/status:
     get:
       responses: {"200": {description: Get node or cluster status}}
+  /api/metrics:
+    get:
+      responses: {"200": {description: Prometheus-format operational metrics}}
+  /metrics:
+    get:
+      responses: {"200": {description: Prometheus text-format operational metrics}}
   /api/cluster/health:
     get:
       responses:
@@ -163,7 +291,21 @@ paths:
       responses: {"200": {description: Regenerate the pairing PIN}}
   /api/pairing/connect:
     post:
-      responses: {"200": {description: Connect to a cluster}}
+      description: Connect this node to an orchestrator. When orchestrator_id is supplied, it must identify a currently discovered orchestrator at the supplied HTTPS address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address: {type: string, format: uri, description: Orchestrator HTTPS address}
+                pin: {type: string, description: Optional one-use PIN for cross-subnet pairing}
+                orchestrator_id: {type: string, description: Stable identity of the selected discovered orchestrator}
+      responses:
+        "200": {description: Connected to the orchestrator}
+        "409": {description: Selected orchestrator is no longer discovered}
   /api/pairing/roster:
     get:
       responses: {"200": {description: Get the pairing roster}}
@@ -219,6 +361,451 @@ paths:
       - $ref: "#/components/parameters/ID"
     get:
       responses: {"200": {description: List node engines}}
+  /api/nodes/{id}/engines/managed:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: List managed engines configured on a node
+      responses:
+        "200":
+          description: Configured managed engine status
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/ManagedEngineStatus"}
+        "404": {description: Node does not exist}
+  /api/nodes/{id}/engines/managed/{engine_id}/profile:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+      - name: engine_id
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: Read a configured model's profile for memory-aware shard planning
+      responses:
+        "200":
+          description: Model architecture and measured weight metadata
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardModelProfile"}
+        "404": {description: Node or managed engine does not exist}
+        "422": {description: Model metadata is unavailable or cannot be measured safely}
+  /api/nodes/{id}/engines/managed/install-worker:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Install or update an idle node's automatically managed RPC worker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source]
+              properties:
+                source: {type: string, enum: [official, xdna]}
+      responses:
+        "200":
+          description: Installed worker, unchanged operator worker, or explicitly deferred update
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WorkerInstallResult"}
+        "400": {description: Invalid source}
+        "409": {description: Managed engines must be stopped before installation or changing source}
+        "501": {description: Unsupported platform}
+        "502": {description: No verified compatible release or download/extraction failure}
+  /api/nodes/{id}/engines/managed/head-models:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Discover readable local Ollama and LM Studio GGUF model heads
+      parameters:
+        - {name: requested_context, in: query, required: true, schema: {type: integer, minimum: 1, maximum: 1048576}}
+      responses:
+        "200":
+          description: Opaque model IDs, parsed profiles and explicit discovery warnings; no filesystem paths
+          content:
+            application/json:
+              schema: {$ref: "./schemas/local-head-models.schema.json"}
+        "400": {description: Invalid context}
+        "422": {description: Local inventory discovery failed}
+  /api/nodes/{id}/engines/managed/configure-head:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Configure an idle installed llama-server using a discovered local GGUF
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/configure-local-head.schema.json"}
+      responses:
+        "200":
+          description: Persisted managed head configuration; model starts with shard group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ManagedEngineStatus"}
+        "400": {description: Invalid model ID or context}
+        "404": {description: Local model no longer available}
+        "409": {description: Managed engines are active}
+        "500": {description: Runtime validation or persistence failed}
+  /api/nodes/{id}/engines/managed/download-model:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Download and verify a recommended public Hugging Face GGUF on a node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/download-head-model.schema.json"}
+      responses:
+        "200":
+          description: Verified local model ID and profile; configure-head selects it before starting
+          content:
+            application/json:
+              schema: {$ref: "./schemas/local-head-models.schema.json#/properties/models/items"}
+        "400": {description: Invalid request}
+        "502": {description: Download or verification failed; inspect node logs}
+  /api/engines/managed/download-model:
+    post:
+      summary: Download a recommended GGUF; requires the current paired orchestrator's pinned mTLS identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/download-head-model.schema.json"}
+      responses:
+        "200":
+          description: Verified local model ID and profile
+          content:
+            application/json:
+              schema: {$ref: "./schemas/local-head-models.schema.json#/properties/models/items"}
+        "400": {description: Invalid request}
+        "403": {description: Not the pinned current orchestrator}
+        "502": {description: Download or verification failed; inspect node logs}
+  /api/engines/managed/head-models:
+    get:
+      summary: Discover local GGUF models; requires the current paired orchestrator's pinned mTLS identity
+      parameters:
+        - {name: requested_context, in: query, required: true, schema: {type: integer, minimum: 1, maximum: 1048576}}
+      responses:
+        "200":
+          description: Local model inventory without filesystem paths
+          content:
+            application/json:
+              schema: {$ref: "./schemas/local-head-models.schema.json"}
+        "400": {description: Invalid context}
+        "403": {description: Not the pinned current orchestrator}
+        "422": {description: Local inventory discovery failed}
+  /api/engines/managed/configure-head:
+    post:
+      summary: Persist a local GGUF model head; requires the current paired orchestrator's pinned mTLS identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/configure-local-head.schema.json"}
+      responses:
+        "200":
+          description: Persisted stopped managed model head
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ManagedEngineStatus"}
+        "400": {description: Invalid model ID or context}
+        "403": {description: Not the pinned current orchestrator}
+        "404": {description: Local model no longer available}
+        "409": {description: Managed engines are active}
+        "500": {description: Runtime validation or persistence failed}
+  /api/shards:
+    get:
+      summary: List shard groups
+      responses:
+        "200":
+          description: Persisted shard groups and current lifecycle states
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroupList"}
+        "503": {description: Shard-group persistence is unavailable}
+    post:
+      summary: Plan and start a shard group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateShardGroupRequest"}
+      responses:
+        "201":
+          description: Shard group is ready
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Invalid model profile, mode, or placement}
+        "409": {description: A group for the model already exists or an operation is active}
+        "502": {description: A managed member could not be started or persisted}
+        "503": {description: Required members or shard-group persistence are unavailable}
+  /api/shards/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Get a shard group
+      responses:
+        "200":
+          description: Shard group details, plan rationale, and member status
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "404": {description: Shard group does not exist}
+        "503": {description: Shard-group persistence is unavailable}
+    delete:
+      summary: Stop and remove a shard group
+      responses:
+        "204": {description: Shard group stopped and removed}
+        "404": {description: Shard group does not exist}
+        "409": {description: A shard-group operation is already active}
+        "502": {description: Member teardown or persisted group deletion failed}
+        "503": {description: Shard-group persistence is unavailable}
+  /api/shards/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Start a saved stopped or failed shard group
+      description: >
+        Requires an empty body. Replans against current device memory with the
+        saved model, pins, and previous head selection. Workers start before
+        the head. Start on a ready group is idempotent. The group ID is retained.
+        Node dashboards forward this action.
+      responses:
+        "200":
+          description: Ready group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Nonempty body or invalid placement}
+        "404": {description: Group or action does not exist}
+        "409": {description: Concurrent operation, invalid state, model conflict, or engine already owned}
+        "502": {description: Member start, stop, or persistence failed}
+        "503": {description: Required members, capacity, or persistence are unavailable}
+  /api/shards/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Drain and stop a shard group while retaining its configuration
+      description: Requires an empty body. Stops head before workers and releases member capacity. Stop on a stopped group is idempotent.
+      responses:
+        "200":
+          description: Stopped group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Nonempty request body}
+        "404": {description: Group does not exist}
+        "409": {description: A group operation is already active}
+        "502": {description: Member teardown or persistence failed}
+        "503": {description: Persistence is unavailable}
+  /api/shards/{id}/restart:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Drain, stop, replan, and start a saved shard group
+      description: Requires an empty body. Retains the group ID and configuration. Workers start before the head; stops and starts share one operation claim.
+      responses:
+        "200":
+          description: Ready group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Nonempty request body or placement refusal}
+        "404": {description: Group does not exist}
+        "409": {description: Concurrent operation or model/engine ownership conflict}
+        "502": {description: Member start, stop, or persistence failed}
+        "503": {description: Required members, capacity, or persistence are unavailable}
+  /api/shards/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Drain a group and reload its saved model across selected member nodes
+      description: Retains the group ID and model head. All selected nodes must be healthy with managed workers. Installs missing RPC workers through the existing install-worker endpoint before applying. Placement is recomputed after unloading; failed reloads retain requested pins for Start retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/shard-membership.schema.json"}
+      responses:
+        "200":
+          description: Reconfigured ready group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Invalid selection, missing worker, removed head, or placement refusal}
+        "404": {description: Group does not exist}
+        "409": {description: Concurrent operation or engine ownership conflict}
+        "502": {description: Stop, reload, or persistence failed}
+        "503": {description: Selected members, capacity, or persistence are unavailable}
+  /api/updates/manifest:
+    get:
+      summary: Offer a newer executable directly to paired peers
+      description: Peer requests require pinned mutual TLS; local loopback access is allowed. Defaults to publisher platform; os and arch query parameters request packaged cross-platform assets. SHA256 protects transfer integrity, not publisher authenticity; artifacts are not release-signed.
+      parameters:
+        - {name: os, in: query, schema: {type: string, enum: [windows, linux]}}
+        - {name: arch, in: query, schema: {type: string, enum: [amd64]}}
+      responses:
+        "200":
+          description: Executable metadata
+          content:
+            application/json:
+              schema: {$ref: "./schemas/peer-update.schema.json"}
+        "403": {description: Peer is not paired}
+        "404": {description: Requested target bundle is unavailable}
+  /api/updates/binary:
+    get:
+      summary: Download a paired peer executable for the requested target
+      parameters:
+        - {name: os, in: query, schema: {type: string, enum: [windows, linux]}}
+        - {name: arch, in: query, schema: {type: string, enum: [amd64]}}
+      responses:
+        "200":
+          description: Executable image matching the manifest size and SHA256
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        "403": {description: Peer is not paired}
+        "404": {description: Requested target bundle is unavailable}
+  /api/engines/managed:
+    get:
+      summary: List managed engine process status
+      description: Node-local status; requests require a pinned mTLS certificate for the current paired orchestrator.
+      security:
+        - PairedOrchestrator: []
+      responses:
+        "200":
+          description: Managed engine status
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/ManagedEngineStatus"}
+        "403": {description: Request is not from the current paired orchestrator}
+  /api/engines/managed/install-worker:
+    post:
+      summary: Download, verify, persist, and register an RPC worker
+      description: Requires the current paired orchestrator. Downloads only approved GitHub release archives, verifies SHA-256, and defers updates while engines are active. Operator-configured workers are unchanged.
+      security:
+        - PairedOrchestrator: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source]
+              properties:
+                source: {type: string, enum: [official, xdna]}
+      responses:
+        "200":
+          description: Installation result and current managed engine inventory
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WorkerInstallResult"}
+        "400": {description: Invalid source}
+        "403": {description: Request is not from the current paired orchestrator}
+        "409": {description: Stop managed engines before installing or changing source}
+        "501": {description: Unsupported platform}
+        "502": {description: No verified supported release or download/extraction failure}
+  /api/engines/managed/{id}/profile:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Read a configured model profile from approved local metadata
+      description: Parses an allow-listed GGUF or Hugging Face config and measures local weight-file sizes without exposing model paths. Requires the current paired orchestrator.
+      security:
+        - PairedOrchestrator: []
+      responses:
+        "200":
+          description: Model architecture and weight profile
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardModelProfile"}
+        "400": {description: Requested context is invalid}
+        "403": {description: Request is not from the current paired orchestrator}
+        "404": {description: Managed engine does not exist}
+        "422": {description: Model metadata is unavailable or cannot be measured safely}
+      parameters:
+        - name: requested_context
+          in: query
+          required: true
+          schema: {type: integer, minimum: 1, maximum: 1048576}
+  /api/engines/managed/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Start a configured managed engine
+      description: Launches the configured argv-only command and waits for readiness. ggml-rpc-server remains on loopback and is reached through pinned mTLS TCP relays. vLLM requires a private VLLM_HOST_IP on an operator-trusted interface, or the explicit allow_insecure_shard_network override, and is unsupported on native Windows.
+      security:
+        - PairedOrchestrator: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ManagedEngineStartRequest"}
+      responses:
+        "200": {description: Engine is ready}
+        "400": {description: Invalid request, shard plan, or untrusted vLLM network preflight}
+        "403": {description: Request is not from the current paired orchestrator}
+        "404": {description: Managed engine is not configured}
+        "502": {description: Engine or authenticated RPC relay failed to start}
+        "501": {description: Engine is unsupported on this platform}
+        "504": {description: Engine readiness timed out}
+  /api/engines/managed/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Stop a managed engine
+      description: Stops the configured process tree. Requests require a pinned mTLS certificate for the current paired orchestrator.
+      security:
+        - PairedOrchestrator: []
+      responses:
+        "200": {description: Engine is stopped}
+        "403": {description: Request is not from the current paired orchestrator}
+        "404": {description: Managed engine is not configured}
+        "504": {description: Engine did not stop before the request deadline}
+  /api/engines/managed/{id}/restart:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Restart a managed engine
+      description: Stops and restarts the configured process with bounded exponential backoff. vLLM requires shard_plan and is unsupported on native Windows.
+      security:
+        - PairedOrchestrator: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ManagedEngineStartRequest"}
+      responses:
+        "200": {description: Engine is ready}
+        "400": {description: Invalid request or shard plan}
+        "403": {description: Request is not from the current paired orchestrator}
+        "404": {description: Managed engine is not configured}
+        "501": {description: Engine is unsupported on this platform}
+        "502": {description: Engine failed to restart}
+        "504": {description: Engine readiness or shutdown timed out}
+  /api/engines/managed/{id}/proxy/{path...}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Proxy an inference request to a ready managed engine
+      description: Node-local inference proxy; requests require a pinned mTLS certificate for the current paired orchestrator.
+      security:
+        - PairedOrchestrator: []
+      responses:
+        "403": {description: Request is not from the current paired orchestrator}
+        "503": {description: Managed engine is not ready}
+        "502": {description: Managed engine request failed}
   /api/nodes/{id}/models/refresh:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -232,6 +819,14 @@ paths:
   /api/nodes/{id}/generate:
     parameters:
       - $ref: "#/components/parameters/ID"
+      - in: header
+        name: Idempotency-Key
+        required: false
+        description: Optional worker-local result replay key for non-streaming generation.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
     post:
       responses: {"200": {description: Generate text on a node}}
   /api/nodes/{id}/chat:
@@ -257,6 +852,14 @@ paths:
     parameters:
       - $ref: "#/components/parameters/ID"
       - $ref: "#/components/parameters/Model"
+      - in: header
+        name: Idempotency-Key
+        required: false
+        description: Optional worker-local result replay key for non-streaming generation.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
     post:
       responses: {"200": {description: Generate with a node model}}
   /api/nodes/{id}/models/{model}/test:
@@ -284,12 +887,47 @@ paths:
         "200":
           description: >-
             Subscribe to server events. Each JSON snapshot additively includes
-            cluster_health using the same view model as GET /api/cluster/health.
+            cluster_health using the same view model as GET /api/cluster/health,
+            model_inventory entries identifying whole and sharded models, and
+            pipeline_plans with stage health and live transfer/utilization data
+            as described by DashboardPipelineSnapshot. Router events and
+            per-node/model circuit-breaker states are also included.
+  /api/pipelines/{model_id}/reshard:
+    parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      summary: Recompute a sharded-model placement and load its stages
+      responses:
+        "200":
+          description: Placement and stage loading completed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plan]
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/PipelinePlan"
+        "404": {description: No sharded model is registered with this logical ID}
+        "500": {description: Pipeline plan persistence failed}
+        "502": {description: A stage failed to load}
+        "503": {description: No complete placement or capacity is available}
   /api/router/requests:
     get:
-      responses: {"200": {description: List recent prompt-free inference routing events}}
+      responses:
+        "200":
+          description: List recent prompt-free routing events and per-node/model circuit-breaker states
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RouterRequests"}
   /api/tasks:
     get:
+      description: >
+        Protocol v3 sync requests may receive 204 with watermarks when no task
+        changes are available. Gzip is negotiated with Accept-Encoding.
       parameters:
         - $ref: "#/components/parameters/PageSize"
         - $ref: "#/components/parameters/Cursor"
@@ -311,6 +949,7 @@ paths:
                   - $ref: "#/components/schemas/TaskHistoryPage"
         "400": {description: Invalid page size or cursor}
         "413": {description: One task exceeds the 64 MiB page response limit}
+        "204": {description: No task changes for a protocol v3 sync request}
     post:
       requestBody:
         required: true
@@ -325,13 +964,21 @@ paths:
                   type: array
                   items: {$ref: "#/components/schemas/Subtask"}
                 graph: {$ref: "#/components/schemas/TaskGraph"}
-                plan_mode: {type: string}
+                plan_mode:
+                  type: string
+                  enum: [auto, heuristic, heuristic_v1]
+                  description: "auto asks a local coordinator model for a plan; heuristic uses local decomposition; heuristic_v1 preserves the legacy heuristic"
+                routing_preference:
+                  type: string
+                  enum: [quality, latency]
+                  description: "Candidate scoring preference applied to all subtasks; defaults to quality"
                 require_review: {type: boolean}
                 require_approval: {type: boolean}
               additionalProperties: true
       responses:
         "202": {description: Task accepted}
         "400": {description: Invalid task request}
+        "502": {description: Planning model failed to produce a valid plan}
         "503": {description: No healthy node can accept the task}
   /api/tasks/resumable:
     get:
@@ -341,6 +988,17 @@ paths:
       - $ref: "#/components/parameters/ID"
     get:
       responses: {"200": {description: Get a task}}
+  /api/tasks/{id}/dependencies:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      responses:
+        "200":
+          description: Get task dependency graph nodes and edges
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TaskDependencies"}
+        "404": {description: Task not found}
   /api/tasks/{id}/assignment-explanation:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -494,7 +1152,12 @@ paths:
       responses: {"200": {description: Get a memory dialogue}}
   /api/memory/sync:
     get:
-      responses: {"200": {description: Get memory synchronization data}}
+      description: >
+        Protocol v3 sync requests may receive 204 with watermarks when no
+        memory changes are available. Gzip is negotiated with Accept-Encoding.
+      responses:
+        "200": {description: Get memory synchronization data}
+        "204": {description: No memory changes for a protocol v3 sync request}
     post:
       responses: {"200": {description: Apply memory synchronization data}}
   /api/memory/prune:
@@ -601,6 +1264,10 @@ paths:
     post:
       responses: {"200": {description: Route an Ollama-compatible generate request}}
 components:
+  securitySchemes:
+    PairedOrchestrator:
+      type: mutualTLS
+      description: The node verifies the client certificate fingerprint, paired orchestrator role, and current election authority.
   parameters:
     PageSize:
       name: page_size
@@ -631,7 +1298,69 @@ components:
       schema: {type: string}
   schemas:
     NodeConfig:
-      $ref: "./schemas/node-config.schema.json"
+      description: Node configuration; configured engine api_key values are write-only.
+      allOf:
+        - $ref: "./schemas/node-config.schema.json"
+        - type: object
+          properties:
+            engines:
+              type: array
+              items: {$ref: "#/components/schemas/EngineConfig"}
+            managed_engines:
+              type: array
+              items: {$ref: "#/components/schemas/ManagedEngineConfig"}
+            managed_engine_binary_allowlist:
+              type: array
+              items: {type: string}
+            managed_engine_model_allowlist:
+              type: array
+              items: {type: string}
+    EngineConfig:
+      type: object
+      required: [name, url]
+      properties:
+        name: {type: string}
+        url: {type: string}
+        registry_url: {type: string}
+        validated_rpc:
+          type: boolean
+          default: false
+          description: Operator-only opt-in after testing this engine's RPC sharding; engine self-reports do not enable NPU shard membership.
+        api_key:
+          type: string
+          writeOnly: true
+          description: Bearer token for supported OpenAI-compatible engines.
+      additionalProperties: true
+    ManagedEngineConfig:
+      $ref: "./schemas/node-config.schema.json#/$defs/ManagedEngine"
+    WorkerInstallResult:
+      type: object
+      additionalProperties: false
+      required: [source, version, updated, engines]
+      properties:
+        source: {type: string, enum: [official, xdna, operator]}
+        version: {type: string}
+        updated: {type: boolean}
+        warning: {type: string}
+        devices:
+          $ref: "./schemas/node-status.schema.json#/properties/hardware/properties/devices"
+        engines:
+          type: array
+          items: {$ref: "#/components/schemas/ManagedEngineStatus"}
+    ManagedEngineStatus:
+      $ref: "./schemas/managed-engine-status.schema.json"
+    ManagedEngineStartRequest:
+      $ref: "./schemas/managed-engine-start.schema.json"
+    CreateShardGroupRequest:
+      $ref: "./schemas/create-shard-group.schema.json"
+    ShardModelProfile:
+      $ref: "./schemas/shard-model-profile.schema.json"
+    ShardPlan:
+      $ref: "./schemas/shard-plan.schema.json"
+    ShardGroup:
+      $ref: "./schemas/shard-group.schema.json"
+    ShardGroupList:
+      $ref: "./schemas/shard-group-list.schema.json"
     OrchestratorConfig:
       $ref: "./schemas/orchestrator-config.schema.json"
     Task:
@@ -642,6 +1371,8 @@ components:
       $ref: "./schemas/subtask.schema.json"
     TaskGraph:
       $ref: "./schemas/task-graph.schema.json"
+    TaskDependencies:
+      $ref: "./schemas/task-dependencies.schema.json"
     Assignment:
       $ref: "./schemas/assignment.schema.json"
     ScoreFactors:
@@ -650,6 +1381,18 @@ components:
       $ref: "./schemas/assignment-explanation.schema.json"
     NodeStatus:
       $ref: "./schemas/node-status.schema.json"
+    StageAssignment:
+      $ref: "./schemas/stage-assignment.schema.json"
+    StageForwardFrame:
+      $ref: "./schemas/stage-forward-frame.schema.json"
+    ShardedModelConfig:
+      $ref: "./schemas/sharded-model-config.schema.json"
+    StageSpec:
+      $ref: "./schemas/stage-spec.schema.json"
+    PipelinePlan:
+      $ref: "./schemas/pipeline-plan.schema.json"
+    DashboardPipelineSnapshot:
+      $ref: "./schemas/dashboard-pipeline.schema.json"
     Announcement:
       $ref: "./schemas/announcement.schema.json"
     Experience:
@@ -668,8 +1411,24 @@ components:
       $ref: "./schemas/dispatch-attempt.schema.json"
     EngineStatus:
       $ref: "./schemas/engine-status.schema.json"
+    PipelineStageCapabilities:
+      $ref: "./schemas/pipeline-stage-capabilities.schema.json"
+    PipelineStageControlRequest:
+      $ref: "./schemas/pipeline-stage-control.schema.json"
+    PipelineStageRequest:
+      $ref: "./schemas/pipeline-stage-request.schema.json"
+    PipelineStageOutput:
+      $ref: "./schemas/pipeline-stage-output.schema.json"
+    ActivationTensor:
+      $ref: "./schemas/activation-tensor.schema.json"
+    PipelineStageMessage:
+      $ref: "./schemas/pipeline-stage-message.schema.json"
     RouterRequestEvent:
       $ref: "./schemas/router-request-event.schema.json"
+    RouterCircuitBreaker:
+      $ref: "./schemas/router-circuit-breaker.schema.json"
+    RouterRequests:
+      $ref: "./schemas/router-requests.schema.json"
     TaskHistoryPage:
       type: object
       required: [items, has_more]
@@ -714,6 +1473,8 @@ x-maistr0-registered-routes:
   - "orchestrator|POST /api/pairing/join"
   - "orchestrator|GET /api/pairing/status"
   - "orchestrator|GET /api/status"
+  - "orchestrator|GET /api/metrics"
+  - "orchestrator|GET /metrics"
   - "orchestrator|GET /api/cluster/health"
   - "orchestrator|POST /api/pairing/pin"
   - "orchestrator|POST /api/pairing/connect"
@@ -730,17 +1491,46 @@ x-maistr0-registered-routes:
   - "orchestrator|GET /api/nodes/{id}/properties"
   - "orchestrator|PATCH /api/nodes/{id}/properties"
   - "orchestrator|GET /api/nodes/{id}/engines"
+  - "orchestrator|GET /api/nodes/{id}/engines/managed"
+  - "orchestrator|POST /api/nodes/{id}/engines/managed/install-worker"
+  - "orchestrator|GET /api/nodes/{id}/engines/managed/head-models"
+  - "orchestrator|POST /api/nodes/{id}/engines/managed/configure-head"
+  - "orchestrator|POST /api/nodes/{id}/engines/managed/download-model"
+  - "orchestrator|GET /api/nodes/{id}/engines/managed/{engine_id}/profile"
+  - "orchestrator|POST /api/shards"
+  - "orchestrator|GET /api/shards"
+  - "orchestrator|GET /api/shards/{id}"
+  - "orchestrator|DELETE /api/shards/{id}"
+  - "orchestrator|POST /api/shards/{id}/start"
+  - "orchestrator|POST /api/shards/{id}/stop"
+  - "orchestrator|POST /api/shards/{id}/restart"
+  - "orchestrator|POST /api/shards/{id}/members"
+  - "orchestrator|GET /api/updates/manifest"
+  - "orchestrator|GET /api/updates/binary"
+  - "node|POST /api/engines/managed/{id}/proxy/{path...}"
   - "orchestrator|POST /api/nodes/{id}/models/refresh"
   - "orchestrator|POST /api/nodes/{id}/models/pull"
   - "orchestrator|GET /api/discovery"
+  - "node|GET /api/cluster/health"
+  - "node|GET /api/shards"
+  - "node|POST /api/shards"
+  - "node|DELETE /api/shards/{id}"
+  - "node|POST /api/shards/{id}/start"
+  - "node|POST /api/shards/{id}/stop"
+  - "node|POST /api/shards/{id}/restart"
+  - "node|POST /api/shards/{id}/members"
+  - "node|GET /api/updates/manifest"
+  - "node|GET /api/updates/binary"
   - "orchestrator|POST /api/discovery/{id}/pairing/invite"
   - "orchestrator|GET /api/events"
+  - "orchestrator|POST /api/pipelines/{model_id}/reshard"
   - "orchestrator|GET /api/router/requests"
   - "orchestrator|POST /router/{path...}"
   - "orchestrator|POST /api/tasks"
   - "orchestrator|GET /api/tasks"
   - "orchestrator|GET /api/tasks/resumable"
   - "orchestrator|GET /api/tasks/{id}"
+  - "orchestrator|GET /api/tasks/{id}/dependencies"
   - "orchestrator|GET /api/tasks/{id}/assignment-explanation"
   - "orchestrator|POST /api/tasks/{id}/cancel"
   - "orchestrator|POST /api/tasks/{id}/approve"
@@ -797,6 +1587,13 @@ x-maistr0-registered-routes:
   - "node|POST /api/pairing/invitation/accept"
   - "node|POST /api/pairing/invitation/reject"
   - "node|/execute"
+  - "node|POST /stage/load"
+  - "node|POST /stage/open"
+  - "node|POST /stage/prefill"
+  - "node|POST /stage/decode"
+  - "node|POST /stage/close"
+  - "node|POST /stage/forward"
+  - "node|POST /stage/unload"
   - "node|POST /generate"
   - "node|POST /chat"
   - "node|POST /proxy/{path...}"
@@ -837,6 +1634,21 @@ x-maistr0-registered-routes:
   - "node|GET /api/nodes/{id}/properties"
   - "node|PATCH /api/nodes/{id}/properties"
   - "node|GET /api/nodes/{id}/engines"
+  - "node|GET /api/nodes/{id}/engines/managed"
+  - "node|POST /api/nodes/{id}/engines/managed/install-worker"
+  - "node|GET /api/nodes/{id}/engines/managed/head-models"
+  - "node|POST /api/nodes/{id}/engines/managed/configure-head"
+  - "node|POST /api/nodes/{id}/engines/managed/download-model"
+  - "node|GET /api/nodes/{id}/engines/managed/{engine_id}/profile"
+  - "node|GET /api/engines/managed"
+  - "node|POST /api/engines/managed/install-worker"
+  - "node|GET /api/engines/managed/head-models"
+  - "node|POST /api/engines/managed/configure-head"
+  - "node|POST /api/engines/managed/download-model"
+  - "node|GET /api/engines/managed/{id}/profile"
+  - "node|POST /api/engines/managed/{id}/start"
+  - "node|POST /api/engines/managed/{id}/stop"
+  - "node|POST /api/engines/managed/{id}/restart"
   - "node|POST /api/nodes/{id}/models/refresh"
   - "node|POST /api/nodes/{id}/models/pull"
   - "node|GET /api/discovery"

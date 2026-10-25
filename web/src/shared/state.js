@@ -60,6 +60,7 @@ const statModels = document.getElementById("stat-models");
 const statLoad = document.getElementById("stat-load");
 const statMemory = document.getElementById("stat-memory");
 const statVersion = document.getElementById("stat-version");
+const connectionStatus = document.getElementById("connection-status");
 const persistenceWarning = document.getElementById("persistence-warning");
 const navTabs = document.querySelectorAll(".nav-tab");
 const tabContents = document.querySelectorAll(".tab-content");
@@ -112,7 +113,17 @@ const dashboardState = {
     promptShown: false,
     dialogAutoOpened: false,
   },
+  connection: {
+    connected: false,
+    lastSyncAt: null,
+  },
   capacity: null,
+  modelInventory: [],
+  pipelinePlans: [],
+  shardGroups: [],
+  shardGroupsError: "",
+  discovery: [],
+  buildVersion: "",
   fullTaskHistoryLoaded: false,
 };
 const taskHistoryPage = {

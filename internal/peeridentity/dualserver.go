@@ -26,8 +26,8 @@ func ServeDualListener(raw net.Listener, localHandler, secureHandler http.Handle
 	split := newSplitListener(raw)
 	go split.run()
 
-	plainServer := &http.Server{Handler: localHandler}
-	secureServer := &http.Server{Handler: secureHandler, TLSConfig: tlsConfig}
+	plainServer := newHTTPServer(localHandler, nil)
+	secureServer := newHTTPServer(secureHandler, tlsConfig)
 	results := make(chan error, 2)
 	go func() { results <- plainServer.Serve(split.listener(false)) }()
 	go func() { results <- secureServer.Serve(tls.NewListener(split.listener(true), tlsConfig)) }()
@@ -40,6 +40,15 @@ func ServeDualListener(raw net.Listener, localHandler, secureHandler http.Handle
 		return nil
 	}
 	return err
+}
+
+func newHTTPServer(handler http.Handler, tlsConfig *tls.Config) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       90 * time.Second,
+	}
 }
 
 type splitListener struct {

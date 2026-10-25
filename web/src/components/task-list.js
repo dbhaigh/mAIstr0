@@ -1,36 +1,88 @@
 function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
-  const expandedTaskIds = new Set(
-    Array.from(container.querySelectorAll?.(".task-details-row:not([hidden])") || [])
-      .map((item) => item.dataset.taskId)
-      .filter(Boolean)
-  );
-  container.innerHTML = "";
+  let state = container.__taskTableState;
+  if (!state) {
+    const table = document.createElement("table");
+    table.className = "task-history-table";
+    table.innerHTML = `
+      <thead><tr>
+        <th scope="col"><span class="sr-only">Expand</span></th>
+        <th scope="col">Task</th>
+        <th scope="col">Task ID</th>
+        <th scope="col">Steps</th>
+        <th scope="col">Status</th>
+      </tr></thead>
+    `;
+    const rows = document.createElement("tbody");
+    table.appendChild(rows);
+    container.innerHTML = "";
+    container.appendChild(table);
+    state = {
+      table,
+      rows,
+      expanded: new Set(),
+      heights: new Map(),
+      tasks: [],
+      frame: 0,
+      idPrefix,
+      linkNodes,
+    };
+    state.onScroll = () => {
+      if (state.frame) return;
+      const raf = globalThis.requestAnimationFrame || ((callback) => setTimeout(callback, 16));
+      state.frame = raf(() => {
+        state.frame = 0;
+        renderTaskHistoryTable(container, state.tasks, state.idPrefix, state.linkNodes);
+      });
+    };
+    container.addEventListener?.("scroll", state.onScroll, { passive: true });
+    container.__taskTableState = state;
+  }
+
+  state.tasks = tasks;
+  container.setAttribute?.("aria-busy", "false");
+  state.idPrefix = idPrefix;
+  state.linkNodes = linkNodes;
+  const virtualized = tasks.length > 80;
+  const range = virtualized
+    ? dashboardDOM.getVirtualRange(tasks, container.scrollTop || 0, container.clientHeight || 600, {
+      estimateHeight: 64,
+      overscan: 8,
+      heightOf: (task) => state.heights.get(task.id) || 64,
+    })
+    : { start: 0, end: tasks.length, top: 0, bottom: 0 };
+
+  if (virtualized && !state.topSpacer) {
+    const createSpacer = () => {
+      const spacer = document.createElement("tbody");
+      spacer.className = "task-virtual-spacer";
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 5;
+      cell.setAttribute("aria-hidden", "true");
+      row.appendChild(cell);
+      spacer.appendChild(row);
+      return { spacer, cell };
+    };
+    state.topSpacer = createSpacer();
+    state.bottomSpacer = createSpacer();
+    state.table.insertBefore(state.topSpacer.spacer, state.rows);
+    state.table.appendChild(state.bottomSpacer.spacer);
+  }
+  if (state.topSpacer) {
+    state.topSpacer.spacer.hidden = range.top === 0;
+    state.topSpacer.cell.style.height = `${range.top}px`;
+    state.bottomSpacer.spacer.hidden = range.bottom === 0;
+    state.bottomSpacer.cell.style.height = `${range.bottom}px`;
+  }
+
   const validStatuses = new Set(["pending", "running", "synthesizing", "awaiting_approval", "completed", "failed", "cancelled"]);
-  const formatTimestamp = (label, value) => {
-    if (!value) return `<span class="task-time-unavailable">${escapeHtml(label)} unavailable</span>`;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return `<span class="task-time-unavailable">${escapeHtml(label)} unavailable</span>`;
-    }
-    return `<time datetime="${escapeHtml(value)}">${escapeHtml(label)} ${escapeHtml(date.toLocaleString())}</time>`;
-  };
-  const table = document.createElement("table");
-  table.className = "task-history-table";
-  table.innerHTML = `
-    <thead><tr>
-      <th scope="col"><span class="sr-only">Expand</span></th>
-      <th scope="col">Task</th>
-      <th scope="col">Task ID</th>
-      <th scope="col">Steps</th>
-      <th scope="col">Status</th>
-    </tr></thead>
-  `;
-  const tbody = document.createElement("tbody");
-  table.appendChild(tbody);
-  container.appendChild(table);
-  for (const [index, t] of tasks.entries()) {
+  dashboardDOM.patchKeyedChildren(state.rows, tasks.slice(range.start, range.end), {
+    keyOf: (task) => task.id,
+    signatureOf: (task) => JSON.stringify({ task, idPrefix, linkNodes }),
+    renderItem: (t, visibleIndex) => {
+    const index = range.start + visibleIndex;
     const status = validStatuses.has(t.status) ? t.status : "unknown";
-    const isExpanded = expandedTaskIds.has(t.id);
+    const isExpanded = state.expanded.has(t.id);
     const detailsId = `${idPrefix}-details-${index}`;
     const subtasks = t.subtasks || [];
     const completedCount = subtasks.filter((subtask) => subtask.status === "completed").length;
@@ -46,7 +98,21 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
       const attemptTimestamps = attempts.length
         ? attempts.map((attempt, attemptIndex) => {
           const attemptNumber = Number(attempt.number) || attemptIndex + 1;
-          return `<div class="task-step-attempt"><strong>Attempt ${attemptNumber}</strong>${formatTimestamp("Started", attempt.started_at)}${attempt.finished_at ? formatTimestamp("Finished", attempt.finished_at) : ""}</div>`;
+          const attemptStatus = typeof attempt.status === "string" ? attempt.status : "unknown";
+          const durationMs = Number(attempt.duration_ms);
+          const details = [
+            `<strong>Attempt ${attemptNumber} · ${escapeHtml(attemptStatus)}</strong>`,
+            attempt.id ? `<span>Attempt ID: ${escapeHtml(attempt.id)}</span>` : "",
+            attempt.request_id ? `<span>Request ID: ${escapeHtml(attempt.request_id)}</span>` : "",
+            attempt.node_id ? `<span>Node: ${escapeHtml(attempt.node_id)}</span>` : "",
+            attempt.model ? `<span>Model: ${escapeHtml(attempt.model)}</span>` : "",
+            attempt.engine ? `<span>Engine: ${escapeHtml(attempt.engine)}</span>` : "",
+            attempt.failure_class ? `<span>Failure: ${escapeHtml(attempt.failure_class)}</span>` : "",
+            attempt.http_status ? `<span>HTTP ${escapeHtml(attempt.http_status)}</span>` : "",
+            Number.isFinite(durationMs) && durationMs >= 0 ? `<span>Duration: ${durationMs} ms</span>` : "",
+            attempt.error ? `<span>Error: ${escapeHtml(attempt.error)}</span>` : "",
+          ].join("");
+          return `<div class="task-step-attempt">${details}${formatTimestamp("Started", attempt.started_at)}${formatTimestamp("Finished", attempt.finished_at)}</div>`;
         }).join("")
         : `<div class="task-step-attempt"><span>Not dispatched</span>${formatTimestamp("Task created", t.created_at)}</div>`;
       return `
@@ -93,13 +159,16 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
       ${t.result ? `<section class="task-result"><h4>Final result</h4><pre class="subtask-output">${escapeHtml(t.result)}</pre></section>` : ""}
       </div></td>
     `;
-    tbody.appendChild(item);
-    tbody.appendChild(detailsRow);
     const expandButton = item.querySelector(".task-expand-btn");
     expandButton?.addEventListener("click", () => {
       detailsRow.hidden = !detailsRow.hidden;
+      if (detailsRow.hidden) state.expanded.delete(t.id);
+      else state.expanded.add(t.id);
       expandButton.setAttribute("aria-expanded", String(!detailsRow.hidden));
       expandButton.setAttribute("aria-label", `${detailsRow.hidden ? "Show" : "Hide"} details for ${t.description || t.id}`);
+      const height = (item.getBoundingClientRect?.().height || 0) +
+        (detailsRow.hidden ? 0 : detailsRow.getBoundingClientRect?.().height || 0);
+      if (height > 0) state.heights.set(t.id, height);
     });
     detailsRow.querySelector(".resume-task-btn")?.addEventListener("click", async (event) => {
       const button = event.currentTarget;
@@ -133,14 +202,31 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
     detailsRow.querySelectorAll("[data-copy-output]").forEach((button) => {
       button.addEventListener("click", () => copyText(decodeURIComponent(button.dataset.copyOutput), button));
     });
-  }
+    return [item, detailsRow];
+    },
+  });
+  state.rows.querySelectorAll?.(".task-history-row").forEach((row) => {
+    const details = row.nextElementSibling;
+    const height = (row.getBoundingClientRect?.().height || 0) +
+      (details && !details.hidden ? details.getBoundingClientRect?.().height || 0 : 0);
+    if (height > 0) state.heights.set(row.dataset.taskId, height);
+  });
 }
 
 function renderTasks(tasks, hasMore = false, loading = false) {
   if (!tasksList) return;
+  tasksList.querySelector?.(".history-load-more")?.remove();
+  tasksList.setAttribute?.("aria-busy", String(loading));
   if (!tasks || tasks.length === 0) {
+    tasksList.__taskTableState?.table.remove?.();
+    delete tasksList.__taskTableState;
+    if (loading) {
+      dashboardDOM.renderSkeleton(tasksList, 3);
+      if (taskHistoryCount) taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(0, 0);
+      return;
+    }
     tasksList.innerHTML = '<p class="task-history-empty">No tasks submitted yet.</p>';
-    if (taskHistoryCount) taskHistoryCount.textContent = "0 tasks";
+    if (taskHistoryCount) taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(0, 0);
     appendTaskHistoryLoadMore(hasMore, loading);
     return;
   }
@@ -164,9 +250,11 @@ function renderTasks(tasks, hasMore = false, loading = false) {
       new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
     );
   if (taskHistoryCount) {
-    taskHistoryCount.textContent = `Showing ${orderedTasks.length} of ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
+    taskHistoryCount.textContent = dashboardViewModel.taskHistoryCountLabel(orderedTasks.length, tasks.length);
   }
   if (orderedTasks.length === 0) {
+    tasksList.__taskTableState?.table.remove?.();
+    delete tasksList.__taskTableState;
     tasksList.innerHTML = '<p class="task-history-empty">No tasks match the selected filters.</p>';
     appendTaskHistoryLoadMore(hasMore, loading);
     return;
@@ -212,9 +300,3 @@ function taskText(tasks) {
 }
 
 copyTasksBtn?.addEventListener("click", () => copyAllTaskResults());
-
-function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = s;
-  return div.innerHTML;
-}

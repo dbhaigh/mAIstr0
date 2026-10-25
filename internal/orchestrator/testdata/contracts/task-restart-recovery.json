@@ -1,0 +1,60 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "created_at": "\u003cTIME\u003e",
+    "description": "Interrupted workflow",
+    "error": "orchestrator restarted before the task completed",
+    "graph": {
+      "edges": [],
+      "nodes": {
+        "work": {
+          "description": "Perform the work",
+          "id": "work",
+          "output_format": "text",
+          "role": "general",
+          "tags": [
+            "general"
+          ],
+          "task_type": "general"
+        }
+      }
+    },
+    "id": "\u003cTASK_ID\u003e",
+    "last_checkpoint": "\u003cCHECKPOINT_ID\u003e",
+    "origin": "\u003cTASK_ORIGIN\u003e",
+    "resumable": true,
+    "sequence": 0,
+    "status": "failed",
+    "subtasks": [
+      {
+        "address": "http://simulated-worker",
+        "engine": "simulated",
+        "error": "orchestrator restarted before the task completed",
+        "model": "simulated-general",
+        "node_id": "simulated-worker",
+        "score": 0,
+        "score_factors": {
+          "active_tasks": 0,
+          "gpu_utilization_penalty": 0,
+          "hardware": 0,
+          "learned_bias": 0,
+          "load_penalty": 0,
+          "model_match": 0,
+          "npu_utilization_penalty": 0,
+          "queued_tasks": 0,
+          "telemetry_fresh": false
+        },
+        "status": "failed",
+        "subtask": {
+          "description": "Perform the work",
+          "id": "work",
+          "role": "general",
+          "tags": null,
+          "task_type": "general"
+        }
+      }
+    ],
+    "updated_at": "\u003cTIME\u003e"
+  }
+}

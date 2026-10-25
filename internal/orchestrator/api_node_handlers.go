@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,12 +14,16 @@ import (
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/version"
 )
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var status cluster.NodeStatus
-	if err := json.NewDecoder(r.Body).Decode(&status); err != nil {
+	status, err := httpx.DecodeJSON[cluster.NodeStatus](
+		w, r, httpx.NodeStatusJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -31,7 +35,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		for _, existing := range s.registry.All() {
 			if existing.Version != "" && version.Compare(status.Version, existing.Version) < 0 {
 				message := "node " + status.ID + " version " + status.Version + " is older than node " + existing.ID + " version " + existing.Version
-				log.Printf("orchestrator: %s", message)
+				logging.Infof("orchestrator", "orchestrator: %s", message)
 				s.registry.Upsert(status)
 				writeError(w, apperr.ConflictError(errors.New(message)))
 				return
@@ -100,7 +104,12 @@ func (s *Server) handleNodeModelsGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("node not found")))
 		return
 	}
-	resp, err := s.nodeClientPort().Get(n.Address + "/models/all")
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, n.Address+"/models/all", nil)
+	if err != nil {
+		writeError(w, apperr.InternalError(err))
+		return
+	}
+	resp, err := s.nodeClientPort().Do(request)
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return
@@ -108,7 +117,13 @@ func (s *Server) handleNodeModelsGet(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
+}
+
+func copyNodeResponse(w http.ResponseWriter, body io.Reader) {
+	if err := httpx.NewStreamWriter(w).Copy(body, nil); err != nil {
+		logging.Errorf("orchestrator", "orchestrator: stream node response: %v", err)
+	}
 }
 
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
@@ -122,12 +137,12 @@ func (s *Server) handleNodeModelsPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("node not found")))
 		return
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.ControlJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequest(http.MethodPatch, n.Address+"/models", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPatch, n.Address+"/models", bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return
@@ -141,7 +156,7 @@ func (s *Server) handleNodeModelsPatch(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
 }
 
 func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +169,20 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/engines") {
 		path = "/engine"
 	}
+	if strings.HasSuffix(r.URL.Path, "/engines/managed") {
+		path = "/api/engines/managed"
+	}
+	if strings.HasSuffix(r.URL.Path, "/engines/managed/install-worker") {
+		path = "/api/engines/managed/install-worker"
+	}
+	for _, operation := range []string{"head-models", "configure-head", "download-model"} {
+		if strings.HasSuffix(r.URL.Path, "/engines/managed/"+operation) {
+			path = "/api/engines/managed/" + operation
+		}
+	}
+	if engineID := r.PathValue("engine_id"); engineID != "" {
+		path = "/api/engines/managed/" + url.PathEscape(engineID) + "/profile"
+	}
 	if strings.HasSuffix(r.URL.Path, "/pull") {
 		path = "/models/pull"
 	}
@@ -163,12 +192,16 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/pairing/connect") {
 		path = "/api/pairing/connect"
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.ControlJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequest(r.Method, n.Address+path, bytes.NewReader(body))
+	target := n.Address + path
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return
@@ -178,19 +211,44 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 			req.Header.Add(k, value)
 		}
 	}
-	resp, err := s.nodeClientPort().DoDispatch(req)
+	var resp *http.Response
+	if path == "/api/engines/managed/install-worker" || path == "/api/engines/managed/download-model" {
+		client, ok := s.nodeClientPort().(interface {
+			DoModelPull(*http.Request) (*http.Response, error)
+		})
+		if !ok {
+			writeError(w, apperr.UnavailableError(errors.New("worker installation client is unavailable")))
+			return
+		}
+		resp, err = client.DoModelPull(req)
+	} else {
+		resp, err = s.nodeClientPort().DoDispatch(req)
+	}
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node communication error: %w", err)))
 		return
 	}
 	defer resp.Body.Close()
+	if path == "/api/engines/managed/install-worker" && resp.StatusCode == http.StatusOK {
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, httpx.ControlJSONBodyBytes+1))
+		var result supervisor.WorkerInstallResult
+		if readErr != nil || len(data) > int(httpx.ControlJSONBodyBytes) || json.Unmarshal(data, &result) != nil {
+			writeError(w, apperr.UpstreamError(errors.New("invalid worker installation response")))
+			return
+		}
+		if result.Devices != nil && !s.registry.UpdateDevices(n.ID, n.Address, result.Devices) {
+			writeError(w, apperr.UnavailableError(errors.New("node changed while refreshing device memory; retry installation")))
+			return
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(data))
+	}
 	for k, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(k, value)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
 }
 
 // handleNodeChat proxies a multi-turn chat request directly to a node's /chat endpoint.
@@ -201,12 +259,12 @@ func (s *Server) handleNodeChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("node not found or offline")))
 		return
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.InferenceJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequest(http.MethodPost, n.Address+"/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, n.Address+"/chat", bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return
@@ -220,7 +278,7 @@ func (s *Server) handleNodeChat(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
 }
 
 // handleNodeDialoguesProxy proxies dialogue interactions directly to a node's dialogue endpoints.
@@ -242,12 +300,12 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 		destURL += "?" + r.URL.RawQuery
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.InferenceJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequest(r.Method, destURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, destURL, bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return
@@ -269,5 +327,5 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	copyNodeResponse(w, resp.Body)
 }

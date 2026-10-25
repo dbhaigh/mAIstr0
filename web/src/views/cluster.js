@@ -168,17 +168,6 @@ function knownStatus(status, states) {
   return states.has(status) ? status : "unknown";
 }
 
-function formatRelativeTime(value) {
-  if (!value) return "time unavailable";
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return "time unavailable";
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return new Date(timestamp).toLocaleDateString();
-}
-
 function nodeAssignments(tasks) {
   const assigned = new Map();
   for (const task of tasks || []) {
@@ -242,32 +231,47 @@ function renderOverview(nodes, tasks, peers, parts = {}) {
         .map((details) => details.closest("[data-node-id]")?.dataset.nodeId)
         .filter(Boolean),
     );
-    overviewNodes.innerHTML = displayNodes.length
-      ? displayNodes.map((node) => {
-          const capacity = capacityByNode.get(node.id);
-          const active = capacity?.active ?? node.active_tasks ?? 0;
-          const capacityLabel = capacity ? ` · ${capacity.remaining}/${capacity.max} slots free` : "";
-          const nodeTasks = assignments.get(node.id) || [];
-          const state = node.discovered ? "discovered" : node.healthy ? "online" : "offline";
-          const status = node.discovered ? "available · not paired" : state;
-          const lastSeen = node.last_seen
-            ? `${node.discovered ? "Seen" : "Last seen"} ${formatRelativeTime(node.last_seen)}`
-            : "Last seen unavailable";
-          return `<article class="overview-node ${state}" data-node-id="${escapeHtml(node.id)}">
-            <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
-            <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
-            <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${active} active tasks${capacityLabel} · ${(node.models || []).length} models`}</div>
-            <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
-            <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
-            ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
-            ${node.discovered ? "" : nodeContextDetailsMarkup(node, expandedNodeIDs.has(node.id))}
-          </article>`;
-        }).join("")
-      : '<p class="overview-empty">No known cluster members.</p>';
-    const nodesByID = new Map(displayNodes.map((node) => [node.id, node]));
-    overviewNodes.querySelectorAll("[data-node-id]").forEach((card) => {
-      const node = nodesByID.get(card.dataset.nodeId);
-      if (node) attachNodeContextMenu(card, node);
+    const nodeItems = displayNodes.length ? displayNodes : [{ id: "__empty", empty: true }];
+    dashboardDOM.patchKeyedChildren(overviewNodes, nodeItems, {
+      keyOf: (item) => item.id,
+      signatureOf: (item) => item.empty ? "empty" : JSON.stringify({
+        node: item,
+        capacity: capacityByNode.get(item.id),
+        assignments: assignments.get(item.id),
+        leaderID,
+        expanded: expandedNodeIDs.has(item.id),
+      }),
+      renderItem: (node) => {
+        if (node.empty) {
+          const empty = document.createElement("p");
+          empty.className = "overview-empty";
+          empty.textContent = "No known cluster members.";
+          return empty;
+        }
+        const capacity = capacityByNode.get(node.id);
+        const active = capacity?.active ?? node.active_tasks ?? 0;
+        const capacityLabel = capacity ? ` · ${capacity.remaining}/${capacity.max} slots free` : "";
+        const nodeTasks = assignments.get(node.id) || [];
+        const state = node.discovered ? "discovered" : node.healthy ? "online" : "offline";
+        const status = node.discovered ? "available · not paired" : state;
+        const lastSeen = node.last_seen
+          ? `${node.discovered ? "Seen" : "Last seen"} ${formatRelativeTime(node.last_seen)}`
+          : "Last seen unavailable";
+        const card = document.createElement("article");
+        card.className = `overview-node ${state}`;
+        card.dataset.nodeId = node.id;
+        card.innerHTML = `
+          <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
+          <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
+          <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${active} active tasks${capacityLabel} · ${(node.models || []).length} models`}</div>
+          <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
+          <small data-last-seen="${escapeHtml(node.last_seen || "")}">${lastSeen}</small>
+          ${nodeTasks.length ? `<div class="overview-node-assignments">${nodeTasks.map((item) => `<span class="assignment-chip ${item.status}">${escapeHtml(item.taskID)} · ${item.status}</span>`).join("")}</div>` : ""}
+          ${node.discovered ? "" : nodeContextDetailsMarkup(node, expandedNodeIDs.has(node.id))}
+        `;
+        if (!node.discovered) attachNodeContextMenu(card, node);
+        return card;
+      },
     });
   }
 

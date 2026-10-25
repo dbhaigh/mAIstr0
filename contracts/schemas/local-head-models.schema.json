@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/local-head-models.schema.json",
+  "title": "LocalHeadModels",
+  "type": "object",
+  "required": ["models", "warnings"],
+  "properties": {
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "source", "profile"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "name": {"type": "string", "minLength": 1},
+          "source": {"type": "string", "enum": ["ollama", "lmstudio", "huggingface"]},
+          "profile": {"$ref": "shard-model-profile.schema.json"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

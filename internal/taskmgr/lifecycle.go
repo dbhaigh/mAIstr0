@@ -2,9 +2,8 @@ package taskmgr
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +21,7 @@ func (m *Manager) SetFinalizer(finalizer Finalizer) {
 func (m *Manager) Create(description string, assignments []scheduler.Assignment) *Task {
 	task, err := m.CreateChecked(description, assignments)
 	if err != nil {
-		log.Printf("taskmgr: create task failed: %v", err)
+		logging.Errorf("taskmgr", "taskmgr: create task failed: %v", err)
 		return nil
 	}
 	return task
@@ -83,8 +82,7 @@ func (m *Manager) CreateWithGraphAndOptionsChecked(description string, graph *sc
 		t.Error = "task has no assigned subtasks"
 		t.Resumable = false
 	}
-	_, _ = m.saveCheckpointLocked(t)
-	if err := m.persistLocked(t); err != nil {
+	if _, err := m.persistTaskAndCheckpointLocked(t); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -96,20 +94,27 @@ func (m *Manager) CreateWithGraphAndOptionsChecked(description string, graph *sc
 func (m *Manager) Cancel(id string) bool {
 	cancelled, err := m.CancelChecked(id)
 	if err != nil {
-		log.Printf("taskmgr: persist cancellation failed: %v", err)
+		logging.Errorf("taskmgr", "taskmgr: persist cancellation failed: %v", err)
 	}
 	return cancelled
 }
 
 // CancelChecked cancels a task and reports persistence errors.
 func (m *Manager) CancelChecked(id string) (bool, error) {
+	_, cancelled, err := m.CancelAndSnapshotChecked(id)
+	return cancelled, err
+}
+
+// CancelAndSnapshotChecked cancels a task and returns the state at the point of
+// cancellation, before concurrent dispatch completion can update its attempts.
+func (m *Manager) CancelAndSnapshotChecked(id string) (*Task, bool, error) {
 	t, ok := m.lockTaskForUpdate(id)
 	if !ok {
-		return false, nil
+		return nil, false, nil
 	}
 	defer m.unlockTaskForUpdate(t)
 	if t.Status == StatusCompleted || t.Status == StatusFailed || t.Status == StatusCancelled {
-		return false, nil
+		return nil, false, nil
 	}
 	t.cancel()
 	t.Status = StatusCancelled
@@ -126,17 +131,14 @@ func (m *Manager) CancelChecked(id string) (bool, error) {
 	t.Resumable = hasCompleted
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
-	checkpointErr := error(nil)
-	if _, err := m.saveCheckpointLocked(t); err != nil {
-		checkpointErr = fmt.Errorf("taskmgr: checkpoint cancelled task %s: %w", t.ID, err)
-	}
-	return true, errors.Join(checkpointErr, m.persistLocked(t))
+	_, persistErr := m.persistTaskAndCheckpointLocked(t)
+	return cloneTask(t), true, persistErr
 }
 
 // StartSubtask marks a dispatched assignment as actively running.
 func (m *Manager) StartSubtask(taskID, subtaskID string) {
 	if err := m.StartSubtaskChecked(taskID, subtaskID); err != nil {
-		log.Printf("taskmgr: persist subtask start failed: %v", err)
+		logging.Errorf("taskmgr", "taskmgr: persist subtask start failed: %v", err)
 	}
 }
 
@@ -187,82 +189,11 @@ func (m *Manager) ReassignSubtaskChecked(taskID, subtaskID string, assignment sc
 	return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
 }
 
-func (m *Manager) BeginDispatchAttemptChecked(taskID, subtaskID string, assignment scheduler.Assignment) (int, error) {
-	t, ok := m.lockTaskForUpdate(taskID)
-	if !ok {
-		return 0, fmt.Errorf("taskmgr: task %s not found", taskID)
-	}
-	defer m.unlockTaskForUpdate(t)
-	for i := range t.Subtasks {
-		result := &t.Subtasks[i]
-		if result.Subtask.ID != subtaskID {
-			continue
-		}
-		if result.Status != StatusRunning {
-			return 0, fmt.Errorf("taskmgr: subtask %s in task %s is not running", subtaskID, taskID)
-		}
-		number := len(result.Attempts) + 1
-		now := time.Now()
-		result.Attempts = append(result.Attempts, DispatchAttempt{
-			ID:     fmt.Sprintf("%s:%s:%d", taskID, subtaskID, number),
-			Number: number, NodeID: assignment.NodeID, Model: assignment.Model,
-			Engine: assignment.Engine, Status: DispatchAttemptRunning, StartedAt: now,
-		})
-		t.UpdatedAt = now
-		signalChanged(t)
-		if err := m.persistLocked(t); err != nil {
-			return 0, err
-		}
-		return number, nil
-	}
-	return 0, fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
-}
-
-func (m *Manager) FinishDispatchAttemptChecked(taskID, subtaskID string, number int, status DispatchAttemptStatus, failureClass string, httpStatus int, attemptErr error, duration time.Duration) error {
-	if status != DispatchAttemptSucceeded && status != DispatchAttemptFailed {
-		return fmt.Errorf("taskmgr: invalid dispatch attempt status %q", status)
-	}
-	t, ok := m.lockTaskForUpdate(taskID)
-	if !ok {
-		return fmt.Errorf("taskmgr: task %s not found", taskID)
-	}
-	defer m.unlockTaskForUpdate(t)
-	for i := range t.Subtasks {
-		result := &t.Subtasks[i]
-		if result.Subtask.ID != subtaskID {
-			continue
-		}
-		for j := range result.Attempts {
-			attempt := &result.Attempts[j]
-			if attempt.Number != number {
-				continue
-			}
-			if attempt.Status != DispatchAttemptRunning {
-				return fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s is already finished", number, subtaskID)
-			}
-			attempt.Status = status
-			attempt.FailureClass = failureClass
-			attempt.HTTPStatus = httpStatus
-			if attemptErr != nil {
-				attempt.Error = attemptErr.Error()
-			}
-			finishedAt := time.Now()
-			attempt.FinishedAt = &finishedAt
-			attempt.DurationMs = duration.Milliseconds()
-			t.UpdatedAt = finishedAt
-			signalChanged(t)
-			return m.persistLocked(t)
-		}
-		return fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s not found", number, subtaskID)
-	}
-	return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
-}
-
 // CompleteSubtask records the outcome of a dispatched subtask and rolls the
 // parent task's overall status up once every subtask has finished.
 func (m *Manager) CompleteSubtask(taskID, subtaskID string, output string, taskErr error) {
 	if err := m.CompleteSubtaskChecked(taskID, subtaskID, output, taskErr); err != nil {
-		log.Printf("taskmgr: persist subtask completion failed: %v", err)
+		logging.Errorf("taskmgr", "taskmgr: persist subtask completion failed: %v", err)
 	}
 }
 
@@ -277,6 +208,23 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 		m.unlockTaskForUpdate(t)
 		return nil
 	}
+	completion, err := m.completeSubtaskLocked(t, subtaskID, output, taskErr)
+	if err != nil {
+		m.unlockTaskForUpdate(t)
+		return err
+	}
+	m.unlockTaskForUpdate(t)
+	return m.finishSubtaskCompletion(taskID, completion)
+}
+
+type subtaskCompletion struct {
+	finalize   Finalizer
+	snapshot   *Task
+	taskCtx    context.Context
+	persistErr error
+}
+
+func (m *Manager) completeSubtaskLocked(t *Task, subtaskID, output string, taskErr error) (subtaskCompletion, error) {
 	found := false
 	for i := range t.Subtasks {
 		if t.Subtasks[i].Subtask.ID != subtaskID {
@@ -293,8 +241,7 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 		break
 	}
 	if !found {
-		m.unlockTaskForUpdate(t)
-		return fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, taskID)
+		return subtaskCompletion{}, fmt.Errorf("taskmgr: subtask %s in task %s not found", subtaskID, t.ID)
 	}
 
 	allDone := true
@@ -331,18 +278,17 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 	}
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
-	_, checkpointErr := m.saveCheckpointLocked(t)
-	persistErr := errors.Join(checkpointErr, m.persistLocked(t))
-	taskCtx := t.ctx
-	m.unlockTaskForUpdate(t)
+	_, persistErr := m.persistTaskAndCheckpointLocked(t)
+	return subtaskCompletion{
+		finalize: finalize, snapshot: snapshot, taskCtx: t.ctx, persistErr: persistErr,
+	}, nil
+}
 
-	if finalize == nil {
-		return persistErr
+func (m *Manager) finishSubtaskCompletion(taskID string, completion subtaskCompletion) error {
+	if completion.finalize == nil || completion.persistErr != nil {
+		return completion.persistErr
 	}
-	if persistErr != nil {
-		return persistErr
-	}
-	return m.finishSynthesis(taskID, taskCtx, snapshot, finalize, persistErr)
+	return m.finishSynthesis(taskID, completion.taskCtx, completion.snapshot, completion.finalize, completion.persistErr)
 }
 
 // ApproveChecked releases a completed task's approval gate and starts
@@ -362,18 +308,16 @@ func (m *Manager) ApproveChecked(taskID string) error {
 		t.Resumable = false
 		t.UpdatedAt = time.Now()
 		signalChanged(t)
-		_, checkpointErr := m.saveCheckpointLocked(t)
-		err := errors.Join(checkpointErr, m.persistLocked(t))
+		_, err := m.persistTaskAndCheckpointLocked(t)
 		m.unlockTaskForUpdate(t)
 		return err
 	}
 	t.Status = StatusSynthesis
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
-	_, checkpointErr := m.saveCheckpointLocked(t)
-	snapshot := cloneTask(t)
 	taskCtx := t.ctx
-	persistErr := errors.Join(checkpointErr, m.persistLocked(t))
+	_, persistErr := m.persistTaskAndCheckpointLocked(t)
+	snapshot := cloneTask(t)
 	m.unlockTaskForUpdate(t)
 	return m.finishSynthesis(taskID, taskCtx, snapshot, finalize, persistErr)
 }
@@ -405,10 +349,33 @@ func (m *Manager) finishSynthesis(taskID string, taskCtx context.Context, snapsh
 	}
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
-	_, checkpointErr := m.saveCheckpointLocked(t)
-	persistErr = errors.Join(checkpointErr, m.persistLocked(t))
+	_, persistErr = m.persistTaskAndCheckpointLocked(t)
 	m.unlockTaskForUpdate(t)
 	return persistErr
+}
+
+func (m *Manager) persistTaskAndCheckpointLocked(task *Task) (*Checkpoint, error) {
+	task.Origin = m.syncOrigin
+	task.Sequence = m.nextSyncSequenceLocked(task.Origin)
+	m.invalidateRecentTasksLocked()
+	return m.saveTaskAndCheckpointLocked(task)
+}
+
+func (m *Manager) saveTaskAndCheckpointLocked(task *Task) (*Checkpoint, error) {
+	if m.store == nil {
+		return nil, nil
+	}
+	snapshot := cloneTask(task)
+	checkpoint := checkpointForTask(snapshot)
+	m.mu.Unlock()
+	err := saveTaskAndCheckpoint(m.store, snapshot, checkpoint)
+	m.mu.Lock()
+	if err != nil {
+		return nil, fmt.Errorf("taskmgr: persist task and checkpoint %s: %w", task.ID, err)
+	}
+	task.LastCheckpoint = snapshot.LastCheckpoint
+	task.Resumable = snapshot.Resumable
+	return checkpoint, nil
 }
 
 // persistLocked snapshots under the manager lock, then releases it for BoltDB

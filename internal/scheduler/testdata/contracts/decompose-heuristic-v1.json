@@ -1,0 +1,11 @@
+[
+  {
+    "id": "sub-a",
+    "description": "Compare Alpha and Beta.",
+    "role": "general",
+    "task_type": "general",
+    "tags": [
+      "general"
+    ]
+  }
+]

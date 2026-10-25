@@ -15,6 +15,7 @@ type routerRequestEvent struct {
 	Engine            string    `json:"engine,omitempty"`
 	QueueMs           int64     `json:"queue_ms,omitempty"`
 	TimeToFirstByteMs int64     `json:"time_to_first_byte_ms,omitempty"`
+	DurationMs        int64     `json:"-"`
 	Status            int       `json:"status,omitempty"`
 	FailureClass      string    `json:"failure_class,omitempty"`
 }

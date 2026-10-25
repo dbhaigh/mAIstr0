@@ -1,13 +1,15 @@
 package orchestrator
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
+	"sort"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
@@ -30,9 +32,27 @@ type assignmentExplanationDetail struct {
 	Summary      string                 `json:"summary"`
 }
 
+type taskDependenciesResponse struct {
+	Nodes []taskDependencyNode `json:"nodes"`
+	Edges []taskDependencyEdge `json:"edges"`
+}
+
+type taskDependencyNode struct {
+	ID          string         `json:"id"`
+	Status      taskmgr.Status `json:"status"`
+	Description string         `json:"description"`
+}
+
+type taskDependencyEdge struct {
+	SourceID string `json:"source_id"`
+	DestID   string `json:"dest_id"`
+}
+
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
-	var req createTaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[createTaskRequest](
+		w, r, httpx.ControlJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -47,6 +67,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.recoverTaskHistory()
+	hadCursor := r.Header.Get(memory.SyncPageCursorHeader) != ""
 	version, watermarks, err := memory.ReadSyncRequestHeaders(r)
 	if err != nil {
 		http.Error(w, "invalid task sync headers: "+err.Error(), http.StatusBadRequest)
@@ -98,17 +119,18 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			writeHistoryPage(w, pageRequest, page.Items, memory.HistoryCursor{
 				UpdatedAt: page.NextCursor.UpdatedAt,
 				Key:       page.NextCursor.ID,
-			}, page.HasMore)
+			}, page.HasMore, s.maxSyncBytes())
 			return
 		}
 	}
 	tasks, currentWatermarks := s.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
 	if memory.SupportsSyncPages(version) {
+		pageStarted := time.Now()
 		if cursor == nil {
 			cursor = make(map[string]uint64)
 			upper = currentWatermarks
 		}
-		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, maxReplicatedTaskHistoryBytes)
+		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, s.maxSyncBytes())
 		if err != nil {
 			http.Error(w, "could not page task history: "+err.Error(), http.StatusRequestEntityTooLarge)
 			return
@@ -121,12 +143,21 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		s.metrics.recordSyncPage()
+		logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: task history sync event=page_served %s records=%d more=%t",
+			syncLogFields(syncLogRequestID(r), syncLogNodeID(r), time.Since(pageStarted), "none"), len(tasks), more)
 	}
-	if err := memory.SetSyncResponseHeaders(w, currentWatermarks); err != nil {
+	if err := memory.SetSyncResponseHeadersForPeer(w, currentWatermarks, version); err != nil {
 		http.Error(w, "could not encode task sync watermarks: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	if memory.SupportsEmptySync(version) && !hadCursor && len(tasks) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if _, err := memory.WriteSyncJSON(w, http.StatusOK, tasks, version, memory.AcceptsSyncCompression(r)); err != nil {
+		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: task sync response encoding failed: %v", err)
+	}
 }
 
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +168,82 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) handleTaskDependencies(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task, ok := s.tasks.Get(id)
+	if !ok {
+		writeError(w, apperr.NotFoundError(errors.New("task not found")))
+		return
+	}
+
+	graph := task.Graph
+	if graph == nil || len(graph.Nodes) == 0 && len(task.Subtasks) > 0 {
+		subtasks := make([]scheduler.Subtask, 0, len(task.Subtasks))
+		for _, result := range task.Subtasks {
+			subtasks = append(subtasks, result.Subtask)
+		}
+		if len(subtasks) > 0 {
+			var err error
+			graph, err = scheduler.TaskGraphFromSubtasks(subtasks)
+			if err != nil {
+				writeError(w, apperr.InternalError(fmt.Errorf("could not reconstruct task dependency graph: %w", err)))
+				return
+			}
+		}
+	}
+	if graph == nil {
+		graph = scheduler.NewTaskGraph()
+	}
+	if len(graph.Nodes) > 0 {
+		if err := graph.Validate(); err != nil {
+			writeError(w, apperr.InternalError(fmt.Errorf("invalid task dependency graph: %w", err)))
+			return
+		}
+	}
+
+	statuses := make(map[string]taskmgr.Status, len(task.Subtasks))
+	for _, result := range task.Subtasks {
+		statuses[result.Subtask.ID] = result.Status
+	}
+	response := taskDependenciesResponse{
+		Nodes: make([]taskDependencyNode, 0, len(graph.Nodes)),
+		Edges: make([]taskDependencyEdge, 0, len(graph.Edges)),
+	}
+	for id, subtask := range graph.Nodes {
+		status, ok := statuses[id]
+		if !ok {
+			status = taskmgr.StatusPending
+		}
+		response.Nodes = append(response.Nodes, taskDependencyNode{
+			ID: id, Status: status, Description: subtask.Description,
+		})
+	}
+	edges := make(map[scheduler.Edge]struct{}, len(graph.Edges))
+	for _, edge := range graph.Edges {
+		edges[edge] = struct{}{}
+	}
+	for id, subtask := range graph.Nodes {
+		for _, prerequisite := range subtask.DependsOn {
+			edges[scheduler.Edge{From: prerequisite, To: id}] = struct{}{}
+		}
+	}
+	for edge := range edges {
+		response.Edges = append(response.Edges, taskDependencyEdge{
+			SourceID: edge.From, DestID: edge.To,
+		})
+	}
+	sort.Slice(response.Nodes, func(i, j int) bool {
+		return response.Nodes[i].ID < response.Nodes[j].ID
+	})
+	sort.Slice(response.Edges, func(i, j int) bool {
+		if response.Edges[i].SourceID != response.Edges[j].SourceID {
+			return response.Edges[i].SourceID < response.Edges[j].SourceID
+		}
+		return response.Edges[i].DestID < response.Edges[j].DestID
+	})
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleTaskAssignmentExplanation(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +292,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("task not found")))
 		return
 	}
-	cancelledOK, err := s.tasks.CancelChecked(id)
+	cancelled, cancelledOK, err := s.tasks.CancelAndSnapshotChecked(id)
 	if err != nil {
 		writeError(w, apperr.InternalError(fmt.Errorf("could not persist cancellation: %w", err)))
 		return
@@ -194,7 +301,6 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.ConflictError(errors.New("task is already complete")))
 		return
 	}
-	cancelled, _ := s.tasks.Get(id)
 	writeJSON(w, http.StatusOK, cancelled)
 }
 
@@ -248,7 +354,7 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	for _, subtask := range resumed.Subtasks {
 		if subtask.Status == taskmgr.StatusPending {
 			if err := s.submitDispatch(resumed.ID, subtask.Assignment); err != nil {
-				log.Printf("orchestrator: could not queue resumed subtask %s: %v", subtask.Subtask.ID, err)
+				logging.Errorf("orchestrator", "orchestrator: could not queue resumed subtask %s: %v", subtask.Subtask.ID, err)
 				s.tasks.CompleteSubtask(resumed.ID, subtask.Subtask.ID, "", err)
 			}
 		}

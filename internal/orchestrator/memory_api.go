@@ -5,17 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
 )
-
-const maxMemorySyncBodyBytes int64 = 64 << 20
 
 type memorySyncCountingReader struct {
 	io.ReadCloser
@@ -51,7 +51,7 @@ func (s *Server) handleMemoryExperiences(w http.ResponseWriter, r *http.Request)
 	}
 	if s.mem == nil {
 		if pageRequest.Active {
-			writeHistoryPage(w, pageRequest, []memory.Experience{}, memory.HistoryCursor{}, false)
+			writeHistoryPage(w, pageRequest, []memory.Experience{}, memory.HistoryCursor{}, false, s.maxSyncBytes())
 			return
 		}
 		writeJSON(w, http.StatusOK, []memory.Experience{})
@@ -81,7 +81,7 @@ func (s *Server) handleMemoryExperiences(w http.ResponseWriter, r *http.Request)
 			SuccessOnly: successOnly == "true",
 		}, memory.PageOptions{
 			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
-			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+			MaxBytes: historyPagePayloadLimit(s.maxSyncBytes()),
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -91,7 +91,7 @@ func (s *Server) handleMemoryExperiences(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "could not read experience page: "+err.Error(), status)
 			return
 		}
-		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore, s.maxSyncBytes())
 		return
 	}
 	limit := intQuery(r, "limit", 50)
@@ -133,7 +133,7 @@ func (s *Server) handleMemoryFactsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.mem == nil {
 		if pageRequest.Active {
-			writeHistoryPage(w, pageRequest, []memory.Fact{}, memory.HistoryCursor{}, false)
+			writeHistoryPage(w, pageRequest, []memory.Fact{}, memory.HistoryCursor{}, false, s.maxSyncBytes())
 			return
 		}
 		writeJSON(w, http.StatusOK, []memory.Fact{})
@@ -151,7 +151,7 @@ func (s *Server) handleMemoryFactsGet(w http.ResponseWriter, r *http.Request) {
 		}
 		page, err := pager.FactsPage(r.URL.Query().Get("scope"), memory.PageOptions{
 			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
-			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+			MaxBytes: historyPagePayloadLimit(s.maxSyncBytes()),
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -161,7 +161,7 @@ func (s *Server) handleMemoryFactsGet(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not read fact page: "+err.Error(), status)
 			return
 		}
-		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore, s.maxSyncBytes())
 		return
 	}
 	writeJSON(w, http.StatusOK, s.mem.Facts(r.URL.Query().Get("scope")))
@@ -172,8 +172,10 @@ func (s *Server) handleMemoryFactsPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UnavailableError(errors.New("memory store unavailable")))
 		return
 	}
-	var f memory.Fact
-	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+	f, err := httpx.DecodeJSON[memory.Fact](
+		w, r, httpx.SmallJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -210,7 +212,7 @@ func (s *Server) handleMemoryDialogues(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.mem == nil {
 		if pageRequest.Active {
-			writeHistoryPage(w, pageRequest, []memory.DialogueRecord{}, memory.HistoryCursor{}, false)
+			writeHistoryPage(w, pageRequest, []memory.DialogueRecord{}, memory.HistoryCursor{}, false, s.maxSyncBytes())
 			return
 		}
 		writeJSON(w, http.StatusOK, []memory.DialogueRecord{})
@@ -228,7 +230,7 @@ func (s *Server) handleMemoryDialogues(w http.ResponseWriter, r *http.Request) {
 		}
 		page, err := pager.DialoguesPage(memory.PageOptions{
 			Cursor: pageRequest.memoryCursor(), Limit: pageRequest.Limit,
-			MaxBytes: maxHistoryPageBytes - historyPageEnvelopeRoom,
+			MaxBytes: historyPagePayloadLimit(s.maxSyncBytes()),
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -238,7 +240,7 @@ func (s *Server) handleMemoryDialogues(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not read dialogue page: "+err.Error(), status)
 			return
 		}
-		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore)
+		writeHistoryPage(w, pageRequest, page.Items, page.NextCursor, page.HasMore, s.maxSyncBytes())
 		return
 	}
 	writeJSON(w, http.StatusOK, s.mem.Dialogues(intQuery(r, "limit", 30)))
@@ -268,25 +270,44 @@ type memorySyncRequest struct {
 // just the work it dispatched itself.
 func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	requestID := syncLogRequestID(r)
+	nodeID := syncLogNodeID(r)
 	reader := &memorySyncCountingReader{ReadCloser: r.Body}
-	log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_start remote=%s body_bytes_declared=%d",
-		r.RemoteAddr, r.ContentLength)
+	logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_start %s remote=%s body_bytes_declared=%d",
+		syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, r.ContentLength)
 	if s.mem == nil {
 		w.WriteHeader(http.StatusNoContent)
-		log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_complete remote=%s status=%d body_bytes=%d elapsed=%s",
-			r.RemoteAddr, http.StatusNoContent, reader.bytesRead, time.Since(started))
+		logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_complete %s remote=%s status=%d body_bytes=%d elapsed=%s",
+			syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, http.StatusNoContent, reader.bytesRead, time.Since(started))
+		return
+	}
+	peerVersion, _, err := memory.ReadSyncRequestHeaders(r)
+	if err != nil {
+		writeError(w, apperr.Invalid(err))
 		return
 	}
 	var req memorySyncRequest
 	decodeStarted := time.Now()
-	if err := json.NewDecoder(http.MaxBytesReader(w, reader, maxMemorySyncBodyBytes)).Decode(&req); err != nil {
+	body, err := memory.DecodeSyncBody(
+		http.MaxBytesReader(w, reader, s.maxSyncBytes()),
+		r.Header.Get("Content-Encoding"),
+		peerVersion,
+		s.maxSyncBytes(),
+	)
+	if err == nil {
+		err = json.Unmarshal(body, &req)
+	}
+	if err != nil {
 		status := http.StatusBadRequest
 		var maxBytesError *http.MaxBytesError
-		if errors.As(err, &maxBytesError) {
+		if errors.As(err, &maxBytesError) || errors.Is(err, memory.ErrSyncBodyTooLarge) {
 			status = http.StatusRequestEntityTooLarge
 		}
-		log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
-			req.NodeID, r.RemoteAddr, status, reader.bytesRead, time.Since(started), err)
+		if strings.TrimSpace(req.NodeID) != "" {
+			nodeID = req.NodeID
+		}
+		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed %s remote=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
+			syncLogFields(requestID, nodeID, time.Since(started), "decode"), r.RemoteAddr, status, reader.bytesRead, time.Since(started), err)
 		if status == http.StatusBadRequest {
 			writeError(w, apperr.Invalid(err))
 		} else {
@@ -295,14 +316,17 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	decodeElapsed := time.Since(decodeStarted)
+	if strings.TrimSpace(req.NodeID) != "" {
+		nodeID = req.NodeID
+	}
 	snapshot := req.Snapshot
 	if len(req.Performances) > 0 {
 		snapshot.Performances = append(snapshot.Performances, req.Performances...)
 	}
 	mergeStarted := time.Now()
 	if err := s.mergeMemorySnapshot(snapshot, req.NodeID); err != nil {
-		log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed node_id=%s remote=%s status=%d body_bytes=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
-			req.NodeID, r.RemoteAddr, apperr.StatusCode(apperr.InternalError(err)), reader.bytesRead, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
+		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed %s remote=%s status=%d body_bytes=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
+			syncLogFields(requestID, nodeID, time.Since(started), "merge"), r.RemoteAddr, apperr.StatusCode(apperr.InternalError(err)), reader.bytesRead, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
 		writeError(w, apperr.InternalError(err))
 		return
 	}
@@ -312,29 +336,46 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 		"merged":  len(snapshot.Experiences) + len(snapshot.Facts) + len(snapshot.Dialogues) + len(snapshot.Performances),
 		"node_id": req.NodeID,
 	})
-	log.Printf("FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_complete node_id=%s remote=%s status=%d body_bytes=%d records=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s response_body_bytes=%d response_error=%v",
-		req.NodeID, r.RemoteAddr, http.StatusOK, reader.bytesRead,
+	logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_complete %s remote=%s status=%d body_bytes=%d records=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s response_body_bytes=%d",
+		syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, http.StatusOK, reader.bytesRead,
 		len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Dialogues)+len(snapshot.Performances),
-		decodeElapsed, mergeElapsed, time.Since(started), response.bytesWritten, response.writeErr)
+		decodeElapsed, mergeElapsed, time.Since(started), response.bytesWritten)
+	if response.writeErr != nil {
+		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed %s remote=%s stage=response error=%v",
+			syncLogFields(requestID, nodeID, time.Since(started), "response"), r.RemoteAddr, response.writeErr)
+	}
 }
 
 func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	log.Printf("FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_start remote=%s body_bytes=unknown", r.RemoteAddr)
+	requestID := syncLogRequestID(r)
+	nodeID := syncLogNodeID(r)
+	peerVersion := 0
+	hadCursor := r.Header.Get(memory.SyncPageCursorHeader) != ""
+	logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_start %s remote=%s body_bytes=unknown",
+		syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr)
 	snapshot := memory.Snapshot{}
 	var responseWatermarks map[string]uint64
 	if s.mem != nil {
-		peerVersion, watermarks, err := memory.ReadSyncRequestHeaders(r)
+		var watermarks map[string]uint64
+		version, watermarks, err := memory.ReadSyncRequestHeaders(r)
 		if err != nil {
+			logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_failed %s remote=%s status=%d stage=headers error=%v",
+				syncLogFields(requestID, nodeID, time.Since(started), "header_validation"), r.RemoteAddr, http.StatusBadRequest, err)
 			http.Error(w, "invalid memory sync headers: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		peerVersion = version
 		cursor, upper, err := memory.ReadSyncPageRequestHeaders(r)
 		if err != nil {
+			logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_failed %s remote=%s status=%d stage=page_headers error=%v",
+				syncLogFields(requestID, nodeID, time.Since(started), "header_validation"), r.RemoteAddr, http.StatusBadRequest, err)
 			http.Error(w, "invalid memory sync page headers: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		if cursor != nil && !memory.SupportsSyncPages(peerVersion) {
+			logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_failed %s remote=%s status=%d stage=page_version",
+				syncLogFields(requestID, nodeID, time.Since(started), "unsupported_page_version"), r.RemoteAddr, http.StatusBadRequest)
 			http.Error(w, "memory sync pagination requires protocol version 2", http.StatusBadRequest)
 			return
 		}
@@ -345,8 +386,10 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 				cursor = make(map[string]uint64)
 				upper = snapshot.Watermarks
 			}
-			page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, maxMemorySyncBodyBytes, 0)
+			page, nextCursor, more, err := memory.PageSnapshot(snapshot, cursor, upper, s.maxSyncBytes(), 0)
 			if err != nil {
+				logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_failed %s remote=%s status=%d stage=page error=%v",
+					syncLogFields(requestID, nodeID, time.Since(started), "page"), r.RemoteAddr, http.StatusRequestEntityTooLarge, err)
 				http.Error(w, "could not page memory snapshot: "+err.Error(), http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -354,20 +397,40 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 			responseWatermarks = upper
 			if more {
 				if err := memory.SetSyncPageResponseHeader(w, nextCursor); err != nil {
+					logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_failed %s remote=%s status=%d stage=page_cursor error=%v",
+						syncLogFields(requestID, nodeID, time.Since(started), "page_cursor"), r.RemoteAddr, http.StatusInternalServerError, err)
 					http.Error(w, "could not encode memory sync page cursor: "+err.Error(), http.StatusInternalServerError)
 					return
 				}
 			}
+			s.metrics.recordSyncPage()
+			logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=page_served %s remote=%s records=%d more=%t",
+				syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr,
+				len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Performances)+len(snapshot.Dialogues), more)
 		}
 	}
-	if err := memory.SetSyncResponseHeaders(w, responseWatermarks); err != nil {
+	if err := memory.SetSyncResponseHeadersForPeer(w, responseWatermarks, peerVersion); err != nil {
+		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_failed %s remote=%s status=%d stage=watermarks error=%v",
+			syncLogFields(requestID, nodeID, time.Since(started), "response_headers"), r.RemoteAddr, http.StatusInternalServerError, err)
 		http.Error(w, "could not encode memory sync watermarks: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if memory.SupportsEmptySync(peerVersion) && !hadCursor &&
+		len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Performances)+len(snapshot.Dialogues) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_complete %s remote=%s status=%d body_bytes=0 records=0 elapsed=%s",
+			syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, http.StatusNoContent, time.Since(started))
+		return
+	}
 	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
-	writeJSON(response, http.StatusOK, snapshot)
-	log.Printf("FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_complete remote=%s status=%d body_bytes=%d records=%d elapsed=%s error=%v",
-		r.RemoteAddr, http.StatusOK, response.bytesWritten,
+	_, writeErr := memory.WriteSyncJSON(response, http.StatusOK, snapshot, peerVersion, memory.AcceptsSyncCompression(r))
+	response.writeErr = writeErr
+	failureClass := "none"
+	if response.writeErr != nil {
+		failureClass = "response_write"
+	}
+	logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_complete %s remote=%s status=%d body_bytes=%d records=%d elapsed=%s error=%v",
+		syncLogFields(requestID, nodeID, time.Since(started), failureClass), r.RemoteAddr, http.StatusOK, response.bytesWritten,
 		len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Performances)+len(snapshot.Dialogues),
 		time.Since(started), response.writeErr)
 }
@@ -394,7 +457,7 @@ func (s *Server) handleNodePeerConverse(w http.ResponseWriter, r *http.Request) 
 		writeError(w, apperr.NotFoundError(errors.New("node not found or offline")))
 		return
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadBody(w, r, httpx.InferenceJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
@@ -407,7 +470,9 @@ func (s *Server) handleNodePeerConverse(w http.ResponseWriter, r *http.Request) 
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	if err := httpx.NewStreamWriter(w).Copy(resp.Body, nil); err != nil {
+		logging.Errorf("orchestrator", "orchestrator: stream node peer conversation: %v", err)
+	}
 }
 
 func intQuery(r *http.Request, key string, def int) int {

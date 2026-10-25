@@ -73,14 +73,16 @@ type ToolDef struct {
 }
 
 type ModelInfo struct {
-	NodeID   string   `json:"node_id"`
-	NodeAddr string   `json:"node_address"`
-	Name     string   `json:"name"`
-	Engine   string   `json:"engine"`
-	Tags     []string `json:"tags"`
-	SizeGB   float64  `json:"size_gb,omitempty"`
-	Default  bool     `json:"default"`
-	Healthy  bool     `json:"healthy"`
+	NodeID        string   `json:"node_id"`
+	NodeAddr      string   `json:"node_address"`
+	Name          string   `json:"name"`
+	Engine        string   `json:"engine"`
+	Tags          []string `json:"tags"`
+	SizeGB        float64  `json:"size_gb,omitempty"`
+	ContextLength int      `json:"context_length,omitempty"`
+	Members       []string `json:"members,omitempty"`
+	Default       bool     `json:"default"`
+	Healthy       bool     `json:"healthy"`
 }
 
 type AgentStats struct {

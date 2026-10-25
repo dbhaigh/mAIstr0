@@ -1,8 +1,16 @@
 function renderRouting(nodes, tasks) {
   if (!routingList) return;
-  routingList.innerHTML = "";
   if (!nodes || nodes.length === 0) {
-    routingList.innerHTML = '<p style="color:var(--muted)">No nodes registered yet.</p>';
+    dashboardDOM.patchKeyedChildren(routingList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No nodes registered yet.";
+        return empty;
+      },
+    });
     return;
   }
 
@@ -28,7 +36,10 @@ function renderRouting(nodes, tasks) {
     if ((b.node.active_tasks || 0) !== (a.node.active_tasks || 0)) return (b.node.active_tasks || 0) - (a.node.active_tasks || 0);
     return (b.running + b.pending) - (a.running + a.pending);
   });
-  for (const { node, pending, running, completed, failed, cancelled, unknown, recent } of workload) {
+  dashboardDOM.patchKeyedChildren(routingList, workload, {
+    keyOf: (item) => item.node.id,
+    signatureOf: JSON.stringify,
+    renderItem: ({ node, pending, running, completed, failed, cancelled, unknown, recent }) => {
     const card = document.createElement("div");
     card.className = "card";
     const total = pending + running + completed + failed + cancelled + unknown;
@@ -57,8 +68,9 @@ function renderRouting(nodes, tasks) {
       <h4>Recent jobs</h4>
       ${recentHTML}
     `;
-    routingList.appendChild(card);
-  }
+    return card;
+    },
+  });
 }
 
 function visibleNetworkPeers(peers, nodes, pairingStatus) {
@@ -83,27 +95,66 @@ function visibleNetworkPeers(peers, nodes, pairingStatus) {
 
 function renderDiscovery(peers) {
   if (!discoveryList) return;
-  discoveryList.innerHTML = "";
   const ordered = visibleNetworkPeers(peers, dashboardState.nodes, dashboardState.pairing.status);
   if (ordered.length === 0) {
-    discoveryList.innerHTML = '<p style="color:var(--muted)">No visible nodes found on the local network yet.</p>';
+    dashboardDOM.patchKeyedChildren(discoveryList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No visible nodes found on the local network yet.";
+        return empty;
+      },
+    });
     return;
   }
 
-  for (const p of ordered) {
+  dashboardDOM.patchKeyedChildren(discoveryList, ordered, {
+    keyOf: (peer) => peer.id,
+    signatureOf: (peer) => JSON.stringify({
+      peer,
+      pairing: dashboardState.pairing.status,
+      member: dashboardState.nodes.find((node) => node.id === peer.id),
+    }),
+    renderItem: (p) => {
     const card = document.createElement("div");
     card.className = "card";
-    const associated = p.role === "node" ? (p.orchestrator_id || "Not announced") : p.role === "orchestrator" ? "self" : "Not elected";
+    const associated = p.role === "node"
+      ? (p.orchestrator_id || "Not announced")
+      : p.role === "orchestrator"
+        ? dashboardState.pairing.status?.role === "node"
+          ? p.id === dashboardState.pairing.status.orchestrator_id ? "current orchestrator" : "available to join"
+          : "self"
+        : "Not elected";
     const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
     const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
+    const joinOrchestrator = p.role === "orchestrator" &&
+      dashboardState.pairing.status?.role === "node" && !p.local;
+    const orchestratorTarget = joinOrchestrator ? {
+      id: p.id,
+      role: p.role,
+      address: p.peer_addr || "",
+      peer_addr: p.peer_addr,
+      healthy: true,
+      discovered: true,
+      joinOrchestrator: true,
+    } : null;
+    const alreadyJoined = dashboardState.pairing.status?.joined &&
+      dashboardState.pairing.status.orchestrator_id === p.id;
+    const joinLabel = alreadyJoined
+      ? `Re-pair with ${p.id}`
+      : dashboardState.pairing.status?.joined
+        ? `Switch to ${p.id}'s cluster`
+        : `Join ${p.id}'s cluster`;
     card.innerHTML = `
       <h3>${escapeHtml(p.id)} <span class="badge healthy">${escapeHtml(p.role)}</span></h3>
       <div class="row"><span>Address</span><span>${escapeHtml(p.peer_addr || p.http_addr || "Address unavailable")}</span></div>
       ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
       <div class="row"><span>Associated orchestrator</span><span>${escapeHtml(associated)}</span></div>
       <div class="row"><span>Last seen</span><span>${p.local ? "This device" : p.last_seen ? new Date(p.last_seen).toLocaleTimeString() : "Online in cluster"}</span></div>
+      ${orchestratorTarget ? `<button type="button" class="discovery-join-orchestrator" data-action="join-orchestrator" ${p.peer_addr ? "" : "disabled"}>${escapeHtml(joinLabel)}</button>` : ""}
     `;
-    discoveryList.appendChild(card);
     if (p.role === "node") {
       attachNodeContextMenu(card, member || {
         id: p.id,
@@ -115,6 +166,13 @@ function renderDiscovery(peers) {
         active_tasks: 0,
         hardware: {},
       });
+    } else if (orchestratorTarget) {
+      card.querySelector("[data-action=join-orchestrator]")?.addEventListener("click", () => {
+        openPairingDialog(orchestratorTarget);
+      });
+      attachNodeContextMenu(card, orchestratorTarget);
     }
-  }
+    return card;
+    },
+  });
 }

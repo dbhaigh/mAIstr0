@@ -10,8 +10,17 @@ func NewFastFlowLM(baseURL string) *FastFlowLM {
 	return &FastFlowLM{VLLM: newOpenAICompatibleEngine(baseURL, "fastflowlm")}
 }
 
-func (f *FastFlowLM) Name() string { return "fastflowlm" }
+func (f *FastFlowLM) Name() string { return f.VLLM.Name() }
 
 func (f *FastFlowLM) ListModels() ([]Model, error) {
-	return f.VLLM.ListModels()
+	models, err := f.VLLM.ListModels()
+	if err != nil || f.Name() != TemplateFastFlowLMXDNA2 {
+		return models, err
+	}
+	for index := range models {
+		if models[index].Device == "" {
+			models[index].Device = "npu"
+		}
+	}
+	return models, nil
 }

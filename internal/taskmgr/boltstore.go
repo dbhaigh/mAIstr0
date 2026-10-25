@@ -27,6 +27,7 @@ func openBoltStore(path string) (*boltStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("taskmgr: open %s: %w", path, err)
 	}
+	db.MaxBatchDelay = 250 * time.Microsecond // Bound coalescing delay for synchronous state writes.
 	if err := db.Update(func(tx *bolt.Tx) error {
 		if _, err := tx.CreateBucketIfNotExists([]byte("tasks")); err != nil {
 			return err
@@ -67,7 +68,7 @@ func (s *boltStore) Save(task *Task) error {
 	if err != nil {
 		return fmt.Errorf("taskmgr: encode task %s: %w", task.ID, err)
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
+	return s.db.Batch(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("tasks")).Put([]byte(task.ID), encoded)
 	})
 }
@@ -80,12 +81,39 @@ func (s *boltStore) SaveCheckpoint(checkpoint *Checkpoint) error {
 	if err != nil {
 		return fmt.Errorf("taskmgr: encode checkpoint %s: %w", checkpoint.ID, err)
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
+	return s.db.Batch(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte("checkpoints"))
 		if err := bucket.Put([]byte(checkpoint.ID), encoded); err != nil {
 			return err
 		}
 		return bucket.Put([]byte("latest:"+checkpoint.TaskID), encoded)
+	})
+}
+
+func (s *boltStore) SaveTaskAndCheckpoint(task *Task, checkpoint *Checkpoint) error {
+	if task == nil || task.ID == "" {
+		return fmt.Errorf("taskmgr: task id is required")
+	}
+	if checkpoint == nil || checkpoint.ID == "" || checkpoint.TaskID != task.ID {
+		return fmt.Errorf("taskmgr: checkpoint id and matching task id are required")
+	}
+	encodedTask, err := json.Marshal(task)
+	if err != nil {
+		return fmt.Errorf("taskmgr: encode task %s: %w", task.ID, err)
+	}
+	encodedCheckpoint, err := json.Marshal(checkpoint)
+	if err != nil {
+		return fmt.Errorf("taskmgr: encode checkpoint %s: %w", checkpoint.ID, err)
+	}
+	return s.db.Batch(func(tx *bolt.Tx) error {
+		if err := tx.Bucket([]byte("tasks")).Put([]byte(task.ID), encodedTask); err != nil {
+			return err
+		}
+		bucket := tx.Bucket([]byte("checkpoints"))
+		if err := bucket.Put([]byte(checkpoint.ID), encodedCheckpoint); err != nil {
+			return err
+		}
+		return bucket.Put([]byte("latest:"+task.ID), encodedCheckpoint)
 	})
 }
 

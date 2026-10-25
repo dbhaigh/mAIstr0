@@ -1,0 +1,11 @@
+{
+  "status": 400,
+  "content_type": "application/json",
+  "body": {
+    "error": {
+      "message": "max_tokens must be greater than zero",
+      "type": "invalid_request_error"
+    },
+    "type": "error"
+  }
+}

@@ -30,6 +30,87 @@ func TestBestOrchestratorCandidateElectsSelfWhenAlone(t *testing.T) {
 	}
 }
 
+func TestBestOrchestratorCandidateWithTwoVisibleCandidates(t *testing.T) {
+	candidateA := Announcement{Role: "candidate", ID: "orchestrator-a", Score: 1}
+	candidateB := Announcement{Role: "candidate", ID: "orchestrator-b", Score: 2}
+
+	if IsBestOrchestratorCandidate(candidateA, []Peer{{Announcement: candidateB}}) {
+		t.Fatal("lower-capability candidate won while the higher-capability candidate was visible")
+	}
+	if !IsBestOrchestratorCandidate(candidateB, []Peer{{Announcement: candidateA}}) {
+		t.Fatal("higher-capability candidate lost while both candidates were visible")
+	}
+}
+
+func TestBestActiveOrchestratorIgnoresCandidates(t *testing.T) {
+	peers := []Peer{
+		{Announcement: Announcement{Role: "candidate", ID: "candidate-high", Score: 100}},
+		{Announcement: Announcement{Role: "orchestrator", ID: "active-low", Score: 10}},
+		{Announcement: Announcement{Role: "orchestrator", ID: "active-high", Score: 20}},
+		{Announcement: Announcement{Role: "node", ID: "node-high", Score: 200}},
+	}
+
+	best, ok := BestActiveOrchestrator(peers)
+	if !ok || best.ID != "active-high" {
+		t.Fatalf("BestActiveOrchestrator() = %#v, %v; want active-high", best, ok)
+	}
+}
+
+func TestPartitionedCandidatesCanElectIndependentLocalWinners(t *testing.T) {
+	candidateA := Announcement{Role: "candidate", ID: "orchestrator-a", Score: 1}
+	candidateB := Announcement{Role: "candidate", ID: "orchestrator-b", Score: 2}
+
+	if !IsBestOrchestratorCandidate(candidateA, nil) || !IsBestOrchestratorCandidate(candidateB, nil) {
+		t.Fatal("each isolated partition should elect its only visible candidate")
+	}
+}
+
+func TestSnapshotExpiresCandidatesAndAllowsPartitionLocalWinner(t *testing.T) {
+	listener := &Listener{peers: map[string]Peer{
+		"orchestrator-visible": {
+			Announcement: Announcement{Role: "candidate", ID: "orchestrator-visible", Score: 100},
+			LastSeen:     time.Now().Add(-peerTTL - time.Second),
+		},
+	}}
+
+	visible := listener.Snapshot()
+	if len(visible) != 0 {
+		t.Fatalf("Snapshot returned %d expired peers, want none", len(visible))
+	}
+	local := Announcement{Role: "candidate", ID: "orchestrator-local", Score: 1}
+	if !IsBestOrchestratorCandidate(local, visible) {
+		t.Fatal("local candidate did not win after the remote candidate's visibility lease expired")
+	}
+	if len(listener.peers) != 0 {
+		t.Fatalf("expired peers were not removed from listener state: %#v", listener.peers)
+	}
+}
+
+func TestExcludePeerSuppressesAndCanRestoreAnnouncements(t *testing.T) {
+	listener := &Listener{
+		peers: map[string]Peer{
+			"leader": {
+				Announcement: Announcement{Role: "orchestrator", ID: "leader"},
+				LastSeen:     time.Now(),
+			},
+		},
+	}
+	listener.ExcludePeer("leader")
+	if peers := listener.Snapshot(); len(peers) != 0 {
+		t.Fatalf("excluded leader is still visible: %#v", peers)
+	}
+	listener.IncludePeer("leader")
+	listener.mu.Lock()
+	listener.peers["leader"] = Peer{
+		Announcement: Announcement{Role: "orchestrator", ID: "leader"},
+		LastSeen:     time.Now(),
+	}
+	listener.mu.Unlock()
+	if peers := listener.Snapshot(); len(peers) != 1 || peers[0].ID != "leader" {
+		t.Fatalf("leader was not restored after recovery: %#v", peers)
+	}
+}
+
 func TestElectedOrchestratorDoesNotPreemptActiveLeader(t *testing.T) {
 	self := Announcement{Role: "orchestrator", ID: "orchestrator-old", Score: 10}
 	challenger := Peer{Announcement: Announcement{Role: "candidate", ID: "orchestrator-new", Score: 20}}

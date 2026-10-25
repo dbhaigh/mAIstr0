@@ -38,6 +38,36 @@ func TestNodeDispatchGateCapacityMath(t *testing.T) {
 	}
 }
 
+func TestNodeDispatchGateCoordinatesRefreshWithoutHoldingCapacityLock(t *testing.T) {
+	gate := newNodeDispatchGate(1)
+	done, owner := gate.beginRefresh()
+	if !owner {
+		t.Fatal("first capacity refresh did not become the owner")
+	}
+	waitDone, owner := gate.beginRefresh()
+	if owner || waitDone != done {
+		t.Fatal("concurrent capacity refresh did not join the in-flight probe")
+	}
+
+	occupancy := make(chan struct{})
+	go func() {
+		gate.occupancy()
+		close(occupancy)
+	}()
+	select {
+	case <-occupancy:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("capacity mutex remained held while a refresh was in flight")
+	}
+
+	gate.endRefresh()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("capacity refresh waiters were not released")
+	}
+}
+
 func TestNodeDispatchGateRespectsAvailableCapacity(t *testing.T) {
 	gate := newNodeDispatchGate(1)
 	// available models the changing node-advertised capacity read by the waiter.

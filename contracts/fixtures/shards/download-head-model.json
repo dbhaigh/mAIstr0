@@ -1,0 +1,36 @@
+{
+  "name": "download-recommended-hugging-face-gguf",
+  "request": {
+    "method": "POST",
+    "path": "/api/nodes/{id}/engines/managed/download-model",
+    "schema": "download-head-model.schema.json",
+    "body": {
+      "model": "qwen2.5-3b-instruct-q4",
+      "requested_context": 4096
+    }
+  },
+  "expected_response": {
+    "status": 200,
+    "body": {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "large-model",
+      "source": "huggingface",
+      "profile": {
+        "name": "large-model",
+        "architecture": "llama",
+        "parameters": 7000000000,
+        "layer_count": 32,
+        "hidden_size": 4096,
+        "kv_heads": 8,
+        "head_dim": 128,
+        "vocab_size": 32000,
+        "quantization": "q4_0",
+        "file_size_bytes": 4000000000,
+        "requested_context": 4096
+      }
+    }
+  },
+  "normalization_rules": [
+    "Fixed IDs, addresses, and RFC3339 timestamps; generated from Go wire types."
+  ]
+}

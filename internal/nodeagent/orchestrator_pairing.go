@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -37,19 +36,39 @@ func (c *orchestratorLink) pairWithOrchestrator(address, pin string) error {
 	return c.pairWithAddress(address, "", strings.TrimSpace(pin))
 }
 
+func (c *orchestratorLink) pairWithDiscoveredOrchestrator(id, address, pin string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("selected orchestrator identity is required")
+	}
+	address, err := normalizeOrchestratorAddress(address)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range c.orchestratorCandidates() {
+		if candidate.id != id {
+			continue
+		}
+		candidateAddress, err := normalizeOrchestratorAddress(candidate.address)
+		if err == nil && candidateAddress == address {
+			return c.pairWithAddress(address, id, strings.TrimSpace(pin))
+		}
+	}
+	return errSelectedOrchestratorNotDiscovered
+}
+
 func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (resultErr error) {
 	defer func() {
 		if resultErr != nil {
-			log.Printf("nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
+			logging.Errorf("nodeagent", "nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
 		}
 	}()
 	if !c.trust.Initialized() {
 		return errors.New("node identity is not initialized")
 	}
 	if pin == "" {
-		log.Printf("nodeagent: attempting auto-join with orchestrator at %s", address)
+		logging.Infof("nodeagent", "nodeagent: attempting auto-join with orchestrator at %s", address)
 	} else {
-		log.Printf("nodeagent: starting pairing with orchestrator at %s", address)
+		logging.Infof("nodeagent", "nodeagent: starting pairing with orchestrator at %s", address)
 	}
 	cfg := c.configState.configSnapshot()
 	body, err := json.Marshal(nodePairingRequest{
@@ -59,9 +78,13 @@ func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (res
 	if err != nil {
 		return fmt.Errorf("encode pairing request: %w", err)
 	}
+	transport := c.trust.BootstrapTransport()
+	if expectedID != "" {
+		transport = c.trust.BootstrapTransportForID(expectedID)
+	}
 	client := &http.Client{
 		Timeout:   5 * time.Second,
-		Transport: c.trust.BootstrapTransport(),
+		Transport: transport,
 	}
 	resp, err := client.Post(address+"/api/pairing/join", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -69,8 +92,7 @@ func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (res
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("pairing rejected by orchestrator at %s: %s: %s", address, resp.Status, strings.TrimSpace(string(message)))
+		return fmt.Errorf("pairing rejected by orchestrator at %s with HTTP status %d", address, resp.StatusCode)
 	}
 	var result nodePairingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -93,7 +115,7 @@ func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (res
 	c.configState.clearPairingPIN()
 	c.setOrchestratorAddr(address)
 	c.setOrchestratorID(result.ID)
-	log.Printf("nodeagent: successfully paired with orchestrator %s at %s", result.ID, address)
+	logging.Infof("nodeagent", "nodeagent: successfully paired with orchestrator %s at %s", result.ID, address)
 	return nil
 }
 

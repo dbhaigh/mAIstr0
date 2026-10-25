@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/worker-install-result.schema.json",
+  "title": "WorkerInstallResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source", "version", "updated", "engines"],
+  "properties": {
+    "source": {"type": "string", "enum": ["official", "xdna", "operator"]},
+    "version": {"type": "string"},
+    "updated": {"type": "boolean"},
+    "warning": {"type": "string"},
+    "devices": {"$ref": "node-status.schema.json#/properties/hardware/properties/devices"},
+    "engines": {
+      "type": "array",
+      "items": {"$ref": "managed-engine-status.schema.json"}
+    }
+  }
+}

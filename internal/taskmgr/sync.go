@@ -111,11 +111,7 @@ func (m *Manager) syncTasks(tasks []*Task, replace, mergeReplicas bool, sourceOr
 		if task.Status == StatusCompleted || task.Status == StatusFailed || task.Status == StatusCancelled {
 			task.cancel()
 		}
-		if _, err := m.saveCheckpointLocked(task); err != nil {
-			task.cancel()
-			return fmt.Errorf("taskmgr: checkpoint synchronized task %s: %w", task.ID, err)
-		}
-		if err := m.persistReplicaLocked(task); err != nil {
+		if _, err := m.saveTaskAndCheckpointLocked(task); err != nil {
 			task.cancel()
 			return err
 		}
@@ -127,20 +123,6 @@ func (m *Manager) syncTasks(tasks []*Task, replace, mergeReplicas bool, sourceOr
 		if sequence := taskSequence(task.ID); sequence > m.seq {
 			m.seq = sequence
 		}
-	}
-	return nil
-}
-
-func (m *Manager) persistReplicaLocked(task *Task) error {
-	if m.store == nil {
-		return nil
-	}
-	snapshot := cloneTask(task)
-	m.mu.Unlock()
-	err := m.store.Save(snapshot)
-	m.mu.Lock()
-	if err != nil {
-		return fmt.Errorf("taskmgr: persist synchronized task %s: %w", task.ID, err)
 	}
 	return nil
 }

@@ -10,49 +10,108 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/engine"
 )
 
 const (
-	DefaultNodeConcurrency     = 2
-	DefaultDispatchConcurrency = 16
+	DefaultNodeConcurrency                = 2
+	DefaultLogLevel                       = "info"
+	DefaultDispatchConcurrency            = 16
+	DefaultDispatchTimeoutSeconds         = 600
+	DefaultMaxConcurrentHedges            = 1
+	MaxAllowedConcurrentHedges            = 4
+	DefaultRouterRequestTimeoutSeconds    = 120
+	DefaultRouterTTFBTimeoutSeconds       = 60
+	DefaultRouterIdleStreamTimeoutSeconds = 30
+	MaxRouterRequestsPerMinute            = 100000
+	MaxRouterConcurrentPerClient          = 1024
+	DefaultSyncMaxBytes                   = int64(64 << 20)
+	DefaultSyncTimeoutSeconds             = 600
+	MaxSyncMaxBytes                       = int64(256 << 20)
+	MaxSyncTimeoutSeconds                 = 3600
 
 	OrchestratorModeFull    = "full"
 	OrchestratorModeMinimal = "minimal"
 )
 
 type EngineConfig struct {
-	Name        string `json:"name"`
-	URL         string `json:"url"`
-	RegistryURL string `json:"registry_url,omitempty"`
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	RegistryURL  string `json:"registry_url,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	ValidatedRPC bool   `json:"validated_rpc,omitempty"` // Operator opt-in after validating RPC sharding.
 }
 
 type NodeConfig struct {
-	NodeID                     string         `json:"node_id"`
-	ListenAddr                 string         `json:"listen_addr"`
-	AdvertiseAddr              string         `json:"advertise_addr"`
-	OrchestratorAddr           string         `json:"orchestrator_addr"` // empty = auto-discover on the LAN
-	MaxConcurrentTasks         int            `json:"max_concurrent_tasks"`
-	PairingPIN                 string         `json:"pairing_pin,omitempty"`
-	DisabledModels             []string       `json:"disabled_models"`
-	DefaultModel               string         `json:"default_model"`
-	Engines                    []EngineConfig `json:"engines,omitempty"`
-	DiscoveryEnabled           bool           `json:"discovery_enabled"`
-	AutoOpenBrowser            bool           `json:"auto_open_browser"`
-	TrayMode                   string         `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
-	MemoryPath                 string         `json:"memory_path"` // empty = default per-user data dir
-	explicitInvalidConcurrency bool
+	NodeID                       string                `json:"node_id"`
+	ListenAddr                   string                `json:"listen_addr"`
+	RPCRelayListenAddr           string                `json:"rpc_relay_listen_addr"`
+	LogLevel                     string                `json:"log_level,omitempty"`
+	AdvertiseAddr                string                `json:"advertise_addr"`
+	OrchestratorAddr             string                `json:"orchestrator_addr"` // empty = auto-discover on the LAN
+	MaxConcurrentTasks           int                   `json:"max_concurrent_tasks"`
+	PairingPIN                   string                `json:"pairing_pin,omitempty"`
+	DisabledModels               []string              `json:"disabled_models"`
+	DefaultModel                 string                `json:"default_model"`
+	Engines                      []EngineConfig        `json:"engines,omitempty"`
+	ManagedEngines               []ManagedEngineConfig `json:"managed_engines,omitempty"`
+	ManagedEngineBinaryAllowlist []string              `json:"managed_engine_binary_allowlist,omitempty"`
+	ManagedEngineModelAllowlist  []string              `json:"managed_engine_model_allowlist,omitempty"`
+	SupportedShardModels         []string              `json:"supported_shard_models,omitempty"`
+	MaxLayersItCanHost           int                   `json:"max_layers_it_can_host,omitempty"`
+	TrustedNetworkInterfaces     []string              `json:"trusted_network_interfaces,omitempty"`
+	AllowInsecureShardNetwork    bool                  `json:"allow_insecure_shard_network,omitempty"`
+	DiscoveryEnabled             bool                  `json:"discovery_enabled"`
+	AutoOpenBrowser              bool                  `json:"auto_open_browser"`
+	TrayMode                     string                `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
+	MemoryPath                   string                `json:"memory_path"` // empty = default per-user data dir
+	explicitInvalidConcurrency   bool
+	SyncMaxBytes                 int64 `json:"sync_max_bytes,omitempty"`
+	SyncTimeoutSeconds           int   `json:"sync_timeout_seconds,omitempty"`
+	explicitInvalidSyncMax       bool
+	explicitInvalidSyncTimeout   bool
 }
 
 func (cfg *NodeConfig) Normalize() {
+	cfg.LogLevel = normalizeLogLevel(cfg.LogLevel)
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = DefaultNodeConfig().ListenAddr
+	}
+	if cfg.RPCRelayListenAddr == "" {
+		cfg.RPCRelayListenAddr = DefaultNodeConfig().RPCRelayListenAddr
 	}
 	if cfg.MaxConcurrentTasks <= 0 {
 		cfg.explicitInvalidConcurrency = cfg.explicitInvalidConcurrency || cfg.MaxConcurrentTasks < 0
 		cfg.MaxConcurrentTasks = DefaultNodeConcurrency
+	}
+	if cfg.SyncMaxBytes <= 0 {
+		cfg.explicitInvalidSyncMax = cfg.explicitInvalidSyncMax || cfg.SyncMaxBytes < 0
+		cfg.SyncMaxBytes = DefaultSyncMaxBytes
+	}
+	if cfg.SyncTimeoutSeconds <= 0 {
+		cfg.explicitInvalidSyncTimeout = cfg.explicitInvalidSyncTimeout || cfg.SyncTimeoutSeconds < 0
+		cfg.SyncTimeoutSeconds = DefaultSyncTimeoutSeconds
+	}
+	seenShardModels := make(map[string]struct{}, len(cfg.SupportedShardModels))
+	shardModels := cfg.SupportedShardModels[:0]
+	for _, modelID := range cfg.SupportedShardModels {
+		modelID = strings.TrimSpace(modelID)
+		key := strings.ToLower(modelID)
+		if modelID == "" {
+			continue
+		}
+		if _, exists := seenShardModels[key]; exists {
+			continue
+		}
+		seenShardModels[key] = struct{}{}
+		shardModels = append(shardModels, modelID)
+	}
+	cfg.SupportedShardModels = shardModels
+	for index := range cfg.TrustedNetworkInterfaces {
+		cfg.TrustedNetworkInterfaces[index] = strings.TrimSpace(cfg.TrustedNetworkInterfaces[index])
 	}
 	if cfg.TrayMode == "" {
 		cfg.TrayMode = "taskbar"
@@ -61,11 +120,46 @@ func (cfg *NodeConfig) Normalize() {
 
 func (cfg NodeConfig) Validate() error {
 	var violations []error
+	if err := validateLogLevel(cfg.LogLevel); err != nil {
+		violations = append(violations, err)
+	}
 	if err := validateListenAddr(cfg.ListenAddr); err != nil {
 		violations = append(violations, fmt.Errorf("listen_addr: %w", err))
 	}
+	if err := validateListenAddr(cfg.RPCRelayListenAddr); err != nil {
+		violations = append(violations, fmt.Errorf("rpc_relay_listen_addr: %w", err))
+	} else {
+		_, port, _ := net.SplitHostPort(cfg.RPCRelayListenAddr)
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			violations = append(violations, errors.New("rpc_relay_listen_addr must use a fixed port between 1 and 65535"))
+		}
+	}
 	if cfg.MaxConcurrentTasks <= 0 || cfg.explicitInvalidConcurrency {
 		violations = append(violations, fmt.Errorf("max_concurrent_tasks must be greater than zero"))
+	}
+	if cfg.MaxLayersItCanHost < 0 {
+		violations = append(violations, errors.New("max_layers_it_can_host must not be negative"))
+	}
+	if len(cfg.SupportedShardModels) > 0 && cfg.MaxLayersItCanHost <= 0 {
+		violations = append(violations, errors.New("max_layers_it_can_host must be greater than zero when supported_shard_models is set"))
+	}
+	seenTrustedInterfaces := make(map[string]struct{}, len(cfg.TrustedNetworkInterfaces))
+	for index, name := range cfg.TrustedNetworkInterfaces {
+		if name == "" || strings.ContainsAny(name, "\x00\r\n") {
+			violations = append(violations, fmt.Errorf("trusted_network_interfaces[%d] must be a non-empty interface name", index))
+			continue
+		}
+		if _, exists := seenTrustedInterfaces[name]; exists {
+			violations = append(violations, fmt.Errorf("trusted_network_interfaces[%d] duplicates another interface", index))
+		}
+		seenTrustedInterfaces[name] = struct{}{}
+	}
+	if cfg.SyncMaxBytes < 1 || cfg.SyncMaxBytes > MaxSyncMaxBytes || cfg.explicitInvalidSyncMax {
+		violations = append(violations, fmt.Errorf("sync_max_bytes must be between 1 and %d", MaxSyncMaxBytes))
+	}
+	if cfg.SyncTimeoutSeconds < 1 || cfg.SyncTimeoutSeconds > MaxSyncTimeoutSeconds || cfg.explicitInvalidSyncTimeout {
+		violations = append(violations, fmt.Errorf("sync_timeout_seconds must be between 1 and %d", MaxSyncTimeoutSeconds))
 	}
 	if cfg.TrayMode != "taskbar" && cfg.TrayMode != "hidden" {
 		violations = append(violations, fmt.Errorf("tray_mode must be \"taskbar\" or \"hidden\""))
@@ -79,6 +173,9 @@ func (cfg NodeConfig) Validate() error {
 	for index, configured := range cfg.Engines {
 		if engine.NewConfigured(configured.Name, configured.URL) == nil {
 			violations = append(violations, fmt.Errorf("engines[%d].name %q is not supported", index, configured.Name))
+		}
+		if err := ValidateManagedEngines(cfg.ManagedEngines, cfg.ManagedEngineBinaryAllowlist, cfg.ManagedEngineModelAllowlist); err != nil {
+			violations = append(violations, err)
 		}
 		if configured.URL == "" {
 			violations = append(violations, fmt.Errorf("engines[%d].url must be a valid HTTP or HTTPS URL", index))
@@ -98,28 +195,50 @@ func (cfg NodeConfig) Validate() error {
 func DefaultNodeConfig() NodeConfig {
 	return NodeConfig{
 		ListenAddr:         ":7451",
+		RPCRelayListenAddr: ":7452",
+		LogLevel:           DefaultLogLevel,
 		AdvertiseAddr:      "",
 		OrchestratorAddr:   "",
 		MaxConcurrentTasks: DefaultNodeConcurrency,
 		DiscoveryEnabled:   true,
 		AutoOpenBrowser:    true,
 		TrayMode:           "taskbar",
+		SyncMaxBytes:       DefaultSyncMaxBytes,
+		SyncTimeoutSeconds: DefaultSyncTimeoutSeconds,
 	}
 }
 
 type OrchestratorConfig struct {
-	ListenAddr                 string `json:"listen_addr"`
-	Mode                       string `json:"mode,omitempty"` // "full" or "minimal"
-	Harness                    string `json:"harness"`        // "deepseek" or "pi"
-	MaxConcurrentDispatches    int    `json:"max_concurrent_dispatches"`
-	DiscoveryEnabled           bool   `json:"discovery_enabled"`
-	AutoOpenBrowser            bool   `json:"auto_open_browser"`
-	TrayMode                   string `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
-	MemoryPath                 string `json:"memory_path"` // empty = default per-user data dir
-	explicitInvalidConcurrency bool
+	ListenAddr                          string               `json:"listen_addr"`
+	LogLevel                            string               `json:"log_level,omitempty"`
+	Mode                                string               `json:"mode,omitempty"` // "full" or "minimal"
+	Harness                             string               `json:"harness"`        // "deepseek" or "pi"
+	MaxConcurrentDispatches             int                  `json:"max_concurrent_dispatches"`
+	DispatchTimeoutSeconds              int                  `json:"dispatch_timeout_seconds"`
+	ShardedModels                       []ShardedModelConfig `json:"sharded_models,omitempty"`
+	DiscoveryEnabled                    bool                 `json:"discovery_enabled"`
+	AutoOpenBrowser                     bool                 `json:"auto_open_browser"`
+	TrayMode                            string               `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
+	MemoryPath                          string               `json:"memory_path"` // empty = default per-user data dir
+	SyncMaxBytes                        int64                `json:"sync_max_bytes,omitempty"`
+	SyncTimeoutSeconds                  int                  `json:"sync_timeout_seconds,omitempty"`
+	SpeculativeHedgingEnabled           bool                 `json:"speculative_hedging_enabled,omitempty"`
+	MaxConcurrentHedges                 int                  `json:"max_concurrent_hedges,omitempty"`
+	RouterTimeToFirstByteTimeoutSeconds int                  `json:"router_time_to_first_byte_timeout_seconds"`
+	RouterIdleStreamTimeoutSeconds      int                  `json:"router_idle_stream_timeout_seconds"`
+	RouterRequestsPerMinute             int                  `json:"router_requests_per_minute,omitempty"`
+	RouterMaxConcurrentPerClient        int                  `json:"router_max_concurrent_per_client,omitempty"`
+	explicitInvalidConcurrency          bool
+	explicitInvalidDispatchTimeout      bool
+	explicitInvalidHedgeCap             bool
+	explicitInvalidRouterTTFBTimeout    bool
+	explicitInvalidRouterIdleTimeout    bool
+	explicitInvalidSyncMax              bool
+	explicitInvalidSyncTimeout          bool
 }
 
 func (cfg *OrchestratorConfig) Normalize() {
+	cfg.LogLevel = normalizeLogLevel(cfg.LogLevel)
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = DefaultOrchestratorConfig().ListenAddr
 	}
@@ -135,6 +254,33 @@ func (cfg *OrchestratorConfig) Normalize() {
 		cfg.explicitInvalidConcurrency = cfg.explicitInvalidConcurrency || cfg.MaxConcurrentDispatches < 0
 		cfg.MaxConcurrentDispatches = DefaultDispatchConcurrency
 	}
+	if cfg.DispatchTimeoutSeconds <= 0 {
+		cfg.explicitInvalidDispatchTimeout = cfg.explicitInvalidDispatchTimeout || cfg.DispatchTimeoutSeconds < 0
+		cfg.DispatchTimeoutSeconds = DefaultDispatchTimeoutSeconds
+	}
+	if cfg.MaxConcurrentHedges <= 0 {
+		cfg.explicitInvalidHedgeCap = cfg.explicitInvalidHedgeCap || cfg.MaxConcurrentHedges < 0
+		cfg.MaxConcurrentHedges = DefaultMaxConcurrentHedges
+	}
+	if cfg.RouterTimeToFirstByteTimeoutSeconds <= 0 {
+		cfg.explicitInvalidRouterTTFBTimeout = cfg.explicitInvalidRouterTTFBTimeout || cfg.RouterTimeToFirstByteTimeoutSeconds < 0
+		cfg.RouterTimeToFirstByteTimeoutSeconds = DefaultRouterTTFBTimeoutSeconds
+	}
+	if cfg.RouterIdleStreamTimeoutSeconds <= 0 {
+		cfg.explicitInvalidRouterIdleTimeout = cfg.explicitInvalidRouterIdleTimeout || cfg.RouterIdleStreamTimeoutSeconds < 0
+		cfg.RouterIdleStreamTimeoutSeconds = DefaultRouterIdleStreamTimeoutSeconds
+	}
+	if cfg.SyncMaxBytes <= 0 {
+		cfg.explicitInvalidSyncMax = cfg.explicitInvalidSyncMax || cfg.SyncMaxBytes < 0
+		cfg.SyncMaxBytes = DefaultSyncMaxBytes
+	}
+	if cfg.SyncTimeoutSeconds <= 0 {
+		cfg.explicitInvalidSyncTimeout = cfg.explicitInvalidSyncTimeout || cfg.SyncTimeoutSeconds < 0
+		cfg.SyncTimeoutSeconds = DefaultSyncTimeoutSeconds
+	}
+	for i := range cfg.ShardedModels {
+		cfg.ShardedModels[i].Normalize()
+	}
 	if cfg.TrayMode == "" {
 		cfg.TrayMode = "taskbar"
 	}
@@ -142,6 +288,9 @@ func (cfg *OrchestratorConfig) Normalize() {
 
 func (cfg OrchestratorConfig) Validate() error {
 	var violations []error
+	if err := validateLogLevel(cfg.LogLevel); err != nil {
+		violations = append(violations, err)
+	}
 	if err := validateListenAddr(cfg.ListenAddr); err != nil {
 		violations = append(violations, fmt.Errorf("listen_addr: %w", err))
 	}
@@ -154,6 +303,51 @@ func (cfg OrchestratorConfig) Validate() error {
 	if cfg.MaxConcurrentDispatches <= 0 || cfg.explicitInvalidConcurrency {
 		violations = append(violations, fmt.Errorf("max_concurrent_dispatches must be greater than zero"))
 	}
+	if cfg.DispatchTimeoutSeconds <= 0 || cfg.explicitInvalidDispatchTimeout {
+		violations = append(violations, fmt.Errorf("dispatch_timeout_seconds must be greater than zero"))
+	}
+	if cfg.MaxConcurrentHedges < 1 || cfg.MaxConcurrentHedges > MaxAllowedConcurrentHedges ||
+		cfg.MaxConcurrentHedges > cfg.MaxConcurrentDispatches || cfg.explicitInvalidHedgeCap {
+		violations = append(violations, fmt.Errorf(
+			"max_concurrent_hedges must be between 1 and min(%d, max_concurrent_dispatches)",
+			MaxAllowedConcurrentHedges,
+		))
+	}
+	if cfg.RouterTimeToFirstByteTimeoutSeconds < 1 ||
+		cfg.RouterTimeToFirstByteTimeoutSeconds > DefaultRouterRequestTimeoutSeconds ||
+		cfg.explicitInvalidRouterTTFBTimeout {
+		violations = append(violations, fmt.Errorf(
+			"router_time_to_first_byte_timeout_seconds must be between 1 and %d",
+			DefaultRouterRequestTimeoutSeconds,
+		))
+	}
+	if cfg.RouterIdleStreamTimeoutSeconds < 1 ||
+		cfg.RouterIdleStreamTimeoutSeconds > DefaultRouterRequestTimeoutSeconds ||
+		cfg.explicitInvalidRouterIdleTimeout {
+		violations = append(violations, fmt.Errorf(
+			"router_idle_stream_timeout_seconds must be between 1 and %d",
+			DefaultRouterRequestTimeoutSeconds,
+		))
+	}
+	if cfg.RouterRequestsPerMinute < 0 || cfg.RouterRequestsPerMinute > MaxRouterRequestsPerMinute {
+		violations = append(violations, fmt.Errorf(
+			"router_requests_per_minute must be between 0 and %d",
+			MaxRouterRequestsPerMinute,
+		))
+	}
+	if cfg.RouterMaxConcurrentPerClient < 0 ||
+		cfg.RouterMaxConcurrentPerClient > MaxRouterConcurrentPerClient {
+		violations = append(violations, fmt.Errorf(
+			"router_max_concurrent_per_client must be between 0 and %d",
+			MaxRouterConcurrentPerClient,
+		))
+	}
+	if cfg.SyncMaxBytes < 1 || cfg.SyncMaxBytes > MaxSyncMaxBytes || cfg.explicitInvalidSyncMax {
+		violations = append(violations, fmt.Errorf("sync_max_bytes must be between 1 and %d", MaxSyncMaxBytes))
+	}
+	if cfg.SyncTimeoutSeconds < 1 || cfg.SyncTimeoutSeconds > MaxSyncTimeoutSeconds || cfg.explicitInvalidSyncTimeout {
+		violations = append(violations, fmt.Errorf("sync_timeout_seconds must be between 1 and %d", MaxSyncTimeoutSeconds))
+	}
 	if cfg.TrayMode != "taskbar" && cfg.TrayMode != "hidden" {
 		violations = append(violations, fmt.Errorf("tray_mode must be \"taskbar\" or \"hidden\""))
 	}
@@ -163,18 +357,54 @@ func (cfg OrchestratorConfig) Validate() error {
 	if err := validateMemoryPath(cfg.MemoryPath); err != nil {
 		violations = append(violations, err)
 	}
+	modelIDs := make(map[string]struct{}, len(cfg.ShardedModels))
+	for i, model := range cfg.ShardedModels {
+		if err := model.Validate(); err != nil {
+			violations = append(violations, fmt.Errorf("sharded_models[%d]: %w", i, err))
+		}
+		if _, exists := modelIDs[model.LogicalID]; exists {
+			violations = append(violations, fmt.Errorf(
+				"sharded_models[%d].logical_id %q is duplicated", i, model.LogicalID,
+			))
+		}
+		modelIDs[model.LogicalID] = struct{}{}
+	}
 	return errors.Join(violations...)
 }
 
 func DefaultOrchestratorConfig() OrchestratorConfig {
 	return OrchestratorConfig{
-		ListenAddr:              ":7450",
-		Mode:                    OrchestratorModeFull,
-		Harness:                 "pi",
-		MaxConcurrentDispatches: DefaultDispatchConcurrency,
-		DiscoveryEnabled:        true,
-		AutoOpenBrowser:         true,
-		TrayMode:                "taskbar",
+		ListenAddr:                          ":7450",
+		LogLevel:                            DefaultLogLevel,
+		Mode:                                OrchestratorModeFull,
+		Harness:                             "pi",
+		MaxConcurrentDispatches:             DefaultDispatchConcurrency,
+		DispatchTimeoutSeconds:              DefaultDispatchTimeoutSeconds,
+		MaxConcurrentHedges:                 DefaultMaxConcurrentHedges,
+		RouterTimeToFirstByteTimeoutSeconds: DefaultRouterTTFBTimeoutSeconds,
+		RouterIdleStreamTimeoutSeconds:      DefaultRouterIdleStreamTimeoutSeconds,
+		DiscoveryEnabled:                    true,
+		AutoOpenBrowser:                     true,
+		TrayMode:                            "taskbar",
+		SyncMaxBytes:                        DefaultSyncMaxBytes,
+		SyncTimeoutSeconds:                  DefaultSyncTimeoutSeconds,
+	}
+}
+
+func normalizeLogLevel(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return DefaultLogLevel
+	}
+	return value
+}
+
+func validateLogLevel(value string) error {
+	switch value {
+	case "debug", "info", "warn", "error":
+		return nil
+	default:
+		return fmt.Errorf("log_level must be debug, info, warn, or error")
 	}
 }
 

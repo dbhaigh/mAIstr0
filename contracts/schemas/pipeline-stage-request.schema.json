@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/pipeline-stage-request.schema.json",
+  "title": "PipelineStageRequest",
+  "type": "object",
+  "required": ["protocol_version", "request_id", "assignment"],
+  "properties": {
+    "protocol_version": {"type": "integer", "const": 2},
+    "request_id": {"type": "string", "minLength": 1},
+    "assignment": {"$ref": "stage-assignment.schema.json"},
+    "prompt": {"type": "string"},
+    "activation": {"$ref": "activation-tensor.schema.json"},
+    "input_token_id": {"type": "integer"},
+    "position": {"type": "integer", "minimum": 0},
+    "temperature": {"type": "number"},
+    "max_tokens": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": true
+}

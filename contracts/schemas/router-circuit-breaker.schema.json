@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/router-circuit-breaker.schema.json",
+  "title": "RouterCircuitBreaker",
+  "type": "object",
+  "required": ["node_id", "model", "state", "recent_failures"],
+  "properties": {
+    "node_id": {"type": "string", "minLength": 1},
+    "model": {"type": "string", "minLength": 1},
+    "state": {"enum": ["closed", "open", "half_open"]},
+    "recent_failures": {"type": "integer", "minimum": 0},
+    "open_until": {"type": "string", "format": "date-time"},
+    "probe_in_flight": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}

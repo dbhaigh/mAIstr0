@@ -7,10 +7,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/agent/deepseekadapter"
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/deepseek"
+	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/hub"
 )
 
@@ -41,8 +46,8 @@ func (p *fakeProvider) Complete(_ context.Context, request CompletionRequest, on
 	return response, nil
 }
 
-func testToolHost() *agent.DeepSeek {
-	return agent.NewDeepSeek(cluster.NewRegistry(), nil, nil, hub.New())
+func testToolHost() *deepseekadapter.DeepSeek {
+	return deepseekadapter.NewDeepSeek(cluster.NewRegistry(), nil, nil, hub.New())
 }
 
 func TestNativeAgentLoopExecutesToolsAndKeepsHistory(t *testing.T) {
@@ -59,6 +64,7 @@ func TestNativeAgentLoopExecutesToolsAndKeepsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	events := make(chan agent.StreamEvent, 16)
 	final, err := backend.SendMessage(context.Background(), session.ID, "Check the cluster.", events)
 	if err != nil {
@@ -103,6 +109,95 @@ func TestNativeAgentLoopExecutesToolsAndKeepsHistory(t *testing.T) {
 	if !backend.DeleteSession(session.ID) || len(host.ListSessions()) != 0 {
 		t.Fatal("deleting the Pi session did not clean up its tool-host session")
 	}
+}
+
+func TestScriptedConversationRunsThroughBothHarnesses(t *testing.T) {
+	var deepSeekCalls atomic.Int32
+	coordinator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deepSeekCalls.Add(1)
+		var request map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode DeepSeek coordinator request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(request["prompt"], "<tool_response>") {
+			_ = json.NewEncoder(w).Encode(map[string]string{"output": "The calculation result is 144."})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"output": "I will calculate 12 * 12.\n<tool_call>\n{\"name\":\"eval_expression\",\"arguments\":{\"expression\":\"12 * 12\"}}\n</tool_call>",
+		})
+	}))
+	defer coordinator.Close()
+
+	registry := cluster.NewRegistry()
+	registry.Upsert(cluster.NodeStatus{
+		ID: "coordinator", Address: coordinator.URL,
+		Hardware:     hardware.Info{CPUCores: 8, TotalRAMMB: 16384, Score: 100},
+		Models:       []engine.Model{{Name: "scripted-local", Tags: []string{"chat", "reasoning"}}},
+		DefaultModel: "scripted-local", Healthy: true, Leader: true,
+	})
+
+	deepSeek := deepseek.New(registry, coordinator.Client())
+	deepSeekSession := deepSeek.CreateSession("scripted", deepseek.SessionConfig{CoordinatorModel: "scripted-local"})
+	deepSeekFinal, err := deepSeek.SendMessage(context.Background(), deepSeekSession.ID, "What is 12 * 12?", nil)
+	if err != nil {
+		t.Fatalf("DeepSeek SendMessage: %v", err)
+	}
+
+	piProvider := &fakeProvider{responses: []*Completion{
+		{ToolCalls: []ChatToolCall{{
+			ID: "call-1", Type: "function",
+			Function: ChatToolFunction{Name: "eval_expression", Arguments: `{"expression":"12 * 12"}`},
+		}}},
+		{Content: "The calculation result is 144."},
+	}}
+	toolHost := deepseekadapter.NewDeepSeek(registry, coordinator.Client(), nil, hub.New())
+	piBackend := New(piProvider, toolHost)
+	piSession, err := piBackend.CreateSession("scripted", agent.SessionConfig{CoordinatorModel: "scripted-local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	piFinal, err := piBackend.SendMessage(context.Background(), piSession.ID, "What is 12 * 12?", nil)
+	if err != nil {
+		t.Fatalf("Pi SendMessage: %v", err)
+	}
+
+	if deepSeekFinal.Content != piFinal.Content || deepSeekFinal.Content != "The calculation result is 144." {
+		t.Fatalf("final answers differ: DeepSeek=%q Pi=%q", deepSeekFinal.Content, piFinal.Content)
+	}
+	if deepSeekCalls.Load() != 2 || len(piProvider.requests) != 2 {
+		t.Fatalf("model calls: DeepSeek=%d Pi=%d, want two each", deepSeekCalls.Load(), len(piProvider.requests))
+	}
+
+	deepSeekStored, ok := deepSeek.GetSession(deepSeekSession.ID)
+	if !ok {
+		t.Fatal("DeepSeek session disappeared")
+	}
+	piStored, ok := piBackend.GetSession(piSession.ID)
+	if !ok {
+		t.Fatal("Pi session disappeared")
+	}
+	assertScriptedHistory := func(name string, messages []agent.Message) {
+		t.Helper()
+		if len(messages) != 4 || messages[0].Role != agent.RoleUser ||
+			messages[1].Role != agent.RoleAssistant || len(messages[1].ToolCalls) != 1 ||
+			messages[1].ToolCalls[0].Name != "eval_expression" ||
+			messages[2].Role != agent.RoleTool || messages[3].Role != agent.RoleAssistant {
+			t.Fatalf("%s conversation history = %#v", name, messages)
+		}
+	}
+	deepSeekHistory := make([]agent.Message, 0, len(deepSeekStored.Messages))
+	for _, message := range deepSeekStored.Messages {
+		converted := agent.Message{Role: agent.MessageRole(message.Role)}
+		for _, call := range message.ToolCalls {
+			converted.ToolCalls = append(converted.ToolCalls, agent.ToolCall(call))
+		}
+		deepSeekHistory = append(deepSeekHistory, converted)
+	}
+	assertScriptedHistory("DeepSeek", deepSeekHistory)
+	assertScriptedHistory("Pi", piStored.Messages)
 }
 
 func TestNativeAgentExecutesEveryToolRequestedInOneTurn(t *testing.T) {

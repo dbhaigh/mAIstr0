@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/shard-model-profile.schema.json",
+  "title": "ShardModelProfile",
+  "type": "object",
+  "required": ["name", "layer_count", "hidden_size", "kv_heads", "head_dim", "requested_context"],
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "architecture": {"type": "string"},
+    "parameters": {"type": "integer", "minimum": 0},
+    "layer_count": {"type": "integer", "minimum": 1},
+    "hidden_size": {"type": "integer", "minimum": 1},
+    "kv_heads": {"type": "integer", "minimum": 1},
+    "head_dim": {"type": "integer", "minimum": 1},
+    "vocab_size": {"type": "integer", "minimum": 0},
+    "quantization": {"type": "string"},
+    "file_size_bytes": {"type": "integer", "minimum": 0},
+    "weights_size_bytes": {"type": "integer", "minimum": 0},
+    "requested_context": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}

@@ -1,32 +1,36 @@
 // Package nodeagent implements the per-node HTTP service: it detects local
 // LLM engines/models and hardware, reports itself to the orchestrator, and
-// executes subtasks dispatched to it.
+// executes subtasks dispatched to it. Engine probes run without inventory
+// locks; a generation check prevents an invalidated probe from restoring stale
+// state.
 package nodeagent
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/hub"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
-	"github.com/maistr0/maistr0/internal/version"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Agent is the public facade and composition root for node-local components.
-// Component pointers are wired before Run and keep their own synchronized state.
+// Component pointers are wired before Run and own their synchronized state;
+// lock ownership and ordering are documented with each component.
 type Agent struct {
 	*engineComponent
 	*telemetryComponent
@@ -37,11 +41,13 @@ type Agent struct {
 	*peerComponent
 	*dialogueComponent
 
-	events *hub.Hub
-
-	tasks  *taskmgr.Manager
-	mem    memory.Store
-	syncer syncerAPI
+	stageComponent      *stageComponent
+	mem                 memory.Store
+	generateIdempotency *generateIdempotencyCache
+	statusReporter      *statusComponent
+	managedEngines      *supervisor.Manager
+	rpcRelays           *rpcRelayManager
+	rpcRelayMu          sync.Mutex
 }
 
 type peerDispatchJob struct {
@@ -94,7 +100,7 @@ func NewWithPersistentTasks(cfg config.NodeConfig) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("nodeagent: open task history: %w", err)
 	}
-	return newAgentWithNormalizedConfig(cfg, tasks, engine.DetectAll), nil
+	return newAgentWithNormalizedConfig(cfg, tasks, engine.DetectAll)
 }
 
 func newAgent(cfg config.NodeConfig, tasks *taskmgr.Manager) (*Agent, error) {
@@ -106,7 +112,7 @@ func newAgentWithEngineDetector(cfg config.NodeConfig, tasks *taskmgr.Manager, d
 	if err != nil {
 		return nil, err
 	}
-	return newAgentWithNormalizedConfig(cfg, tasks, detector), nil
+	return newAgentWithNormalizedConfig(cfg, tasks, detector)
 }
 
 func normalizeAgentConfig(cfg config.NodeConfig) (config.NodeConfig, error) {
@@ -126,52 +132,79 @@ func normalizeAgentConfig(cfg config.NodeConfig) (config.NodeConfig, error) {
 	return cfg, nil
 }
 
-func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) *Agent {
+func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) (*Agent, error) {
+	managedEngines, err := supervisor.New(cfg, supervisor.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("nodeagent: initialize managed engine supervisor: %w", err)
+	}
 	tasks.SetSyncOrigin("task:" + cfg.NodeID)
 	configuredEngines := make([]engine.Engine, 0, len(cfg.Engines))
 	for _, configured := range cfg.Engines {
-		if e := engine.NewConfigured(configured.Name, configured.URL); e != nil {
+		if e := engine.NewConfiguredWithAPIKey(configured.Name, configured.URL, configured.APIKey); e != nil {
 			configuredEngines = append(configuredEngines, e)
 		}
 	}
 	hw := hardware.Detect()
 	state := newAgentState(cfg)
 	telemetry := newTelemetryComponent(hw)
+	telemetry.hardwareUsageProbe = func() hardwareUsageSample {
+		usage := currentHardwareUsage()
+		devices, err := managedEngines.RuntimeDevices(context.Background())
+		if err != nil {
+			logging.Errorf("nodeagent", "installed runtime device probe failed: %v", err)
+			usage.runtimeProbe = true
+		} else if devices != nil {
+			usage.runtimeDevices, usage.runtimeProbe = devices, true
+		}
+		return usage
+	}
 	executor := newExecutorComponent(cfg.MaxConcurrentTasks, state)
 	engines := newEngineComponent(configuredEngines, detector, telemetry, state)
+	engines.operatorCapabilities = make(map[string]engine.Capabilities)
+	for _, configured := range cfg.Engines {
+		if configured.ValidatedRPC {
+			key := strings.ToLower(strings.TrimSpace(configured.Name))
+			engines.operatorCapabilities[key] = engine.Capabilities{ValidatedRPC: true}
+		}
+	}
 	identity := newIdentityComponent()
 	events := hub.New()
 	link := newOrchestratorLink(state, identity, telemetry, engines, tasks, events)
+	stages := newStageComponent()
+	statusReporter := newStatusComponent(state, telemetry, engines, executor, stages)
 	peers := newPeerComponent(
 		state, telemetry, engines, executor, tasks,
 		func() *http.Client { return link.peerClient },
 		config.DefaultDispatchConcurrency,
 	)
 	a := &Agent{
-		tasks:              tasks,
-		events:             events,
-		engineComponent:    engines,
-		telemetryComponent: telemetry,
-		agentState:         state,
-		identityComponent:  identity,
-		orchestratorLink:   link,
-		executorComponent:  executor,
-		peerComponent:      peers,
+		engineComponent:     engines,
+		telemetryComponent:  telemetry,
+		agentState:          state,
+		identityComponent:   identity,
+		orchestratorLink:    link,
+		executorComponent:   executor,
+		stageComponent:      stages,
+		peerComponent:       peers,
+		generateIdempotency: newGenerateIdempotencyCache(),
+		statusReporter:      statusReporter,
+		managedEngines:      managedEngines,
 	}
 	link.statusSnapshot = a.status
 	link.currentTasks = peers.currentTasks
 	if store, err := memory.Open(cfg.MemoryPath, cfg.NodeID); err != nil {
-		log.Printf("nodeagent: memory unavailable, running stateless: %v", err)
+		logging.Errorf("nodeagent", "nodeagent: memory unavailable, running stateless: %v", err)
 	} else {
 		a.mem = store
-		log.Printf("nodeagent: memory store at %s", store.Path())
+		logging.Infof("nodeagent", "nodeagent: memory store at %s", store.Path())
 	}
 	a.dialogueComponent = newDialogueComponent(a.cfg.NodeID, a.mem, a.engineComponent, a.executorComponent, a.remember)
-	a.syncer = newSyncerComponent(
+	link.syncer = newSyncerComponent(
 		cfg.NodeID, tasks, a.mem,
 		func() *http.Client { return link.peerClient },
 		func() *http.Client { return link.memorySyncClient },
 		a.Peers,
+		cfg.SyncMaxBytes,
 		func() bool {
 			if a.getOrchestratorAddr() != "" && a.getOrchestratorID() != "" {
 				return false
@@ -179,16 +212,16 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 			return a.mostCapableNode().ID == cfg.NodeID
 		},
 	)
-	return a
+	return a, nil
 }
 
 // Close flushes and releases the persistent task and memory stores.
 func (a *Agent) Close() error {
 	var closeErr error
-	if a.tasks != nil {
-		for _, task := range a.tasks.All() {
+	if a.orchestratorLink.tasks != nil {
+		for _, task := range a.orchestratorLink.tasks.All() {
 			if task.Status == taskmgr.StatusPending || task.Status == taskmgr.StatusRunning || task.Status == taskmgr.StatusSynthesis {
-				if _, err := a.tasks.CancelChecked(task.ID); err != nil {
+				if _, err := a.orchestratorLink.tasks.CancelChecked(task.ID); err != nil {
 					closeErr = errors.Join(closeErr, err)
 				}
 			}
@@ -197,8 +230,14 @@ func (a *Agent) Close() error {
 	if a.peerComponent != nil && a.peerComponent.dispatchPool != nil {
 		a.peerComponent.dispatchPool.Close()
 	}
-	if a.tasks != nil {
-		closeErr = errors.Join(closeErr, a.tasks.Close())
+	if a.managedEngines != nil {
+		closeErr = errors.Join(closeErr, a.managedEngines.Close())
+	}
+	if a.rpcRelays != nil {
+		closeErr = errors.Join(closeErr, a.rpcRelays.Close())
+	}
+	if a.orchestratorLink.tasks != nil {
+		closeErr = errors.Join(closeErr, a.orchestratorLink.tasks.Close())
 	}
 	if a.mem != nil {
 		closeErr = errors.Join(closeErr, a.mem.Close())
@@ -212,20 +251,37 @@ func (a *Agent) Memory() memory.Store { return a.mem }
 
 // InitializeIdentity loads the node's persistent TLS identity before serving.
 func (a *Agent) InitializeIdentity() error {
-	if a.identityComponent.Initialized() {
-		return nil
+	if !a.identityComponent.Initialized() {
+		if err := a.identityComponent.initialize(a.cfg.NodeID, a.cfg.MemoryPath, a.cfg.AdvertiseAddr); err != nil {
+			return err
+		}
+		transport, err := a.identityComponent.clientTransport()
+		if err != nil {
+			return err
+		}
+		a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: transport}
+		a.memorySyncClient = &http.Client{
+			Timeout:   time.Duration(a.cfg.SyncTimeoutSeconds) * time.Second,
+			Transport: transport,
+		}
+		a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: transport}
+		a.streamClient = &http.Client{Transport: transport}
 	}
-	if err := a.identityComponent.initialize(a.cfg.NodeID, a.cfg.MemoryPath, a.cfg.AdvertiseAddr); err != nil {
-		return err
+	a.rpcRelayMu.Lock()
+	defer a.rpcRelayMu.Unlock()
+	if a.rpcRelays == nil {
+		relays, err := newRPCRelayManager(
+			a.identityComponent.identity,
+			a.cfg.NodeID,
+			a.cfg.RPCRelayListenAddr,
+			a.cfg.AdvertiseAddr,
+		)
+		if err != nil {
+			return fmt.Errorf("initialize RPC relay: %w", err)
+		}
+		a.rpcRelays = relays
+		a.managedEngines.SetRPCRelayController(relays)
 	}
-	transport, err := a.identityComponent.clientTransport()
-	if err != nil {
-		return err
-	}
-	a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: transport}
-	a.memorySyncClient = &http.Client{Timeout: memorySyncTimeout, Transport: transport}
-	a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: transport}
-	a.streamClient = &http.Client{Transport: transport}
 	return nil
 }
 
@@ -299,7 +355,7 @@ func (a *Agent) remember(e memory.Experience) {
 		e.NodeID = a.cfg.NodeID
 	}
 	if _, err := a.mem.Record(e); err != nil {
-		log.Printf("nodeagent: memory write failed: %v", err)
+		logging.Errorf("nodeagent", "nodeagent: memory write failed: %v", err)
 	}
 }
 
@@ -329,50 +385,6 @@ type executeResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
-type statusResponse struct {
-	ID                 string                       `json:"id"`
-	Version            string                       `json:"version"`
-	Address            string                       `json:"address"`
-	Hardware           hardware.Info                `json:"hardware"`
-	TelemetryAt        time.Time                    `json:"telemetry_at"`
-	GPUHistory         []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
-	NPUHistory         []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
-	SystemHistory      []hardware.SystemUsageSample `json:"system_history,omitempty"`
-	Models             []engine.Model               `json:"models"`
-	Engines            []engine.Status              `json:"engines,omitempty"`
-	Capabilities       []string                     `json:"capabilities,omitempty"`
-	DefaultModel       string                       `json:"default_model,omitempty"`
-	FastScore          float64                      `json:"fast_score"`
-	ActiveTasks        int                          `json:"active_tasks"`
-	MaxConcurrentTasks int                          `json:"max_concurrent_tasks"`
-	AvailableCapacity  int                          `json:"available_capacity"`
-}
-
-func (a *Agent) status() statusResponse {
-	cfg := a.configSnapshot()
-	active := a.executorComponent.activeTaskCount()
-	hw := a.hardwareSnapshot()
-	models := a.reportedModelList()
-	return statusResponse{
-		ID:                 cfg.NodeID,
-		Version:            version.String(),
-		Address:            cfg.AdvertiseAddr,
-		Hardware:           hw,
-		TelemetryAt:        a.telemetryTimestamp(),
-		GPUHistory:         a.gpuHistorySnapshot(),
-		NPUHistory:         a.npuHistorySnapshot(),
-		SystemHistory:      a.systemHistorySnapshot(),
-		Models:             models,
-		Engines:            a.reportedEngineList(),
-		Capabilities:       cluster.NodeStatus{Hardware: hw, Models: models}.EffectiveCapabilities(),
-		DefaultModel:       a.defaultModelName(),
-		FastScore:          fastScore(hw),
-		ActiveTasks:        active,
-		MaxConcurrentTasks: cfg.MaxConcurrentTasks,
-		AvailableCapacity:  a.executorComponent.availableCapacity(cfg.MaxConcurrentTasks),
-	}
-}
-
 type generateRequest struct {
 	Model       string  `json:"model"`
 	Prompt      string  `json:"prompt"`
@@ -392,6 +404,7 @@ type chatRequest struct {
 	Model       string               `json:"model"`
 	Messages    []engine.ChatMessage `json:"messages"`
 	Temperature float64              `json:"temperature,omitempty"`
+	MaxTokens   int                  `json:"max_tokens,omitempty"`
 }
 
 type chatResponse struct {
@@ -457,9 +470,7 @@ type engineInfo struct {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = httpx.WriteJSON(w, status, v)
 }
 
 // portSuffix extracts ":port" from a listen address like ":7451" or

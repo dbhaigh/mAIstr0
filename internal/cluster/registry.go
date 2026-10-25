@@ -16,27 +16,31 @@ import (
 // NodeStatus is the snapshot a node agent reports about itself, either on
 // registration or on every heartbeat poll from the orchestrator.
 type NodeStatus struct {
-	ID                 string                       `json:"id"`
-	Version            string                       `json:"version"`
-	Address            string                       `json:"address"` // base URL the orchestrator can reach the node at
-	Hardware           hardware.Info                `json:"hardware"`
-	Models             []engine.Model               `json:"models"`
-	Engines            []engine.Status              `json:"engines,omitempty"`
-	Capabilities       []string                     `json:"capabilities,omitempty"`
-	GPUHistory         []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
-	NPUHistory         []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
-	SystemHistory      []hardware.SystemUsageSample `json:"system_history,omitempty"`
-	TelemetryAt        time.Time                    `json:"telemetry_at,omitempty"`
-	DefaultModel       string                       `json:"default_model,omitempty"`
-	FastScore          float64                      `json:"fast_score"`
-	ActiveTasks        int                          `json:"active_tasks"`
-	MaxConcurrentTasks int                          `json:"max_concurrent_tasks,omitempty"`
-	AvailableCapacity  int                          `json:"available_capacity,omitempty"`
-	QueuedTasks        int                          `json:"-"`
-	LastSeen           time.Time                    `json:"last_seen"`
-	Healthy            bool                         `json:"healthy"`
-	Leader             bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
-	VersionError       string                       `json:"version_error,omitempty"`
+	ID                        string                       `json:"id"`
+	Version                   string                       `json:"version"`
+	Address                   string                       `json:"address"` // base URL the orchestrator can reach the node at
+	Hardware                  hardware.Info                `json:"hardware"`
+	Models                    []engine.Model               `json:"models"`
+	Engines                   []engine.Status              `json:"engines,omitempty"`
+	SupportedShardModels      []string                     `json:"supported_shard_models,omitempty"`
+	MaxLayersItCanHost        int                          `json:"max_layers_it_can_host,omitempty"`
+	AllowInsecureShardNetwork bool                         `json:"allow_insecure_shard_network,omitempty"`
+	CurrentStageAssignments   int                          `json:"current_stage_assignments,omitempty"`
+	Capabilities              []string                     `json:"capabilities,omitempty"`
+	GPUHistory                []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
+	NPUHistory                []hardware.NPUUsageSample    `json:"npu_history,omitempty"`
+	SystemHistory             []hardware.SystemUsageSample `json:"system_history,omitempty"`
+	TelemetryAt               time.Time                    `json:"telemetry_at,omitempty"`
+	DefaultModel              string                       `json:"default_model,omitempty"`
+	FastScore                 float64                      `json:"fast_score"`
+	ActiveTasks               int                          `json:"active_tasks"`
+	MaxConcurrentTasks        int                          `json:"max_concurrent_tasks,omitempty"`
+	AvailableCapacity         int                          `json:"available_capacity,omitempty"`
+	QueuedTasks               int                          `json:"-"`
+	LastSeen                  time.Time                    `json:"last_seen"`
+	Healthy                   bool                         `json:"healthy"`
+	Leader                    bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
+	VersionError              string                       `json:"version_error,omitempty"`
 }
 
 func (n NodeStatus) EngineReady(name string) bool {
@@ -54,14 +58,24 @@ func (n NodeStatus) EngineReady(name string) bool {
 // EffectiveCapabilities returns the node's advertised capabilities, deriving them
 // from models and hardware if not explicitly declared.
 func (n NodeStatus) EffectiveCapabilities() []string {
-	seen := make(map[string]bool)
-	var caps []string
+	return n.AppendEffectiveCapabilities(nil)
+}
+
+// AppendEffectiveCapabilities appends the node's effective capabilities to dst
+// without changing its existing prefix.
+func (n NodeStatus) AppendEffectiveCapabilities(dst []string) []string {
+	start := len(dst)
 	add := func(c string) {
 		c = strings.ToLower(strings.TrimSpace(c))
-		if c != "" && !seen[c] {
-			seen[c] = true
-			caps = append(caps, c)
+		if c == "" {
+			return
 		}
+		for _, existing := range dst[start:] {
+			if existing == c {
+				return
+			}
+		}
+		dst = append(dst, c)
 	}
 	for _, c := range n.Capabilities {
 		add(c)
@@ -112,11 +126,11 @@ func (n NodeStatus) EffectiveCapabilities() []string {
 	if n.Hardware.TotalRAMMB >= 16*1024 {
 		add("long-context")
 	}
-	if len(caps) == 0 {
+	if len(dst) == start {
 		add("general")
 	}
-	sort.Strings(caps)
-	return caps
+	sort.Strings(dst[start:])
+	return dst
 }
 
 // Registry is a thread-safe store of known nodes.
@@ -161,6 +175,20 @@ func (r *Registry) Upsert(status NodeStatus) {
 
 // MarkUnhealthy flags a node as unreachable without removing it, so it's
 // still visible in the GUI but excluded from scheduling.
+// UpdateDevices publishes an authenticated runtime probe without replacing heartbeat state.
+func (r *Registry) UpdateDevices(id, address string, devices []hardware.Device) bool {
+	snapshot := cloneNodeStatus(NodeStatus{Hardware: hardware.Info{Devices: devices}}).Hardware.Devices
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	node, ok := r.nodes[id]
+	if !ok || node.Address != address {
+		return false
+	}
+	node.Hardware.Devices = snapshot
+	r.invalidateSnapshotLocked()
+	return true
+}
+
 func (r *Registry) MarkUnhealthy(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -259,6 +287,12 @@ func (r *Registry) invalidateSnapshotLocked() {
 }
 
 func cloneNodeStatus(status NodeStatus) NodeStatus {
+	status.Hardware.Devices = cloneSlice(status.Hardware.Devices)
+	for i := range status.Hardware.Devices {
+		status.Hardware.Devices[i].Backends = cloneSlice(status.Hardware.Devices[i].Backends)
+	}
+	status.Hardware.NUMANodes = cloneSlice(status.Hardware.NUMANodes)
+	status.Hardware.NetworkLinks = cloneSlice(status.Hardware.NetworkLinks)
 	status.Models = cloneSlice(status.Models)
 	for i := range status.Models {
 		status.Models[i].Tags = cloneSlice(status.Models[i].Tags)
@@ -267,6 +301,7 @@ func cloneNodeStatus(status NodeStatus) NodeStatus {
 	status.Engines = cloneSlice(status.Engines)
 	for i := range status.Engines {
 		status.Engines[i].Protocols = cloneSlice(status.Engines[i].Protocols)
+		status.Engines[i].Capabilities = engine.CloneCapabilities(status.Engines[i].Capabilities)
 	}
 	status.Capabilities = cloneSlice(status.Capabilities)
 	status.GPUHistory = cloneSlice(status.GPUHistory)
@@ -298,11 +333,63 @@ func (r *Registry) Active() []NodeStatus {
 
 // CapabilityScore ranks the node's raw machine strength, using hardware and
 // model-acceleration capability as the tie-breaker for orchestrator election.
+const (
+	npuHardwareScoreBonus = 30
+	npuFastScoreBonus     = 100
+)
+
 func CapabilityScore(n NodeStatus) float64 {
-	if n.Hardware.Score == 0 {
-		return n.FastScore + float64(n.Hardware.CPUCores)*1.5
+	runningNPU := hasReadyNPUModel(n)
+	fastScore := n.FastScore
+	if hasHardwareNPU(n.Hardware) {
+		legacyFastScore := float64(n.Hardware.CPUCores)*2 + npuFastScoreBonus
+		if n.Hardware.HasGPU {
+			legacyFastScore += 100
+		}
+		if fastScore == legacyFastScore {
+			fastScore -= npuFastScoreBonus
+		}
+		if runningNPU {
+			fastScore += npuFastScoreBonus
+		}
 	}
-	return n.Hardware.Score + n.FastScore*0.75
+	if n.Hardware.Score == 0 {
+		return fastScore + float64(n.Hardware.CPUCores)*1.5
+	}
+	hardwareScore := n.Hardware.Score
+	if hasHardwareNPU(n.Hardware) && !runningNPU {
+		hardwareScore -= npuHardwareScoreBonus
+	}
+	return hardwareScore + fastScore*0.75
+}
+
+func hasReadyNPUModel(node NodeStatus) bool {
+	if !hasHardwareNPU(node.Hardware) {
+		return false
+	}
+	for _, model := range node.Models {
+		if engine.NormalizeDeviceKind(model.Device) != "npu" || model.Engine == "" {
+			continue
+		}
+		for _, status := range node.Engines {
+			if strings.EqualFold(status.Name, model.Engine) && status.Ready && status.ModelCount > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasHardwareNPU(info hardware.Info) bool {
+	if info.HasNPU {
+		return true
+	}
+	for _, device := range info.Devices {
+		if strings.EqualFold(device.Kind, "npu") {
+			return true
+		}
+	}
+	return false
 }
 
 // GPUUtilizationPenalty converts live GPU activity into the scheduler's
@@ -328,9 +415,6 @@ func NPUUtilizationPenalty(hw hardware.Info) float64 {
 func FastScore(hw hardware.Info) float64 {
 	s := float64(hw.CPUCores) * 2
 	if hw.HasGPU {
-		s += 100
-	}
-	if hw.HasNPU {
 		s += 100
 	}
 	return s

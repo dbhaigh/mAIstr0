@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/create-shard-group.schema.json",
+  "title": "CreateShardGroupRequest",
+  "type": "object",
+  "required": ["model", "mode"],
+  "properties": {
+    "model": {"$ref": "https://maistr0.dev/contracts/schemas/shard-model-profile.schema.json"},
+    "mode": {"type": "string", "enum": ["llamacpp-rpc", "vllm-mp"]},
+    "head_node_id": {"type": "string", "minLength": 1},
+    "head_engine_id": {"type": "string", "minLength": 1},
+    "pinned_nodes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  },
+  "dependentRequired": {
+    "head_node_id": ["head_engine_id"],
+    "head_engine_id": ["head_node_id"]
+  },
+  "additionalProperties": false
+}

@@ -24,6 +24,8 @@
       "gpu_utilization_penalty": 0,
       "npu_utilization_penalty": 0,
       "topology_score": 1,
+      "estimated_completion_seconds": 3.5276684147527875,
+      "estimated_tokens_per_second": 9.071147352221454,
       "learned_bias": 0,
       "telemetry_fresh": false
     }
@@ -56,6 +58,8 @@
       "load_penalty": 10,
       "gpu_utilization_penalty": 0,
       "npu_utilization_penalty": 0,
+      "estimated_completion_seconds": 7.055336829505575,
+      "estimated_tokens_per_second": 9.071147352221454,
       "learned_bias": 0,
       "telemetry_fresh": false
     }

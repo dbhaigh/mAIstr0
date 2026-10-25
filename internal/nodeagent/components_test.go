@@ -203,6 +203,39 @@ func TestEngineInventoryRefreshTracksChangesAndRetainsLastGoodModelsOnError(t *t
 	}
 }
 
+func TestEngineInventorySurfacesModelAndEngineCapabilities(t *testing.T) {
+	eng := &capabilityInventoryTestEngine{
+		inventoryTestEngine: &inventoryTestEngine{models: []engine.Model{{
+			Name: "accelerated-model", Device: "npu",
+		}}},
+		capabilities: engine.Capabilities{Devices: []string{"cpu"}, Backends: []string{"cann"}},
+	}
+	component := newEngineComponent(
+		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{},
+		newAgentState(config.NodeConfig{}),
+	)
+
+	component.refreshReportedModels()
+	models := component.reportedModelList()
+	if len(models) != 1 || models[0].Device != "npu" {
+		t.Fatalf("reported models = %+v, want model running on NPU", models)
+	}
+	statuses := component.reportedEngineList()
+	if len(statuses) != 1 || !statuses[0].Ready || statuses[0].ModelCount != 1 {
+		t.Fatalf("reported engine status = %+v", statuses)
+	}
+	if !containsEngineCapability(statuses[0].Capabilities.Devices, "cpu") ||
+		!containsEngineCapability(statuses[0].Capabilities.Devices, "npu") ||
+		!containsEngineCapability(statuses[0].Capabilities.Backends, "cann") {
+		t.Fatalf("reported capabilities = %+v", statuses[0].Capabilities)
+	}
+
+	statuses[0].Capabilities.Devices[0] = "mutated"
+	if got := component.reportedEngineList()[0].Capabilities.Devices[0]; got == "mutated" {
+		t.Fatal("mutating a returned engine status changed cached capabilities")
+	}
+}
+
 func TestModelInventoryTTLAndHardwareGenerationCaches(t *testing.T) {
 	eng := &inventoryTestEngine{models: []engine.Model{{Name: "alpha"}}}
 	telemetry := &telemetryComponent{}
@@ -213,6 +246,7 @@ func TestModelInventoryTTLAndHardwareGenerationCaches(t *testing.T) {
 	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "alpha" {
 		t.Fatalf("initial inventory = %#v, want alpha", got)
 	}
+
 	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "alpha" {
 		t.Fatalf("cached inventory = %#v, want alpha", got)
 	}
@@ -251,6 +285,47 @@ func TestModelInventoryTTLAndHardwareGenerationCaches(t *testing.T) {
 	component.enginesMu.RUnlock()
 	if gotGeneration != 1 {
 		t.Fatalf("engine snapshot hardware generation = %d, want 1", gotGeneration)
+	}
+}
+
+func TestInventoryInvalidationDoesNotWaitForEngineProbe(t *testing.T) {
+	eng := &blockingInventoryEngine{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	component := newEngineComponent(
+		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{}, newAgentState(config.NodeConfig{}),
+	)
+	refreshed := make(chan struct{})
+	go func() {
+		component.refreshReportedModels()
+		close(refreshed)
+	}()
+	select {
+	case <-eng.started:
+	case <-time.After(time.Second):
+		t.Fatal("inventory probe did not start")
+	}
+
+	invalidated := make(chan struct{})
+	go func() {
+		component.invalidateReportedModels()
+		close(invalidated)
+	}()
+	select {
+	case <-invalidated:
+	case <-time.After(100 * time.Millisecond):
+		close(eng.release)
+		<-invalidated
+		<-refreshed
+		t.Fatal("inventory invalidation waited for the engine probe")
+	}
+
+	close(eng.release)
+	select {
+	case <-refreshed:
+	case <-time.After(time.Second):
+		t.Fatal("inventory refresh did not finish after the probe was released")
 	}
 }
 
@@ -293,6 +368,24 @@ func TestPeriodicEngineScanRetainsUnavailableEngineDuringGracePeriod(t *testing.
 	}
 }
 
+func TestConfiguredEngineProfileReplacesDetectedEngineAtSameEndpoint(t *testing.T) {
+	endpoint := "http://127.0.0.1:8080"
+	configured := engine.NewConfigured(engine.TemplateLlamaCPPXDNA2NPU, endpoint)
+	detected := engine.NewLlamaCPP(endpoint)
+	component := newEngineComponent(
+		[]engine.Engine{configured},
+		func() []engine.Engine { return []engine.Engine{detected} },
+		&telemetryComponent{},
+		newAgentState(config.NodeConfig{}),
+	)
+	component.rescanDetectedEngines()
+
+	engines := component.engineSnapshot()
+	if len(engines) != 1 || engines[0].Name() != engine.TemplateLlamaCPPXDNA2NPU {
+		t.Fatalf("engine snapshot = %#v, want the configured XDNA profile only", engines)
+	}
+}
+
 type componentTestEngine struct {
 	models []engine.Model
 }
@@ -313,6 +406,33 @@ type inventoryTestEngine struct {
 	models         []engine.Model
 	err            error
 	listModelCount int
+}
+
+type capabilityInventoryTestEngine struct {
+	*inventoryTestEngine
+	capabilities engine.Capabilities
+}
+
+func (e *capabilityInventoryTestEngine) Capabilities() engine.Capabilities {
+	return e.capabilities
+}
+
+type blockingInventoryEngine struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*blockingInventoryEngine) Name() string    { return "blocking" }
+func (*blockingInventoryEngine) Available() bool { return true }
+func (e *blockingInventoryEngine) ListModels() ([]engine.Model, error) {
+	e.once.Do(func() { close(e.started) })
+	<-e.release
+	return []engine.Model{{Name: "model"}}, nil
+}
+func (*blockingInventoryEngine) Generate(string, string) (string, error) { return "", nil }
+func (*blockingInventoryEngine) Chat(string, []engine.ChatMessage) (string, error) {
+	return "", nil
 }
 
 func (e *inventoryTestEngine) Name() string    { return "test" }
@@ -337,4 +457,13 @@ func (e *inventoryTestEngine) listModelCalls() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.listModelCount
+}
+
+func containsEngineCapability(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

@@ -1,15 +1,18 @@
 package nodeagent
 
 import (
+	"context"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io/fs"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/peeridentity"
+	"github.com/maistr0/maistr0/internal/selfupdate"
 	"github.com/maistr0/maistr0/internal/version"
 	"github.com/maistr0/maistr0/web"
 )
@@ -21,6 +24,12 @@ func (a *Agent) Run() error {
 		return fmt.Errorf("nodeagent: initialize cluster identity: %w", err)
 	}
 	mux := http.NewServeMux()
+	distribution, err := selfupdate.CurrentDistribution()
+	if err != nil {
+		return fmt.Errorf("nodeagent: configure peer update distribution: %w", err)
+	}
+	mux.Handle("GET /api/updates/manifest", distribution)
+	mux.Handle("GET /api/updates/binary", distribution)
 	mux.HandleFunc("/status", a.handleStatus)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version.String()})
@@ -33,6 +42,13 @@ func (a *Agent) Run() error {
 	mux.Handle("POST /api/pairing/invitation/accept", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationAccept)))
 	mux.Handle("POST /api/pairing/invitation/reject", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationReject)))
 	mux.HandleFunc("/execute", a.handleExecute)
+	mux.HandleFunc("POST /stage/load", a.handleStageLoad)
+	mux.HandleFunc("POST /stage/forward", a.handleStageForward)
+	mux.HandleFunc("POST /stage/unload", a.handleStageUnload)
+	mux.HandleFunc("POST /stage/open", a.handleStageOpen)
+	mux.HandleFunc("POST /stage/prefill", a.handleStagePrefill)
+	mux.HandleFunc("POST /stage/decode", a.handleStageDecode)
+	mux.HandleFunc("POST /stage/close", a.handleStageClose)
 	mux.HandleFunc("POST /generate", a.handleGenerate)
 	mux.HandleFunc("POST /chat", a.handleChat)
 	mux.HandleFunc("POST /proxy/{path...}", a.handleTransparentProxy)
@@ -89,11 +105,26 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("GET /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", a.handleAPINodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed", a.handleAPINodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/install-worker", a.handleAPINodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/head-models", a.handleAPINodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/configure-head", a.handleAPINodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/download-model", a.handleAPINodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/{engine_id}/profile", a.handleAPINodeControl)
+	registerManagedEngineRoutes(mux, a)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", a.handleAPINodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/discovery", a.handleAPIDiscovery)
+	mux.HandleFunc("GET /api/cluster/health", a.handleAPIOrchestratorRead)
+	mux.HandleFunc("GET /api/shards", a.handleAPIOrchestratorRead)
+	mux.HandleFunc("POST /api/shards", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("DELETE /api/shards/{id}", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/shards/{id}/start", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/shards/{id}/stop", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/shards/{id}/restart", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/shards/{id}/members", a.handleAPIOrchestratorProxy)
 	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", a.handleAPIDiscoveryPairingInvite)
-	mux.HandleFunc("GET /api/events", a.events.ServeHTTP)
+	mux.HandleFunc("GET /api/events", a.orchestratorLink.events.ServeHTTP)
 	mux.HandleFunc("POST /api/tasks", a.handleAPITasksPost)
 	mux.HandleFunc("GET /api/tasks", a.handleAPITasksList)
 	mux.HandleFunc("GET /api/tasks/{id}", a.handleAPITaskGet)
@@ -122,9 +153,10 @@ func (a *Agent) Run() error {
 
 	staticFS, err := fs.Sub(web.StaticFiles, "static")
 	if err != nil {
-		log.Fatalf("nodeagent: embedded web assets missing: %v", err)
+		logging.Errorf("nodeagent", "embedded web assets missing: %v", err)
+		panic("nodeagent: embedded web assets missing")
 	}
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("/", web.NewHandler(staticFS))
 
 	cfg := a.configSnapshot()
 	if cfg.DiscoveryEnabled {
@@ -134,14 +166,23 @@ func (a *Agent) Run() error {
 		// Announce continuously: before joining this is how the cluster finds
 		// us, and after joining it keeps us visible in every LAN panel.
 		go discovery.Beacon(func() discovery.Announcement {
+			if a.orchestratorLink.localOrchestratorIDValue() == cfg.NodeID {
+				return discovery.Announcement{}
+			}
 			orchestratorID := ""
 			if a.isJoined() {
 				orchestratorID = a.getOrchestratorID()
 			}
+			role := "node"
+			peerAddr := a.configSnapshot().AdvertiseAddr
+			if candidateAddr := a.orchestratorLink.electionCandidateAddrValue(); candidateAddr != "" {
+				role = "candidate"
+				peerAddr = candidateAddr
+			}
 			return discovery.Announcement{
-				Role: "node", ID: cfg.NodeID,
+				Role: role, ID: cfg.NodeID,
 				HTTPAddr:       "http://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr),
-				PeerAddr:       a.configSnapshot().AdvertiseAddr,
+				PeerAddr:       peerAddr,
 				Score:          cluster.SelfScore(a.hardwareSnapshot()),
 				OrchestratorID: orchestratorID,
 			}
@@ -156,10 +197,13 @@ func (a *Agent) Run() error {
 	go a.syncPeerMemoryLoop()
 	go a.orchestratorLink.broadcastLoop()
 	go a.syncMemoryToOrchestrator()
+	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
+	defer stopHeartbeat()
+	go a.orchestratorLink.heartbeat.Run(heartbeatCtx)
 
 	cfg = a.configSnapshot()
-	log.Printf("node agent %q listening on %s (advertised as %s)", cfg.NodeID, cfg.ListenAddr, cfg.AdvertiseAddr)
-	trustedHandler := a.identityComponent.requireTrustedPeer(mux)
+	logging.Infof("nodeagent", "node agent %q listening on %s (advertised as %s)", cfg.NodeID, cfg.ListenAddr, cfg.AdvertiseAddr)
+	trustedHandler := a.identityComponent.requireTrustedPeer(a.currentCoordinatorWriteFence(mux))
 	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/pairing/invitation" {
 			a.handlePairingInvitation(w, r)
@@ -167,10 +211,71 @@ func (a *Agent) Run() error {
 		}
 		trustedHandler.ServeHTTP(w, r)
 	})
+	bodyLimit, err := httpx.LimitBodyBytes(httpx.DefaultMaxRequestBodyBytes)
+	if err != nil {
+		return fmt.Errorf("nodeagent: configure HTTP request limit: %w", err)
+	}
+	withMiddleware := func(next http.Handler) http.Handler {
+		return selfupdate.Admission.Wrap(httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit))
+	}
 	return peeridentity.ServeDual(
 		cfg.ListenAddr,
-		peeridentity.LoopbackOnly(mux),
-		secureHandler,
+		withMiddleware(peeridentity.LoopbackOnly(mux)),
+		withMiddleware(secureHandler),
 		a.identityComponent.serverTLSConfig(),
 	)
+}
+
+func registerManagedEngineRoutes(mux *http.ServeMux, agent *Agent) {
+	mux.Handle("GET /api/engines/managed", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStatus)))
+	mux.Handle("POST /api/engines/managed/install-worker", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedWorkerInstall)))
+	mux.Handle("GET /api/engines/managed/head-models", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleLocalHeadModels)))
+	mux.Handle("POST /api/engines/managed/configure-head", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleConfigureLocalHead)))
+	mux.Handle("POST /api/engines/managed/download-model", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleDownloadHeadModel)))
+	mux.Handle("GET /api/engines/managed/{id}/profile", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineModelProfile)))
+	mux.Handle("POST /api/engines/managed/{id}/start", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStart)))
+	mux.Handle("POST /api/engines/managed/{id}/stop", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStop)))
+	mux.Handle("POST /api/engines/managed/{id}/restart", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineRestart)))
+	mux.Handle("POST /api/engines/managed/{id}/proxy/{path...}", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineProxy)))
+}
+
+func (a *Agent) currentElectedOrchestratorID() string {
+	if a.orchestratorLink.discoveryListener != nil {
+		if leader, ok := a.orchestratorLink.discoveryListener.BestOrchestrator(); ok {
+			return leader.ID
+		}
+	}
+	if id := a.getOrchestratorID(); id != "" {
+		return id
+	}
+	return a.mostCapableNode().ID
+}
+
+func (a *Agent) currentCoordinatorWriteFence(next http.Handler) http.Handler {
+	return currentCoordinatorWriteFence(
+		next,
+		a.identityComponent.IsTrustedOrchestratorID,
+		a.currentElectedOrchestratorID,
+	)
+}
+
+func currentCoordinatorWriteFence(next http.Handler, isOrchestrator func(string) bool, electedID func() string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		default:
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		peerID := r.TLS.PeerCertificates[0].Subject.CommonName
+		if isOrchestrator(peerID) && electedID() != peerID {
+			http.Error(w, "state-changing request requires the current elected orchestrator", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

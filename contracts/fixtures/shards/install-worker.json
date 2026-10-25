@@ -1,0 +1,31 @@
+{
+  "name": "install-managed-worker",
+  "request": {
+    "method": "POST",
+    "path": "/api/nodes/{id}/engines/managed/install-worker",
+    "schema": "worker-install-request.schema.json",
+    "body": {
+      "source": "official"
+    }
+  },
+  "expected_response": {
+    "status": 200,
+    "schema": "worker-install-result.schema.json",
+    "body": {
+      "source": "official",
+      "version": "test",
+      "updated": true,
+      "engines": [
+        {
+          "id": "maistr0-auto-rpc",
+          "kind": "ggml-rpc-server",
+          "state": "stopped",
+          "restart_count": 0
+        }
+      ]
+    }
+  },
+  "normalization_rules": [
+    "Fixed IDs, addresses, and RFC3339 timestamps; generated from Go wire types."
+  ]
+}

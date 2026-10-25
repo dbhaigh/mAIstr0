@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/shard-plan.schema.json",
+  "title": "ShardPlan",
+  "type": "object",
+  "required": ["mode", "model", "nodes", "rationale"],
+  "properties": {
+    "mode": {"type": "string", "enum": ["llamacpp-rpc", "vllm-mp"]},
+    "model": {"$ref": "https://maistr0.dev/contracts/schemas/shard-model-profile.schema.json"},
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["node_id", "start_layer", "end_layer", "devices"],
+        "properties": {
+          "node_id": {"type": "string", "minLength": 1},
+          "rpc_address": {"type": "string"},
+          "start_layer": {"type": "integer", "minimum": 0},
+          "end_layer": {"type": "integer", "minimum": 0},
+          "tensor_split_layers": {"type": "integer", "minimum": 0},
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind", "index", "start_layer", "end_layer", "weights_bytes", "kv_cache_bytes", "safety_margin_bytes", "required_bytes", "free_memory_bytes"],
+              "properties": {
+                "kind": {"type": "string"},
+                "vendor": {"type": "string"},
+                "name": {"type": "string"},
+                "index": {"type": "integer"},
+                "start_layer": {"type": "integer", "minimum": 0},
+                "end_layer": {"type": "integer", "minimum": 0},
+                "weights_bytes": {"type": "integer", "minimum": 0},
+                "kv_cache_bytes": {"type": "integer", "minimum": 0},
+                "safety_margin_bytes": {"type": "integer", "minimum": 0},
+                "required_bytes": {"type": "integer", "minimum": 0},
+                "free_memory_bytes": {"type": "integer", "minimum": 0}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "rpc": {"type": "string"},
+    "tensor_split": {"type": "string"},
+    "tensor_parallel_size": {"type": "integer", "minimum": 0},
+    "pipeline_parallel_size": {"type": "integer", "minimum": 0},
+    "vllm_parallelism": {"type": "string", "enum": ["auto", "pipeline", "tensor-across-nodes"]},
+    "whole_model": {"type": "boolean"},
+    "rationale": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

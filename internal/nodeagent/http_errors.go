@@ -4,10 +4,11 @@ import (
 	"net/http"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 func writeError(w http.ResponseWriter, err error) {
-	http.Error(w, err.Error(), apperr.StatusCode(err))
+	httpx.WriteError(w, err)
 }
 
 func writeJSONError(w http.ResponseWriter, err error, body any) {

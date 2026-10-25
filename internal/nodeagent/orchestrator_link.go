@@ -7,9 +7,9 @@ import (
 	"errors"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/version"
-	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -20,6 +20,7 @@ type orchestratorCandidate struct {
 	id      string
 	address string
 	score   float64
+	role    string
 }
 
 var (
@@ -28,12 +29,27 @@ var (
 	errPairingInvitationWaiting          = errors.New("another pairing invitation is waiting for local confirmation")
 	errPairingInvitationExpired          = errors.New("pairing invitation is missing or expired")
 	errPairingInvitationRejecting        = errors.New("pairing invitation is being accepted")
+	errSelectedOrchestratorNotDiscovered = errors.New("selected orchestrator is no longer discovered")
 )
 
 func (c *orchestratorLink) getOrchestratorID() string {
 	c.orchMu.RLock()
 	defer c.orchMu.RUnlock()
 	return c.orchestratorID
+}
+
+func (c *orchestratorLink) heartbeatOrchestratorID() string {
+	if id := c.getOrchestratorID(); id != "" {
+		return id
+	}
+	host := strings.TrimPrefix(strings.TrimPrefix(c.getOrchestratorAddr(), "http://"), "https://")
+	if colon := strings.LastIndex(host, ":"); colon >= 0 {
+		host = host[:colon]
+	}
+	if host == "" {
+		return ""
+	}
+	return "orchestrator-" + host
 }
 
 func (a *Agent) getOrchestratorID() string {
@@ -74,6 +90,18 @@ func (c *orchestratorLink) setOrchestratorAddr(addr string) {
 	c.orchMu.Unlock()
 }
 
+func (c *orchestratorLink) setElectionCandidateAddr(addr string) {
+	c.orchMu.Lock()
+	c.electionCandidateAddr = addr
+	c.orchMu.Unlock()
+}
+
+func (c *orchestratorLink) electionCandidateAddrValue() string {
+	c.orchMu.RLock()
+	defer c.orchMu.RUnlock()
+	return c.electionCandidateAddr
+}
+
 func (c *orchestratorLink) markJoined() {
 	c.joinedMu.Lock()
 	c.joined = true
@@ -95,9 +123,70 @@ func (a *Agent) SetDiscovery(listener *discovery.Listener) {
 	a.orchestratorLink.setDiscovery(listener)
 }
 
+// SetElectionStarter configures the runtime failover callback. It runs away
+// from the node scheduler after the orchestrator misses four status probes.
+func (a *Agent) SetElectionStarter(start func(string)) {
+	if start == nil {
+		a.heartbeat.setElectionStarter(nil)
+		return
+	}
+	a.heartbeat.setElectionStarter(func(failedID string) {
+		if failedID != "" && a.discoveryListener != nil {
+			a.discoveryListener.ExcludePeer(failedID)
+		}
+		start(failedID)
+	})
+}
+
+// BeginElection advertises this node as a failover candidate at address.
+func (a *Agent) BeginElection(address string) {
+	a.orchestratorLink.setElectionCandidateAddr(address)
+}
+
+// EndElection returns this node to its ordinary worker announcement.
+func (a *Agent) EndElection() {
+	a.orchestratorLink.setElectionCandidateAddr("")
+}
+
+// PromoteToOrchestrator updates local coordinator state and pins this node's
+// existing certificate as the local orchestrator identity.
+func (a *Agent) PromoteToOrchestrator(address string) error {
+	certificate, err := a.IdentityCertificate()
+	if err != nil {
+		return err
+	}
+	if err := a.identityComponent.TrustPeerDetails(a.ID(), certificate, "orchestrator", address); err != nil {
+		return err
+	}
+	c := a.orchestratorLink
+	c.orchMu.Lock()
+	c.localOrchestratorID = a.ID()
+	c.orchestratorID = a.ID()
+	c.orchestratorAddr = address
+	c.electionCandidateAddr = ""
+	c.orchMu.Unlock()
+	return nil
+}
+
+// DemoteFromOrchestrator returns a failover-promoted node to worker duty and
+// points it at the orchestrator it is yielding to. Registration then joins
+// that orchestrator and the node's own LAN announcement resumes.
+func (a *Agent) DemoteFromOrchestrator(orchestratorID, address string) {
+	c := a.orchestratorLink
+	c.orchMu.Lock()
+	c.localOrchestratorID = ""
+	c.orchestratorID = orchestratorID
+	c.orchestratorAddr = address
+	c.electionCandidateAddr = ""
+	c.orchMu.Unlock()
+	c.joinedMu.Lock()
+	c.joined = false
+	c.joinedMu.Unlock()
+}
+
 func (c *orchestratorLink) resolveOrchestratorAndRegister() {
 	if c.getOrchestratorAddr() == "" && c.discoveryListener == nil {
-		log.Printf("nodeagent: discovery disabled and no orchestrator configured; registration will retry")
+		logging.Infof("nodeagent", "nodeagent: discovery disabled and no orchestrator configured; registration will retry")
 	}
 	c.registrationLoop()
 }
@@ -106,9 +195,6 @@ func (c *orchestratorLink) registrationLoop() {
 	register := func() {
 		candidates := c.orchestratorCandidates()
 		if len(candidates) == 0 {
-			if c.discoveryListener != nil {
-				c.setOrchestratorAddr("")
-			}
 			c.joinedMu.Lock()
 			c.joined = false
 			c.joinedMu.Unlock()
@@ -120,41 +206,52 @@ func (c *orchestratorLink) registrationLoop() {
 		}
 		for _, candidate := range candidates {
 			if !strings.HasPrefix(strings.ToLower(candidate.address), "https://") {
-				log.Printf("nodeagent: refusing insecure orchestrator address %q; use https", candidate.address)
+				logging.Infof("nodeagent", "nodeagent: refusing insecure orchestrator address %q; use https", candidate.address)
 				continue
 			}
 			if !c.trust.IsTrustedID(candidate.id) {
 				if pairErr := c.pairOrchestrator(candidate); pairErr != nil {
-					log.Printf("nodeagent: pairing candidate %s failed: %v", candidate.id, pairErr)
+					logging.Errorf("nodeagent", "nodeagent: pairing candidate %s failed: %v", candidate.id, pairErr)
 					continue
 				}
 			}
 			resp, postErr := c.peerClient.Post(candidate.address+"/api/nodes/register", "application/json", bytes.NewReader(body))
 			if postErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				resp.Body.Close()
+				if candidate.role == "orchestrator" {
+					certificate, ok := c.trust.TrustedPeers()[candidate.id]
+					if !ok {
+						logging.Errorf("nodeagent", "nodeagent: registration with %s succeeded but its certificate is missing from the trust roster", candidate.id)
+						continue
+					}
+					if err := c.trust.TrustPeerDetails(candidate.id, certificate, "orchestrator", candidate.address); err != nil {
+						logging.Errorf("nodeagent", "nodeagent: registration with %s succeeded but coordinator trust could not be updated: %v", candidate.id, err)
+						continue
+					}
+				}
 				previous := c.getOrchestratorAddr()
 				c.setOrchestratorAddr(candidate.address)
 				c.setOrchestratorID(candidate.id)
 				c.markJoined()
 				if previous != candidate.address {
-					log.Printf("nodeagent: election winner is %s at %s, switching orchestrator", candidate.id, candidate.address)
+					logging.Infof("nodeagent", "nodeagent: election winner is %s at %s, switching orchestrator", candidate.id, candidate.address)
 				}
 				return
 			}
 			if resp != nil {
-				log.Printf("nodeagent: registration candidate %s rejected or unreachable: %v (status %s)", candidate.address, postErr, resp.Status)
+				logging.Errorf("nodeagent", "nodeagent: registration candidate %s rejected or unreachable: %v (status %s)", candidate.address, postErr, resp.Status)
 				resp.Body.Close()
 			} else if postErr != nil {
-				log.Printf("nodeagent: registration candidate %s unreachable: %v", candidate.address, postErr)
+				logging.Errorf("nodeagent", "nodeagent: registration candidate %s unreachable: %v", candidate.address, postErr)
 			}
 		}
 		c.joinedMu.Lock()
 		c.joined = false
 		c.joinedMu.Unlock()
 		if c.discoveryListener != nil {
-			c.setOrchestratorAddr("")
+			logging.Infof("nodeagent", "nodeagent: retaining the last orchestrator address for health monitoring and retry")
 		}
-		log.Printf("nodeagent: no elected orchestrator accepted registration; discovery remains active")
+		logging.Infof("nodeagent", "nodeagent: no elected orchestrator accepted registration; discovery remains active")
 	}
 
 	time.Sleep(1500 * time.Millisecond)
@@ -182,7 +279,11 @@ func (c *orchestratorLink) orchestratorCandidates() []orchestratorCandidate {
 		if id == c.localOrchestratorIDValue() {
 			score = cluster.SelfScore(c.telemetry.hardwareSnapshot())
 		}
-		byAddress[current] = orchestratorCandidate{id: id, address: current, score: score}
+		role := ""
+		if c.trust.IsTrustedOrchestratorID(id) {
+			role = "orchestrator"
+		}
+		byAddress[current] = orchestratorCandidate{id: id, address: current, score: score, role: role}
 	}
 	if c.discoveryListener != nil {
 		for _, peer := range c.discoveryListener.Snapshot() {
@@ -190,7 +291,7 @@ func (c *orchestratorLink) orchestratorCandidates() []orchestratorCandidate {
 				continue
 			}
 			candidate := orchestratorCandidate{
-				id: peer.ID, address: peer.PeerAddr, score: peer.Score,
+				id: peer.ID, address: peer.PeerAddr, score: peer.Score, role: peer.Role,
 			}
 			if existing, ok := byAddress[peer.PeerAddr]; !ok ||
 				candidate.score > existing.score ||
@@ -224,7 +325,7 @@ func (c *orchestratorLink) peerPollLoop() {
 		}
 		resp, err := c.peerClient.Get(addr + "/api/nodes")
 		if err != nil {
-			log.Printf("nodeagent: peer poll failed: %v", err)
+			logging.Errorf("nodeagent", "nodeagent: peer poll failed: %v", err)
 			return
 		}
 		defer resp.Body.Close()
@@ -235,13 +336,13 @@ func (c *orchestratorLink) peerPollLoop() {
 		c.state.replacePeers(nodes)
 		rosterResp, err := c.peerClient.Get(addr + "/api/pairing/roster")
 		if err != nil {
-			log.Printf("nodeagent: paired-peer roster refresh failed: %v", err)
+			logging.Errorf("nodeagent", "nodeagent: paired-peer roster refresh failed: %v", err)
 		} else {
 			var roster map[string]string
 			decodeErr := json.NewDecoder(rosterResp.Body).Decode(&roster)
 			_ = rosterResp.Body.Close()
 			if decodeErr != nil {
-				log.Printf("nodeagent: decode paired-peer roster: %v", decodeErr)
+				logging.Errorf("nodeagent", "nodeagent: decode paired-peer roster: %v", decodeErr)
 			} else {
 				orchestratorID := c.getOrchestratorID()
 				for id, certificate := range roster {
@@ -249,7 +350,7 @@ func (c *orchestratorLink) peerPollLoop() {
 						continue
 					}
 					if err := c.trust.TrustPeer(id, certificate); err != nil {
-						log.Printf("nodeagent: trust paired peer %q: %v", id, err)
+						logging.Errorf("nodeagent", "nodeagent: trust paired peer %q: %v", id, err)
 					}
 				}
 				if orchestratorID != "" {
@@ -259,7 +360,7 @@ func (c *orchestratorLink) peerPollLoop() {
 						}
 						if _, ok := roster[id]; !ok {
 							if err := c.trust.RemovePeer(id); err != nil {
-								log.Printf("nodeagent: revoke stale peer %q: %v", id, err)
+								logging.Errorf("nodeagent", "nodeagent: revoke stale peer %q: %v", id, err)
 							}
 						}
 					}
@@ -286,7 +387,7 @@ func (c *orchestratorLink) sseSubscribeLoop() {
 			continue
 		}
 		if err := c.subscribeOnce(addr); err != nil {
-			log.Printf("nodeagent: event stream to orchestrator lost, retrying: %v", err)
+			logging.Errorf("nodeagent", "nodeagent: event stream to orchestrator lost, retrying: %v", err)
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -323,7 +424,7 @@ func (c *orchestratorLink) subscribeOnce(addr string) error {
 		}
 		if len(snap.Tasks) > 0 {
 			if err := c.tasks.ReplaceFromSync(snap.Tasks); err != nil {
-				log.Printf("nodeagent: could not apply task snapshot from orchestrator: %v", err)
+				logging.Errorf("nodeagent", "nodeagent: could not apply task snapshot from orchestrator: %v", err)
 			}
 		}
 		c.state.replacePeers(snap.Nodes)

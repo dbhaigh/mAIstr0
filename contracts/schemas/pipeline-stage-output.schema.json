@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/pipeline-stage-output.schema.json",
+  "title": "PipelineStageOutput",
+  "type": "object",
+  "properties": {
+    "activation": {"$ref": "activation-tensor.schema.json"},
+    "token": {
+      "type": "object",
+      "required": ["id", "text"],
+      "properties": {
+        "id": {"type": "integer"},
+        "text": {"type": "string"},
+        "done": {"type": "boolean"},
+        "finish_reason": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "prompt_tokens": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": true
+}

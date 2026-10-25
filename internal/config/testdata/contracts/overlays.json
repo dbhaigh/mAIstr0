@@ -2,6 +2,8 @@
   "node": {
     "node_id": "worker-17",
     "listen_addr": ":7451",
+    "rpc_relay_listen_addr": ":7452",
+    "log_level": "info",
     "advertise_addr": "",
     "orchestrator_addr": "",
     "max_concurrent_tasks": 5,
@@ -10,16 +12,25 @@
     "discovery_enabled": true,
     "auto_open_browser": true,
     "tray_mode": "taskbar",
-    "memory_path": ""
+    "memory_path": "",
+    "sync_max_bytes": 67108864,
+    "sync_timeout_seconds": 600
   },
   "orchestrator": {
     "listen_addr": ":7450",
+    "log_level": "info",
     "mode": "full",
     "harness": "deepseek",
     "max_concurrent_dispatches": 7,
+    "dispatch_timeout_seconds": 600,
     "discovery_enabled": true,
     "auto_open_browser": true,
     "tray_mode": "taskbar",
-    "memory_path": ""
+    "memory_path": "",
+    "sync_max_bytes": 67108864,
+    "sync_timeout_seconds": 600,
+    "max_concurrent_hedges": 1,
+    "router_time_to_first_byte_timeout_seconds": 60,
+    "router_idle_stream_timeout_seconds": 30
   }
 }

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,49 @@ func TestAssignRejectsUnassignableSubtasks(t *testing.T) {
 	}
 }
 
+func TestAssignExplainsRejectedNPUModel(t *testing.T) {
+	node := cluster.NodeStatus{
+		ID: "intel-npu", Address: "https://intel-npu", Healthy: true,
+		Hardware: hardware.Info{
+			HasNPU: true, NPUVendor: "intel-npu",
+			Devices: []hardware.Device{{
+				Kind: "npu", Vendor: "intel-npu", Backends: []string{"openvino"}, FreeMemoryMB: 2048,
+			}},
+		},
+		Engines: []engine.Status{{
+			Name: "openvino", Ready: true, ModelCount: 1,
+			Capabilities: engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{"openvino"},
+				NPUVendors: []string{"intel-npu"}, Quantizations: []string{"q4_0"},
+				PrimaryQuantization: "q4_0", RequiresContextCap: true,
+			},
+		}},
+		Models: []engine.Model{{
+			Name: "model", Engine: "openvino", Tags: []string{"general"},
+			Device: "npu", SizeGB: 4, Quantization: "q5_k",
+		}},
+	}
+	assignments, err := Assign([]Subtask{{ID: "npu-work", TaskType: "general"}}, []cluster.NodeStatus{node})
+	var unassignable *UnassignableSubtasksError
+	if len(assignments) != 0 || !errors.As(err, &unassignable) {
+		t.Fatalf("assignments = %+v, error = %v, want NPU eligibility refusal", assignments, err)
+	}
+	for _, reason := range []string{
+		"model does not fit in reported NPU memory",
+		"model quantization is not supported",
+		"engine requires a reported context cap",
+	} {
+		if !strings.Contains(err.Error(), reason) {
+			t.Errorf("scheduler error %q does not include %q", err, reason)
+		}
+	}
+	if len(unassignable.ModelRejections) != 1 ||
+		unassignable.ModelRejections[0].NodeID != node.ID ||
+		unassignable.ModelRejections[0].Model != "model" {
+		t.Fatalf("structured model rejections = %+v", unassignable.ModelRejections)
+	}
+}
+
 func TestAssignAllowsGeneralCapableModelForSpecificTask(t *testing.T) {
 	assignments, err := Assign([]Subtask{{ID: "sub-code", TaskType: "code"}}, []cluster.NodeStatus{{
 		ID: "general-node", Address: "http://node", Healthy: true,
@@ -107,6 +151,52 @@ func TestAssignAllowsGeneralCapableModelForSpecificTask(t *testing.T) {
 	}
 	if len(assignments) != 1 || assignments[0].Model != "general-model" {
 		t.Fatalf("unexpected assignments: %+v", assignments)
+	}
+}
+
+func TestAssignUsesLatencyPreferenceAndMeasuredThroughput(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "fast", Address: "http://fast", Healthy: true,
+			Models: []engine.Model{{Name: "small-model", Tags: []string{"general"}, SizeGB: 7}},
+		},
+		{
+			ID: "quality", Address: "http://quality", Healthy: true,
+			Models: []engine.Model{{
+				Name: "large-model", Tags: []string{"general", "high-quality", "reasoning"}, SizeGB: 70,
+			}},
+		},
+	}
+	experience := routingHistoryFixture{"fast": 100, "quality": 10}
+	subtask := Subtask{
+		ID: "work", TaskType: "general", Description: strings.Repeat("d", 1000),
+		ExpectedOutput: strings.Repeat("o", 1000),
+	}
+	qualityAssignments, err := AssignWithExperience(
+		[]Subtask{subtask}, nodes, experience,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qualityAssignments[0].NodeID != "quality" {
+		t.Fatalf("quality preference selected %s, want quality candidate", qualityAssignments[0].NodeID)
+	}
+
+	subtask.RoutingPreference = RoutingPreferenceLatency
+	latencyAssignments, err := AssignWithExperience(
+		[]Subtask{subtask}, nodes, experience,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latencyAssignments[0].NodeID != "fast" {
+		t.Fatalf("latency preference selected %s, want faster candidate", latencyAssignments[0].NodeID)
+	}
+	factors := latencyAssignments[0].Factors
+	if factors.EstimatedTokensPerSecond != 100 || factors.ModelSizeGB != 7 ||
+		factors.EstimatedCompletionSeconds >= qualityAssignments[0].Factors.EstimatedCompletionSeconds {
+		t.Fatalf("selected latency score factors = %+v; quality candidate factors = %+v",
+			factors, qualityAssignments[0].Factors)
 	}
 }
 
@@ -198,10 +288,19 @@ func TestAssignPrefersModelsAdvertisedByGPUNode(t *testing.T) {
 	}
 }
 
-func TestAssignPrefersLMStudioAndSmallerModelOnGPU(t *testing.T) {
+func TestAssignPrefersCapabilityMatchedSmallerModelOnGPU(t *testing.T) {
 	nodes := []cluster.NodeStatus{{
 		ID: "gpu", Address: "http://gpu", Healthy: true,
-		Hardware: hardware.Info{HasGPU: true},
+		Hardware: hardware.Info{
+			HasGPU:  true,
+			Devices: []hardware.Device{{Kind: "gpu", Backends: []string{"cuda"}}},
+		},
+		Engines: []engine.Status{
+			{Name: "ollama", Ready: true, ModelCount: 1},
+			{Name: "lmstudio", Ready: true, ModelCount: 2, Capabilities: engine.Capabilities{
+				Devices: []string{"gpu"}, Backends: []string{"cuda"},
+			}},
+		},
 		Models: []engine.Model{
 			{Name: "ollama-general", Engine: "ollama", Tags: []string{"general"}},
 			{Name: "lmstudio-large", Engine: "lmstudio", Tags: []string{"general"}},
@@ -214,7 +313,7 @@ func TestAssignPrefersLMStudioAndSmallerModelOnGPU(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignments) != 1 || assignments[0].Model != "lmstudio-small" {
-		t.Fatalf("assigned to %+v, want the small LM Studio model on the GPU node", assignments)
+		t.Fatalf("assigned to %+v, want the smaller model from the GPU-capable engine", assignments)
 	}
 }
 
@@ -327,4 +426,14 @@ func TestAssignExcludesFailedNodes(t *testing.T) {
 	if len(assignments) != 1 || assignments[0].NodeID != "healthy" {
 		t.Fatalf("failed node was assigned work: %+v", assignments)
 	}
+}
+
+type routingHistoryFixture map[string]float64
+
+func (routingHistoryFixture) LearnedBias(string, string, string) float64 {
+	return 0
+}
+
+func (history routingHistoryFixture) TokensPerSecond(nodeID, _, _ string) float64 {
+	return history[nodeID]
 }

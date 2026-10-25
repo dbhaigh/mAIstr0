@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/dashboard-pipeline.schema.json",
+  "title": "DashboardPipelineSnapshot",
+  "type": "object",
+  "properties": {
+    "model_inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["model_id", "kind"],
+        "properties": {
+          "model_id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["whole", "sharded"]},
+          "nodes": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "router_events": {
+      "type": ["array", "null"],
+      "items": {"$ref": "router-request-event.schema.json"}
+    },
+    "router_circuit_breakers": {
+      "type": "array",
+      "items": {"$ref": "router-circuit-breaker.schema.json"}
+    },
+    "pipeline_plans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["model_id", "status", "stages"],
+        "properties": {
+          "model_id": {"type": "string", "minLength": 1},
+          "status": {"enum": ["not_placed", "ready", "degraded"]},
+          "plan": {"$ref": "pipeline-plan.schema.json"},
+          "stages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["stage", "node_id", "start_layer", "end_layer", "engine", "status", "active"],
+              "properties": {
+                "stage": {"type": "integer", "minimum": 0},
+                "node_id": {"type": "string", "minLength": 1},
+                "start_layer": {"type": "integer", "minimum": 0},
+                "end_layer": {"type": "integer", "minimum": 1},
+                "engine": {"type": "string", "minLength": 1},
+                "status": {"enum": ["ready", "offline", "unavailable"]},
+                "active": {"type": "integer", "minimum": 0},
+                "capacity": {"type": "integer", "minimum": 0},
+                "utilization_percent": {"type": "number", "minimum": 0},
+                "activation_transfer_ms": {"type": "number", "minimum": 0},
+                "activation_bytes": {"type": "integer", "minimum": 0}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

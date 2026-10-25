@@ -6,7 +6,7 @@ package discovery
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"net"
 	"net/url"
 	"strings"
@@ -39,59 +39,20 @@ type Peer struct {
 	LastSeen time.Time `json:"last_seen"`
 }
 
-// Beacon periodically broadcasts an announcement on the LAN until stop is closed.
-func Beacon(get func() Announcement, interval time.Duration, stop <-chan struct{}) {
-	conn, err := listenUDP("udp4", ":0", true)
-	if err != nil {
-		log.Printf("discovery: beacon disabled, could not open UDP socket: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	send := func() {
-		ann := get()
-		if ann.ID == "" { // empty announcement = skip this tick (e.g. yielded orchestrator)
-			return
-		}
-		buf, err := json.Marshal(ann)
-		if err != nil {
-			return
-		}
-		addrs := broadcastAddrs()
-		if len(addrs) == 0 {
-			log.Printf("discovery: no non-loopback IPv4 interface found; announcement not sent")
-		}
-		for _, addr := range addrs {
-			if _, err := conn.WriteTo(buf, &net.UDPAddr{IP: addr, Port: Port}); err != nil {
-				log.Printf("discovery: broadcast to %s failed: %v", addr, err)
-			}
-		}
-	}
-
-	send()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			send()
-		}
-	}
-}
-
 // Listener collects announcements from other instances on the LAN.
 type Listener struct {
 	selfIDs map[string]bool
 	stop    chan struct{}
 	conn    net.PacketConn
 	ready   chan struct{}
+	// bind opens the discovery socket; nil uses UDP Port. Tests inject fakes.
+	bind func() (net.PacketConn, error)
 
 	// mu protects peers and listener readiness/connection state. Copy values
 	// under the lock, then release it before closing connections or waiting.
 	mu       sync.RWMutex
 	peers    map[string]Peer
+	excluded map[string]bool
 	readyErr error
 }
 
@@ -101,50 +62,137 @@ type Listener struct {
 // It never returns an error for callers that want to keep running without
 // discovery (e.g. port in use); it just logs and leaves the peer set empty.
 func Listen(selfIDs ...string) *Listener {
+	return listenWith(nil, selfIDs...)
+}
+
+func listenWith(bind func() (net.PacketConn, error), selfIDs ...string) *Listener {
 	exclude := make(map[string]bool, len(selfIDs))
 	for _, id := range selfIDs {
 		exclude[id] = true
 	}
-	l := &Listener{selfIDs: exclude, peers: make(map[string]Peer), stop: make(chan struct{}), ready: make(chan struct{})}
+	l := &Listener{
+		selfIDs:  exclude,
+		peers:    make(map[string]Peer),
+		excluded: make(map[string]bool),
+		stop:     make(chan struct{}),
+		ready:    make(chan struct{}),
+		bind:     bind,
+	}
 	go l.run()
 	return l
 }
 
+const (
+	listenerRetryMin = 250 * time.Millisecond
+	listenerRetryMax = 5 * time.Second
+)
+
+func bindListenerPort() (net.PacketConn, error) {
+	return listenUDP("udp4", ":"+itoa(Port), false)
+}
+
+func (l *Listener) bindPort() (net.PacketConn, error) {
+	if l.bind != nil {
+		return l.bind()
+	}
+	return bindListenerPort()
+}
+
 func (l *Listener) run() {
-	conn, err := listenUDP("udp4", ":"+itoa(Port), false)
+	conn, err := l.bindPort()
 	if err != nil {
-		log.Printf("discovery: listener disabled, could not bind UDP port %d: %v", Port, err)
+		logging.Errorf("discovery", "discovery: listener disabled, could not bind UDP port %d: %v", Port, err)
 		l.mu.Lock()
 		l.readyErr = err
 		close(l.ready)
 		l.mu.Unlock()
 		return
 	}
+	if !l.setConn(conn) {
+		close(l.ready)
+		return
+	}
+	close(l.ready)
+
+	for conn != nil {
+		err := l.serve(conn)
+		_ = conn.Close()
+		l.setConn(nil)
+		if err == nil {
+			return
+		}
+		// A socket error would otherwise end discovery silently while the
+		// process keeps running; reopen the port instead.
+		logging.Errorf("discovery", "discovery: listener read on UDP port %d failed: %v; reopening", Port, err)
+		conn = l.rebind()
+	}
+}
+
+// setConn publishes the active socket. It returns false (and closes conn)
+// when the listener was stopped concurrently, so Close never misses a socket.
+func (l *Listener) setConn(conn net.PacketConn) bool {
 	l.mu.Lock()
 	l.conn = conn
-	close(l.ready)
 	l.mu.Unlock()
-	defer conn.Close()
-	defer func() {
+	if conn != nil && l.stopped() {
 		l.mu.Lock()
 		l.conn = nil
 		l.mu.Unlock()
-	}()
+		_ = conn.Close()
+		return false
+	}
+	return true
+}
 
+func (l *Listener) stopped() bool {
+	select {
+	case <-l.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// rebind retries binding the discovery port with capped exponential backoff
+// until it succeeds or the listener stops (returning nil).
+func (l *Listener) rebind() net.PacketConn {
+	delay := listenerRetryMin
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-l.stop:
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+		conn, err := l.bindPort()
+		if err == nil {
+			if !l.setConn(conn) {
+				return nil
+			}
+			logging.Infof("discovery", "discovery: listener reopened UDP port %d", Port)
+			return conn
+		}
+		logging.Errorf("discovery", "discovery: could not reopen UDP port %d: %v", Port, err)
+		delay = min(delay*2, listenerRetryMax)
+	}
+}
+
+// serve reads announcements until the listener stops (nil) or the socket
+// returns a non-timeout error.
+func (l *Listener) serve(conn net.PacketConn) error {
 	buf := make([]byte, 4096)
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 		n, _, err := conn.ReadFrom(buf)
 		if err != nil {
-			select {
-			case <-l.stop:
-				return
-			default:
+			if l.stopped() {
+				return nil
 			}
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
-			return
+			return err
 		}
 		var ann Announcement
 		if err := json.Unmarshal(buf[:n], &ann); err != nil {
@@ -154,7 +202,9 @@ func (l *Listener) run() {
 			continue
 		}
 		l.mu.Lock()
-		l.peers[ann.ID] = Peer{Announcement: ann, LastSeen: time.Now()}
+		if !l.excluded[ann.ID] {
+			l.peers[ann.ID] = Peer{Announcement: ann, LastSeen: time.Now()}
+		}
 		l.mu.Unlock()
 	}
 }
@@ -210,6 +260,10 @@ func (l *Listener) Snapshot() []Peer {
 	out := make([]Peer, 0, len(l.peers))
 	cutoff := time.Now().Add(-peerTTL)
 	for id, p := range l.peers {
+		if l.excluded[id] {
+			delete(l.peers, id)
+			continue
+		}
 		if p.LastSeen.After(cutoff) {
 			out = append(out, p)
 		} else {
@@ -217,6 +271,32 @@ func (l *Listener) Snapshot() []Peer {
 		}
 	}
 	return out
+}
+
+// ExcludePeer suppresses future announcements from a peer until IncludePeer
+// is called. It is used while a health check has declared the current leader
+// unavailable, so that stale beacons cannot keep it in the failover election.
+func (l *Listener) ExcludePeer(id string) {
+	if id == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.excluded == nil {
+		l.excluded = make(map[string]bool)
+	}
+	l.excluded[id] = true
+	delete(l.peers, id)
+}
+
+// IncludePeer resumes accepting announcements from a previously excluded peer.
+func (l *Listener) IncludePeer(id string) {
+	if id == "" {
+		return
+	}
+	l.mu.Lock()
+	delete(l.excluded, id)
+	l.mu.Unlock()
 }
 
 // FirstOrchestrator blocks (up to timeout) waiting for an orchestrator to be
@@ -237,9 +317,15 @@ func (l *Listener) FirstOrchestrator(timeout time.Duration) string {
 // BestOrchestrator returns the announcing orchestrator with the highest
 // capability score (ties broken by lowest ID): the current election winner.
 func (l *Listener) BestOrchestrator() (Peer, bool) {
+	return BestActiveOrchestrator(l.Snapshot())
+}
+
+// BestActiveOrchestrator selects from running orchestrators, ignoring
+// candidates that have not completed startup.
+func BestActiveOrchestrator(peers []Peer) (Peer, bool) {
 	var best Peer
 	found := false
-	for _, p := range l.Snapshot() {
+	for _, p := range peers {
 		if p.Role != "orchestrator" {
 			continue
 		}
@@ -337,40 +423,6 @@ func firstLANIP() string {
 		return ip4.String()
 	}
 	return ""
-}
-
-// broadcastAddrs returns the subnet broadcast address of every local IPv4
-// LAN interface (loopback and link-local excluded), so announcements only
-// go out on the local network, never to 127.0.0.1.
-func broadcastAddrs() []net.IP {
-	var out []net.IP
-	addrs, err := interfaceAddrs()
-	if err != nil {
-		return out
-	}
-	for _, a := range addrs {
-		ipNet, ok := a.(*net.IPNet)
-		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
-			continue
-		}
-		ip4 := ipNet.IP.To4()
-		if ip4 == nil {
-			continue
-		}
-		mask := ipNet.Mask
-		if len(mask) == 16 {
-			mask = mask[12:]
-		}
-		if len(mask) != 4 {
-			continue
-		}
-		bcast := make(net.IP, 4)
-		for i := range ip4 {
-			bcast[i] = ip4[i] | ^mask[i]
-		}
-		out = append(out, bcast)
-	}
-	return out
 }
 
 // IsSameSubnet reports whether the given IP is on the same subnet as any of

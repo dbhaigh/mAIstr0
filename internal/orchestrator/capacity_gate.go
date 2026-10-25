@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"sync"
 	"time"
 
@@ -148,35 +148,50 @@ func (g *dispatchCapacityGate) dispatchCapacity(
 	nodeGate *nodeDispatchGate,
 	nodeID, address string,
 ) (int, int, int, bool) {
-	select {
-	case nodeGate.refreshMu <- struct{}{}:
-		defer func() { <-nodeGate.refreshMu }()
-	case <-ctx.Done():
-		return 0, 0, 0, false
-	}
+	var status cluster.NodeStatus
+	for {
+		current, exists := g.registry.Get(nodeID)
+		if !exists || !current.Healthy || current.Address != address {
+			return 0, 0, 0, false
+		}
+		status = current
+		if time.Since(status.LastSeen) <= nodeCapacityFreshnessWindow {
+			break
+		}
 
-	status, exists := g.registry.Get(nodeID)
-	if !exists || !status.Healthy || status.Address != address {
-		return 0, 0, 0, false
-	}
-	if time.Since(status.LastSeen) > nodeCapacityFreshnessWindow {
+		done, owner := nodeGate.beginRefresh()
+		if !owner {
+			select {
+			case <-ctx.Done():
+				return 0, 0, 0, false
+			case <-done:
+				continue
+			}
+		}
+
 		refreshed, err := g.capacityProbe.discoveredNodeStatusContext(ctx, status.Address)
 		if err != nil {
 			if ctx.Err() != nil {
+				nodeGate.endRefresh()
 				return 0, 0, 0, false
 			}
-			log.Printf("orchestrator: refreshing capacity for node %s failed: %v", nodeID, err)
+			logging.Errorf("orchestrator", "orchestrator: refreshing capacity for node %s failed: %v", nodeID, err)
 			g.registry.MarkUnhealthy(nodeID)
+			nodeGate.endRefresh()
 			return 0, 0, 0, false
 		}
 		if refreshed.ID != nodeID || refreshed.Address != address {
-			log.Printf("orchestrator: capacity response identity mismatch for node %s", nodeID)
+			logging.Errorf("orchestrator", "orchestrator: capacity response identity mismatch for node %s", nodeID)
 			g.registry.MarkUnhealthy(nodeID)
+			nodeGate.endRefresh()
 			return 0, 0, 0, false
 		}
 		g.registry.Upsert(refreshed)
+		nodeGate.endRefresh()
 		status = refreshed
+		break
 	}
+
 	limit := status.MaxConcurrentTasks
 	available := status.AvailableCapacity
 	if limit <= 0 {

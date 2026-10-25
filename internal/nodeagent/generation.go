@@ -3,8 +3,9 @@ package nodeagent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"net/http"
 	"strings"
@@ -23,7 +24,7 @@ func (a *Agent) streamGenerate(w http.ResponseWriter, r *http.Request, eng engin
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
+	stream := httpx.NewStreamWriter(w)
 	start := time.Now()
 	var output strings.Builder
 	writeDelta := func(delta string) error {
@@ -32,11 +33,8 @@ func (a *Agent) streamGenerate(w http.ResponseWriter, r *http.Request, eng engin
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		if err := stream.WriteSSEData(data); err != nil {
 			return err
-		}
-		if flusher != nil {
-			flusher.Flush()
 		}
 		return nil
 	}
@@ -60,15 +58,18 @@ func (a *Agent) streamGenerate(w http.ResponseWriter, r *http.Request, eng engin
 	if err != nil {
 		data, marshalErr := json.Marshal(map[string]string{"error": err.Error()})
 		if marshalErr == nil {
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			if writeErr := stream.WriteSSEData(data); writeErr != nil {
+				logging.Errorf("nodeagent", "nodeagent: write generation stream error: %v", writeErr)
+			}
 		}
 	}
-	if flusher != nil {
-		flusher.Flush()
-	}
+	stream.Flush()
 }
 
-func chatWithContext(ctx context.Context, eng engine.Engine, model string, messages []engine.ChatMessage) (string, error) {
+func chatWithContext(ctx context.Context, eng engine.Engine, model string, messages []engine.ChatMessage, options engine.GenerationOptions) (string, error) {
+	if withOptions, ok := eng.(engine.EngineWithChatOptions); ok {
+		return withOptions.ChatWithOptions(ctx, model, messages, options)
+	}
 	if withChat, ok := eng.(engine.EngineWithChatContext); ok {
 		return withChat.ChatWithContext(ctx, model, messages)
 	}

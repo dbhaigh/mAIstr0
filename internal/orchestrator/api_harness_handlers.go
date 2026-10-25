@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 type createSessionRequest struct {
@@ -27,15 +28,16 @@ type agentMessageRequest struct {
 	Message string `json:"message"`
 }
 
-func writeAgentStreamError(w http.ResponseWriter, flusher http.Flusher, sessionID string, err error) {
+func writeAgentStreamError(stream *httpx.StreamWriter, sessionID string, err error) {
 	event := agent.StreamEvent{Type: agent.EventError, SessionID: sessionID, Error: "could not persist agent session: " + err.Error()}
 	data, marshalErr := json.Marshal(event)
 	if marshalErr != nil {
-		log.Printf("orchestrator: encode agent stream error: %v", marshalErr)
+		logging.Errorf("orchestrator", "orchestrator: encode agent stream error: %v", marshalErr)
 		return
 	}
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-	flusher.Flush()
+	if err := stream.WriteSSEData(data); err != nil {
+		logging.Errorf("orchestrator", "orchestrator: write agent stream error: %v", err)
+	}
 }
 
 func (s *Server) handleAgentSessionsList(w http.ResponseWriter, r *http.Request) {
@@ -45,10 +47,14 @@ func (s *Server) handleAgentSessionsList(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleAgentSessionsCreate(w http.ResponseWriter, r *http.Request) {
 	var req createSessionRequest
 	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		decoded, err := httpx.DecodeJSON[createSessionRequest](
+			w, r, httpx.ControlJSONBodyBytes,
+		)
+		if err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, apperr.Invalid(err))
 			return
 		}
+		req = decoded
 	}
 	harness, backend := s.currentAgent()
 	session, err := backend.CreateSession(req.Title, agent.SessionConfig{
@@ -115,8 +121,10 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
 		return
 	}
-	var req agentMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[agentMessageRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -144,11 +152,12 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		flusher, ok := w.(http.Flusher)
+		_, ok := w.(http.Flusher)
 		if !ok {
 			writeError(w, apperr.InternalError(errors.New("streaming unsupported")))
 			return
 		}
+		stream := httpx.NewStreamWriter(w)
 
 		streamChan := make(chan agent.StreamEvent, 50)
 		go func() {
@@ -164,20 +173,21 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 		for ev := range streamChan {
 			data, err := json.Marshal(ev)
 			if err == nil {
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-				flusher.Flush()
+				if writeErr := stream.WriteSSEData(data); writeErr != nil {
+					logging.Errorf("orchestrator", "orchestrator: write agent stream event: %v", writeErr)
+				}
 			}
 		}
 		session, ok := backend.GetSession(id)
 		if !ok {
 			err := errors.New("agent session disappeared while processing the message")
-			log.Printf("orchestrator: persist streamed agent session %s: %v", id, err)
-			writeAgentStreamError(w, flusher, id, err)
+			logging.Errorf("orchestrator", "orchestrator: persist streamed agent session %s: %v", id, err)
+			writeAgentStreamError(stream, id, err)
 		} else {
 			session.Harness = harness
 			if err := s.persistAgentSession(session); err != nil {
-				log.Printf("orchestrator: persist streamed agent session %s: %v", id, err)
-				writeAgentStreamError(w, flusher, id, err)
+				logging.Errorf("orchestrator", "orchestrator: persist streamed agent session %s: %v", id, err)
+				writeAgentStreamError(stream, id, err)
 			}
 		}
 		s.publishSnapshot()
@@ -193,7 +203,7 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 	session.Harness = harness
 	if err := s.persistAgentSession(session); err != nil {
 		if sendErr != nil {
-			log.Printf("orchestrator: persist failed agent session %s: %v", id, err)
+			logging.Errorf("orchestrator", "orchestrator: persist failed agent session %s: %v", id, err)
 		}
 		writeError(w, apperr.InternalError(fmt.Errorf("could not persist agent session: %w", err)))
 		return
@@ -240,7 +250,7 @@ func (s *Server) handleAgentToolsList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgentModelsList(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
-	writeJSON(w, http.StatusOK, backend.ListClusterModels())
+	writeJSON(w, http.StatusOK, s.listClusterModels(backend))
 }
 
 func (s *Server) handleAgentStatsGet(w http.ResponseWriter, r *http.Request) {
@@ -256,10 +266,13 @@ func (s *Server) handleAgentBackendGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentBackendPatch(w http.ResponseWriter, r *http.Request) {
-	var request struct {
+	type harnessRequest struct {
 		Harness string `json:"harness"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	request, err := httpx.DecodeJSON[harnessRequest](
+		w, r, httpx.SmallJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}

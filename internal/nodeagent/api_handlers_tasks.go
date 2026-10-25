@@ -1,10 +1,11 @@
 package nodeagent
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
@@ -17,8 +18,10 @@ import (
 // each subtask straight to the chosen peer's /execute endpoint rather than
 // routing everything back through the orchestrator.
 func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	var req submitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[submitRequest](
+		w, r, httpx.ControlJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -48,19 +51,19 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := a.tasks.CreateChecked(req.Description, assignments)
+	task, err := a.orchestratorLink.tasks.CreateChecked(req.Description, assignments)
 	if err != nil {
 		writeError(w, apperr.InternalError(fmt.Errorf("could not persist task: %w", err)))
 		return
 	}
-	taskCtx, ok := a.tasks.Context(task.ID)
+	taskCtx, ok := a.orchestratorLink.tasks.Context(task.ID)
 	if !ok {
 		writeError(w, apperr.InternalError(errors.New("created task is no longer available")))
 		return
 	}
 	for _, asg := range assignments {
 		if err := a.peerComponent.dispatchPool.Submit(taskCtx, peerDispatchJob{taskID: task.ID, assignment: asg}); err != nil {
-			a.tasks.CompleteSubtask(task.ID, asg.Subtask.ID, "", err)
+			a.orchestratorLink.tasks.CompleteSubtask(task.ID, asg.Subtask.ID, "", err)
 		}
 	}
 	writeJSON(w, http.StatusAccepted, task)
@@ -81,13 +84,13 @@ func (a *Agent) handleTasksList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task sync pagination requires protocol version 2", http.StatusBadRequest)
 		return
 	}
-	tasks, currentWatermarks := a.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
+	tasks, currentWatermarks := a.orchestratorLink.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
 	if memory.SupportsSyncPages(version) {
 		if cursor == nil {
 			cursor = make(map[string]uint64)
 			upper = currentWatermarks
 		}
-		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, maxTaskSyncBodyBytes)
+		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, a.cfg.SyncMaxBytes)
 		if err != nil {
 			http.Error(w, "could not page task history: "+err.Error(), http.StatusRequestEntityTooLarge)
 			return
@@ -101,15 +104,21 @@ func (a *Agent) handleTasksList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := memory.SetSyncResponseHeaders(w, currentWatermarks); err != nil {
+	if err := memory.SetSyncResponseHeadersForPeer(w, currentWatermarks, version); err != nil {
 		http.Error(w, "could not encode task sync watermarks: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	if memory.SupportsEmptySync(version) && r.Header.Get(memory.SyncPageCursorHeader) == "" && len(tasks) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if _, err := memory.WriteSyncJSON(w, http.StatusOK, tasks, version, memory.AcceptsSyncCompression(r)); err != nil {
+		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: task sync response encoding failed: %v", err)
+	}
 }
 
 func (a *Agent) handleTaskGet(w http.ResponseWriter, r *http.Request) {
-	t, ok := a.tasks.Get(r.PathValue("id"))
+	t, ok := a.orchestratorLink.tasks.Get(r.PathValue("id"))
 	if !ok {
 		writeError(w, apperr.NotFoundError(errors.New("task not found")))
 		return
@@ -133,7 +142,7 @@ func (a *Agent) handleAPITasksPost(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) handleAPITasksList(w http.ResponseWriter, r *http.Request) {
 	if addr := a.getOrchestratorAddr(); addr != "" {
-		a.proxy(w, r, addr, "/api/tasks")
+		a.proxy(w, r, addr, withRawQuery("/api/tasks", r))
 		return
 	}
 	if a.isMostCapable() {

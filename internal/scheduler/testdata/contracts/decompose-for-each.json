@@ -1,0 +1,49 @@
+[
+  {
+    "id": "sub-a",
+    "description": "summarize the risk for Alpha",
+    "role": "summarizer",
+    "task_type": "summarize",
+    "tags": [
+      "summarize",
+      "general"
+    ]
+  },
+  {
+    "id": "sub-b",
+    "description": "summarize the risk for Beta",
+    "role": "summarizer",
+    "task_type": "summarize",
+    "tags": [
+      "summarize",
+      "general"
+    ]
+  },
+  {
+    "id": "sub-c",
+    "description": "summarize the risk for Gamma",
+    "role": "summarizer",
+    "task_type": "summarize",
+    "tags": [
+      "summarize",
+      "general"
+    ]
+  },
+  {
+    "id": "synthesis",
+    "description": "Synthesize the completed results into a coherent answer to the original task: For each of Alpha, Beta, and Gamma, summarize the risk.",
+    "role": "summarizer",
+    "task_type": "summarize",
+    "tags": [
+      "summarize",
+      "general"
+    ],
+    "depends_on": [
+      "sub-a",
+      "sub-b",
+      "sub-c"
+    ],
+    "expected_output": "A concise integrated response addressing the original task.",
+    "synthesis": true
+  }
+]

@@ -30,3 +30,15 @@ func (s *Server) callNodeGenerateWithOptions(nodeAddr, model, prompt string, tem
 func (s *Server) callNodeGenerateWithOptionsContext(ctx context.Context, nodeAddr, model, prompt string, temperature float64, maxTokens int) (string, error) {
 	return s.nodeClientPort().callNodeGenerateWithOptionsContext(ctx, nodeAddr, model, prompt, temperature, maxTokens)
 }
+
+func (s *Server) callNodeGenerateWithOptionsContextAndIdempotency(
+	ctx context.Context,
+	nodeAddr, model, prompt string,
+	temperature float64,
+	maxTokens int,
+	idempotencyKey string,
+) (string, error) {
+	return s.nodeClientPort().callNodeGenerateWithOptionsContextAndIdempotency(
+		ctx, nodeAddr, model, prompt, temperature, maxTokens, idempotencyKey,
+	)
+}

@@ -133,6 +133,8 @@
           "gpu_utilization_penalty": 0,
           "npu_utilization_penalty": 0,
           "capability_score": 15,
+          "estimated_completion_seconds": 3.5276684147527875,
+          "estimated_tokens_per_second": 9.071147352221454,
           "learned_bias": 0,
           "telemetry_fresh": false
         }

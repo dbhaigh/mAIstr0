@@ -9,6 +9,18 @@ import (
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
+func saveTaskAndCheckpoint(store Store, task *Task, checkpoint *Checkpoint) error {
+	if atomicStore, ok := store.(interface {
+		SaveTaskAndCheckpoint(*Task, *Checkpoint) error
+	}); ok {
+		return atomicStore.SaveTaskAndCheckpoint(task, checkpoint)
+	}
+	if err := store.SaveCheckpoint(checkpoint); err != nil {
+		return err
+	}
+	return store.Save(task)
+}
+
 // Checkpoint stores a durable snapshot of task execution state at a consistent frontier.
 type Checkpoint struct {
 	ID        string               `json:"id"`
@@ -95,25 +107,6 @@ func checkpointForTask(t *Task) *Checkpoint {
 	return cp
 }
 
-func (m *Manager) saveCheckpointLocked(t *Task) (*Checkpoint, error) {
-	if m.store == nil {
-		return nil, nil
-	}
-	// Keep checkpoint mutation on a private snapshot while allowing unrelated
-	// task reads and writes to proceed during the BoltDB transaction.
-	snapshot := cloneTask(t)
-	m.mu.Unlock()
-	cp := checkpointForTask(snapshot)
-	err := m.store.SaveCheckpoint(cp)
-	m.mu.Lock()
-	if err != nil {
-		return nil, err
-	}
-	t.LastCheckpoint = snapshot.LastCheckpoint
-	t.Resumable = snapshot.Resumable
-	return cp, nil
-}
-
 // GetCheckpoints returns all checkpoints for a task ordered by timestamp.
 func (m *Manager) GetCheckpoints(taskID string) ([]Checkpoint, error) {
 	if m.store == nil {
@@ -186,10 +179,7 @@ func (m *Manager) ResumeTaskChecked(taskID string) (*Task, error) {
 	t.cancel = cancel
 
 	signalChanged(t)
-	if _, err := m.saveCheckpointLocked(t); err != nil {
-		return nil, fmt.Errorf("taskmgr: checkpoint resumed task %s: %w", t.ID, err)
-	}
-	if err := m.persistLocked(t); err != nil {
+	if _, err := m.persistTaskAndCheckpointLocked(t); err != nil {
 		return nil, err
 	}
 	return cloneTask(t), nil

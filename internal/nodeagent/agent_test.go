@@ -8,6 +8,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,6 +47,54 @@ func mustNewTestAgentWithEngineDetector(t *testing.T, cfg config.NodeConfig, tas
 		t.Fatal(err)
 	}
 	return agent
+}
+
+func TestNodeSyncConfigControlsPageLimitAndTimeout(t *testing.T) {
+	cfg := config.DefaultNodeConfig()
+	cfg.NodeID = "sync-config-test"
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "sync.db")
+	cfg.SyncMaxBytes = 4096
+	cfg.SyncTimeoutSeconds = 37
+	agent := mustNewTestAgentWithEngineDetector(t, cfg, taskmgr.NewManager(), func() []engine.Engine { return nil })
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+	if agent.orchestratorLink.syncer.maxSyncBytes != 4096 {
+		t.Fatalf("sync page limit = %d, want 4096", agent.orchestratorLink.syncer.maxSyncBytes)
+	}
+	if agent.memorySyncClient.Timeout != 37*time.Second {
+		t.Fatalf("memory sync timeout = %s, want 37s", agent.memorySyncClient.Timeout)
+	}
+}
+
+func TestMemorySyncProxyUsesConfiguredBodyLimit(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "sync-proxy-body-limit-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+		SyncMaxBytes: 4,
+	})
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+	upstreamReached := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamReached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/memory/sync", strings.NewReader("12345"))
+	response := httptest.NewRecorder()
+	agent.peerComponent.proxy(response, request, upstream.URL, "/api/memory/sync")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized sync proxy returned %d, want 400", response.Code)
+	}
+	if upstreamReached {
+		t.Fatal("oversized sync request reached the upstream server")
+	}
 }
 
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
@@ -95,17 +145,17 @@ func (e *pullTestEngine) Pull(model string) error {
 }
 
 func TestHandleExecuteEnforcesAdvertisedConcurrencyLimit(t *testing.T) {
-	agent := mustNewTestAgent(t, config.NodeConfig{
+	agent := mustNewTestAgentWithEngineDetector(t, config.NodeConfig{
 		NodeID: "execution-limit-test", MaxConcurrentTasks: 1,
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
-	})
+	}, nil, func() []engine.Engine { return nil })
 	t.Cleanup(func() {
 		if err := agent.Close(); err != nil {
 			t.Errorf("close test agent: %v", err)
 		}
 	})
 	eng := &blockingExecutionEngine{started: make(chan struct{}, 2), release: make(chan struct{})}
-	agent.engines = []engine.Engine{eng}
+	agent.replaceConfiguredEngine(eng)
 
 	runRequest := func() *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
@@ -118,7 +168,12 @@ func TestHandleExecuteEnforcesAdvertisedConcurrencyLimit(t *testing.T) {
 	select {
 	case <-eng.started:
 	case <-time.After(time.Second):
-		t.Fatal("first execution did not start")
+		select {
+		case response := <-firstDone:
+			t.Fatalf("first execution returned before engine start: %d: %s", response.Code, response.Body.String())
+		default:
+			t.Fatal("first execution did not start")
+		}
 	}
 	secondDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() { secondDone <- runRequest() }()
@@ -224,31 +279,144 @@ func TestHandlePropertiesLoadsAndSavesCompleteProperties(t *testing.T) {
 	}
 }
 
-func TestPrioritizeAcceleratedEnginesPrefersNPUCompatibleServer(t *testing.T) {
+type capabilityTestEngine struct {
+	engine.Engine
+	capabilities engine.Capabilities
+}
+
+func (e capabilityTestEngine) Capabilities() engine.Capabilities { return e.capabilities }
+
+func TestPrioritizeEnginesByCapabilitiesAndReadiness(t *testing.T) {
 	engines := []engine.Engine{
-		&pullTestEngine{name: "ollama"},
-		&pullTestEngine{name: "fastflowlm"},
-		&pullTestEngine{name: "lmstudio"},
+		capabilityTestEngine{
+			Engine:       &pullTestEngine{name: "cpu"},
+			capabilities: engine.Capabilities{Devices: []string{"cpu"}},
+		},
+		capabilityTestEngine{
+			Engine:       &pullTestEngine{name: "gpu"},
+			capabilities: engine.Capabilities{},
+		},
+		capabilityTestEngine{
+			Engine:       &pullTestEngine{name: "npu"},
+			capabilities: engine.Capabilities{},
+		},
 	}
 	tests := []struct {
-		name string
-		hw   hardware.Info
-		want string
+		name     string
+		hw       hardware.Info
+		statuses []engine.Status
+		want     string
 	}{
-		{name: "NPU takes precedence over GPU", hw: hardware.Info{HasGPU: true, HasNPU: true}, want: "fastflowlm,lmstudio,ollama"},
-		{name: "NPU without GPU", hw: hardware.Info{HasNPU: true}, want: "fastflowlm,ollama,lmstudio"},
-		{name: "GPU without NPU", hw: hardware.Info{HasGPU: true}, want: "lmstudio,ollama,fastflowlm"},
-		{name: "no accelerator", want: "ollama,fastflowlm,lmstudio"},
+		{
+			name: "best available device wins among ready engines",
+			hw: hardware.Info{Devices: []hardware.Device{
+				{Kind: "cpu"}, {Kind: "gpu", Backends: []string{"cuda"}}, {Kind: "npu", Backends: []string{"openvino"}},
+			}},
+			statuses: []engine.Status{
+				{Name: "cpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"cpu"}}},
+				{Name: "gpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}}},
+				{Name: "npu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"openvino"}}},
+			},
+			want: "npu,gpu,cpu",
+		},
+		{
+			name: "ready model outranks unsupported unready accelerator",
+			hw: hardware.Info{Devices: []hardware.Device{
+				{Kind: "gpu", Backends: []string{"cuda"}}, {Kind: "npu", Backends: []string{"openvino"}},
+			}},
+			statuses: []engine.Status{
+				{Name: "gpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}}},
+				{Name: "npu", Capabilities: engine.Capabilities{Devices: []string{"npu"}, Backends: []string{"openvino"}}},
+			},
+			want: "gpu,npu,cpu",
+		},
+		{
+			name: "backend mismatch does not match device",
+			hw:   hardware.Info{Devices: []hardware.Device{{Kind: "gpu", Backends: []string{"rocm"}}}},
+			statuses: []engine.Status{
+				{Name: "gpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"gpu"}, Backends: []string{"cuda"}}},
+				{Name: "cpu", Ready: true, ModelCount: 1, Capabilities: engine.Capabilities{Devices: []string{"cpu"}}},
+			},
+			want: "cpu,gpu,npu",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ordered := prioritizeAcceleratedEngines(engines, tt.hw)
+			ordered := prioritizeEnginesByCapabilities(engines, tt.hw, tt.statuses)
 			var names []string
 			for _, e := range ordered {
 				names = append(names, e.Name())
 			}
 			if got := strings.Join(names, ","); got != tt.want {
 				t.Fatalf("accelerated engine order = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNPUEngineCapabilitiesMatchHardwareVendor(t *testing.T) {
+	tests := []struct {
+		name    string
+		vendor  string
+		backend string
+	}{
+		{name: "Intel OpenVINO", vendor: "intel-npu", backend: "openvino"},
+		{name: "AMD XDNA", vendor: "amd-npu", backend: "xdna"},
+		{name: "Qualcomm Hexagon", vendor: "qualcomm-npu", backend: "hexagon"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			capabilities := engine.Capabilities{
+				Devices: []string{"npu"}, Backends: []string{test.backend},
+				NPUVendors: []string{test.vendor},
+			}
+			hardwareInfo := hardware.Info{HasNPU: true, NPUVendor: test.vendor, Devices: []hardware.Device{
+				{Kind: "npu", Vendor: test.vendor, Backends: []string{test.backend}},
+			}}
+			if got := engineDeviceMatchScore(capabilities, hardwareInfo); got != deviceKindPriority("npu") {
+				t.Fatalf("matching NPU score = %d, want %d", got, deviceKindPriority("npu"))
+			}
+			mismatchedVendor := "qualcomm-npu"
+			if test.vendor == mismatchedVendor {
+				mismatchedVendor = "intel-npu"
+			}
+			hardwareInfo.NPUVendor = mismatchedVendor
+			hardwareInfo.Devices[0].Vendor = mismatchedVendor
+			if got := engineDeviceMatchScore(capabilities, hardwareInfo); got != 0 {
+				t.Fatalf("mismatched NPU vendor score = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestValidatedRPCCapabilityRequiresOperatorOptIn(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		set  bool
+		want bool
+	}{
+		{name: "default is disabled"},
+		{name: "operator opt-in", set: true, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			component := &engineComponent{
+				engines: []engine.Engine{
+					capabilityTestEngine{
+						Engine: &pullTestEngine{name: "llamacpp"},
+						capabilities: engine.Capabilities{
+							Devices: []string{"npu"}, SupportsSharding: []string{"llamacpp-rpc"},
+						},
+					},
+				},
+				telemetry: &telemetryComponent{},
+				state:     &agentState{},
+				operatorCapabilities: map[string]engine.Capabilities{
+					"llamacpp": {ValidatedRPC: test.set},
+				},
+			}
+			_, statuses := component.inspectInventory()
+			if len(statuses) != 1 || statuses[0].Capabilities.ValidatedRPC != test.want {
+				t.Fatalf("engine status capabilities = %+v, want ValidatedRPC=%t", statuses, test.want)
 			}
 		})
 	}
@@ -341,7 +509,7 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/pairing/join" {
 			t.Errorf("pairing path = %q", r.URL.Path)
 		}
@@ -361,6 +529,8 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 			ID: orchestrator.ID(), Role: "orchestrator", CertificatePEM: orchestrator.CertificatePEM(),
 		})
 	}))
+	server.TLS = orchestrator.ServerTLSConfig()
+	server.StartTLS()
 	defer server.Close()
 
 	agent := mustNewTestAgent(t, config.NodeConfig{
@@ -372,7 +542,11 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	requestBody, _ := json.Marshal(map[string]string{"address": server.URL, "pin": ""})
+	agent.setOrchestratorAddr(server.URL)
+	agent.setOrchestratorID(orchestrator.ID())
+	requestBody, _ := json.Marshal(map[string]string{
+		"address": server.URL, "pin": "", "orchestrator_id": orchestrator.ID(),
+	})
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(requestBody))
 	response := httptest.NewRecorder()
 	agent.handlePairingConnect(response, request)
@@ -381,6 +555,67 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	}
 	if !agent.identity.IsTrustedID(orchestrator.ID()) || agent.getOrchestratorAddr() != server.URL {
 		t.Fatal("node did not trust and select the auto-joined orchestrator")
+	}
+}
+
+func TestPairingFailureDoesNotLogOrReturnReflectedPIN(t *testing.T) {
+	const pin = "654321"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "invalid PIN "+pin, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "pairing-error-redaction-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousOutput)
+
+	err := agent.orchestratorLink.pairWithAddress(server.URL, "", pin)
+	if err == nil {
+		t.Fatal("pairing unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), pin) {
+		t.Fatalf("pairing error leaked PIN %q: %v", pin, err)
+	}
+	if strings.Contains(logs.String(), pin) {
+		t.Fatalf("pairing log leaked PIN %q: %s", pin, logs.String())
+	}
+}
+
+func TestPairingConnectRejectsStaleSelectedOrchestrator(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "node-stale-orchestrator", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if agent.Memory() != nil {
+		t.Cleanup(func() { _ = agent.Memory().Close() })
+	}
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	agent.setOrchestratorAddr("https://127.0.0.1:7450")
+	agent.setOrchestratorID("visible-orchestrator")
+	body, err := json.Marshal(map[string]string{
+		"address": "https://127.0.0.1:7450", "orchestrator_id": "stale-orchestrator",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	agent.handlePairingConnect(response, httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(body)))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "no longer discovered") {
+		t.Fatalf("stale selected orchestrator returned %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -545,7 +780,7 @@ func TestPersistentTaskHistorySurvivesAgentRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := agent.tasks.CreateChecked("Persist this task", nil)
+	created, err := agent.orchestratorLink.tasks.CreateChecked("Persist this task", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +793,7 @@ func TestPersistentTaskHistorySurvivesAgentRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	restored, ok := restarted.tasks.Get(created.ID)
+	restored, ok := restarted.orchestratorLink.tasks.Get(created.ID)
 	if !ok || restored.Description != "Persist this task" {
 		t.Fatalf("task history was not restored: %#v", restored)
 	}
@@ -598,7 +833,7 @@ func TestTaskReplicaRequiresCurrentOrchestrator(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("replica from current coordinator returned %d: %s", response.Code, response.Body.String())
 	}
-	replica, ok := agent.tasks.Get(task.ID)
+	replica, ok := agent.orchestratorLink.tasks.Get(task.ID)
 	if !ok || replica.Description != task.Description {
 		t.Fatalf("coordinator task was not replicated: %#v", replica)
 	}
@@ -959,7 +1194,7 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pairServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	pairServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/pairing/join" {
 			t.Errorf("pairing path = %q", r.URL.Path)
 		}
@@ -975,6 +1210,8 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 			ID: orchestrator.ID(), Role: "orchestrator", CertificatePEM: orchestrator.CertificatePEM(),
 		})
 	}))
+	pairServer.TLS = orchestrator.ServerTLSConfig()
+	pairServer.StartTLS()
 	defer pairServer.Close()
 
 	agent := mustNewTestAgent(t, config.NodeConfig{
@@ -984,6 +1221,19 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer agent.Memory().Close()
+	wrongServerReceivedRequest := false
+	wrongServer := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		wrongServerReceivedRequest = true
+	}))
+	wrongServer.TLS = otherOrchestrator.ServerTLSConfig()
+	wrongServer.StartTLS()
+	defer wrongServer.Close()
+	if err := agent.pairWithAddress(wrongServer.URL, orchestrator.ID(), "123456"); err == nil {
+		t.Fatal("pairing sent a PIN to a TLS endpoint with the wrong identity")
+	}
+	if wrongServerReceivedRequest || agent.identity.IsTrustedID(orchestrator.ID()) {
+		t.Fatal("wrong-identity bootstrap reached the endpoint or changed the trust roster")
+	}
 	agent.setOrchestratorAddr("https://orchestrator.local:7450")
 	agent.setOrchestratorID(orchestrator.ID())
 	certBlock, _ := pem.Decode([]byte(orchestrator.CertificatePEM()))
@@ -1040,6 +1290,71 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 	agent.handlePairingInvitationAccept(acceptResponse, httptest.NewRequest(http.MethodPost, "/api/pairing/invitation/accept", nil))
 	if acceptResponse.Code != http.StatusOK || !agent.identity.IsTrustedID(orchestrator.ID()) {
 		t.Fatalf("local acceptance returned %d: %s", acceptResponse.Code, acceptResponse.Body.String())
+	}
+}
+
+func TestStaleOrchestratorCannotMutateAfterYieldButCanServeItsPartition(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "stale-orchestrator-fence-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	if agent.mem != nil {
+		defer agent.mem.Close()
+	}
+	if err := agent.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	oldLeader, err := peeridentity.Open(filepath.Join(t.TempDir(), "old-leader.json"), "old-leader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newLeader, err := peeridentity.Open(filepath.Join(t.TempDir(), "new-leader.json"), "new-leader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leader := range []*peeridentity.Identity{oldLeader, newLeader} {
+		if err := agent.identity.TrustPeerDetails(leader.ID(), leader.CertificatePEM(), "orchestrator", "https://127.0.0.1:7450"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	block, _ := pem.Decode([]byte(oldLeader.CertificatePEM()))
+	if block == nil {
+		t.Fatal("old leader certificate is not PEM encoded")
+	}
+	oldCertificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name       string
+		electedID  string
+		wantStatus int
+		wantWrite  bool
+	}{
+		{name: "new higher-ranked leader is visible", electedID: newLeader.ID(), wantStatus: http.StatusForbidden},
+		{name: "old leader remains elected in an isolated partition", electedID: oldLeader.ID(), wantStatus: http.StatusNoContent, wantWrite: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wrote := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				wrote = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			fenced := currentCoordinatorWriteFence(next, agent.identity.IsTrustedOrchestratorID, func() string {
+				return test.electedID
+			})
+			handler := agent.identity.RequireTrustedPeer(fenced)
+			request := httptest.NewRequest(http.MethodPost, "/api/models", nil)
+			request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{oldCertificate}}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("stale coordinator mutation returned %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if wrote != test.wantWrite {
+				t.Fatalf("mutation reached handler = %t, want %t", wrote, test.wantWrite)
+			}
+		})
 	}
 }
 
@@ -1106,82 +1421,6 @@ func TestAppendSystemUsageSampleKeepsBoundedRecentHistory(t *testing.T) {
 	}
 }
 
-func TestNodeStatusIncludesCopiedGPUHistory(t *testing.T) {
-	agent := mustNewTestAgent(t, config.NodeConfig{
-		NodeID: "gpu-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
-	})
-	if agent.Memory() != nil {
-		t.Cleanup(func() { _ = agent.Memory().Close() })
-	}
-	sample := hardware.GPUUsageSample{
-		Timestamp: time.Unix(1, 0).UTC(), Available: true, Utilization: 41,
-	}
-	agent.hwMu.Lock()
-	agent.gpuHistory = []hardware.GPUUsageSample{sample}
-	agent.hwMu.Unlock()
-
-	status := agent.status()
-	if len(status.GPUHistory) != 1 || status.GPUHistory[0] != sample {
-		t.Fatalf("node status GPU history = %#v", status.GPUHistory)
-	}
-	if !status.TelemetryAt.Equal(sample.Timestamp) {
-		t.Fatalf("node telemetry timestamp = %s, want %s", status.TelemetryAt, sample.Timestamp)
-	}
-	status.GPUHistory[0].Utilization = 99
-	if agent.gpuHistorySnapshot()[0].Utilization != sample.Utilization {
-		t.Fatal("node status exposed mutable telemetry history")
-	}
-}
-
-func TestNodeStatusIncludesCopiedNPUHistory(t *testing.T) {
-	agent := mustNewTestAgent(t, config.NodeConfig{
-		NodeID: "npu-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
-	})
-	if agent.Memory() != nil {
-		t.Cleanup(func() { _ = agent.Memory().Close() })
-	}
-	sample := hardware.NPUUsageSample{
-		Timestamp: time.Unix(1, 0).UTC(), Available: true, Utilization: 41,
-	}
-	agent.hwMu.Lock()
-	agent.npuHistory = []hardware.NPUUsageSample{sample}
-	agent.hwMu.Unlock()
-
-	status := agent.status()
-	if len(status.NPUHistory) != 1 || status.NPUHistory[0] != sample {
-		t.Fatalf("node status NPU history = %#v", status.NPUHistory)
-	}
-	status.NPUHistory[0].Utilization = 99
-	if agent.npuHistorySnapshot()[0].Utilization != sample.Utilization {
-		t.Fatal("node status exposed mutable telemetry history")
-	}
-}
-
-func TestNodeStatusIncludesCopiedSystemHistory(t *testing.T) {
-	agent := mustNewTestAgent(t, config.NodeConfig{
-		NodeID: "system-history-status-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
-	})
-	if agent.Memory() != nil {
-		t.Cleanup(func() { _ = agent.Memory().Close() })
-	}
-	sample := hardware.SystemUsageSample{
-		Timestamp: time.Unix(2, 0).UTC(), CPUAvailable: true, CPUUtilization: 37,
-		MemoryAvailable: true, MemoryUtilization: 62,
-	}
-	agent.hwMu.Lock()
-	agent.systemHistory = []hardware.SystemUsageSample{sample}
-	agent.hwMu.Unlock()
-
-	status := agent.status()
-	if len(status.SystemHistory) != 1 || status.SystemHistory[0] != sample {
-		t.Fatalf("node status system history = %#v", status.SystemHistory)
-	}
-	status.SystemHistory[0].CPUUtilization = 99
-	if agent.systemHistorySnapshot()[0].CPUUtilization != sample.CPUUtilization {
-		t.Fatal("node status exposed mutable system telemetry history")
-	}
-}
-
 func TestSystemStatusReportsPersistenceAvailability(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -1230,6 +1469,7 @@ func TestNodeChatAndDialogueEndpoints(t *testing.T) {
 		ListenAddr: ":0",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	}
+
 	agent := mustNewTestAgent(t, cfg)
 	t.Cleanup(func() { _ = agent.Memory().Close() })
 	// Ensure simulated engine is present for deterministic unit testing
@@ -1331,6 +1571,27 @@ func TestNodeChatAndDialogueEndpoints(t *testing.T) {
 	}
 }
 
+func TestDialogueCreateRejectsMalformedAndOversizedBodies(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "dialogue-body-limit-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	t.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			t.Errorf("close agent: %v", err)
+		}
+	})
+
+	for _, body := range []string{`{"model":`, strings.Repeat(" ", 64<<10+1)} {
+		request := httptest.NewRequest(http.MethodPost, "/dialogues", strings.NewReader(body))
+		response := httptest.NewRecorder()
+		agent.handleDialogueCreate(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("dialogue create with %d-byte body returned %d, want 400",
+				len(body), response.Code)
+		}
+	}
+}
+
 func TestTaskSubmissionProxyUsesLongTimeoutClient(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
@@ -1348,5 +1609,104 @@ func TestTaskSubmissionProxyUsesLongTimeoutClient(t *testing.T) {
 	agent.handleAPITasksPost(response, request)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("proxied task submission returned %d: %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/nodes/worker/engines/managed/install-worker", strings.NewReader(`{"source":"official"}`))
+	agent.handleAPINodeControl(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("proxied worker installation returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestReadOnlyClusterViewsProxyToOrchestrator(t *testing.T) {
+	var gotURI string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	tests := []struct {
+		name       string
+		joined     bool
+		target     string
+		handler    func(*Agent) http.HandlerFunc
+		wantStatus int
+		wantURI    string
+	}{
+		{name: "cluster health", joined: true, target: "/api/cluster/health", handler: func(a *Agent) http.HandlerFunc { return a.handleAPIOrchestratorRead }, wantStatus: http.StatusOK, wantURI: "GET /api/cluster/health"},
+		{name: "shard groups", joined: true, target: "/api/shards", handler: func(a *Agent) http.HandlerFunc { return a.handleAPIOrchestratorRead }, wantStatus: http.StatusOK, wantURI: "GET /api/shards"},
+		{name: "task page keeps query", joined: true, target: "/api/tasks?page_size=50&cursor=abc", handler: func(a *Agent) http.HandlerFunc { return a.handleAPITasksList }, wantStatus: http.StatusOK, wantURI: "GET /api/tasks?page_size=50&cursor=abc"},
+		{name: "not joined", target: "/api/cluster/health", handler: func(a *Agent) http.HandlerFunc { return a.handleAPIOrchestratorRead }, wantStatus: http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotURI = ""
+			agent := mustNewTestAgent(t, config.NodeConfig{})
+			if tt.joined {
+				agent.orchestratorAddr = upstream.URL
+			}
+			agent.peerClient = upstream.Client()
+			response := httptest.NewRecorder()
+			tt.handler(agent)(response, httptest.NewRequest(http.MethodGet, tt.target, nil))
+			if response.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, tt.wantStatus, response.Body.String())
+			}
+			if gotURI != tt.wantURI {
+				t.Fatalf("upstream request = %q, want %q", gotURI, tt.wantURI)
+			}
+		})
+	}
+}
+
+func TestNodeDashboardProxiesShardCreationAndProfileReadsToOrchestrator(t *testing.T) {
+	var gotMethod, gotURI, gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotURI = r.URL.RequestURI()
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read proxied request body: %v", err)
+		}
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	agent := mustNewTestAgent(t, config.NodeConfig{})
+	agent.orchestratorAddr = upstream.URL
+	agent.peerClient = upstream.Client()
+
+	createResponse := httptest.NewRecorder()
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/shards", strings.NewReader(`{"mode":"llamacpp-rpc"}`))
+	agent.handleAPIOrchestratorProxy(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK || gotMethod != http.MethodPost ||
+		gotURI != "/api/shards" || gotBody != `{"mode":"llamacpp-rpc"}` {
+		t.Fatalf("shard create proxy = %d %s %s %q", createResponse.Code, gotMethod, gotURI, gotBody)
+	}
+
+	gotMethod, gotURI, gotBody = "", "", ""
+	profileResponse := httptest.NewRecorder()
+	profileRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/nodes/worker/engines/managed/engine/profile?requested_context=4096",
+		nil,
+	)
+	agent.handleAPINodeControl(profileResponse, profileRequest)
+	if profileResponse.Code != http.StatusOK || gotMethod != http.MethodGet ||
+		gotURI != "/api/nodes/worker/engines/managed/engine/profile?requested_context=4096" {
+		t.Fatalf("model profile proxy = %d %s %s", profileResponse.Code, gotMethod, gotURI)
+	}
+	installResponse := httptest.NewRecorder()
+	installRequest := httptest.NewRequest(
+		http.MethodPost, "/api/nodes/worker/engines/managed/install-worker",
+		strings.NewReader(`{"source":"official"}`),
+	)
+	agent.handleAPINodeControl(installResponse, installRequest)
+	if installResponse.Code != http.StatusOK || gotMethod != http.MethodPost ||
+		gotURI != "/api/nodes/worker/engines/managed/install-worker" || gotBody != `{"source":"official"}` {
+		t.Fatalf("worker install proxy = %d %s %s %q", installResponse.Code, gotMethod, gotURI, gotBody)
 	}
 }

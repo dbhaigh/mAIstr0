@@ -1,24 +1,32 @@
 // Package orchestrator implements the control-plane HTTP API and background
 // bookkeeping: node registry maintenance, task decomposition/assignment, and
-// dispatching subtasks out to node agents.
+// dispatching subtasks out to node agents. Sync state advances only after
+// complete snapshots, and component locks are not held across peer I/O.
 package orchestrator
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io/fs"
-	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/agent/deepseekadapter"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/piagent"
+	"github.com/maistr0/maistr0/internal/selfupdate"
+	"github.com/maistr0/maistr0/internal/shard"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/web"
 )
@@ -28,18 +36,32 @@ type Server struct {
 	tasks              *taskmgr.Manager
 	nodeClient         *nodeClient
 	dispatcher         *dispatcherComponent
+	shardedModels      map[string]config.ShardedModelConfig
+	pipelinePlans      *pipelinePlanStore
+	pipelineLocker     *pipelinePlanLocker
+	pipelineMetrics    *pipelineStageMetrics
+	pipelineRequests   *pipelineRequestGate
 	planner            *taskPlanner
 	election           *electionComponent
 	events             *hub.Hub
 	routerEvents       *routerEventLog
 	harness            *harnessManager
 	syncer             syncerAPI
+	metrics            *operationalMetrics
+	routerBreakers     *routerCircuitBreakers
+	routerClients      *routerClientLimiter
 	mem                memory.Store
+	shards             *ShardManager
 	identityPath       string
 	identity           *peeridentity.Identity
+	orchestratorEpoch  string
 	advertiseAddr      string
 	localNodeDashboard string
 	mode               string
+	syncMaxBytes       int64
+	syncTimeout        time.Duration
+	routerTTFBTimeout  time.Duration
+	routerIdleTimeout  time.Duration
 }
 
 type SessionStore interface {
@@ -69,7 +91,14 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches, cfg.Mode)
+	srv, err := newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
+		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
+		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second, cfg.ShardedModels)
+	if err != nil {
+		return nil, err
+	}
+	srv.configureRouter(cfg)
+	return srv, nil
 }
 
 // NewWithConfig creates an orchestrator from its JSON configuration.
@@ -78,22 +107,62 @@ func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches, cfg.Mode)
+	srv, err := newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
+		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
+		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second, cfg.ShardedModels)
+	if err != nil {
+		return nil, err
+	}
+	srv.dispatcher.configureSpeculativeHedging(cfg.SpeculativeHedgingEnabled, cfg.MaxConcurrentHedges)
+	srv.configureRouter(cfg)
+	return srv, nil
 }
 
-func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatchLimit int, mode string) (*Server, error) {
+func (s *Server) configureRouter(cfg config.OrchestratorConfig) {
+	s.routerTTFBTimeout = time.Duration(cfg.RouterTimeToFirstByteTimeoutSeconds) * time.Second
+	s.routerIdleTimeout = time.Duration(cfg.RouterIdleStreamTimeoutSeconds) * time.Second
+	s.routerClients = newRouterClientLimiter(cfg.RouterRequestsPerMinute, cfg.RouterMaxConcurrentPerClient)
+}
+
+func newWithMemoryHarnessAndConcurrency(
+	memoryPath, harnessName string,
+	dispatchLimit int,
+	dispatchTimeout time.Duration,
+	mode string,
+	syncMaxBytes int64,
+	syncTimeout time.Duration,
+	shardedModels []config.ShardedModelConfig,
+) (*Server, error) {
 	if harnessName != "deepseek" && harnessName != "pi" {
 		return nil, fmt.Errorf("unknown agent backend %q (want deepseek or pi)", harnessName)
 	}
+	if syncMaxBytes <= 0 {
+		syncMaxBytes = config.DefaultSyncMaxBytes
+	}
+	if syncTimeout <= 0 {
+		syncTimeout = time.Duration(config.DefaultSyncTimeoutSeconds) * time.Second
+	}
 	reg := cluster.NewRegistry()
-	disp := &http.Client{Timeout: 10 * time.Minute}
+	if dispatchTimeout <= 0 {
+		dispatchTimeout = time.Duration(config.DefaultDispatchTimeoutSeconds) * time.Second
+	}
+	disp := &http.Client{Timeout: dispatchTimeout}
 	selfID := "orchestrator-" + discovery.OutboundIP()
+	pipelineDataPath := memoryPath
+	if pipelineDataPath == "" {
+		pipelineDataPath = memory.DefaultPath(selfID)
+	}
+	pipelinePlans, err := openPipelinePlanStore(pipelineDataPath + ".pipelines.json")
+	if err != nil {
+		return nil, err
+	}
 	events := hub.New()
+	metrics := &operationalMetrics{}
 	var store memory.Store
 	if mode != config.OrchestratorModeMinimal {
 		openedStore, err := memory.Open(memoryPath, selfID)
 		if err != nil {
-			log.Printf("orchestrator: memory unavailable, running stateless: %v", err)
+			logging.Errorf("orchestrator", "orchestrator: memory unavailable, running stateless: %v", err)
 		} else {
 			store = openedStore
 		}
@@ -109,27 +178,52 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		}
 		return nil, fmt.Errorf("orchestrator: open task history: %w", err)
 	}
-	nodeClient := newNodeClient(&http.Client{Timeout: 10 * time.Second}, disp, &http.Client{Timeout: discoveryRequestTimeout})
-	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit)
+	nodeClient := newNodeClientWithSyncTimeout(
+		&http.Client{Timeout: 10 * time.Second}, disp,
+		&http.Client{Timeout: discoveryRequestTimeout}, syncTimeout,
+	)
+	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit, dispatchTimeout)
+	dispatcher.metrics = metrics
 	planner := newTaskPlanner(schedulerAdapter{}, tasks, dispatcher, nodeClient, dispatcher.schedulerNodes, dispatcher.experience())
+	planner.metrics = metrics
+	provisioner := newAutoModelProvisioner(reg, nodeClient)
+	planner.provisioner = provisioner
 	election := newElectionComponent(reg, nodeClient, selfID, cluster.SelfScore(hardware.Detect()), true)
-	syncer := newSyncerComponent(reg, tasks, nodeClient, store, election.isElectedOrchestrator)
+	syncer := newSyncerComponent(reg, tasks, nodeClient.sync, store, election.isElectedOrchestrator)
+	syncer.maxBytes = syncMaxBytes
 	srv := &Server{
-		registry:     reg,
-		nodeClient:   nodeClient,
-		dispatcher:   dispatcher,
-		planner:      planner,
-		election:     election,
-		events:       events,
-		routerEvents: newRouterEventLog(200),
-		syncer:       syncer,
-		tasks:        tasks,
-		mem:          store,
-		identityPath: peeridentity.DefaultPath(selfID),
-		mode:         mode,
+		registry:          reg,
+		nodeClient:        nodeClient,
+		dispatcher:        dispatcher,
+		shardedModels:     make(map[string]config.ShardedModelConfig, len(shardedModels)),
+		pipelinePlans:     pipelinePlans,
+		pipelineLocker:    newPipelinePlanLocker(),
+		pipelineMetrics:   newPipelineStageMetrics(),
+		pipelineRequests:  newPipelineRequestGate(),
+		planner:           planner,
+		election:          election,
+		events:            events,
+		routerEvents:      newRouterEventLog(200),
+		routerBreakers:    newRouterCircuitBreakers(),
+		syncer:            syncer,
+		metrics:           metrics,
+		tasks:             tasks,
+		mem:               store,
+		identityPath:      peeridentity.DefaultPath(selfID),
+		orchestratorEpoch: strconv.FormatInt(time.Now().UnixNano(), 10),
+		mode:              mode,
+		syncMaxBytes:      syncMaxBytes,
+		syncTimeout:       syncTimeout,
+		routerTTFBTimeout: time.Duration(config.DefaultRouterTTFBTimeoutSeconds) * time.Second,
+		routerIdleTimeout: time.Duration(config.DefaultRouterIdleStreamTimeoutSeconds) * time.Second,
+	}
+	srv.routerClients = newRouterClientLimiter(0, 0)
+	for _, model := range shardedModels {
+		model.Normalize()
+		srv.shardedModels[model.LogicalID] = model
 	}
 	if mode != config.OrchestratorModeMinimal {
-		deepseekBackend := agent.NewDeepSeek(reg, disp, store, events)
+		deepseekBackend := deepseekadapter.NewDeepSeek(reg, disp, store, events)
 		harness := newHarnessManager(map[string]agent.Backend{"deepseek": deepseekBackend}, harnessName, store)
 		srv.harness = harness
 		harness.registerBackend("pi", piagent.New(&localPiProvider{generate: srv}, deepseekBackend))
@@ -139,16 +233,36 @@ func newWithMemoryHarnessAndConcurrency(memoryPath, harnessName string, dispatch
 		srv.identityPath = memoryPath + ".identity"
 	}
 	srv.tasks.SetFinalizer(srv.synthesizeTask)
+	if store != nil {
+		capacity, ok := dispatcher.capacityGate.(*dispatchCapacityGate)
+		if !ok {
+			if closeErr := srv.Close(); closeErr != nil {
+				logging.Errorf("orchestrator", "orchestrator: cleanup after shard capacity initialization failure: %v", closeErr)
+			}
+			return nil, errors.New("orchestrator: shard groups require the node dispatch capacity gate")
+		}
+		srv.shards, err = NewShardManager(store, reg, nodeClient, capacity, shard.Plan)
+		if err != nil {
+			if closeErr := srv.Close(); closeErr != nil {
+				logging.Errorf("orchestrator", "orchestrator: cleanup after shard manager initialization failure: %v", closeErr)
+			}
+			return nil, fmt.Errorf("orchestrator: initialize shard manager: %w", err)
+		}
+		nodeClient.shards = srv.shards
+		dispatcher.shards = srv.shards
+		dispatcher.shardModel = nodeClient
+		provisioner.shards = srv.shards
+	}
 	if srv.harness != nil {
 		if err := srv.harness.restoreAgentSessions(); err != nil {
 			if closeErr := srv.Close(); closeErr != nil {
-				log.Printf("orchestrator: cleanup after session restore failure: %v", closeErr)
+				logging.Errorf("orchestrator", "orchestrator: cleanup after session restore failure: %v", closeErr)
 			}
 			return nil, fmt.Errorf("orchestrator: restore agent sessions: %w", err)
 		}
 	}
 	if store != nil {
-		log.Printf("orchestrator: memory store at %s", store.Path())
+		logging.Infof("orchestrator", "orchestrator: memory store at %s", store.Path())
 	}
 	return srv, nil
 }
@@ -157,14 +271,23 @@ func (s *Server) Close() error {
 	for _, task := range s.tasks.All() {
 		if task.Status == taskmgr.StatusPending || task.Status == taskmgr.StatusRunning || task.Status == taskmgr.StatusSynthesis {
 			if _, err := s.tasks.CancelChecked(task.ID); err != nil {
-				log.Printf("orchestrator: cancel task %s during shutdown: %v", task.ID, err)
+				logging.Errorf("orchestrator", "orchestrator: cancel task %s during shutdown: %v", task.ID, err)
 			}
 		}
 	}
 	s.dispatcherPort().close()
 	var agentErr error
+	if s.shards != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := s.shards.Close(ctx); err != nil {
+			agentErr = err
+		}
+		cancel()
+	}
 	if s.harness != nil {
-		agentErr = s.harnessPort().close()
+		if err := s.harnessPort().close(); agentErr == nil {
+			agentErr = err
+		}
 	}
 	if s.mem != nil {
 		if err := s.mem.Close(); agentErr == nil {
@@ -183,9 +306,13 @@ func (s *Server) Memory() memory.Store { return s.mem }
 
 func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/updates/manifest", s.handlePeerUpdate)
+	mux.HandleFunc("GET /api/updates/binary", s.handlePeerUpdate)
 	mux.HandleFunc("POST /api/pairing/join", s.handlePairingJoin)
 	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
 	mux.HandleFunc("GET /api/status", s.handleSystemStatus)
+	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/cluster/health", s.handleClusterHealth)
 	mux.Handle("POST /api/pairing/pin", peeridentity.LoopbackOnly(http.HandlerFunc(s.handlePairingPINRegenerate)))
 	mux.HandleFunc("POST /api/pairing/connect", s.handlePairingConnect)
@@ -202,17 +329,33 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/nodes/{id}/properties", s.handleNodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", s.handleNodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", s.handleNodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed", s.handleNodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/install-worker", s.handleNodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/head-models", s.handleNodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/configure-head", s.handleNodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/download-model", s.handleNodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/{engine_id}/profile", s.handleNodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", s.handleNodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", s.handleNodeControl)
 	mux.HandleFunc("GET /api/discovery", s.handleDiscovery)
 	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", s.handlePairingInvite)
 	mux.HandleFunc("GET /api/events", s.events.ServeHTTP)
 	mux.HandleFunc("GET /api/router/requests", s.handleRouterEvents)
+	mux.HandleFunc("POST /api/pipelines/{model_id}/reshard", s.handlePipelineReshard)
+	mux.HandleFunc("POST /api/shards", s.handleCreateShardGroup)
+	mux.HandleFunc("GET /api/shards", s.handleListShardGroups)
+	mux.HandleFunc("GET /api/shards/{id}", s.handleGetShardGroup)
+	mux.HandleFunc("DELETE /api/shards/{id}", s.handleDeleteShardGroup)
+	mux.HandleFunc("POST /api/shards/{id}/start", s.handleStartShardGroup)
+	mux.HandleFunc("POST /api/shards/{id}/stop", s.handleStopShardGroup)
+	mux.HandleFunc("POST /api/shards/{id}/restart", s.handleRestartShardGroup)
+	mux.HandleFunc("POST /api/shards/{id}/members", s.handleShardMembership)
 	mux.HandleFunc("POST /router/{path...}", s.handleRouterRequest)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /api/tasks/resumable", s.handleListResumableTasks)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("GET /api/tasks/{id}/dependencies", s.handleTaskDependencies)
 	mux.HandleFunc("GET /api/tasks/{id}/assignment-explanation", s.handleTaskAssignmentExplanation)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
 	mux.HandleFunc("POST /api/tasks/{id}/approve", s.handleApproveTask)
@@ -269,9 +412,11 @@ func (s *Server) Mux() *http.ServeMux {
 
 	staticFS, err := fs.Sub(web.StaticFiles, "static")
 	if err != nil {
-		log.Fatalf("orchestrator: embedded web assets missing: %v", err)
+		logging.Errorf("orchestrator", "embedded web assets missing: %v", err)
+		panic("orchestrator: embedded web assets missing")
 	}
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+
+	mux.Handle("/", web.NewHandler(staticFS))
 	return mux
 }
 
@@ -285,6 +430,11 @@ func (s *Server) Run(listenAddr string) error {
 	if err := s.InitializeIdentity(); err != nil {
 		return fmt.Errorf("orchestrator: initialize cluster identity: %w", err)
 	}
+	if s.shards != nil {
+		if err := s.shards.Recover(context.Background()); err != nil {
+			logging.Warnf("orchestrator", "some persisted shard groups could not be restored: %v", err)
+		}
+	}
 	go s.healthSweepLoop()
 	go s.broadcastLoop()
 	go s.syncer.taskHistorySyncLoop()
@@ -292,30 +442,29 @@ func (s *Server) Run(listenAddr string) error {
 		return fmt.Errorf("orchestrator: start cluster discovery: %w", err)
 	}
 	go s.electionPort().discoverySyncLoop(s.publishSnapshot)
-	log.Printf("orchestrator listening on %s", listenAddr)
-	mux := s.Mux()
-	secure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.isElectedOrchestrator() {
-			http.Error(w, "this instance yielded orchestrator leadership to a higher-ranked cluster member", http.StatusServiceUnavailable)
-			return
-		}
+	logging.Infof("orchestrator", "orchestrator listening on %s", listenAddr)
+	mux := s.fenceStateChangingRequests(s.Mux())
+	secure := requireElectedOrchestrator(s.isElectedOrchestrator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/pairing/join" {
 			mux.ServeHTTP(w, r)
 			return
 		}
 		s.identity.RequireTrustedPeer(mux).ServeHTTP(w, r)
-	})
-	loopback := peeridentity.LoopbackOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.isElectedOrchestrator() {
-			s.handleYieldedDashboard(w, r)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	}))
+	}), nil)
+	loopback := peeridentity.LoopbackOnly(requireElectedOrchestrator(
+		s.isElectedOrchestrator, mux, http.HandlerFunc(s.handleYieldedDashboard),
+	))
+	bodyLimit, err := httpx.LimitBodyBytes(httpx.DefaultMaxRequestBodyBytes)
+	if err != nil {
+		return fmt.Errorf("orchestrator: configure HTTP request limit: %w", err)
+	}
+	withMiddleware := func(next http.Handler) http.Handler {
+		return selfupdate.Admission.Wrap(httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit))
+	}
 	return peeridentity.ServeDual(
 		listenAddr,
-		loopback,
-		secure,
+		withMiddleware(loopback),
+		withMiddleware(secure),
 		s.identity.ServerTLSConfig(),
 	)
 }

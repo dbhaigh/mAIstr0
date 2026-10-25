@@ -50,12 +50,14 @@
           {
             "duration_ms": 0,
             "engine": "simulated",
+            "failure_class": "none",
             "finished_at": "\u003cTIME\u003e",
             "http_status": 200,
             "id": "\u003cTASK_ID\u003e",
             "model": "simulated-general",
             "node_id": "simulated-worker",
             "number": 1,
+            "request_id": "task-1:prepare",
             "started_at": "\u003cTIME\u003e",
             "status": "succeeded"
           }
@@ -67,6 +69,8 @@
         "score": 0,
         "score_factors": {
           "active_tasks": 0,
+          "estimated_completion_seconds": 0,
+          "estimated_tokens_per_second": 0,
           "gpu_utilization_penalty": 0,
           "hardware": 0,
           "learned_bias": 0,
@@ -94,12 +98,14 @@
           {
             "duration_ms": 0,
             "engine": "simulated",
+            "failure_class": "none",
             "finished_at": "\u003cTIME\u003e",
             "http_status": 200,
             "id": "\u003cTASK_ID\u003e",
             "model": "simulated-general",
             "node_id": "simulated-worker",
             "number": 1,
+            "request_id": "task-1:summarize",
             "started_at": "\u003cTIME\u003e",
             "status": "succeeded"
           }
@@ -111,6 +117,8 @@
         "score": 0,
         "score_factors": {
           "active_tasks": 0,
+          "estimated_completion_seconds": 0,
+          "estimated_tokens_per_second": 0,
           "gpu_utilization_penalty": 0,
           "hardware": 0,
           "learned_bias": 0,

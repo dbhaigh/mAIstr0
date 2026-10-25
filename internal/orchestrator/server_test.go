@@ -5,7 +5,10 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -20,6 +23,8 @@ import (
 	"github.com/maistr0/maistr0/internal/deepseek"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/piagent"
 	"github.com/maistr0/maistr0/internal/scheduler"
@@ -44,9 +49,16 @@ func newTestServer(t *testing.T) *Server {
 
 func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 	cfg := config.OrchestratorConfig{
-		Harness:          " DEEPSEEK ",
-		DiscoveryEnabled: true,
-		MemoryPath:       filepath.Join(t.TempDir(), "orchestrator.db"),
+		Harness:                             " DEEPSEEK ",
+		DiscoveryEnabled:                    true,
+		DispatchTimeoutSeconds:              90,
+		SyncMaxBytes:                        2 << 20,
+		SyncTimeoutSeconds:                  37,
+		RouterTimeToFirstByteTimeoutSeconds: 17,
+		RouterIdleStreamTimeoutSeconds:      8,
+		RouterRequestsPerMinute:             12,
+		RouterMaxConcurrentPerClient:        3,
+		MemoryPath:                          filepath.Join(t.TempDir(), "orchestrator.db"),
 	}
 	srv, err := NewWithConfig(cfg)
 	if err != nil {
@@ -62,6 +74,23 @@ func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 	}
 	if srv.dispatcher.limit != config.DefaultDispatchConcurrency {
 		t.Fatalf("dispatch limit = %d, want %d", srv.dispatcher.limit, config.DefaultDispatchConcurrency)
+	}
+	if srv.dispatcher.dispatchTimeout != 90*time.Second {
+		t.Fatalf("dispatch timeout = %s, want 90s", srv.dispatcher.dispatchTimeout)
+	}
+	if srv.nodeClient.dispatcher.Timeout != 90*time.Second {
+		t.Fatalf("generation HTTP timeout = %s, want configured 90s", srv.nodeClient.dispatcher.Timeout)
+	}
+	if srv.maxSyncBytes() != 2<<20 || srv.syncTimeout != 37*time.Second ||
+		srv.nodeClient.sync.Timeout != 37*time.Second {
+		t.Fatalf("sync config = %d bytes/%s client timeout %s, want %d bytes/37s",
+			srv.maxSyncBytes(), srv.syncTimeout, srv.nodeClient.sync.Timeout, 2<<20)
+	}
+	if srv.routerTTFBTimeout != 17*time.Second || srv.routerIdleTimeout != 8*time.Second ||
+		srv.routerClients.requestsPerMinute != 12 || srv.routerClients.maxConcurrent != 3 {
+		t.Fatalf("router config = %s TTFB/%s idle/%d requests/min/%d concurrent",
+			srv.routerTTFBTimeout, srv.routerIdleTimeout,
+			srv.routerClients.requestsPerMinute, srv.routerClients.maxConcurrent)
 	}
 
 	cfg.DiscoveryEnabled = false
@@ -111,6 +140,8 @@ func TestMinimalModeOmitsOptionalRoutesAndKeepsClusterRouting(t *testing.T) {
 		method, path, wantPattern string
 	}{
 		{http.MethodGet, "/api/status", "GET /api/status"},
+		{http.MethodGet, "/api/metrics", "GET /api/metrics"},
+		{http.MethodGet, "/metrics", "GET /metrics"},
 		{http.MethodGet, "/api/cluster/health", "GET /api/cluster/health"},
 		{http.MethodPost, "/router/v1/chat/completions", "POST /router/{path...}"},
 		{http.MethodGet, "/v1/models", "GET /v1/models"},
@@ -156,6 +187,7 @@ func TestYieldedDashboardPreservesLocalPairingAccess(t *testing.T) {
 	} {
 		t.Run(test.method+test.path+test.remote, func(t *testing.T) {
 			request := httptest.NewRequest(test.method, test.path, nil)
+			request.Host = "localhost"
 			request.RemoteAddr = test.remote
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
@@ -804,6 +836,41 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 	}
 }
 
+func TestPairingJoinRejectsWrongPINFromRemotePeer(t *testing.T) {
+	srv := newTestServer(t)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.identity = identity
+	pin, err := identity.NewPairingPIN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "node.json"), "wrong-pin-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(pairingJoinRequest{
+		ID: node.ID(), Role: "node", PIN: "000000", CertificatePEM: node.CertificatePEM(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
+	request.RemoteAddr = "203.0.113.10:1234"
+	request.TLS = &tls.ConnectionState{}
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong-PIN pairing returned %d, want 401: %s", response.Code, response.Body.String())
+	}
+	if identity.IsTrustedID(node.ID()) || !identity.VerifyPairingPIN(pin) {
+		t.Fatal("wrong-PIN pairing changed the trust roster or consumed the active PIN")
+	}
+}
+
 func TestAutoJoinOnSameSubnetWithoutPIN(t *testing.T) {
 	srv := newTestServer(t)
 	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
@@ -928,12 +995,46 @@ func TestPairingFromDifferentSubnetRequiresPIN(t *testing.T) {
 	reqWithPIN.TLS = &tls.ConnectionState{}
 	reqWithPIN.RemoteAddr = "192.0.2.1:54321"
 	respWithPIN := httptest.NewRecorder()
+	var pairingLogs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&pairingLogs)
+	defer log.SetOutput(previousOutput)
 	srv.Mux().ServeHTTP(respWithPIN, reqWithPIN)
 	if respWithPIN.Code != http.StatusOK {
 		t.Fatalf("remote subnet join with valid PIN returned %d: %s", respWithPIN.Code, respWithPIN.Body.String())
 	}
+	if strings.Contains(pairingLogs.String(), pin) {
+		t.Fatalf("pairing log leaked PIN %q: %s", pin, pairingLogs.String())
+	}
 	if !identity.IsTrustedID(node.ID()) {
 		t.Fatal("node certificate was not pinned after valid PIN pairing")
+	}
+}
+
+func TestSnapshotAndIdentityLogsDoNotExposePairingPIN(t *testing.T) {
+	srv := newTestServer(t)
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousOutput)
+
+	if err := srv.InitializeIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	pin, _, active := srv.identity.ActivePairingPIN()
+	if !active || pin == "" {
+		t.Fatal("identity did not create an active pairing PIN")
+	}
+	if strings.Contains(logs.String(), pin) {
+		t.Fatalf("identity initialization log leaked PIN %q: %s", pin, logs.String())
+	}
+
+	snapshot, err := json.Marshal(srv.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(snapshot), pin) {
+		t.Fatalf("cluster snapshot leaked pairing PIN %q: %s", pin, snapshot)
 	}
 }
 
@@ -953,6 +1054,7 @@ func TestPairingPINCanBeRegeneratedFromLoopback(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/pin", nil)
+	request.Host = "localhost"
 	request.RemoteAddr = "127.0.0.1:1234"
 	response := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(response, request)
@@ -971,6 +1073,7 @@ func TestPairingPINCanBeRegeneratedFromLoopback(t *testing.T) {
 	}
 
 	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/pairing/pin", nil)
+	remoteRequest.Host = "localhost"
 	remoteRequest.RemoteAddr = "192.0.2.10:1234"
 	remoteResponse := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(remoteResponse, remoteRequest)
@@ -1036,8 +1139,15 @@ func TestDiscoveredNodeStatusAllowsSlowPeerResponse(t *testing.T) {
 	}
 
 	peerMux := http.NewServeMux()
-	peerMux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(2 * time.Second)
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	peerMux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		select {
+		case <-releaseResponse:
+		case <-r.Context().Done():
+			return
+		}
 		_, _ = w.Write([]byte(`{"id":"slow-node"}`))
 	})
 	peerServer := httptest.NewUnstartedServer(peer.RequireTrustedPeer(peerMux))
@@ -1045,12 +1155,37 @@ func TestDiscoveredNodeStatusAllowsSlowPeerResponse(t *testing.T) {
 	peerServer.StartTLS()
 	defer peerServer.Close()
 
-	status, err := srv.discoveredNodeStatus(peerServer.URL)
-	if err != nil {
-		t.Fatalf("fetch from a slow paired node failed: %v", err)
+	type statusResult struct {
+		id  string
+		err error
 	}
-	if status.ID != peer.ID() {
-		t.Fatalf("fetched node status = %#v, want ID %q", status, peer.ID())
+	resultCh := make(chan statusResult, 1)
+	go func() {
+		status, err := srv.discoveredNodeStatus(peerServer.URL)
+		if err != nil {
+			resultCh <- statusResult{err: err}
+			return
+		}
+		resultCh <- statusResult{id: status.ID}
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("slow paired node did not receive the status request")
+	}
+	close(releaseResponse)
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("fetch from a slow paired node failed: %v", result.err)
+		}
+		if result.id != peer.ID() {
+			t.Fatalf("fetched node status ID = %q, want %q", result.id, peer.ID())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fetch from a slow paired node did not complete")
 	}
 }
 
@@ -1451,19 +1586,38 @@ func TestCreateTaskRejectsPartiallyAssignableWork(t *testing.T) {
 func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	// These counters are updated by concurrent test-server handlers.
 	var firstCalls, secondCalls atomic.Int32
+	type dispatchIDs struct{ request, attempt string }
+	attemptIDs := make(chan dispatchIDs, 2)
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstCalls.Add(1)
+		if r.Header.Get(inferroute.HeaderRequestID) == "" || r.Header.Get(inferroute.HeaderAttemptID) == "" {
+			t.Errorf("dispatch request IDs missing: request=%q attempt=%q",
+				r.Header.Get(inferroute.HeaderRequestID), r.Header.Get(inferroute.HeaderAttemptID))
+		}
+		if got, want := r.Header.Get(httpx.RequestIDHeader), r.Header.Get(inferroute.HeaderRequestID); got != want {
+			t.Errorf("standard dispatch request ID = %q, want attempt request ID %q", got, want)
+		}
+		attemptIDs <- dispatchIDs{request: r.Header.Get(inferroute.HeaderRequestID), attempt: r.Header.Get(inferroute.HeaderAttemptID)}
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 	}))
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secondCalls.Add(1)
 		var request struct {
+			Model  string `json:"model"`
 			Engine string `json:"engine"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Engine != "ollama" {
-			t.Errorf("dispatch engine = %q, error=%v", request.Engine, err)
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Engine != "ollama" || request.Model != "other-model" {
+			t.Errorf("dispatch model/engine = %q/%q, error=%v", request.Model, request.Engine, err)
 		}
+		if r.Header.Get(inferroute.HeaderRequestID) == "" || r.Header.Get(inferroute.HeaderAttemptID) == "" {
+			t.Errorf("retry request IDs missing: request=%q attempt=%q",
+				r.Header.Get(inferroute.HeaderRequestID), r.Header.Get(inferroute.HeaderAttemptID))
+		}
+		if got, want := r.Header.Get(httpx.RequestIDHeader), r.Header.Get(inferroute.HeaderRequestID); got != want {
+			t.Errorf("standard retry request ID = %q, want attempt request ID %q", got, want)
+		}
+		attemptIDs <- dispatchIDs{request: r.Header.Get(inferroute.HeaderRequestID), attempt: r.Header.Get(inferroute.HeaderAttemptID)}
 		_ = json.NewEncoder(w).Encode(map[string]string{"output": "retry succeeded"})
 	}))
 	defer second.Close()
@@ -1475,7 +1629,7 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	})
 	srv.registry.Upsert(cluster.NodeStatus{
 		ID: "node-b", Address: second.URL, Healthy: true,
-		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+		Models: []engine.Model{{Name: "other-model", Engine: "ollama", Tags: []string{"general"}}},
 	})
 	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
 		Subtask: scheduler.Subtask{ID: "sub-a", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
@@ -1496,11 +1650,459 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	if attempts := completed.Subtasks[0].Attempts; len(attempts) != 2 ||
 		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
 		attempts[0].FailureClass != "upstream_5xx" ||
-		attempts[1].Status != taskmgr.DispatchAttemptSucceeded {
+		attempts[1].Status != taskmgr.DispatchAttemptSucceeded ||
+		attempts[0].NodeID == attempts[1].NodeID ||
+		attempts[0].Model == attempts[1].Model ||
+		attempts[0].ID != taskmgr.DispatchAttemptID(task.ID, "sub-a", 1) ||
+		attempts[1].ID != taskmgr.DispatchAttemptID(task.ID, "sub-a", 2) ||
+		attempts[0].RequestID != taskmgr.DispatchRequestID(task.ID, "sub-a") ||
+		attempts[1].RequestID != attempts[0].RequestID {
 		t.Fatalf("dispatch attempt history = %+v", attempts)
 	}
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
 		t.Fatalf("dispatch attempts = (%d, %d), want (1, 1)", firstCalls.Load(), secondCalls.Load())
+	}
+	for _, expected := range []dispatchIDs{
+		{request: task.ID + ":sub-a", attempt: taskmgr.DispatchAttemptID(task.ID, "sub-a", 1)},
+		{request: task.ID + ":sub-a", attempt: taskmgr.DispatchAttemptID(task.ID, "sub-a", 2)},
+	} {
+		if got := <-attemptIDs; got != expected {
+			t.Errorf("worker dispatch IDs = %+v, want %+v", got, expected)
+		}
+	}
+	historyResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(historyResponse, httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID, nil))
+	if historyResponse.Code != http.StatusOK {
+		t.Fatalf("task history API returned %d: %s", historyResponse.Code, historyResponse.Body.String())
+	}
+	var history taskmgr.Task
+	if err := json.Unmarshal(historyResponse.Body.Bytes(), &history); err != nil {
+		t.Fatalf("decode task history response: %v", err)
+	}
+	if len(history.Subtasks) != 1 || len(history.Subtasks[0].Attempts) != 2 ||
+		history.Subtasks[0].Attempts[0].RequestID != task.ID+":sub-a" ||
+		history.Subtasks[0].Attempts[1].ID != taskmgr.DispatchAttemptID(task.ID, "sub-a", 2) {
+		t.Fatalf("task API did not expose full attempt history: %+v", history.Subtasks)
+	}
+	metrics := srv.metrics.snapshot()
+	if metrics.dispatches != 2 || metrics.retries != 1 || metrics.capacityReservations != 2 {
+		t.Fatalf("dispatch metrics = %+v, want two attempts, one retry, and two reservations", metrics)
+	}
+}
+
+func TestDispatchPermanentFailureDoesNotRetry(t *testing.T) {
+	var retryCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		retryCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "should not run"})
+	}))
+	defer second.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-a", Address: first.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-b", Address: second.URL, Healthy: true,
+		Models: []engine.Model{{Name: "other", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "permanent", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: first.URL, Model: "general", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("permanent failure task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if len(attempts) != 1 || attempts[0].FailureClass != "client_error" ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed {
+		t.Fatalf("permanent failure attempts = %+v, want one client_error failure", attempts)
+	}
+	if retryCalls.Load() != 0 {
+		t.Fatalf("permanent failure triggered %d retries", retryCalls.Load())
+	}
+}
+
+func TestDispatchCancellationDuringExecutionFailsWithoutRetry(t *testing.T) {
+	entered := make(chan struct{})
+	releaseWorker := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseWorker) }) }
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-releaseWorker
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "late response"})
+	}))
+	defer first.Close()
+	defer release()
+	var retryCalls atomic.Int32
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		retryCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "should not run"})
+	}))
+	defer second.Close()
+
+	srv := newTestServer(t)
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-a", Address: first.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-b", Address: second.URL, Healthy: true,
+		Models: []engine.Model{{Name: "other", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "cancelled", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: first.URL, Model: "general", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		srv.dispatcher.dispatchWithContext(parent, task.ID, task.Subtasks[0].Assignment)
+		close(done)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("dispatch did not reach the worker")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch did not stop after cancellation")
+	}
+	release()
+
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("cancelled dispatch task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if len(attempts) != 1 || attempts[0].FailureClass != "cancelled" ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed {
+		t.Fatalf("cancelled dispatch attempts = %+v", attempts)
+	}
+	if retryCalls.Load() != 0 {
+		t.Fatalf("cancelled dispatch triggered %d retries", retryCalls.Load())
+	}
+}
+
+type loseFirstDispatchResponse struct {
+	base      dispatchHTTPClient
+	completed <-chan struct{}
+	drop      atomic.Bool
+}
+
+func (c *loseFirstDispatchResponse) Do(request *http.Request) (*http.Response, error) {
+	response, err := c.base.Do(request)
+	if err != nil {
+		return response, err
+	}
+	if c.drop.CompareAndSwap(false, true) {
+		<-c.completed
+		_ = response.Body.Close()
+		return nil, errors.New("simulated lost response after worker completion")
+	}
+	return response, nil
+}
+
+func TestDispatchRetriesWhenCompletedResponseIsLost(t *testing.T) {
+	var firstCompleted, secondCalls atomic.Int32
+	workerCompleted := make(chan struct{})
+	type dispatchIDs struct{ request, attempt string }
+	firstIDs := make(chan dispatchIDs, 1)
+	secondIDs := make(chan dispatchIDs, 1)
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCompleted.Add(1)
+		if got, want := r.Header.Get(httpx.RequestIDHeader), r.Header.Get(inferroute.HeaderRequestID); got != want {
+			t.Errorf("standard lost-response request ID = %q, want attempt request ID %q", got, want)
+		}
+		firstIDs <- dispatchIDs{
+			request: r.Header.Get(inferroute.HeaderRequestID),
+			attempt: r.Header.Get(inferroute.HeaderAttemptID),
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "completed but response lost"})
+		close(workerCompleted)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		if got, want := r.Header.Get(httpx.RequestIDHeader), r.Header.Get(inferroute.HeaderRequestID); got != want {
+			t.Errorf("standard retry request ID = %q, want attempt request ID %q", got, want)
+		}
+		secondIDs <- dispatchIDs{
+			request: r.Header.Get(inferroute.HeaderRequestID),
+			attempt: r.Header.Get(inferroute.HeaderAttemptID),
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "retry completed"})
+	}))
+	defer second.Close()
+
+	srv := newTestServer(t)
+	srv.dispatcher.executeClient = &loseFirstDispatchResponse{
+		base: http.DefaultClient, completed: workerCompleted,
+	}
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-a", Address: first.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-b", Address: second.URL, Healthy: true,
+		Models: []engine.Model{{Name: "other", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "lost-response", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: first.URL, Model: "general", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusCompleted {
+		t.Fatalf("lost-response retry task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if firstCompleted.Load() != 1 || secondCalls.Load() != 1 || len(attempts) != 2 ||
+		attempts[0].FailureClass != "transport" ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
+		attempts[1].Status != taskmgr.DispatchAttemptSucceeded ||
+		attempts[0].RequestID != taskmgr.DispatchRequestID(task.ID, "lost-response") ||
+		attempts[1].RequestID != attempts[0].RequestID {
+		t.Fatalf("lost-response execution = first %d, retry %d, attempts %+v",
+			firstCompleted.Load(), secondCalls.Load(), attempts)
+	}
+	if got, want := <-firstIDs, (dispatchIDs{
+		request: taskmgr.DispatchRequestID(task.ID, "lost-response"),
+		attempt: taskmgr.DispatchAttemptID(task.ID, "lost-response", 1),
+	}); got != want {
+		t.Fatalf("first lost-response attempt IDs = %+v, want %+v", got, want)
+	}
+	if got, want := <-secondIDs, (dispatchIDs{
+		request: taskmgr.DispatchRequestID(task.ID, "lost-response"),
+		attempt: taskmgr.DispatchAttemptID(task.ID, "lost-response", 2),
+	}); got != want {
+		t.Fatalf("retry attempt IDs = %+v, want %+v", got, want)
+	}
+}
+
+func TestDispatchRetriesWhenAssignedNodeDisappears(t *testing.T) {
+	disappeared := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	disappearedAddress := disappeared.URL
+	disappeared.Close()
+	available := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "recovered on another node"})
+	}))
+	defer available.Close()
+
+	srv := newTestServer(t)
+	model := []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}}
+	srv.registry.Upsert(cluster.NodeStatus{ID: "node-a", Address: disappearedAddress, Healthy: true, Models: model})
+	srv.registry.Upsert(cluster.NodeStatus{ID: "node-b", Address: available.URL, Healthy: true, Models: model})
+	task, err := srv.tasks.CreateChecked("Run after node loss", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "node-loss", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: disappearedAddress, Model: "general", Engine: "ollama",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusCompleted {
+		t.Fatalf("node-loss retry task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if len(attempts) != 2 || attempts[0].FailureClass != "transport" ||
+		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
+		attempts[1].Status != taskmgr.DispatchAttemptSucceeded ||
+		completed.Subtasks[0].NodeID != "node-b" ||
+		completed.Subtasks[0].Output != "recovered on another node" {
+		t.Fatalf("node-loss dispatch result = task %+v, attempts %+v", completed.Subtasks[0], attempts)
+	}
+}
+
+type dropFirstHTTPResponseRoundTripper struct {
+	base    http.RoundTripper
+	dropped atomic.Bool
+}
+
+func (t *dropFirstHTTPResponseRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(request)
+	if err != nil {
+		return response, err
+	}
+	if t.dropped.CompareAndSwap(false, true) {
+		_, copyErr := io.Copy(io.Discard, response.Body)
+		closeErr := response.Body.Close()
+		if copyErr != nil {
+			return nil, copyErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		return nil, errors.New("simulated dropped inference response")
+	}
+	return response, nil
+}
+
+func TestGenerateForwardsIdempotencyKeyWithoutFallbackAfterLostResponse(t *testing.T) {
+	var generateCalls, executeCalls atomic.Int32
+	workerKeys := make(chan string, 3)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/generate":
+			generateCalls.Add(1)
+			workerKeys <- r.Header.Get(inferroute.HeaderIdempotencyKey)
+			_ = json.NewEncoder(w).Encode(map[string]string{"output": "generated"})
+		case "/execute":
+			executeCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"output": "fallback"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer worker.Close()
+
+	srv := newTestServer(t)
+	srv.nodeClient.dispatcher.Transport = &dropFirstHTTPResponseRoundTripper{base: http.DefaultTransport}
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "node-a", Address: worker.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Engine: "ollama", Tags: []string{"general"}}},
+	})
+	makeRequest := func() *http.Request {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/nodes/node-a/generate", strings.NewReader(
+			`{"model":"general","prompt":"repeat me"}`,
+		))
+		request.Header.Set(inferroute.HeaderIdempotencyKey, "request-key")
+		return request
+	}
+	first := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(first, makeRequest())
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("lost worker response returned %d, want gateway error: %s", first.Code, first.Body.String())
+	}
+	retry := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(retry, makeRequest())
+	if retry.Code != http.StatusOK || generateCalls.Load() != 2 || executeCalls.Load() != 0 {
+		t.Fatalf("keyed retry returned %d after %d generate and %d execute calls: %s",
+			retry.Code, generateCalls.Load(), executeCalls.Load(), retry.Body.String())
+	}
+	for range 2 {
+		if key := <-workerKeys; key != "request-key" {
+			t.Fatalf("worker received idempotency key %q, want request-key", key)
+		}
+	}
+	compatRequest := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(
+		`{"model":"general","prompt":"compat request","stream":false}`,
+	))
+	compatRequest.Header.Set(inferroute.HeaderIdempotencyKey, "compat-key")
+	compatResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(compatResponse, compatRequest)
+	if compatResponse.Code != http.StatusOK {
+		t.Fatalf("compat generate returned %d: %s", compatResponse.Code, compatResponse.Body.String())
+	}
+	if key := <-workerKeys; key != "compat-key" {
+		t.Fatalf("compat generate forwarded key %q, want compat-key", key)
+	}
+}
+
+func TestDispatchDeadlineDuringRetryStopsFurtherAttempts(t *testing.T) {
+	var thirdCalls atomic.Int32
+	retryStarted := make(chan struct{})
+	releaseRetry := make(chan struct{})
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(retryStarted)
+		select {
+		case <-r.Context().Done():
+		case <-releaseRetry:
+		}
+	}))
+	defer second.Close()
+	defer close(releaseRetry)
+	third := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		thirdCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "must not run"})
+	}))
+	defer third.Close()
+
+	srv := newTestServer(t)
+	srv.dispatcher.retryPolicy.maxAttempts = 3
+	srv.dispatcher.retryPolicy.backoff = time.Millisecond
+	srv.dispatcher.retryPolicy.maxBackoff = time.Millisecond
+	for _, node := range []struct {
+		id      string
+		address string
+		score   float64
+	}{
+		{id: "node-a", address: first.URL, score: 100},
+		{id: "node-b", address: second.URL, score: 80},
+		{id: "node-c", address: third.URL, score: 20},
+	} {
+		srv.registry.Upsert(cluster.NodeStatus{
+			ID: node.id, Address: node.address, Healthy: true,
+			Hardware: hardware.Info{Score: node.score},
+			Models:   []engine.Model{{Name: "general", Tags: []string{"general"}}},
+		})
+	}
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "deadline", Description: "Run it", TaskType: "general", Tags: []string{"general"}},
+		NodeID:  "node-a", Address: first.URL, Model: "general",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parent, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		srv.dispatcher.dispatchWithContext(parent, task.ID, task.Subtasks[0].Assignment)
+		close(done)
+	}()
+	select {
+	case <-retryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("retry did not reach the second worker")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch did not stop after the parent deadline")
+	}
+
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("deadline retry task = %+v", completed)
+	}
+	attempts := completed.Subtasks[0].Attempts
+	if len(attempts) != 2 || attempts[0].FailureClass != "upstream_5xx" ||
+		attempts[1].FailureClass != "timeout" || attempts[1].Status != taskmgr.DispatchAttemptFailed ||
+		!strings.Contains(completed.Subtasks[0].Error, "deadline exceeded") || thirdCalls.Load() != 0 {
+		t.Fatalf("deadline retry history = %+v, task error %q, third worker calls %d",
+			attempts, completed.Subtasks[0].Error, thirdCalls.Load())
 	}
 }
 
@@ -1524,6 +2126,54 @@ func TestDispatchRetryClassificationExcludesClientErrors(t *testing.T) {
 			t.Errorf("classifyDispatchStatus(%d, %q) = (%q, %t), want (%q, %t)",
 				test.status, test.body, class, retryable, test.class, test.retryable)
 		}
+
+	}
+}
+
+func TestDispatcherUsesConfiguredTimeout(t *testing.T) {
+	releaseWorker := make(chan struct{})
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-releaseWorker
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer worker.Close()
+	defer close(releaseWorker)
+
+	srv := newTestServer(t)
+	srv.dispatcher.dispatchTimeout = 50 * time.Millisecond
+	srv.registry.Upsert(cluster.NodeStatus{
+		ID: "slow-worker", Address: worker.URL, Healthy: true,
+		Models: []engine.Model{{Name: "general", Tags: []string{"general"}}},
+	})
+	task, err := srv.tasks.CreateChecked("Run one step", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{
+			ID: "slow", Description: "Run it", TaskType: "general", Tags: []string{"general"},
+		},
+		NodeID: "slow-worker", Address: worker.URL, Model: "general",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		srv.dispatcher.dispatchWithContext(context.Background(), task.ID, task.Subtasks[0].Assignment)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch did not stop at the configured timeout")
+	}
+
+	completed, ok := srv.tasks.Get(task.ID)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("timed-out task = %+v", completed)
+	}
+	result := completed.Subtasks[0]
+	if !strings.Contains(result.Error, "subtask dispatch deadline exceeded") ||
+		len(result.Attempts) != 1 || result.Attempts[0].FailureClass != "timeout" {
+		t.Fatalf("timed-out subtask result = %+v", result)
 	}
 }
 

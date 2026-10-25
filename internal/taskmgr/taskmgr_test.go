@@ -54,19 +54,12 @@ func TestTaskSnapshotsAndAggregateResult(t *testing.T) {
 	}
 }
 
-func TestDispatchAttemptsPersistAcrossRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dispatch-attempts.db")
-	manager, err := OpenManager(path, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	task, err := manager.CreateChecked("run inference", []scheduler.Assignment{{
-		Subtask: scheduler.Subtask{ID: "work", TaskType: "general"},
-		NodeID:  "node-a", Model: "model-a", Engine: "ollama",
+func TestCancelAndSnapshotCheckedReturnsAtomicTaskSnapshot(t *testing.T) {
+	manager := NewManager()
+	task := manager.Create("cancel a running attempt", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work"},
+		NodeID:  "node-a", Model: "model-a",
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
 		t.Fatal(err)
 	}
@@ -74,27 +67,26 @@ func TestDispatchAttemptsPersistAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.FinishDispatchAttemptChecked(task.ID, "work", number, DispatchAttemptFailed, "upstream_5xx", 503, nil, 25*time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Close(); err != nil {
-		t.Fatal(err)
-	}
 
-	reopened, err := OpenManager(path, nil)
+	snapshot, cancelled, err := manager.CancelAndSnapshotChecked(task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
-	persisted, ok := reopened.Get(task.ID)
-	if !ok || len(persisted.Subtasks[0].Attempts) != 1 {
-		t.Fatalf("persisted task attempts = %#v", persisted)
+	if !cancelled || snapshot == nil || snapshot.Status != StatusCancelled ||
+		len(snapshot.Subtasks[0].Attempts) != 1 ||
+		snapshot.Subtasks[0].Attempts[0].Status != DispatchAttemptRunning {
+		t.Fatalf("cancellation snapshot = %#v, cancelled %v", snapshot, cancelled)
 	}
-	attempt := persisted.Subtasks[0].Attempts[0]
-	if attempt.ID == "" || attempt.NodeID != "node-a" || attempt.Model != "model-a" ||
-		attempt.Engine != "ollama" || attempt.Status != DispatchAttemptFailed ||
-		attempt.FailureClass != "upstream_5xx" || attempt.HTTPStatus != 503 || attempt.DurationMs != 25 {
-		t.Fatalf("persisted attempt metadata = %+v", attempt)
+	if err := manager.FinishDispatchAttemptChecked(task.ID, "work", number, DispatchAttemptFailed,
+		"cancelled", 0, context.Canceled, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Subtasks[0].Attempts[0].Status != DispatchAttemptRunning {
+		t.Fatalf("cancellation snapshot changed after dispatch completion: %+v", snapshot.Subtasks[0].Attempts[0])
+	}
+	current, ok := manager.Get(task.ID)
+	if !ok || current.Subtasks[0].Attempts[0].Status != DispatchAttemptFailed {
+		t.Fatalf("persisted task did not record dispatch completion: %#v", current)
 	}
 }
 

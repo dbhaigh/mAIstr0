@@ -1,0 +1,143 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": [
+    {
+      "frontier": [
+        "work"
+      ],
+      "graph": {
+        "edges": [],
+        "nodes": {
+          "work": {
+            "description": "Work",
+            "id": "work",
+            "output_format": "text",
+            "role": "general",
+            "tags": [
+              "general"
+            ],
+            "task_type": "general"
+          }
+        }
+      },
+      "id": "\u003cCHECKPOINT_ID\u003e",
+      "outputs": {},
+      "resumable": true,
+      "sequence": 0,
+      "status": "running",
+      "subtasks": [
+        {
+          "address": "\u003cWORKER_URL\u003e",
+          "engine": "simulated",
+          "model": "simulated-general",
+          "node_id": "simulated-worker",
+          "score": 0,
+          "score_factors": {
+            "active_tasks": 0,
+            "estimated_completion_seconds": 0,
+            "estimated_tokens_per_second": 0,
+            "gpu_utilization_penalty": 0,
+            "hardware": 0,
+            "learned_bias": 0,
+            "load_penalty": 0,
+            "model_match": 30,
+            "npu_utilization_penalty": 0,
+            "queued_tasks": 0,
+            "telemetry_fresh": false
+          },
+          "status": "pending",
+          "subtask": {
+            "description": "Work",
+            "id": "work",
+            "output_format": "text",
+            "role": "general",
+            "tags": [
+              "general"
+            ],
+            "task_type": "general"
+          }
+        }
+      ],
+      "task_id": "\u003cTASK_ID\u003e",
+      "timestamp": "\u003cTIME\u003e"
+    },
+    {
+      "frontier": [],
+      "graph": {
+        "edges": [],
+        "nodes": {
+          "work": {
+            "description": "Work",
+            "id": "work",
+            "output_format": "text",
+            "role": "general",
+            "tags": [
+              "general"
+            ],
+            "task_type": "general"
+          }
+        }
+      },
+      "id": "\u003cCHECKPOINT_ID\u003e",
+      "outputs": {
+        "work": "[simulated response from simulated-general] processed prompt of 168 chars"
+      },
+      "resumable": false,
+      "sequence": 0,
+      "status": "completed",
+      "subtasks": [
+        {
+          "address": "\u003cWORKER_URL\u003e",
+          "attempts": [
+            {
+              "duration_ms": 0,
+              "engine": "simulated",
+              "failure_class": "none",
+              "finished_at": "\u003cTIME\u003e",
+              "http_status": 200,
+              "id": "\u003cTASK_ID\u003e",
+              "model": "simulated-general",
+              "node_id": "simulated-worker",
+              "number": 1,
+              "request_id": "task-1:work",
+              "started_at": "\u003cTIME\u003e",
+              "status": "succeeded"
+            }
+          ],
+          "engine": "simulated",
+          "model": "simulated-general",
+          "node_id": "simulated-worker",
+          "output": "[simulated response from simulated-general] processed prompt of 168 chars",
+          "score": 0,
+          "score_factors": {
+            "active_tasks": 0,
+            "estimated_completion_seconds": 0,
+            "estimated_tokens_per_second": 0,
+            "gpu_utilization_penalty": 0,
+            "hardware": 0,
+            "learned_bias": 0,
+            "load_penalty": 0,
+            "model_match": 30,
+            "npu_utilization_penalty": 0,
+            "queued_tasks": 0,
+            "telemetry_fresh": false
+          },
+          "status": "completed",
+          "subtask": {
+            "description": "Work",
+            "id": "work",
+            "output_format": "text",
+            "role": "general",
+            "tags": [
+              "general"
+            ],
+            "task_type": "general"
+          }
+        }
+      ],
+      "task_id": "\u003cTASK_ID\u003e",
+      "timestamp": "\u003cTIME\u003e"
+    }
+  ]
+}

@@ -24,15 +24,94 @@ jobs:
         with:
           node-version: 22
       - name: Check contract drift
+        shell: bash
         run: |
           go generate ./contracts ./internal/scheduler
           git diff --exit-code -- contracts/fixtures
+          test -z "$(git ls-files --others --exclude-standard -- contracts/fixtures)"
           go test ./contracts
       - name: Run Go tests
+        if: runner.os == 'Windows'
         run: go test ./...
+      - name: Run Go tests with coverage
+        if: runner.os == 'Linux'
+        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Summarize Go coverage
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          go tool cover -func=coverage.out > coverage.txt
+          total="$(tail -n 1 coverage.txt)"
+          {
+            echo "## Go coverage"
+            echo
+            echo "\`$total\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Go coverage report
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: |
+            coverage.out
+            coverage.txt
+          if-no-files-found: error
+      - name: Run Go tests with race detector
+        if: runner.os == 'Linux'
+        run: go test -race ./...
       - name: Run Go vet
         run: go vet ./...
+      - name: Scan Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: Build application
         run: go build ./cmd/maistr0
+      - name: Validate release configuration
+        if: runner.os == 'Linux'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
       - name: Test dashboard
         run: node --test web/app_test.js
+
+  shard-fakes:
+    name: Build sharding process fixtures (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build S3 supervisor and sharding fake binaries
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/shard-fakes"
+          suffix=""
+          if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
+          go build -o "$RUNNER_TEMP/shard-fakes/supervisor$suffix" ./internal/nodeagent/supervisor/testdata/fakeengine
+          for fake in fakerpc fakellama fakevllm; do
+            go build -o "$RUNNER_TEMP/shard-fakes/$fake$suffix" "./internal/integration/testdata/$fake"
+          done
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+          args: --timeout=5m

@@ -17,38 +17,10 @@ import (
 type RecallMemoryTool struct{}
 
 func (t *RecallMemoryTool) Def() ToolDef {
-	return ToolDef{
-		Name: "recall_memory",
-		Description: "Search the cluster's persistent memory database for what happened in the past: previous tasks, " +
-			"which node and model handled them, whether they succeeded, how long they took, and the answers produced. " +
-			"Call this before re-solving anything to reuse prior work instead of repeating it.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "Keywords describing what to remember (e.g. 'go worker pool benchmark').",
-				},
-				"task_type": map[string]any{
-					"type":        "string",
-					"description": "Optional task category filter (code, math, reasoning, summarize, general).",
-				},
-				"node_id": map[string]any{
-					"type":        "string",
-					"description": "Optional filter to experiences on one node.",
-				},
-				"success_only": map[string]any{
-					"type":        "boolean",
-					"description": "When true, only recall runs that succeeded.",
-				},
-				"limit": map[string]any{
-					"type":        "number",
-					"description": "Maximum memories to return (default 8).",
-				},
-			},
-			"required": []string{"query"},
-		},
-	}
+	return toolDefinition[recallMemoryArgs](
+		"recall_memory",
+		"Search the cluster's persistent memory database for what happened in the past: previous tasks, which node and model handled them, whether they succeeded, how long they took, and the answers produced. Call this before re-solving anything to reuse prior work instead of repeating it.",
+	)
 }
 
 func (t *RecallMemoryTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -118,30 +90,10 @@ func clip(s string, max int) string {
 type RememberFactTool struct{}
 
 func (t *RememberFactTool) Def() ToolDef {
-	return ToolDef{
-		Name: "remember_fact",
-		Description: "Durably save a lesson, preference, or conclusion to the cluster memory database so it survives " +
-			"this session and is recalled automatically in future ones. Use it whenever you discover something " +
-			"non-obvious about the cluster, the user, or how a task should be done.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"key": map[string]any{
-					"type":        "string",
-					"description": "Short identifier for the fact (e.g. 'preferred-code-model').",
-				},
-				"value": map[string]any{
-					"type":        "string",
-					"description": "The knowledge to remember.",
-				},
-				"scope": map[string]any{
-					"type":        "string",
-					"description": "Optional scope: 'cluster' (default), 'node:<id>', or 'session:<id>'.",
-				},
-			},
-			"required": []string{"key", "value"},
-		},
-	}
+	return toolDefinition[rememberFactArgs](
+		"remember_fact",
+		"Durably save a lesson, preference, or conclusion to the cluster memory database so it survives this session and is recalled automatically in future ones. Use it whenever you discover something non-obvious about the cluster, the user, or how a task should be done.",
+	)
 }
 
 func (t *RememberFactTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -178,20 +130,10 @@ func (t *RememberFactTool) Execute(ctx context.Context, h *Harness, s *Session, 
 type MemoryInsightsTool struct{}
 
 func (t *MemoryInsightsTool) Def() ToolDef {
-	return ToolDef{
-		Name: "memory_insights",
-		Description: "Report what the cluster has learned from its accumulated history: overall success rate, which " +
-			"node+model pairings perform best and worst per task type, and the routing lessons currently being applied.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"task_type": map[string]any{
-					"type":        "string",
-					"description": "Optional task category to focus the recommendations on.",
-				},
-			},
-		},
-	}
+	return toolDefinition[memoryInsightsArgs](
+		"memory_insights",
+		"Report what the cluster has learned from its accumulated history: overall success rate, which node+model pairings perform best and worst per task type, and the routing lessons currently being applied.",
+	)
 }
 
 func (t *MemoryInsightsTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {
@@ -219,38 +161,10 @@ func (t *MemoryInsightsTool) Execute(ctx context.Context, h *Harness, s *Session
 type NodeToNodeConversationTool struct{}
 
 func (t *NodeToNodeConversationTool) Def() ToolDef {
-	return ToolDef{
-		Name: "node_to_node_conversation",
-		Description: "Put two worker node LLMs into direct conversation with each other for several rounds so they can " +
-			"debate, design, cross-check, or peer-review a topic without the orchestrator mediating every turn. " +
-			"Returns the full transcript plus the conclusion the two models reached.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"node_a": map[string]any{
-					"type":        "string",
-					"description": "Node ID whose LLM opens the conversation.",
-				},
-				"node_b": map[string]any{
-					"type":        "string",
-					"description": "Node ID whose LLM responds.",
-				},
-				"topic": map[string]any{
-					"type":        "string",
-					"description": "What the two node LLMs should discuss or decide.",
-				},
-				"opening": map[string]any{
-					"type":        "string",
-					"description": "Optional opening instruction for the first node's LLM.",
-				},
-				"rounds": map[string]any{
-					"type":        "number",
-					"description": "Number of back-and-forth rounds (1 to 5, default 2).",
-				},
-			},
-			"required": []string{"node_a", "node_b", "topic"},
-		},
-	}
+	return toolDefinition[nodeToNodeConversationArgs](
+		"node_to_node_conversation",
+		"Put two worker node LLMs into direct conversation with each other for several rounds so they can debate, design, cross-check, or peer-review a topic without the orchestrator mediating every turn. Returns the full transcript plus the conclusion the two models reached.",
+	)
 }
 
 func (t *NodeToNodeConversationTool) Execute(ctx context.Context, h *Harness, s *Session, args map[string]any) (any, string, string, string, error) {

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/pipeline-stage-message.schema.json",
+  "title": "PipelineStageMessageHeader",
+  "description": "Length-prefixed binary envelope: 4-byte big-endian JSON-header length, this header, then the contiguous tensor payload described by request.activation or output.activation.",
+  "type": "object",
+  "required": ["request"],
+  "properties": {
+    "request": {"$ref": "pipeline-stage-request.schema.json"},
+    "output": {"$ref": "pipeline-stage-output.schema.json"}
+  },
+  "additionalProperties": true
+}

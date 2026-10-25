@@ -10,20 +10,37 @@ import (
 type nodeDispatchGate struct {
 	// mu protects advertised capacity and local/external active counts; capacity probes run before acquiring it.
 	mu sync.Mutex
-	// refreshMu serializes capacity refreshes, and is never held while acquiring mu.
-	refreshMu chan struct{}
-	limit     int
-	active    int
-	external  int
-	changed   chan struct{}
+	// refreshDone marks the single in-flight node probe; mu is released during I/O.
+	refreshDone chan struct{}
+	limit       int
+	active      int
+	external    int
+	changed     chan struct{}
 }
 
 func newNodeDispatchGate(limit int) *nodeDispatchGate {
 	return &nodeDispatchGate{
-		limit:     limit,
-		refreshMu: make(chan struct{}, 1),
-		changed:   make(chan struct{}),
+		limit:   limit,
+		changed: make(chan struct{}),
 	}
+}
+
+func (g *nodeDispatchGate) beginRefresh() (<-chan struct{}, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.refreshDone != nil {
+		return g.refreshDone, false
+	}
+	g.refreshDone = make(chan struct{})
+	return g.refreshDone, true
+}
+
+func (g *nodeDispatchGate) endRefresh() {
+	g.mu.Lock()
+	done := g.refreshDone
+	g.refreshDone = nil
+	close(done)
+	g.mu.Unlock()
 }
 
 func (g *nodeDispatchGate) setCapacity(limit, available, reportedActive int) {

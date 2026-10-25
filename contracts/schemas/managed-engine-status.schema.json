@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/managed-engine-status.schema.json",
+  "title": "ManagedEngineStatus",
+  "type": "object",
+  "required": ["id", "kind", "state", "restart_count"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "enum": ["llama-server", "ggml-rpc-server", "vllm"]},
+    "state": {"type": "string", "enum": ["stopped", "starting", "ready", "stopping", "restarting", "failed"]},
+    "pid": {"type": "integer", "minimum": 0},
+    "endpoint": {"type": "string"},
+    "relay_endpoint": {"type": "string", "description": "mTLS-protected llama.cpp RPC relay endpoint, when configured."},
+    "restart_count": {"type": "integer", "minimum": 0},
+    "last_error": {"type": "string"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

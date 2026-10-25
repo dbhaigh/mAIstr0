@@ -112,7 +112,14 @@ func (request historyPageRequest) memoryCursor() memory.HistoryCursor {
 	}
 }
 
-func writeHistoryPage(w http.ResponseWriter, request historyPageRequest, items any, cursor memory.HistoryCursor, hasMore bool) {
+func historyPagePayloadLimit(maxBytes int64) int64 {
+	if maxBytes > historyPageEnvelopeRoom {
+		return maxBytes - historyPageEnvelopeRoom
+	}
+	return maxBytes
+}
+
+func writeHistoryPage(w http.ResponseWriter, request historyPageRequest, items any, cursor memory.HistoryCursor, hasMore bool, maxBytes int64) {
 	rawItems, err := json.Marshal(items)
 	if err != nil {
 		http.Error(w, "could not encode history page: "+err.Error(), http.StatusInternalServerError)
@@ -131,8 +138,11 @@ func writeHistoryPage(w http.ResponseWriter, request historyPageRequest, items a
 		http.Error(w, "could not encode history page: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if int64(len(body)) > maxHistoryPageBytes {
-		http.Error(w, "history page exceeds the 64 MiB response limit", http.StatusRequestEntityTooLarge)
+	if maxBytes <= 0 {
+		maxBytes = maxHistoryPageBytes
+	}
+	if int64(len(body)) > maxBytes {
+		http.Error(w, fmt.Sprintf("history page exceeds the %d-byte response limit", maxBytes), http.StatusRequestEntityTooLarge)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

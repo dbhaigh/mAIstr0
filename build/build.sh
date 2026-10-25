@@ -17,12 +17,14 @@ ldflags="-s -w -X github.com/maistr0/maistr0/internal/version.Value=${version}"
 mkdir -p dist/windows-amd64 dist/linux-amd64 dist/linux-ubuntu-amd64
 
 echo "Building windows/amd64..."
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$ldflags" -o dist/windows-amd64/maistr0.exe ./cmd/maistr0
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/windows-amd64/maistr0.exe ./cmd/maistr0
 
 echo "Building linux/amd64..."
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$ldflags" -o dist/linux-amd64/maistr0 ./cmd/maistr0
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/linux-amd64/maistr0 ./cmd/maistr0
 
 echo "Building ubuntu linux/amd64..."
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOFLAGS='-tags=ubuntu' go build -ldflags "$ldflags" -o dist/linux-ubuntu-amd64/maistr0 ./cmd/maistr0
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOFLAGS='-tags=ubuntu' go build -trimpath -ldflags "$ldflags" -o dist/linux-ubuntu-amd64/maistr0 ./cmd/maistr0
+
+go run ./cmd/updatebundle -root ./dist -version "$version"
 
 echo "Done. Binaries in dist/windows-amd64, dist/linux-amd64, and dist/linux-ubuntu-amd64"

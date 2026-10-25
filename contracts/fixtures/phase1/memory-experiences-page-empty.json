@@ -2,7 +2,7 @@
   "name": "memory-experiences-page-empty",
   "request": {
     "method": "GET",
-    "path": "/api/memory/experiences?page_size=50&q=empty"
+    "path": "/api/memory/experiences?page_size=50\u0026q=empty"
   },
   "expected_response": {
     "status": 200,

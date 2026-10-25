@@ -134,6 +134,28 @@ func (m *Manager) load() error {
 		} else if task.Sequence > m.syncSeq[task.Origin] {
 			m.syncSeq[task.Origin] = task.Sequence
 		}
+		attemptHistoryChanged := false
+		for i := range task.Subtasks {
+			for j := range task.Subtasks[i].Attempts {
+				attempt := &task.Subtasks[i].Attempts[j]
+				if attempt.RequestID == "" {
+					attempt.RequestID = DispatchRequestID(task.ID, task.Subtasks[i].Subtask.ID)
+					attemptHistoryChanged = true
+				}
+				if attempt.Status == DispatchAttemptRunning {
+					now := time.Now()
+					attempt.Status = DispatchAttemptFailed
+					attempt.FailureClass = "orchestrator_restart"
+					attempt.Error = "orchestrator restarted before the attempt result was recorded"
+					attempt.FinishedAt = &now
+					attempt.DurationMs = max(0, now.Sub(attempt.StartedAt).Milliseconds())
+					attemptHistoryChanged = true
+				}
+			}
+		}
+		if attemptHistoryChanged {
+			metadataChanged[task.ID] = true
+		}
 		if task.Status == StatusPending || task.Status == StatusRunning || task.Status == StatusSynthesis {
 			task.Status = StatusFailed
 			task.Error = interruptedTaskError
@@ -148,6 +170,7 @@ func (m *Manager) load() error {
 			task.Origin = m.syncOrigin
 			task.Sequence = m.nextSyncSequenceLocked(task.Origin)
 			interrupted[task.ID] = true
+			metadataChanged[task.ID] = false
 			cancel()
 		} else if task.Status == StatusAwaitingApproval {
 			task.Resumable = true
@@ -162,6 +185,11 @@ func (m *Manager) load() error {
 		} else {
 			cancel()
 		}
+		if attemptHistoryChanged && !interrupted[task.ID] {
+			task.UpdatedAt = time.Now()
+			task.Origin = m.syncOrigin
+			task.Sequence = m.nextSyncSequenceLocked(task.Origin)
+		}
 		m.tasks[task.ID] = task
 		if sequence := taskSequence(task.ID); sequence > m.seq {
 			m.seq = sequence
@@ -169,11 +197,8 @@ func (m *Manager) load() error {
 	}
 	for _, task := range tasks {
 		if interrupted[task.ID] {
-			if err := m.store.Save(task); err != nil {
-				return err
-			}
 			checkpoint := checkpointForTask(task)
-			if err := m.store.SaveCheckpoint(checkpoint); err != nil {
+			if err := saveTaskAndCheckpoint(m.store, task, checkpoint); err != nil {
 				return err
 			}
 		} else if metadataChanged[task.ID] {

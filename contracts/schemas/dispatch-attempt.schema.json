@@ -6,6 +6,7 @@
   "required": ["id", "number", "node_id", "model", "status", "started_at", "duration_ms"],
   "properties": {
     "id": {"type": "string"},
+    "request_id": {"type": "string"},
     "number": {"type": "integer", "minimum": 1},
     "node_id": {"type": "string"},
     "model": {"type": "string"},

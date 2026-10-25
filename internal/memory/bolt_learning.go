@@ -3,7 +3,7 @@ package memory
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +19,36 @@ func perfKey(nodeID, model, taskType string) string {
 	return nodeID + "|" + model + "|" + strings.ToLower(taskType)
 }
 
+// performanceSnapshot is immutable after publication so learned-bias reads
+// do not contend with memory-store updates.
+type performanceSnapshot struct {
+	records map[string]Performance
+}
+
+func (snapshot *performanceSnapshot) learnedBias(nodeID, model, taskType string) float64 {
+	if snapshot == nil {
+		return 0
+	}
+	performance, ok := snapshot.records[perfKey(nodeID, model, taskType)]
+	if !ok {
+		performance, ok = snapshot.records[perfKey(nodeID, model, "general")]
+	}
+	if !ok {
+		return 0
+	}
+	return learnedBias(performance)
+}
+
+func (s *boltStore) publishPerformanceSnapshot() {
+	records := make(map[string]Performance, len(s.perfCache))
+	for key, performance := range s.perfCache {
+		if performance != nil {
+			records[key] = *performance
+		}
+	}
+	s.learnedBiases.Store(&performanceSnapshot{records: records})
+}
+
 func (s *boltStore) loadPerfCache() {
 	_ = s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketPerf).ForEach(func(k, v []byte) error {
@@ -29,22 +59,12 @@ func (s *boltStore) loadPerfCache() {
 			return nil
 		})
 	})
+	s.publishPerformanceSnapshot()
 }
 
-// updatePerformance folds one experience into the rolling per node+model
-// aggregate. This is the cluster's learning signal: repeated successes make
-// a pairing more attractive, failures and slow runs make it less so.
-func (s *boltStore) updatePerformance(e Experience) {
-	if e.NodeID == "" || e.Model == "" {
-		return
-	}
-	key := perfKey(e.NodeID, e.Model, e.TaskType)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.perfCache[key]
+func performanceAfterExperience(current *Performance, e Experience) Performance {
 	var snapshot Performance
-	if !ok {
+	if current == nil {
 		taskType := e.TaskType
 		if taskType == "" {
 			taskType = "general"
@@ -65,26 +85,7 @@ func (s *boltStore) updatePerformance(e Experience) {
 	snapshot.RatingSum += e.Rating
 
 	snapshot.LastUsed = e.CreatedAt
-
-	if err := s.db.Update(func(tx *bolt.Tx) error {
-		sequence, err := nextOriginSequence(tx, s.owner)
-		if err != nil {
-			return err
-		}
-		snapshot.Origin, snapshot.Sequence = s.owner, sequence
-		buf, err := json.Marshal(snapshot)
-		if err != nil {
-			return err
-		}
-		return tx.Bucket(bucketPerf).Put([]byte(key), buf)
-	}); err != nil {
-		log.Printf("memory: persist performance for %s: %v", key, err)
-		return
-	}
-	s.perfCache[key] = &snapshot
-	clear(s.learnedBiasCache)
-	s.performanceGeneration++
-	s.invalidateWatermarksCacheLocked()
+	return snapshot
 }
 
 // Performances returns every learned node+model+taskType aggregate,
@@ -111,7 +112,7 @@ func (s *boltStore) Performances() []Performance {
 func (s *boltStore) MergePerformances(incoming []Performance) {
 	previousWatermarks := s.Watermarks()
 	if err := s.mergePerformancesFrom(incoming, legacyOrigin); err != nil {
-		log.Printf("memory: merge performances: %v", err)
+		logging.Errorf("memory", "memory: merge performances: %v", err)
 		return
 	}
 	if syncinterval.WatermarksAdvanced(previousWatermarks, s.Watermarks()) {
@@ -177,8 +178,9 @@ func (s *boltStore) mergePerformancesFrom(incoming []Performance, sourceOrigin s
 		copyOf := performance
 		s.perfCache[key] = &copyOf
 	}
-	clear(s.learnedBiasCache)
-	s.performanceGeneration++
+	if len(merged) > 0 {
+		s.publishPerformanceSnapshot()
+	}
 	s.invalidateWatermarksCacheLocked()
 	return nil
 }
@@ -191,37 +193,7 @@ func (s *boltStore) LearnedBias(nodeID, model, taskType string) float64 {
 	if s == nil {
 		return 0
 	}
-	key := perfKey(nodeID, model, taskType)
-	s.mu.RLock()
-	if bias, ok := s.learnedBiasCache[key]; ok {
-		s.mu.RUnlock()
-		return bias
-	}
-	generation := s.performanceGeneration
-	p, ok := s.perfCache[key]
-	if !ok {
-		// Fall back to the pairing's general-purpose record.
-		p, ok = s.perfCache[perfKey(nodeID, model, "general")]
-	}
-	if !ok {
-		s.mu.RUnlock()
-		s.mu.Lock()
-		if generation == s.performanceGeneration {
-			s.learnedBiasCache[key] = 0
-		}
-		s.mu.Unlock()
-		return 0
-	}
-	snapshot := *p
-	s.mu.RUnlock()
-
-	bias := learnedBias(snapshot)
-	s.mu.Lock()
-	if generation == s.performanceGeneration {
-		s.learnedBiasCache[key] = bias
-	}
-	s.mu.Unlock()
-	return bias
+	return s.learnedBiases.Load().learnedBias(nodeID, model, taskType)
 }
 
 func learnedBias(snapshot Performance) float64 {

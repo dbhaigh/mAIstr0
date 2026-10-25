@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"strings"
 
 	bolt "go.etcd.io/bbolt"
@@ -113,7 +113,7 @@ func (s *boltStore) Watermarks() map[string]uint64 {
 		})
 	})
 	if err != nil {
-		log.Printf("memory: read watermarks: %v", err)
+		logging.FileErrorf("memory", "FILE_ONLY: memory: read watermarks: %v", err)
 		return watermarks
 	}
 	s.mu.Lock()
@@ -150,7 +150,7 @@ func (s *boltStore) PeerWatermarks(peer string) map[string]uint64 {
 		return nil
 	})
 	if err != nil {
-		log.Printf("memory: read watermarks for peer %s: %v", peer, err)
+		logging.FileErrorf("memory", "FILE_ONLY: memory: read watermarks for peer %s: %v", peer, err)
 		return map[string]uint64{}
 	}
 	s.mu.Lock()
@@ -168,29 +168,42 @@ func (s *boltStore) SetPeerWatermarks(peer string, watermarks map[string]uint64)
 	}
 	var merged map[string]uint64
 	err := s.db.Update(func(tx *bolt.Tx) error {
-		meta := tx.Bucket(bucketMeta)
-		merged = make(map[string]uint64)
-		if value := meta.Get(peerWatermarkKey(peer)); value != nil {
-			if err := json.Unmarshal(value, &merged); err != nil {
-				return fmt.Errorf("memory: decode watermarks for peer %s: %w", peer, err)
-			}
-		}
-		merged = mergeWatermarks(merged, watermarks)
-		encoded, err := json.Marshal(merged)
-		if err != nil {
-			return err
-		}
-		return meta.Put(peerWatermarkKey(peer), encoded)
+		var err error
+		merged, err = mergePeerWatermarksTx(tx, peer, watermarks)
+		return err
 	})
 	if err != nil {
 		return err
 	}
+	s.cachePeerWatermarks(peer, merged)
+	return nil
+}
+
+func mergePeerWatermarksTx(tx *bolt.Tx, peer string, watermarks map[string]uint64) (map[string]uint64, error) {
+	meta := tx.Bucket(bucketMeta)
+	merged := make(map[string]uint64)
+	if value := meta.Get(peerWatermarkKey(peer)); value != nil {
+		if err := json.Unmarshal(value, &merged); err != nil {
+			return nil, fmt.Errorf("memory: decode watermarks for peer %s: %w", peer, err)
+		}
+	}
+	merged = mergeWatermarks(merged, watermarks)
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return nil, err
+	}
+	if err := meta.Put(peerWatermarkKey(peer), encoded); err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+func (s *boltStore) cachePeerWatermarks(peer string, merged map[string]uint64) {
 	s.mu.Lock()
 	s.peerWatermarksCache[peer] = cloneWatermarks(merged)
 	s.peerWatermarksLoaded[peer] = true
 	s.peerWatermarksGeneration[peer]++
 	s.mu.Unlock()
-	return nil
 }
 
 func (s *boltStore) backfillRecordMetadata() error {

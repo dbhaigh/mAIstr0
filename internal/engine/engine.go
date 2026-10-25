@@ -15,22 +15,30 @@ import (
 // Model describes an LLM available on a node, tagged with the task
 // categories it is well suited for so the scheduler can match work to it.
 type Model struct {
-	Name      string   `json:"name"`
-	Engine    string   `json:"engine"`
-	Tags      []string `json:"tags"`
-	Protocols []string `json:"protocols,omitempty"`
-	SizeGB    float64  `json:"size_gb,omitempty"`
+	Name          string   `json:"name"`
+	Engine        string   `json:"engine"`
+	Tags          []string `json:"tags"`
+	Protocols     []string `json:"protocols,omitempty"`
+	SizeGB        float64  `json:"size_gb,omitempty"`
+	ContextLength int      `json:"context_length,omitempty"`
+	Device        string   `json:"device,omitempty"`
+	Quantization  string   `json:"quantization,omitempty"`
+	Members       []string `json:"members,omitempty"`
 }
 
 type Status struct {
-	Name             string    `json:"name"`
-	Ready            bool      `json:"ready"` // The engine responded to its model inventory request.
-	Protocols        []string  `json:"protocols,omitempty"`
-	InventoryState   string    `json:"inventory_state,omitempty"`
-	ModelCount       int       `json:"model_count"`
-	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
-	LastSuccessfulAt time.Time `json:"last_successful_at,omitempty"`
-	LastError        string    `json:"last_error,omitempty"`
+	Name               string                     `json:"name"`
+	Ready              bool                       `json:"ready"` // The engine responded to its model inventory request.
+	Protocols          []string                   `json:"protocols,omitempty"`
+	Capabilities       Capabilities               `json:"capabilities,omitempty"`
+	CapabilitiesError  string                     `json:"capabilities_error,omitempty"`
+	InventoryState     string                     `json:"inventory_state,omitempty"`
+	ModelCount         int                        `json:"model_count"`
+	LastCheckedAt      time.Time                  `json:"last_checked_at,omitempty"`
+	LastSuccessfulAt   time.Time                  `json:"last_successful_at,omitempty"`
+	LastError          string                     `json:"last_error,omitempty"`
+	PipelineStage      *PipelineStageCapabilities `json:"pipeline_stage,omitempty"`
+	PipelineStageError string                     `json:"pipeline_stage_error,omitempty"`
 }
 
 const (
@@ -44,7 +52,8 @@ func ProtocolsForEngine(name string) []string {
 	switch name {
 	case "ollama":
 		return []string{"ollama", "openai"}
-	case "lmstudio", "llamacpp", "vllm", "fastflowlm":
+	case "lmstudio", "llamacpp", TemplateLlamaCPPOpenVINONPU, TemplateLlamaCPPHexagonNPU, TemplateLlamaCPPXDNA2NPU,
+		"vllm", "fastflowlm", TemplateFastFlowLMXDNA2, "tgi", "localai", "mlx", "sglang", "openai":
 		return []string{"openai"}
 	default:
 		return nil
@@ -96,6 +105,12 @@ type EngineWithChatContext interface {
 	ChatWithContext(ctx context.Context, model string, messages []ChatMessage) (string, error)
 }
 
+// EngineWithChatOptions is implemented by engines that support generation
+// parameters during multi-turn chat.
+type EngineWithChatOptions interface {
+	ChatWithOptions(ctx context.Context, model string, messages []ChatMessage, options GenerationOptions) (string, error)
+}
+
 // StreamingEngine is implemented by engines that can return generated text
 // incrementally.
 type StreamingEngine interface {
@@ -106,6 +121,13 @@ type StreamingEngine interface {
 type ModelManager interface {
 	Engine
 	Pull(model string) error
+}
+
+// ContextModelManager is a model manager whose downloads can be cancelled by
+// the request that initiated them.
+type ContextModelManager interface {
+	ModelManager
+	PullContext(context.Context, string) error
 }
 
 // DetectAll probes the host for every known engine implementation and returns
@@ -163,17 +185,39 @@ func firstAvailableLlamaCPP(candidates ...*LlamaCPP) Engine {
 }
 
 func NewConfigured(name, baseURL string) Engine {
+	return NewConfiguredWithAPIKey(name, baseURL, "")
+}
+
+func NewConfiguredWithAPIKey(name, baseURL, apiKey string) Engine {
 	switch name {
 	case "ollama":
 		return NewOllama(baseURL)
 	case "llamacpp":
+		if apiKey != "" {
+			return &LlamaCPP{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
+		}
 		return NewLlamaCPP(baseURL)
+	case TemplateLlamaCPPOpenVINONPU, TemplateLlamaCPPHexagonNPU, TemplateLlamaCPPXDNA2NPU:
+		return &LlamaCPP{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
 	case "vllm":
+		if apiKey != "" {
+			return newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)
+		}
 		return NewVLLM(baseURL)
 	case "lmstudio":
+		if apiKey != "" {
+			return &LMStudio{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
+		}
 		return NewLMStudio(baseURL)
 	case "fastflowlm":
+		if apiKey != "" {
+			return &FastFlowLM{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
+		}
 		return NewFastFlowLM(baseURL)
+	case TemplateFastFlowLMXDNA2:
+		return &FastFlowLM{VLLM: newOpenAICompatibleEngineWithAPIKey(baseURL, name, apiKey)}
+	case "tgi", "localai", "mlx", "sglang", "openai":
+		return newOpenAICompatibleEngine(baseURL, name)
 	default:
 		return nil
 	}

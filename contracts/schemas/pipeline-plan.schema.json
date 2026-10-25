@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/pipeline-plan.schema.json",
+  "title": "PipelinePlan",
+  "type": "object",
+  "required": ["model", "stages", "plan_version", "coordinator_epoch"],
+  "properties": {
+    "model": {"$ref": "sharded-model-config.schema.json"},
+    "stages": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"$ref": "stage-spec.schema.json"}
+    },
+    "plan_version": {"type": "integer", "minimum": 1},
+    "coordinator_epoch": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true
+}

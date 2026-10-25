@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/memory"
@@ -28,14 +29,18 @@ type syncerComponent struct {
 	memory   memory.Store
 	isLeader func() bool
 
-	// syncMu serializes history passes and is outermost relative to registry/task/store operations; those operations never call back into the syncer.
-	syncMu sync.Mutex
+	// syncing prevents overlapping history passes without holding a lock during peer I/O.
+	syncing atomic.Bool
 	// recoveryOnce ensures initial task-history recovery is launched only once.
 	recoveryOnce sync.Once
+	maxBytes     int64
 }
 
 func newSyncerComponent(registry *cluster.Registry, tasks *taskmgr.Manager, client taskHistoryClient, store memory.Store, isLeader func() bool) *syncerComponent {
-	return &syncerComponent{registry: registry, tasks: tasks, client: client, memory: store, isLeader: isLeader}
+	return &syncerComponent{
+		registry: registry, tasks: tasks, client: client, memory: store,
+		isLeader: isLeader, maxBytes: maxReplicatedTaskHistoryBytes,
+	}
 }
 
 func (s *syncerComponent) shouldSync() bool {

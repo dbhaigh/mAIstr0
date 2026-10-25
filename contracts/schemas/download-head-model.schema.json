@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/download-head-model.schema.json",
+  "title": "DownloadHeadModel",
+  "type": "object",
+  "required": ["model", "requested_context"],
+  "properties": {
+    "model": {"enum": ["qwen2.5-3b-instruct-q4", "qwen2.5-7b-instruct-q4"]},
+    "requested_context": {"type": "integer", "minimum": 1, "maximum": 1048576}
+  },
+  "additionalProperties": false
+}

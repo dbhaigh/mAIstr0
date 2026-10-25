@@ -1,12 +1,30 @@
+function updateConnectionStatus() {
+  if (!connectionStatus) return;
+  const state = dashboardState.connection;
+  const lastSync = state.lastSyncAt
+    ? new Date(state.lastSyncAt).toLocaleTimeString()
+    : "not yet";
+  connectionStatus.dataset.connected = String(state.connected);
+  connectionStatus.textContent = `${state.connected ? "Connected" : "Reconnecting"} · Last sync ${lastSync}`;
+}
+
+const loadedDashboardPanels = new Set(["agent-tab"]);
+
+function markDashboardSynced() {
+  dashboardState.connection.lastSyncAt = Date.now();
+  updateConnectionStatus();
+}
+
 async function refresh() {
+  if (!document.getElementById("cluster-tab")?.classList.contains("active")) return;
   try {
     const [nodes, peers, build] = await Promise.all([
       fetchJSON("/api/nodes/all"),
       fetchJSON("/api/discovery"),
       fetchJSON("/api/version"),
     ]);
-    await refreshTaskHistory();
     applySnapshot({ nodes, tasks: dashboardState.tasks || [], discovery: peers, build_version: build.version });
+    markDashboardSynced();
   } catch (err) {
     console.error(err);
   }
@@ -149,60 +167,39 @@ async function refreshDiscovery() {
   }
 }
 
-setInterval(refreshDiscovery, 5000);
+setInterval(() => {
+  if (loadedDashboardPanels.has("discovery-panel") &&
+      document.getElementById("cluster-tab")?.classList.contains("active") &&
+      document.getElementById("discovery-panel")?.classList.contains("active")) {
+    void refreshDiscovery();
+  }
+}, 5000);
 
 function applySnapshot(snap) {
-  if (snap.complete_tasks) {
-    dashboardState.tasks = snap.tasks || [];
-    dashboardState.fullTaskHistoryLoaded = true;
-  } else if (dashboardState.fullTaskHistoryLoaded) {
-    const merged = new Map((dashboardState.tasks || []).map((task) => [task.id, task]));
-    for (const task of snap.tasks || []) merged.set(task.id, task);
-    dashboardState.tasks = [...merged.values()].sort((a, b) =>
-      new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
-    );
-  } else {
-    dashboardState.tasks = snap.tasks || [];
-  }
+  const taskSnapshot = dashboardSnapshot.mergeTaskSnapshot(
+    dashboardState.tasks, snap.tasks, snap.complete_tasks, dashboardState.fullTaskHistoryLoaded,
+  );
+  dashboardState.tasks = taskSnapshot.tasks;
+  dashboardState.fullTaskHistoryLoaded = taskSnapshot.fullTaskHistoryLoaded;
   mergeLiveTaskHistory(snap.tasks || []);
   dashboardState.nodes = snap.nodes || [];
+  if (Array.isArray(snap.discovery)) dashboardState.discovery = snap.discovery;
+  if (snap.build_version) dashboardState.buildVersion = snap.build_version;
+  if (Array.isArray(snap.model_inventory)) dashboardState.modelInventory = snap.model_inventory;
+  if (Array.isArray(snap.pipeline_plans)) dashboardState.pipelinePlans = snap.pipeline_plans;
   if (snap.cluster_health) dashboardState.capacity = snap.cluster_health;
   const capacityByNode = new Map(
     (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node]),
   );
-  const nodeCount = snap.member_count ?? dashboardState.nodes.filter((node) => node.healthy).length;
-  updateClusterTitle(nodeCount);
+  const status = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState.nodes, dashboardState.capacity);
+  updateClusterTitle(status.nodeCount);
 
   // Update header stats pills
-  if (statNodes) statNodes.textContent = `Nodes: ${nodeCount}`;
-  let modelCount = 0;
-  let activeLoad = 0;
-  if (Array.isArray(dashboardState.capacity?.nodes)) {
-    for (const node of dashboardState.capacity.nodes) {
-      if (!node.healthy) continue;
-      activeLoad += Number(node.active) || 0;
-    }
-  } else {
-    for (const n of dashboardState.nodes) {
-      if (!n.healthy) continue;
-      activeLoad += (n.active_tasks || 0);
-    }
-  }
-  for (const n of dashboardState.nodes) {
-    if (!n.healthy) continue;
-    modelCount += (n.models || []).length;
-  }
-  if (statModels) statModels.textContent = `Models: ${modelCount}`;
-  if (statLoad) {
-    const dispatch = dashboardState.capacity?.global_dispatch;
-    statLoad.textContent = dispatch
-      ? `Active Load: ${activeLoad} · Dispatch ${dispatch.active_slots}/${dispatch.global_limit} · Queue ${dispatch.queue_depth}`
-      : `Active Load: ${activeLoad}`;
-  }
-  if (statMemory && snap.memory) {
-    statMemory.textContent = `Memory: ${snap.memory.total_experiences || 0} · ${Math.round((snap.memory.success_rate || 0) * 100)}%`;
-  }
-  if (statVersion && snap.build_version) statVersion.textContent = snap.build_version;
+  if (statNodes) statNodes.textContent = `Nodes: ${status.nodeCount}`;
+  if (statModels) statModels.textContent = `Models: ${status.modelCount}`;
+  if (statLoad) statLoad.textContent = status.loadLabel;
+  if (statMemory && status.memoryLabel) statMemory.textContent = status.memoryLabel;
+  if (statVersion && status.buildVersion) statVersion.textContent = status.buildVersion;
 
   const nodeState = dashboardState.nodes.map((node) => ({
     id: node.id, version: node.version, address: node.address, hardware: node.hardware,
@@ -292,17 +289,21 @@ function applySnapshot(snap) {
     nodes: overviewNodeSignature !== window.lastOverviewNodeSignature,
     peers: peerSignature !== window.lastOverviewPeerSignature,
   };
-  if (overviewParts.activity || overviewParts.nodes || overviewParts.peers) {
+  if (loadedDashboardPanels.has("cluster-overview-panel") &&
+      (overviewParts.activity || overviewParts.nodes || overviewParts.peers)) {
     renderOverview(dashboardState.nodes, dashboardState.tasks, snap.discovery || [], overviewParts);
     window.lastActivitySignature = activitySignature;
     window.lastOverviewNodeSignature = overviewNodeSignature;
     window.lastOverviewPeerSignature = peerSignature;
     overviewChanged = true;
   }
-  if (nodeSignature !== window.lastNodeSignature) {
+  if (loadedDashboardPanels.has("nodes-panel") && nodeSignature !== window.lastNodeSignature) {
     renderNodes(dashboardState.nodes);
-    renderSetupNodes(dashboardState.nodes);
     window.lastNodeSignature = nodeSignature;
+  }
+  if (loadedDashboardPanels.has("setup-nodes-panel") && nodeSignature !== window.lastSetupNodeSignature) {
+    renderSetupNodes(dashboardState.nodes);
+    window.lastSetupNodeSignature = nodeSignature;
   }
   const routingSignature = JSON.stringify({
     nodes: nodeState.map((node) => ({ id: node.id, healthy: node.healthy, active_tasks: node.active_tasks })),
@@ -311,19 +312,60 @@ function applySnapshot(snap) {
       subtasks: task.subtasks,
     })),
   });
-  if (routingSignature !== window.lastRoutingSignature) {
+  if (loadedDashboardPanels.has("routing-panel") && routingSignature !== window.lastRoutingSignature) {
     renderRouting(dashboardState.nodes, dashboardState.tasks);
     window.lastRoutingSignature = routingSignature;
   }
-  if (peerSignature !== window.lastPeerSignature) {
+  const pipelineSignature = JSON.stringify({
+    models: dashboardState.modelInventory,
+    plans: dashboardState.pipelinePlans,
+  });
+  if (loadedDashboardPanels.has("routing-panel") && pipelineSignature !== window.lastPipelineSignature) {
+    renderPipelineDashboard(dashboardState.modelInventory, dashboardState.pipelinePlans);
+    window.lastPipelineSignature = pipelineSignature;
+  }
+  if (loadedDashboardPanels.has("discovery-panel") && peerSignature !== window.lastPeerSignature) {
     renderDiscovery(snap.discovery || []);
     window.lastPeerSignature = peerSignature;
   }
-  if (taskSignature !== window.lastTaskSignature) {
+  if (loadedDashboardPanels.has("tasks-panel") && taskSignature !== window.lastTaskSignature) {
     renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, taskHistoryPage.loading);
     window.lastTaskSignature = taskSignature;
   }
   if (overviewChanged) refreshOverviewTimes();
+}
+
+function activateDashboardTab(tabID) {
+  if (tabID === "memory-tab") {
+    loadedDashboardPanels.add(tabID);
+    void refreshMemory();
+    return;
+  }
+  if (tabID !== "cluster-tab") return;
+  const selected = Array.from(clusterWorkspaceTabs)
+    .find((tab) => tab.getAttribute("aria-selected") === "true");
+  activateWorkspacePanel(selected?.getAttribute("aria-controls") || "cluster-overview-panel");
+  void refresh();
+}
+
+function activateWorkspacePanel(panelID) {
+  if (panelID.startsWith("overview-")) loadedDashboardPanels.add("cluster-overview-panel");
+  if (panelID.startsWith("setup-")) loadedDashboardPanels.add("setup-panel");
+  loadedDashboardPanels.add(panelID);
+  applySnapshot({
+    nodes: dashboardState.nodes,
+    tasks: dashboardState.tasks,
+    discovery: dashboardState.discovery,
+    model_inventory: dashboardState.modelInventory,
+    pipeline_plans: dashboardState.pipelinePlans,
+    cluster_health: dashboardState.capacity,
+    build_version: dashboardState.buildVersion,
+  });
+  if (panelID === "setup-readiness-panel") void checkSetupReadiness();
+  if (panelID === "setup-catalog-panel") void loadModelCatalog();
+  if (panelID === "tasks-panel") void refreshTaskHistory(true);
+  if (panelID === "discovery-panel") void refreshDiscovery();
+  if (panelID === "routing-panel") void refreshShardGroups();
 }
 
 function refreshOverviewTimes() {
@@ -335,14 +377,15 @@ function refreshOverviewTimes() {
 setInterval(refreshOverviewTimes, 15000);
 
 function connectEvents() {
-  const es = new EventSource("/api/events");
-  es.onmessage = (evt) => {
-    try {
-      applySnapshot(JSON.parse(evt.data));
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  dashboardSnapshot.connectDashboardEvents((snapshot) => {
+    markDashboardSynced();
+    applySnapshot(snapshot);
+  }, {
+    onConnectionChange: (connected) => {
+      dashboardState.connection.connected = connected;
+      updateConnectionStatus();
+    },
+  });
 }
 
 submitBtn?.addEventListener("click", async () => {
@@ -376,10 +419,9 @@ setInterval(refreshPersistenceStatus, 30000);
 setInterval(() => {
   if (document.getElementById("cluster-tab")?.classList.contains("active")) {
     void refresh();
+    if (document.getElementById("routing-panel")?.classList.contains("active")) {
+      void refreshShardGroups();
+    }
   }
 }, 15000);
-loadClusterModels();
-refresh();
-checkSetupReadiness();
-loadModelCatalog();
 connectEvents();

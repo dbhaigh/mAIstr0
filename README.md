@@ -1,433 +1,503 @@
 # mAIstr0
 
-mAIstr0 is a local-first orchestrator for distributing LLM work across machines
-on a LAN. The orchestrator discovers worker nodes, routes prompts to models
-available on those nodes, and provides a dashboard and OpenAI-compatible API.
+mAIstr0 is a local-first orchestrator for distributing LLM work across
+machines on a LAN. It combines task planning and scheduling, a transparent
+inference router, interactive Pi and DeepSeek harnesses, and synchronized
+cluster memory. It does not require cloud inference.
+
+Current version: **0.0.24.1**. See the [release notes](./changelog.md#00241)
+for the shard-group setup wizard, cluster reliability improvements, and
+dashboard updates.
+
+## Updating nodes and editing shard members
+
+Starting with 0.0.24.1, nodes download strictly newer versions directly from
+paired peers, then restart **only when idle**. Existing installations need one
+manual upgrade to this version. Stop active shard groups to allow replacement;
+the updater never force-stops a running group. See
+[peer updates and their accepted executable-trust risk](./docs/configuration.md#automatic-peer-executable-updates)
+before enabling this on machines you do not fully trust.
+
+On a shard-group card, select **Edit members**, check healthy nodes to add or
+uncheck workers to remove, then choose **Apply and reload**. Missing RPC
+runtimes install automatically. The current model head remains selected.
+mAIstr0 drains current inference, unloads the group, recomputes comfortable
+memory placement, then reloads workers and head using the **same group ID and
+model**. There is a brief inference outage, not live migration; insufficient
+remaining memory or runtime failures remain visible on the group. Correct the
+selection and retry, or use **Start** after fixing the reported cause.
 
 ## Quick start
 
-Run `maistr0.exe` on Windows, or the `maistr0` binary on Linux. By default,
-instances announce an orchestrator candidacy for six seconds. The candidate
-with the highest capability score wins, with the lowest stable ID breaking
-ties. The winner starts both the orchestrator and a local worker node; all
-other instances join as nodes. This lets the orchestrator host contribute its
-own compute resources to cluster work.
+Download the Windows or Linux archive from
+[GitHub Releases](https://github.com/dbhaigh/mAIstr0/releases). Start the
+application on the first machine; automatic startup looks for an existing
+orchestrator, then elects one from the currently visible LAN candidates if
+none is found. The elected machine also contributes a local worker.
 
-`--role orchestrator` and `--role both` use the same election. LAN discovery
-must be available to start an orchestrator; coordinator startup fails closed
-when discovery is disabled. `--role node` always starts a worker. To pair a
-node, open the
-orchestrator dashboard's Setup panel to view its one-time PIN, then open the
-node dashboard's Setup panel and enter the orchestrator's HTTPS address and
-PIN. The command-line pairing option is also available:
+PowerShell:
 
 ```powershell
-.\maistr0.exe --role orchestrator
-.\maistr0.exe --role node --orchestrator-addr https://192.168.1.10:7450 --pairing-pin "<six-digit-pin>"
+.\maistr0.exe
 ```
+
+bash:
 
 ```sh
-./maistr0 --role orchestrator
-./maistr0 --role node --orchestrator-addr https://192.168.1.10:7450 --pairing-pin "<six-digit-pin>"
+./maistr0
 ```
 
-The default ports are `7450` for the orchestrator and `7451` for a node. Use
-`--no-discovery` to disable LAN discovery for node-only instances or
-`--no-browser` to prevent opening the dashboard automatically. Orchestrator
-election requires discovery. Node and orchestrator JSON configuration paths
-can be set with `--node-config` and `--orchestrator-config`.
+On another machine, start a node and pair it with the orchestrator from the
+dashboard's **Setup** panel. The default dashboard/API ports are `7450` for the
+orchestrator and `7451` for a node. Pairing uses an out-of-band, one-time PIN;
+see [Pairing and security](./docs/pairing-and-security.md).
 
-Concurrency can be tuned in those JSON files. The orchestrator's
-`max_concurrent_dispatches` setting defaults to `16` and caps subtask execution
-across the cluster. A node's `max_concurrent_tasks` setting defaults to `2`;
-the node advertises its active and remaining capacity in status/heartbeat
-updates, and both the orchestrator and node enforce that limit. These settings
-only affect new in-memory scheduling; they do not change task or memory storage
-formats.
-
-Cluster traffic uses mutual TLS with persistent per-instance certificates.
-The orchestrator displays and logs a six-digit, one-use pairing PIN that
-expires after 30 minutes; after each successful pairing it creates the next
-PIN. Use **Generate new PIN** in the Setup panel to replace an expired or
-consumed PIN. The dashboard provides a direct node pairing form and can send
-TLS-identified invitations to LAN-discovered nodes; a node must confirm locally
-before the invitation's PIN is used to join. Alternatively, pass the PIN to a
-new node with `--pairing-pin` or the node config's `pairing_pin`
-setting. Paired nodes exchange certificate pins over the authenticated
-connection. Orchestrator-to-orchestrator pairing is disabled to keep a single
-coordinator per LAN cluster. Plain HTTP is restricted to loopback for the
-local dashboard; use HTTPS for configured cluster addresses. The combined
-orchestrator and local worker are paired automatically. A machine that loses
-the election joins as a node; provide the elected orchestrator's one-use PIN
-with `--pairing-pin` for automatic secure enrollment, or pair it later from
-the node dashboard's Setup panel.
-If a running orchestrator yields, its local dashboard redirects to the worker
-dashboard so pairing and invitation acceptance remain available. Existing
-trust in the old orchestrator does not authorize joining the new one; use the
-new leader's PIN or accept its invitation locally.
-The **Local network** tab lists LAN-discovered instances regardless of pairing,
-plus online cluster nodes and the local worker. Membership is labeled
-separately from visibility; an associated orchestrator is shown only when known,
-not inferred from whichever orchestrator happens to be visible first.
-Application logs are appended to `maistr0.log` in the user's configuration
-directory (`%APPDATA%\maistr0\maistr0.log` on Windows). Choose **View Logs**
-from the tray icon's right-click menu to inspect pairing and TLS diagnostics,
-including when the console is hidden. Logs roll over daily; dated archives are
-kept for seven calendar days and are available through **Open Logs Folder** in
-the same menu.
-
-`GET /api/status` reports whether persistent memory is available. If its
-database cannot be opened, the dashboard shows a warning that conversation
-history and learned data will not survive restarts; the process continues
-without persistent memory.
-
-## API contracts and porting
-
-The [OpenAPI specification](./contracts/openapi.yaml), [JSON Schemas](./contracts/schemas/),
-and [porting guide](./contracts/PORTING.md) describe the language-neutral HTTP,
-configuration, task, scheduler, node, discovery, and memory contracts.
-
-## Architecture and concurrency
-
-Scheduler assignments use the deterministic, lock-free scorer in
-[`internal/scheduler/score`](./internal/scheduler/score/score.go); eligibility
-and capacity prefilters run before scoring. Workflow dispatch and direct
-OpenAI-compatible routing share the [`CapacityGate`](./internal/workpool/pool.go),
-which reserves per-node and global slots until released. The
-[`ClusterHealth`](./internal/orchestrator/cluster_health.go) view model is the
-single source of truth for capacity and readiness in both the API and SSE
-dashboard snapshots.
-
-Keep critical sections narrow and avoid calling other components or doing
-network work while holding state locks. The task-manager write hierarchy is
-`persistGate` → per-task `persistMu` → `Manager.mu`; release `Manager.mu`
-before waiting for a task lock. Node-agent engine scans acquire
-`engineScanMu` before `enginesMu`, while inventory refresh follows
-`refreshMu` → `modelMu` → agent state. Pass request and task contexts through
-dispatch and capacity waits. Workpool `Options` controls whether submitter
-cancellation continues to propagate after a job is accepted; pool shutdown
-always cancels running work.
-
-## Orchestrator agent backends
-
-The interactive orchestrator uses [Pi](https://github.com/earendil-works/pi)
-by default, with a native Go implementation of the agent loop. Pi selects
-coordinator models from healthy nodes in the local mAIstr0 cluster, and does
-not send prompts to OpenAI or another cloud provider. No API key, Node.js, or
-Pi CLI installation is required. Choose a specific local coordinator model in
-the dashboard or leave it on Auto for cluster routing. It does not include
-Pi's standalone coding CLI/TUI, filesystem or shell tools, or extension
-compatibility. Pi and the built-in DeepSeek harness share mAIstr0's cluster,
-model, task, web, math, and persistent-memory tools. To use DeepSeek instead,
-start mAIstr0
-with `--harness deepseek`. The Interactive Orchestrator sidebar can switch the
-default harness at runtime; this applies to new conversations, while existing
-conversations stay on their original harness. Runtime changes last until the
-orchestrator restarts; use the `harness` setting in the orchestrator
-configuration to choose the startup default. The default `full` mode enables
-interactive harnesses and persistent learning. Set `"mode": "minimal"` in the
-orchestrator configuration to omit harness and memory/learning endpoints and
-their storage; cluster task history and the `/router/...` and `/v1/...`
-routing APIs remain available.
-
-```json
-{
-  "mode": "full",
-  "harness": "pi"
-}
-```
-Interactive session history for both backends is stored in the orchestrator's
-memory database and restored when it restarts. Deleting a conversation from
-the dashboard also removes its persisted history.
-
-## Dashboard
-
-The dashboard provides three views:
-
-- **Interactive Orchestrator** for conversational requests, tool activity,
-  cluster-aware model selection, runtime harness selection, and the shared
-  tool catalog available to both Pi and DeepSeek. In-flight agent turns can be
-  interrupted at any time via the **Interrupt** button or the API
-  (`POST /api/agent/sessions/{id}/interrupt`), cleanly halting reasoning loops,
-  cancelling downstream node model dispatches, and preserving session state.
-  Both harnesses can hand multi-step work to the same persistent `execute_workflow`
-  engine instead of coordinating worker calls only in chat history; workflows
-  triggered by an agent are cancelled if the parent session is interrupted.
-- **Cluster & Workload** for node health, discovered LAN peers, model lists,
-  active tasks, and routing. Its Overview has **Available nodes** and
-  **Recent activity** tabs for node status and current/recent task activity.
-  Selecting a subtask assignment switches to Available nodes and highlights
-  its target node; known members remain visible when offline. Its Setup page
-  is organized into **Pairing access**, **Available nodes**, **Inference readiness**,
-  and **Model catalog** tabs. Workspace, Overview, and Setup tabs support arrow
-  keys, Home, and End. Content sections expand with their content and scroll
-  cleanly without compressing or overlapping.
-  Pending, running, completed, failed, cancelled, and unknown subtasks are
-  counted separately. Tasks awaiting human approval remain visible as active
-  work. Detailed Nodes, Workload, Local network, Tasks, Setup,
-  and Batch submit panels remain available as workspace tabs. Node details
-  include GPU, NPU, CPU, and memory utilization history when the host supports
-  those metrics. On Windows, NPU utilization is collected from the NPU's
-  DXCore-identified GPU Engine counters when available; unavailable telemetry
-  is identified rather than treated as zero.
-- **Memory & Learning** for cluster experience, recommendations, and learned
-  facts.
-
-Joined nodes synchronize experiences, facts, dialogues, and routing history
-with the orchestrator every 30 seconds. Standalone peer clusters use the
-elected node to relay memory between members every 15 seconds. Memory records
-carry optional origin and sequence metadata; version 1 and newer peers exchange
-only records newer than their persisted per-peer watermarks. Protocol version 2
-adds cursor-based paging for large snapshots while keeping the upper watermark
-fixed for the duration of a transfer. Intermediate pages do not advance the
-receiver's peer watermark. Older peers retain the unpaged compatibility path,
-and a peer whose watermark is ahead of the sender triggers a full snapshot.
-Legacy memory databases are backfilled when opened without changing their
-existing record fields.
-
-Task history is synchronized separately every 15 seconds; the orchestrator
-starts its task-history loop after a short startup delay. Version 1 and newer
-task sync sends only records newer than each peer's watermark, while older
-peers receive full snapshots. Task records also carry optional origin and
-sequence metadata, and legacy task databases are backfilled automatically.
-Memory and task-history requests remain limited to 64 MiB each; larger
-histories transfer in multiple bounded pages. A single record larger than the
-limit is rejected explicitly. Sync transfers use a dedicated 10-minute HTTP
-timeout, and sync diagnostics are retained in the rolling log without being
-printed to the console. The scheduler uses successful and failed
-node/model/task outcomes to improve future assignments.
-
-The Cluster & Workload **Setup** tab checks each node's engine and model
-readiness, refreshes an empty model registry, and links to node settings for
-engine configuration and default-model selection.
-On worker-only nodes, local model inspection and updates run directly without
-an HTTPS request back to the worker itself. Remote node requests still require
-paired certificate pins.
-Its model catalog is a curated, bundled list of pull-ready Ollama names with
-descriptions and searchable task/capability tags for chat, coding, reasoning,
-vision, and other common workloads; it does not fetch catalog metadata or send
-prompts to a remote catalog service. Choose an online target node and its
-download-capable engine before installing. Installed models are shown as
-either usable or disabled for scheduling.
-Task details show the scheduler's score components and whether accelerator
-telemetry was fresh enough to influence the assignment; telemetry older than
-30 seconds is ignored for routing. Scheduler load includes active node work and
-workflow subtasks waiting on dependencies, with node-reported utilization
-penalties applied only when the telemetry sample timestamp is current.
-
-Nodes scan for local LLM servers at startup and refresh their model lists
-automatically. Use **Rescan engines & models** on an online node card to detect
-servers started or installed later, or **Rescan all nodes** to scan every online
-node. Configured engines are retained alongside locally discovered engines.
-Node cards report engine inventory status and model counts. Open **Configure
-models** for per-engine model lists, the latest check and last successful check,
-and any probe error. A successful empty inventory is distinct from an untested
-or failed check; a failed check retains the last successful model list and marks
-it as stale. Inventory checks query the engine's model list and do not guarantee
-that a model can load or generate.
-To edit a node's properties, right-click its card in the Nodes section. The properties dialog
-can change its model engine and URL, default and disabled models, advertised
-and orchestrator addresses, discovery, tray and browser behavior, and memory
-path. Node identity and listen address are shown as read-only settings.
-
-## Model engines
-
-Nodes detect local Ollama, LM Studio, llama.cpp, and FastFlowLM services by
-default. LM Studio is discovered at `http://127.0.0.1:1234`; llama.cpp is
-discovered at `http://127.0.0.1:8080` or PAIR's managed-server port
-`http://127.0.0.1:8081`. Both can also be configured at another
-OpenAI-compatible server URL. Configure
-additional or remote engines in a node configuration file:
-
-```json
-{
-  "listen_addr": ":7451",
-  "max_concurrent_tasks": 2,
-  "orchestrator_addr": "https://192.168.1.10:7450",
-  "pairing_pin": "<six-digit-pin>",
-  "engines": [
-    { "name": "ollama", "url": "http://127.0.0.1:11434" },
-    { "name": "lmstudio", "url": "http://127.0.0.1:1234" },
-    { "name": "llamacpp", "url": "http://127.0.0.1:8080" },
-    { "name": "vllm", "url": "http://127.0.0.1:8000" }
-  ]
-}
-```
-
-An orchestrator config can set the cluster-wide cap:
-
-```json
-{
-  "max_concurrent_dispatches": 16
-}
-```
-
-## Configuration validation
-
-Configuration is normalized before startup. Empty harness settings default to
-`pi` (harness names are trimmed and lowercased), empty tray modes default to
-`taskbar`, and zero or omitted concurrency settings use their documented
-defaults. Negative concurrency values are rejected. Orchestrator configs must
-keep LAN discovery enabled. The optional orchestrator `mode` setting accepts
-`full` or `minimal`; omitted or empty values normalize to `full`.
-
-Listen addresses must use `host:port` or `:port` syntax. A node's
-`orchestrator_addr` and `advertise_addr` must be empty or HTTPS URLs. Configured
-engine names must be `ollama`, `vllm`, `lmstudio`, `llamacpp`, or `fastflowlm`,
-and their `url` values must be HTTP or HTTPS URLs. A configured `pairing_pin`
-must contain exactly six digits. When `memory_path` is set, its parent
-directory must be creatable; missing parent directories are created as needed.
-
-Invalid settings are reported individually and prevent startup with exit code
-`2`.
-
-The SSE cluster snapshot includes dispatch queue depth, active global slots,
-dependency waiters, cumulative dispatch/dependency-wait duration, goroutine
-count, and each node's active/max/remaining task capacity. Increase the
-orchestrator cap to use more cluster-wide parallelism; increase a node's cap
-only when its local engine and hardware can safely serve more concurrent
-requests.
-
-LM Studio, vLLM, llama.cpp, and FastFlowLM use the OpenAI-compatible
-chat-completions API. mAIstr0 connects to an already-running `llama-server`;
-installing the server and downloading/managing its model files remain the
-responsibility of llama.cpp or another model manager. The scheduler adds a GPU preference to models advertised by GPU-equipped
-nodes; this is a routing preference and does not guarantee that the engine
-will use the GPU. On nodes with a detected NPU, FastFlowLM is preferred when
-the same model is available from multiple local engines. Ollama and
-OpenAI-compatible engines support token streaming. Other engines can still
-serve requests, but their streamed responses may arrive as a single completed
-chunk. Temperature and maximum-token settings are passed to engines that
-support those options.
-
-## API
-
-The orchestrator API remains available while the mAIstr0 process is running,
-including when its console is hidden. Local third-party programs can use
-`http://127.0.0.1:7450` by default. Remote clients must use HTTPS and a paired
-cluster identity (mutual TLS); plain HTTP is restricted to loopback.
-
-Submit work through `POST /api/tasks` with a JSON body such as
-`{"description":"Summarize this report"}`. By default, mAIstr0 preserves its
-heuristic decomposition. Set `"plan_mode":"auto"` to have a local coordinator
-model produce a structured plan with agent roles and dependencies; invalid
-plans are rejected rather than silently run. If the selected coordinator
-model fails, the planner retries with another advertised node/model; if no
-candidate succeeds, the failure is returned. Work is rejected with a service
-unavailable response if any planned subtask has no compatible model, rather
-than accepting only part of the request. Query task status and results through
-`GET /api/tasks` or `GET /api/tasks/{id}`. Cancel a running task with
-`POST /api/tasks/{id}/cancel`.
-
-For precise multi-step workflows, submit an explicit plan. Dependencies name
-other subtask IDs; dependent work waits for its prerequisites and receives
-their outputs as context:
-
-```json
-{
-  "description": "Research and summarize a topic",
-  "subtasks": [
-    {
-      "id": "research",
-      "description": "Research the topic",
-      "role": "researcher",
-      "task_type": "general",
-      "expected_output": "Evidence and key findings"
-    },
-    {
-      "id": "summary",
-      "description": "Write a concise summary",
-      "role": "summarizer",
-      "depends_on": ["research"],
-      "expected_output": "A concise, evidence-grounded summary"
-    }
-  ]
-}
-```
-
-Plans are checked for missing dependencies and cycles. Heuristic decomposition
-also recognizes clear sequential cues such as “then” and “after that”; other
-subtasks remain parallel. Supported roles include researcher, analyst, coder,
-writer, reviewer, summarizer, translator, and general. Subtasks may specify
-`expected_output`, `output_format:"json"`, `required_fields`, and
-`max_retries` (0–2); JSON contracts are checked before dependent work starts.
-Set `"require_review":true` to add a reviewer task that must return
-`{"approved":true,...}` before synthesis, or `"require_approval":true` to
-pause completed work for a human. Approve through
-`POST /api/tasks/{id}/approve`; the approval state and outputs survive
-restarts. Multi-task results are synthesized by a cluster model only after
-all required work succeeds. Work that was still running when the orchestrator
-stopped is restored as failed with an interruption reason rather than being
-reported as running.
-
-`POST /v1/chat/completions` accepts OpenAI-style messages and supports streamed
-responses using `"stream": true`. The orchestrator preserves system, user,
-assistant, and tool message roles in its model prompt.
-
-For provider-compatible inference without task planning or payload translation,
-use the separate transparent router paths:
-`POST /router/v1/chat/completions`, `/router/v1/completions`,
-`/router/v1/messages`, `/router/api/chat`, and `/router/api/generate`.
-The router selects a healthy node/model whose ready engine advertises the
-request protocol, preserves provider fields and headers, and supplies a model
-when the request omits one. It retries only bounded transient failures, and
-streaming failover is allowed only before the first response byte is sent.
-Responses include an `X-Request-ID`; recent prompt-free request/attempt events
-are available through `GET /api/router/requests` and the SSE cluster snapshots.
-The Anthropic-compatible route is accepted only when a ready node engine
-advertises Anthropic protocol support; the current built-in engines advertise
-OpenAI and/or Ollama protocols.
-
-Task dispatch also retries transient failures across up to five distinct
-node/model pairs within a bounded deadline. Each execution attempt, including
-its selected node/model/engine, status, and failure class, is persisted with
-the task and returned by the task APIs.
-
-The Ollama-compatible surface includes `GET /api/tags`, `POST /api/chat`, and
-`POST /api/generate` (use the Ollama request fields such as `stream` and
-`options`). Anthropic Messages clients can use `POST /v1/messages` with
-`max_tokens`; text messages and text content blocks are supported. Streaming
-is supported by both compatibility APIs. Existing mAIstr0 generation requests
-and the OpenAI-compatible routes remain available.
-The bundled model catalog is available at `GET /api/models/catalog`, with
-optional `engine` and `q` filters. Model pulls can specify both `model` and
-`engine` in `POST /api/nodes/{id}/models/pull`.
-
-Automatic decomposition remains heuristic; callers that need reliable
-dependencies should provide an explicit plan. GPU utilization and free-memory
-telemetry influence scheduling when supported by NVIDIA tooling. CPU and
-memory utilization samples are retained for display when reported by the
-node's operating system.
-
-## Development
-
-Run the test suite with:
-
-```sh
-go test ./...
-go vet ./...
-node --test web/app_test.js
-```
-
-The Go suite includes a process-level integration test for pairing, authenticated
-cluster requests, streaming inference, and session restoration after restart.
-Regenerate characterization contract fixtures with
-`go test ./internal/orchestrator ./internal/scheduler ./internal/taskmgr ./internal/config -args -update`;
-review the resulting golden-file changes before committing.
-Contract fixtures use LF line endings enforced by `.gitattributes` so
-byte-for-byte comparisons remain consistent on Windows and Linux.
-The GitHub Actions workflow runs these checks and builds the application on
-Windows and Linux.
-
-On Windows, cross-compile the release binaries for Windows and Linux with:
+PowerShell:
 
 ```powershell
-.\build\build.ps1
+.\maistr0.exe --role node --orchestrator-addr https://192.168.1.10:7450
 ```
 
-On Linux or macOS, use `./build/build.sh`. Both scripts write versioned
-binaries to `dist/windows-amd64/`, `dist/linux-amd64/`, and
-`dist/linux-ubuntu-amd64/`, and record the release number in `dist/version.txt`.
-The release number comes from `internal/version/version.go` and is shown by
-running `maistr0 --version`. Tests use isolated temporary data stores; normal
-runs store persistent memory in the per-user data directory.
+bash:
+
+```sh
+./maistr0 --role node --orchestrator-addr https://192.168.1.10:7450
+```
+
+Use `--no-browser` to suppress automatic dashboard launch,
+`--print-config` to inspect normalized configuration, or `--diagnostics` for
+a prompt-free local health summary. See the
+[configuration guide](./docs/configuration.md) for options and JSON examples.
+
+## How it works
+
+```mermaid
+flowchart LR
+    Client["Dashboard / API client"] --> Orchestrator
+    Discovery["LAN discovery"] --> Election["Visible-candidate election"]
+    Election --> Orchestrator
+    Orchestrator <-->|"paired mTLS"| Node["Worker node"]
+    Orchestrator --> Task["Task planning + scheduler"]
+    Task --> Node
+    Client --> Router["Transparent router"]
+    Router --> Node
+    Orchestrator --> Harness["Pi / DeepSeek harness"]
+    Harness --> Tools["Shared typed tools"]
+    Node <-->|"bounded, watermark-based sync"| Memory["Cluster memory + task history"]
+    Orchestrator <-->|"bounded, watermark-based sync"| Memory
+```
+
+Election ranks candidates visible to each instance; it is not consensus, so a
+network partition can produce a local winner on each side. Pairing establishes
+certificate pins for remote cluster traffic. Read the
+[architecture guide](./docs/architecture.md) for component boundaries and
+failure assumptions.
+
+## Documentation
+
+- [Configuration](./docs/configuration.md) — roles, limits, engines, and
+  configuration validation.
+- [API reference](./docs/api.md) — task, inference, router, SSE, and metrics
+  endpoints.
+- [Pairing and security](./docs/pairing-and-security.md) — trust model,
+  certificates, local dashboard boundary, and request limits.
+- [Memory synchronization](./docs/memory-sync.md) — protocol behavior,
+  compatibility, limits, and observability.
+- [Development](./docs/development.md) — build, test, contracts, and release
+  workflows.
+- [Security policy](./SECURITY.md) — private vulnerability reporting.
+- [MIT License](./LICENSE).
+- [Contributing](./CONTRIBUTING.md) — pull-request and compatibility
+  expectations.
+
+The language-neutral HTTP and data contracts are in
+[OpenAPI](./contracts/openapi.yaml), [JSON Schemas](./contracts/schemas/), and
+the [porting guide](./contracts/PORTING.md). Current project changes are
+recorded in the [changelog](./changelog.md).
+
+## Sharding
+
+A managed shard group runs one model across multiple machines. It is different
+from distributing independent tasks or replicating a whole model on each node.
+The **Shard groups** panel under Job routing shows group state and placement
+details. Ctrl-click a healthy node in the cluster view to configure a group;
+the orchestrator plans placement, reserves member capacity, starts workers
+before the head, and exposes a ready head through
+`POST /router/v1/chat/completions` using the group's model name.
+
+- `llamacpp-rpc`: compatible RPC-enabled llama.cpp worker and head builds;
+  heterogeneous supported GPUs are permitted. The wizard automatically
+  installs missing `ggml-rpc-server` workers. Configure a managed `llama-server`
+  with a compatible build and model on at least one selected node.
+  Pair the nodes and make their authenticated RPC
+  relays reachable before creating the group.
+- `vllm-mp`: Linux-only homogeneous GPU nodes, matching GPU counts and models,
+  compatible vLLM builds, and a trusted private network. Configure a managed
+  `vllm` on each node. The default topology uses tensor parallelism within a
+  node and pipeline parallelism between nodes; non-head ranks are headless.
+- Free **device** memory must fit weights, KV cache at the requested context,
+  and a safety margin. Host RAM is not counted as GPU/NPU memory. The current
+  group API does not enable CPU offload. NPU layer sharding requires explicit
+  operator validation; a detected NPU is not proof of RPC support.
+
+### Create a shard group from the dashboard
+
+1. Start the orchestrator and worker nodes and pair them. For `llamacpp-rpc`,
+   have a compatible GGUF model installed in Ollama or LM Studio on at least
+   one selected node; the wizard installs the runtime and configures its head.
+   Existing operator-configured `llama-server` heads are also supported.
+   For `vllm-mp`, configure vLLM on every selected node. See
+   [managed engine configuration](./docs/configuration.md#managed-engine-processes).
+2. Ctrl-click a healthy node in the cluster view to open **Create shard group**.
+   Select the worker nodes and sharding mode. Every selected node must have the
+   mode's managed worker engine. For llama.cpp RPC, selecting a node
+   automatically downloads and verifies a missing worker; idle, automatically
+   installed workers check for newer releases. Choose official llama.cpp or
+   the custom XDNA release source. Unsupported platforms, missing releases,
+   and failed verification are shown as errors, not skipped.
+3. Choose the **Model head node**, a model, and its requested context length.
+   For llama.cpp RPC, the picker reads existing managed heads and local Ollama
+   or LM Studio GGUF files on that node. It configures the bundled matching
+   `llama-server` when creating the group, without downloading or copying weights.
+   For vLLM, it inspects configured local/cached Hugging Face metadata and weights.
+   Models are offered only when their architecture and weight size can be read.
+4. Choose **Create and start group**. The orchestrator calculates the placement
+   from each device's current free memory, holds back a 2 GiB safety margin per
+   device, and refuses the plan if the model weights and KV cache do not fit.
+   For `llamacpp-rpc`, layer ranges are weighted by device capacity; vLLM
+   requires homogeneous node resources and uses the configured parallel layout.
+   The installed runtime refreshes actual free accelerator memory, including
+   Vulkan devices. Unknown device memory is not replaced with host RAM and
+   cannot receive layers.
+5. The dialog reports the ready group and its assigned layers. The **Shard
+   groups** panel under Job routing shows the group state and placement details.
+
+The same create operation is available through the API. For example, after
+configuring the engines and choosing eligible node IDs, send this payload to
+`POST /api/shards` (replace the model metadata and IDs with actual values):
+
+```json
+{
+  "model": {
+    "name": "my-sharded-model",
+    "architecture": "llama",
+    "parameters": 7000000000,
+    "layer_count": 32,
+    "hidden_size": 4096,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "vocab_size": 32000,
+    "quantization": "q4_0",
+    "file_size_bytes": 4000000000,
+    "requested_context": 4096
+  },
+  "mode": "llamacpp-rpc",
+  "pinned_nodes": ["worker-1", "worker-2"]
+}
+```
+
+Save the JSON as `shard-group.json` and submit it with
+PowerShell's `curl.exe` (replace the URL with the orchestrator's listener URL):
+
+```powershell
+curl.exe --fail-with-body `
+  -H "Content-Type: application/json" `
+  --data-binary "@shard-group.json" `
+  "http://127.0.0.1:7450/api/shards"
+```
+
+A successful request returns `201` with the ready group. Check `GET /api/shards`
+or `GET /api/shards/{id}` for the plan, rationale, members, and state.
+
+Requests within a group are serialized. Member/process loss first produces `degraded`;
+the next health sweep tears down the group and marks it `failed`. Neither
+state accepts inference. Rebuild by creating a new group with the same model
+name after fixing the cause; a failed group may remain for diagnosis.
+`DELETE /api/shards/{id}` stops the head before workers and removes the record.
+Restart recovery verifies every member before restoring readiness.
+Automatic llama.cpp heads are also checked against the saved model's name and
+weight metadata. Starting a saved group restores its original local GGUF model
+if another stopped group reconfigured the shared automatic head. If those
+weights are no longer available, startup fails explicitly rather than running a
+different model under the saved name. Runtime health checks and inference reject
+mismatched heads; stop and start the group to restore the intended model.
+
+### Use a shard group
+
+If task planning or assignment reports **no compatible model**, mAIstr0 first
+checks ready cluster models, then tries readable local GGUF weights on an idle
+node. If none fit, it automatically downloads a recommended public Hugging Face
+GGUF, verifies its size and SHA-256, installs a missing official llama.cpp
+runtime, and starts a managed single-node group before retrying assignment.
+This also works when no model is available for the initial planning step.
+Active groups and operator-configured heads are never replaced.
+
+The initial download recommendations are Qwen2.5 Instruct 3B and 7B Q4_K_M.
+Downloads require internet access and roughly 2.1 GB or 4.7 GB of disk space
+respectively; temporary download space is required until verification finishes.
+The source repositories' model licenses still apply.
+Only single-file public GGUF models are supported, not gated repositories,
+arbitrary URLs, model scripts, or other weight formats. Placement still requires
+known free GPU memory with the normal safety reserve and KV-cache allowance;
+host RAM is not substituted for GPU memory. If every node is busy or the task
+requires unsupported capabilities (for example vision), recovery returns an
+explicit error rather than replacing a model or weakening the requirements.
+See [model acquisition](./docs/api.md#compatible-model-acquisition) for manual
+download and local-model selection.
+
+1. Open **Shard groups** under **Job routing** and check that the group is
+   **ready**. A failed or degraded group cannot answer prompts.
+2. In dashboard **mAIstr0** chat, submit your request normally. Ready shard
+   models are eligible for automatic planning, subtask execution, and final
+   answer synthesis, alongside ordinary cluster models. Chat does not pin a
+   specific group; scheduler selection still applies.
+3. To explicitly select the group instead of using automatic task planning,
+   send an OpenAI-compatible request to the orchestrator's
+   `POST /v1/chat/completions` with the exact model name shown on its card.
+   For example, save this as `shard-chat.json`, replacing `model` with your
+   ready group's model:
+
+   ```json
+   {
+     "model": "Llama-3.2-3B-Instruct-Q4_K_M",
+     "messages": [
+       {"role": "user", "content": "Rank ten classical composers and explain each ranking with examples."}
+     ],
+     "stream": false
+   }
+   ```
+
+   ```powershell
+   curl.exe --fail-with-body `
+     -H "Content-Type: application/json" `
+     --data-binary "@shard-chat.json" `
+     "http://127.0.0.1:7450/v1/chat/completions"
+   ```
+
+The group is **one logical model**. Send prompts to the orchestrator, not to
+individual shard workers. All requests share the head and are serialized,
+including planning and synthesis; more shard members increase usable model
+memory, not the number of independently running copies.
+
+If chat reports `select planning model: scheduler: no compatible model for
+subtasks: plan`, the planner could not find an eligible model; this is not an
+error in the composer prompt. Update/restart the orchestrator to a build with
+shard-task routing, verify that a group is **ready**, and submit again. Older
+builds could route direct OpenAI requests to a shard head but could not use it
+for task planning. If no group is ready, resolve its startup error or make a
+normal cluster model available first.
+
+If a working head times out with `Client.Timeout exceeded while awaiting headers`,
+older task routing requested a non-streaming response: the head could be busy
+generating without returning the completed answer before the fixed ten-minute
+limit. Current builds consume streaming responses internally and flush proxy
+chunks promptly. For a slow distributed model, set `dispatch_timeout_seconds`
+to `1800` in the orchestrator configuration and restart with
+`-orchestrator-config <path>` to allow thirty minutes. This also applies to
+planning and synthesis. See [generation timeouts and progress](./docs/configuration.md#capacity-timeouts-and-synchronization).
+The application log reports elapsed time and output/reasoning byte counts,
+not private generated text. Low GPU utilization alone does not identify the
+bottleneck: inspect the head's prompt-evaluation and generation timings and
+worker/network behavior before assuming the model has hung.
+
+Failed cards offer **Delete failed group**. This stops any remaining group
+processes, releases its reservations, and removes the saved group. Errors are
+displayed and the card is retained if cleanup fails. Deletion does not remove
+downloaded runtimes or original model weights. Fix the reported cause and
+Ctrl-click eligible nodes to create a replacement group.
+
+### Stop, start, or restart a shard group
+
+Use the buttons on its card under **Job routing → Shard groups**:
+
+- **Stop** (ready/degraded): wait for active inference to finish, stop the head
+  followed by the workers, and release member capacity. The group becomes
+  **stopped**; its model, placement history, pinned nodes, and ID remain saved.
+- **Start** (stopped/failed): retry the saved group with the same model and ID.
+  Placement is recalculated using current device memory, preserving pinned
+  nodes and the previous head selection when available. Workers start before
+  the head. A ready group is eligible for inference and automatic tasks again.
+- **Restart**: drain and stop the group, then replan and start it. It does not
+  restart just the head or create a second group. A failed group can also be
+  retried this way.
+
+Controls are disabled while an operation is in progress. Startup may take up
+to ten minutes for a large head. A stopped group is unavailable for new prompts
+and remains stopped across application restarts. Stop/restart waits rather
+than aborting active inference; queued/new requests may receive an unavailable
+error once stopping begins. Cleanup/startup failures are shown on the card;
+resolve the cause and retry. Engines in another group cannot be taken over.
+
+The equivalent API calls use an empty request body:
+
+```powershell
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/stop"
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/start"
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/restart"
+```
+
+Each successful call returns `200` and the updated group. Start on a ready
+group and stop on a stopped group are idempotent. Concurrent lifecycle
+operations return `409`.
+
+The Go process integration tests prove control-plane lifecycle and routing with
+fake engines, not tensor correctness, hardware compatibility, or throughput.
+Record real-machine evidence in the
+[hardware validation checklist](./docs/hardware-validation.md). See
+[managed process configuration](./docs/configuration.md#managed-engine-processes),
+the [planner](./docs/shard-planner.md), and
+[troubleshooting](./docs/sharding-troubleshooting.md).
+
+## Support matrix
+
+These are runtime/build requirements, **not hardware certification**. All
+real-machine combinations in the new validation checklist start untested.
+An HTTP adapter can run on a different OS from its engine server.
+
+- **llama.cpp (`llamacpp`), Linux / Windows / macOS**:
+  CPU whole-model inference depends on a compatible build and model. GPU
+  execution needs a matching backend: NVIDIA CUDA on Linux/Windows, AMD
+  ROCm/HIP or Vulkan where supported, Intel Arc/iGPU Vulkan or SYCL where
+  supported, or Metal on Apple silicon/macOS. RPC needs compatible RPC-enabled
+  head/worker builds in addition to those device backends. CPU-only managed
+  group placement is not currently enabled.
+- **vLLM (`vllm`), Linux**:
+  managed `vllm-mp` requires homogeneous GPUs and an appropriate upstream
+  build (for example NVIDIA CUDA or AMD ROCm). CPU-only and NPU shard groups
+  are not supported by this mode. Other standalone upstream backends are not
+  evidence of mAIstr0 distributed support. **vLLM is not native on Windows**;
+  a Windows mAIstr0 client may use a Linux server or a separately configured
+  Linux/WSL environment. macOS managed vLLM is not supported.
+- **Intel NPU (`llamacpp-openvino-npu`)**:
+  experimental OpenVINO-enabled llama.cpp on an upstream-supported Intel
+  Linux/Windows environment; requires compatible drivers, model quantization,
+  and an explicit context cap. It is not an Apple/AMD/Qualcomm NPU backend.
+  CPU/GPU use should select an appropriate ordinary engine profile instead.
+- **AMD NPU (`llamacpp-xdna2-npu`, `fastflowlm-xdna2`)**:
+  experimental, build/driver-specific Ryzen AI XDNA 2 paths. The enhanced
+  llama.cpp/XRT profile is not a generic GPU or Windows NPU guarantee;
+  FastFlowLM's Windows deployment has its own runtime requirements. Supported
+  shapes, models, CPU fallback, and context limits differ. No macOS support
+  is claimed. Neither profile enables NPU RPC sharding by default.
+- **Snapdragon NPU (`llamacpp-hexagon-npu`)**:
+  experimental Hexagon/HTP-enabled llama.cpp on the upstream-supported
+  Snapdragon OS/SDK combination. This is not a claim of native Windows or
+  macOS NPU support; validate the exact Android/Linux/Windows target against
+  its build documentation. CPU/GPU and NPU execution are separate backends.
+- **MLX (`mlx`), Apple silicon / macOS**:
+  whole-model CPU/unified-memory GPU runtime via a compatible server; no
+  mAIstr0 managed multi-node mode or NPU support is claimed.
+- **Ollama, LM Studio, FastFlowLM, TGI, LocalAI, SGLang, and OpenAI-compatible
+  servers**: mAIstr0 provides API adapters, not bundled runtimes or a common
+  CPU/GPU/NPU support guarantee. Linux/Windows/macOS and accelerator support
+  follow each server's build. These adapters do not imply managed shard-group
+  or protocol-v2 partial-layer support.
+
+## Engine configuration
+
+Valid configured engine names include `ollama`, `vllm`, `llamacpp`,
+`lmstudio`, `fastflowlm`, `tgi`, `localai`, `mlx`, `sglang`, `openai`,
+`llamacpp-openvino-npu`, `llamacpp-hexagon-npu`, `llamacpp-xdna2-npu`, and
+`fastflowlm-xdna2`.
+These llama.cpp and FastFlowLM profile names use the OpenAI-compatible API.
+The `vllm`, `llamacpp`, `lmstudio`, and `fastflowlm` engines also use that API.
+Add an optional `api_key` to an engine configuration to send bearer
+authentication; it is redacted from config dumps and never returned by node
+or orchestrator APIs. The typed NPU profiles only advertise documented
+vendor/backend capabilities; see the
+[configuration guide](./docs/configuration.md#model-engines) for examples.
+
+The `llamacpp-xdna2-npu` profile is an opt-in, experimental managed
+llama-server build for AMD Ryzen AI XDNA 2 systems. It does not replace the
+default llama.cpp engine; CPU fallback remains enabled for unsupported
+operations. The current XDNA kernels cover only exact Q4_0 matrix-vector
+shapes, and the measured XDNA-requested Qwen run was slower than CPU-only.
+See the [XDNA deployment notes](./docs/configuration.md#amd-xdna-2-llama-cpp).
+
+## Distributed shard network security
+
+The control plane authenticates paired nodes with mutual TLS and pinned
+certificates. The data planes used by distributed inference have different
+security properties and must not be exposed to untrusted networks:
+
+- llama.cpp RPC is an unauthenticated, unencrypted proof-of-concept protocol.
+  mAIstr0 keeps each `ggml-rpc-server` on loopback and forwards worker traffic
+  through a separate mutual-TLS relay authenticated with the paired nodes'
+  pinned certificates. The head engine receives only local loopback relay
+  addresses; configure the relay listener (`rpc_relay_listen_addr`, default
+  `:7452`) so selected workers can reach it.
+- vLLM's distributed traffic is unencrypted and can use dynamic ports. By
+  default, each node requires `VLLM_HOST_IP` to resolve to a private address on
+  an operator-trusted interface (`trusted_network_interfaces`). Run distributed
+  vLLM over WireGuard or an isolated VLAN. Setting
+  `allow_insecure_shard_network` is an explicit opt-out: it permits an
+  otherwise untrusted interface and emits a prominent warning, but does not
+  encrypt or authenticate vLLM traffic.
+
+Mutual TLS on the llama.cpp relay does not make the underlying RPC protocol
+safe to expose directly; firewall the RPC backend so only its local relay can
+reach it. See the [network configuration details](./docs/configuration.md#managed-engine-processes).
+
+## Threat model
+
+The protected assets are model inputs/outputs and activations in transit,
+cluster control authority, local model files, and the ability to launch
+allow-listed engine processes. The remote attacker model includes an unpaired
+LAN client, intercepted discovery traffic, and attempts to control processes
+or send traffic directly to a shard backend.
+
+- Pairing establishes pinned mutual-TLS identities, not trust in every machine
+  on the LAN. Managed lifecycle calls additionally require the currently
+  elected, paired orchestrator. Discovery/election does not authenticate peers
+  or provide partition-safe consensus.
+- llama.cpp RPC backends stay loopback-only behind the pinned mTLS relay.
+  Do not publish their raw ports. vLLM distributed traffic is not protected by
+  the HTTP control-plane TLS; use WireGuard or an isolated trusted VLAN and
+  firewall its distributed ports. The insecure override is not a security fix.
+- The local dashboard trusts the host user and loopback boundary. Do not expose
+  it with an unauthenticated reverse proxy, shared port forward, or public
+  tunnel. Keep PINs, certificates/private keys, and API keys out of logs.
+- Binary/model allow-lists and typed argv constrain process selection; they
+  do not sandbox an engine. Operators must trust the executable, model
+  artifacts, driver stack, and every paired worker. A compromised paired host
+  can observe its shard's data or return malicious results.
+- Denial of service, malicious engine/model code, compromised administrator
+  accounts, side channels, disk encryption, and cryptographic verification of
+  model output are outside the current guarantees. Health checks and capacity
+  limits improve availability but are not fault-tolerant inference.
+
+See [pairing and security](./docs/pairing-and-security.md) for the complete
+local/remote trust boundaries and [SECURITY.md](./SECURITY.md) for reporting.
+
+## Sharding troubleshooting
+
+Start with group `state`, `error`, and `rationale`, then inspect managed-engine
+status on the member nodes. Common causes are missing RPC builds or relays,
+untrusted vLLM interfaces, insufficient free device memory, incompatible
+models/backends, and native Windows vLLM launches. A `degraded` group is not a
+reduced-capacity service: wait for teardown, fix the cause, and rebuild.
+The [troubleshooting guide](./docs/sharding-troubleshooting.md) includes
+safe diagnostic steps and evidence to record before retrying.
+## Asking mAIstr0 about cluster status
+
+The dashboard's **Ask mAIstr0** action answers read-only cluster-status
+questions directly from the node inventory, health/capacity, recent-task,
+shard-group, and version APIs. It does not call an LLM or create a task for
+questions such as "What common LLMs are on the cluster?", "Which nodes are
+offline?", or "What engines are running?". The answer includes reported model
+names per node and their intersection across all online nodes. An offline
+node or unavailable engine inventory makes availability on **all registered
+nodes** unknown, not a successful match. Identical advertised model names are
+not proof of identical weights, quantization, or revisions.
+
+This is a snapshot report, not a new engine probe or a diagnosis of an
+unreported failure. Missing telemetry and failed API reads are marked
+explicitly. It also works when no nodes are healthy. Requests that change
+state, such as installing models or restarting workers, remain on the task
+path; ambiguous/general requests still use the workflow planner.
+
+For work requiring automatic planning, malformed JSON or invalid task graphs
+get one corrective retry on the selected model before trying another eligible
+node/model. If every attempt fails, mAIstr0 reports the planning error rather
+than silently substituting a heuristic plan. Model output is not echoed into
+corrective prompts or logged.

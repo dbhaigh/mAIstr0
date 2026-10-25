@@ -1,9 +1,17 @@
 function renderNodes(nodes) {
   dashboardState.nodes = nodes || [];
   if (!nodesList) return;
-  nodesList.innerHTML = "";
   if (!nodes || nodes.length === 0) {
-    nodesList.innerHTML = '<p style="color:var(--muted)">No nodes registered yet.</p>';
+    dashboardDOM.patchKeyedChildren(nodesList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "task-history-empty";
+        empty.textContent = "No nodes registered yet.";
+        return empty;
+      },
+    });
     return;
   }
 
@@ -11,81 +19,76 @@ function renderNodes(nodes) {
   const leaderID = ordered.find((n) => n.leader)?.id;
   const fastestID = ordered.reduce((best, node) => !best || node.fast_score > best.fast_score || (node.fast_score === best.fast_score && node.id < best.id) ? node : best, null)?.id;
 
-  for (const n of ordered) {
-    const card = document.createElement("div");
-    card.className = "card" + (n.id === leaderID ? " leader" : "");
-    const modelTags = (n.models || [])
-      .map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`)
-      .join("");
-    const nodeActions = n.healthy
-      ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
-         <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
-         <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>`
-      : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
-    card.innerHTML = `
-      <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
-      ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
-      <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ''}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ''}</div>
-      ${engineStatusSummaryMarkup(n.engines)}
-      <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
-      <div class="row"><span>OS / Arch</span><span>${escapeHtml(n.hardware.os)}/${escapeHtml(n.hardware.arch)}</span></div>
-      <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
-      <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
-      ${nodeAcceleratorMarkup(n)}
-      ${resourceHistoryMarkup(n)}
-      ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
-      <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
-      <div class="row"><span>Score</span><span>${n.hardware.score.toFixed(1)}</span></div>
-      <div class="row"><span>Fast score</span><span>${(n.fast_score || 0).toFixed(1)}</span></div>
-      <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
-      <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
-      ${nodeActions}
-      <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
-    `;
-    nodesList.appendChild(card);
-    card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
-    card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
-    attachNodeContextMenu(card, n);
-
-    // Wire model direct test buttons
-    card.querySelectorAll(".model-tag-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const nodeId = btn.dataset.node;
-        const model = btn.dataset.model;
-        btn.textContent = "⏳ Testing…";
-        try {
-          const res = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/${encodeURIComponent(model)}/test`, { method: "POST" });
-          if (res.healthy) {
-            btn.textContent = `✓ ${model} (${res.duration_ms}ms)`;
-          } else {
-            btn.textContent = `✗ ${model} (err)`;
-          }
-        } catch (e) {
-          btn.textContent = `✗ ${model}`;
+  dashboardDOM.patchKeyedChildren(nodesList, ordered, {
+    keyOf: (node) => node.id,
+    signatureOf: (node) => JSON.stringify({
+      node,
+      modelPanelOpen: modelPanelOpen.has(node.id),
+      modelPanel: lastFetchedModels.get(node.id),
+    }),
+    renderItem: (n) => {
+      const card = document.createElement("div");
+      card.className = "card" + (n.id === leaderID ? " leader" : "");
+      const modelTags = (n.models || [])
+        .map((m) => `<button class="model-tag-btn" data-node="${escapeHtml(n.id)}" data-model="${escapeHtml(m.name)}" title="Directly test ${escapeHtml(m.name)} on ${escapeHtml(n.id)}" ${n.healthy ? "" : "disabled"}>⚡ ${escapeHtml(m.name)}</button>`)
+        .join("");
+      const nodeActions = n.healthy
+        ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
+           <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
+           <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>`
+        : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
+      card.innerHTML = `
+        <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
+        ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
+        <div class="role-tags">${n.id === leaderID ? '<span class="role-tag coordinator">cluster leader · orchestrator</span>' : ''}${n.id === fastestID && n.id !== leaderID ? '<span class="role-tag worker">fastest</span>' : ''}</div>
+        ${engineStatusSummaryMarkup(n.engines)}
+        <div class="row"><span>Address</span><span>${escapeHtml(n.address)}</span></div>
+        <div class="row"><span>OS / Arch</span><span>${escapeHtml(n.hardware.os)}/${escapeHtml(n.hardware.arch)}</span></div>
+        <div class="row"><span>CPU cores</span><span>${n.hardware.cpu_cores}</span></div>
+        <div class="row"><span>RAM</span><span>${(n.hardware.total_ram_mb / 1024).toFixed(1)} GB</span></div>
+        ${nodeAcceleratorMarkup(n)}
+        ${resourceHistoryMarkup(n)}
+        ${!n.healthy ? `<div class="row"><span>Last seen</span><span>${escapeHtml(n.last_seen ? new Date(n.last_seen).toLocaleString() : "unknown")}</span></div>` : ""}
+        <div class="row"><span>Active tasks</span><span>${n.active_tasks}</span></div>
+        <div class="row"><span>Score</span><span>${n.hardware.score.toFixed(1)}</span></div>
+        <div class="row"><span>Fast score</span><span>${(n.fast_score || 0).toFixed(1)}</span></div>
+        <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
+        <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
+        ${nodeActions}
+        <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
+      `;
+      card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
+      card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
+      card.querySelector(".model-config-toggle")?.addEventListener("click", () => {
+        if (modelPanelOpen.has(n.id)) {
+          modelPanelOpen.delete(n.id);
+          lastFetchedModels.delete(n.id);
+        } else {
+          modelPanelOpen.add(n.id);
         }
-        setTimeout(() => { btn.textContent = `⚡ ${model}`; }, 3500);
+        renderNodes(nodes);
       });
-    });
-    if (modelPanelOpen.has(n.id)) {
-      if (lastFetchedModels.has(n.id)) {
-        renderModelPanel(n.id, lastFetchedModels.get(n.id), n.engines);
-      } else {
-        loadModelPanel(n.id);
+      card.querySelectorAll(".model-tag-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const nodeId = btn.dataset.node;
+          const model = btn.dataset.model;
+          btn.textContent = "⏳ Testing…";
+          try {
+            const res = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/${encodeURIComponent(model)}/test`, { method: "POST" });
+            btn.textContent = res.healthy ? `✓ ${model} (${res.duration_ms}ms)` : `✗ ${model} (err)`;
+          } catch {
+            btn.textContent = `✗ ${model}`;
+          }
+          setTimeout(() => { btn.textContent = `⚡ ${model}`; }, 3500);
+        });
+      });
+      attachNodeContextMenu(card, n);
+      if (modelPanelOpen.has(n.id)) {
+        if (lastFetchedModels.has(n.id)) renderModelPanel(n.id, lastFetchedModels.get(n.id), n.engines);
+        else loadModelPanel(n.id);
       }
-    }
-  }
-
-  nodesList.querySelectorAll(".model-config-toggle").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const nodeId = btn.dataset.node;
-      if (modelPanelOpen.has(nodeId)) {
-        modelPanelOpen.delete(nodeId);
-        lastFetchedModels.delete(nodeId);
-      } else {
-        modelPanelOpen.add(nodeId);
-      }
-      renderNodes(nodes);
-    });
+      return card;
+    },
   });
 }
 
@@ -97,11 +100,22 @@ function renderSetupNodes(nodes) {
     setupNodeSummary.textContent = `${online} online · ${ordered.length - online} offline · ${ordered.length} total`;
   }
   if (!ordered.length) {
-    setupNodeList.innerHTML = '<p class="setup-empty">No cluster members are registered yet. Pair a node to add it to the cluster.</p>';
+    dashboardDOM.patchKeyedChildren(setupNodeList, [{ id: "__empty" }], {
+      keyOf: (item) => item.id,
+      signatureOf: () => "empty",
+      renderItem: () => {
+        const empty = document.createElement("p");
+        empty.className = "setup-empty";
+        empty.textContent = "No cluster members are registered yet. Pair a node to add it to the cluster.";
+        return empty;
+      },
+    });
     return;
   }
-  setupNodeList.innerHTML = "";
-  for (const node of ordered) {
+  dashboardDOM.patchKeyedChildren(setupNodeList, ordered, {
+    keyOf: (node) => node.id,
+    signatureOf: JSON.stringify,
+    renderItem: (node) => {
     const online = Boolean(node.healthy);
     const card = document.createElement("article");
     card.className = `setup-node-card ${online ? "online" : "offline"}`;
@@ -117,8 +131,9 @@ function renderSetupNodes(nodes) {
       </div>`;
     card.insertAdjacentHTML("beforeend", engineStatusSummaryMarkup(node.engines));
     attachNodeContextMenu(card, node);
-    setupNodeList.appendChild(card);
-  }
+    return card;
+    },
+  });
 }
 
 async function openNodeTerminal(node) {
@@ -306,15 +321,21 @@ function showNodeMenu(x, y) {
   const properties = menu.querySelector("[data-action=properties]");
   const pairing = menu.querySelector("[data-action=pair]");
   const nodeIsDiscovered = Boolean(contextNode.discovered);
+  const joiningOrchestrator = Boolean(contextNode.joinOrchestrator);
   if (properties) {
-    properties.textContent = `Configure ${contextNode.id}`;
-    properties.disabled = !contextNode.healthy || nodeIsDiscovered;
+    properties.textContent = joiningOrchestrator ? "Configure host properties" : `Configure ${contextNode.id}`;
+    properties.disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
   }
   if (pairing) {
-    pairing.textContent = nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
+    const currentOrchestrator = dashboardState.pairing.status?.orchestrator_id === contextNode.id;
+    pairing.textContent = joiningOrchestrator
+      ? dashboardState.pairing.status?.joined && currentOrchestrator
+        ? `Re-pair with ${contextNode.id}`
+        : `Join ${contextNode.id}'s cluster`
+      : nodeIsDiscovered ? "Pair node to this cluster" : "Re-pair node with this cluster";
     pairing.disabled = !contextNode.healthy;
   }
-  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered;
+  menu.querySelector("[data-action=open]").disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
   menu.hidden = false;
   const bounds = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
@@ -322,7 +343,17 @@ function showNodeMenu(x, y) {
 }
 
 function attachNodeContextMenu(element, node) {
+  element.addEventListener("click", (event) => {
+    if (!event.ctrlKey || !node.healthy || event.target.closest("button, input, select, textarea, a")) return;
+    event.preventDefault();
+    openShardGroupWizard(node.id);
+  });
   element.addEventListener("contextmenu", (event) => {
+    if (event.ctrlKey && node.healthy) {
+      event.preventDefault();
+      if (!document.getElementById("shard-group-setup-dialog")?.open) openShardGroupWizard(node.id);
+      return;
+    }
     event.preventDefault();
     contextNode = node;
     showNodeMenu(event.clientX, event.clientY);

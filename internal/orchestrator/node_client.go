@@ -7,18 +7,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/logging"
 	"io"
-	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/inferroute"
 )
 
 type nodeClient struct {
+	shards     *ShardManager
 	client     *http.Client
 	dispatcher *http.Client
 	status     *http.Client
+	managed    *http.Client
+	modelPull  *http.Client
+	sync       *http.Client
 }
 
 type nodeClientAPI interface {
@@ -29,6 +36,7 @@ type nodeClientAPI interface {
 	callNodeGenerate(string, string, string) (string, error)
 	callNodeGenerateWithOptions(string, string, string, float64, int) (string, error)
 	callNodeGenerateWithOptionsContext(context.Context, string, string, string, float64, int) (string, error)
+	callNodeGenerateWithOptionsContextAndIdempotency(context.Context, string, string, string, float64, int, string) (string, error)
 	Do(*http.Request) (*http.Response, error)
 	DoDispatch(*http.Request) (*http.Response, error)
 	Get(string) (*http.Response, error)
@@ -37,8 +45,74 @@ type nodeClientAPI interface {
 
 func newNodeClient(client, dispatcher, status *http.Client) *nodeClient {
 	return &nodeClient{
-		client: client, dispatcher: dispatcher, status: status,
+		client: clientWithRequestID(client), dispatcher: clientWithRequestID(dispatcher),
+		status: clientWithRequestID(status), managed: clientWithRequestID(&http.Client{Timeout: 2 * time.Minute}),
+		modelPull: clientWithRequestID(&http.Client{Timeout: time.Hour}),
+		sync:      clientWithRequestID(&http.Client{Timeout: 10 * time.Minute}),
 	}
+}
+
+func newNodeClientWithSyncTimeout(client, dispatcher, status *http.Client, timeout time.Duration) *nodeClient {
+	node := newNodeClient(client, dispatcher, status)
+	node.sync = clientWithRequestID(&http.Client{Timeout: timeout})
+	return node
+}
+
+type requestIDTransport struct {
+	next http.RoundTripper
+}
+
+func (t *requestIDTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	var err error
+	request, err = withRequestIDHeaders(request)
+	if err != nil {
+		return nil, err
+	}
+	next := t.next
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	return next.RoundTrip(request)
+}
+
+func clientWithRequestID(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+	clone := *client
+	if _, alreadyWrapped := clone.Transport.(*requestIDTransport); !alreadyWrapped {
+		clone.Transport = &requestIDTransport{next: clone.Transport}
+	}
+	return &clone
+}
+
+func withRequestIDHeaders(request *http.Request) (*http.Request, error) {
+	requestID := request.Header.Get(httpx.RequestIDHeader)
+	if requestID == "" {
+		requestID = request.Header.Get(inferroute.HeaderRequestID)
+	}
+	if requestID == "" {
+		requestID = httpx.RequestIDFromContext(request.Context())
+	}
+	if requestID == "" {
+		var err error
+		requestID, err = httpx.NewRequestID()
+		if err != nil {
+			return nil, fmt.Errorf("generate node request ID: %w", err)
+		}
+	}
+	request = request.Clone(request.Context())
+	request.Header = request.Header.Clone()
+	if request.Header == nil {
+		request.Header = make(http.Header)
+	}
+	if request.Header.Get(httpx.RequestIDHeader) == "" {
+		request.Header.Set(httpx.RequestIDHeader, requestID)
+	}
+	if request.Header.Get(inferroute.HeaderRequestID) == "" {
+		request.Header.Set(inferroute.HeaderRequestID, requestID)
+	}
+	return request, nil
 }
 
 func (c *nodeClient) Do(request *http.Request) (*http.Response, error) {
@@ -47,6 +121,13 @@ func (c *nodeClient) Do(request *http.Request) (*http.Response, error) {
 
 func (c *nodeClient) DoDispatch(request *http.Request) (*http.Response, error) {
 	return c.dispatcher.Do(request)
+}
+
+func (c *nodeClient) DoModelPull(request *http.Request) (*http.Response, error) {
+	if c.modelPull == nil {
+		return nil, errors.New("model pull client is unavailable")
+	}
+	return c.modelPull.Do(request)
 }
 
 func (c *nodeClient) Get(url string) (*http.Response, error) {
@@ -58,9 +139,17 @@ func (c *nodeClient) PostDispatch(url, contentType string, body io.Reader) (*htt
 }
 
 func (c *nodeClient) setTransport(newTransport func() *http.Transport) {
-	c.client.Transport = newTransport()
-	c.dispatcher.Transport = newTransport()
-	c.status.Transport = newTransport()
+	transport := &requestIDTransport{next: newTransport()}
+	c.client.Transport = transport
+	c.dispatcher.Transport = transport
+	c.status.Transport = transport
+	c.managed.Transport = transport
+	if c.modelPull != nil {
+		c.modelPull.Transport = transport
+	}
+	if c.sync != nil {
+		c.sync.Transport = transport
+	}
 }
 
 func (c *nodeClient) discoveredNodeStatus(addr string) (cluster.NodeStatus, error) {
@@ -94,6 +183,27 @@ func (c *nodeClient) discoveredNodeStatusContext(ctx context.Context, addr strin
 }
 
 func (c *nodeClient) streamNodeGenerate(w http.ResponseWriter, r *http.Request, address, model string, genReq generateAPIRequest, prompt string) {
+	if c.shards != nil {
+		if group, found := c.shards.GroupForModel(model); found {
+			output, err := c.generateShardGroup(r.Context(), group, address, prompt, genReq.Temperature, genReq.MaxTokens)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, generateAPIResponse{Error: err.Error()})
+				return
+			}
+			data, err := json.Marshal(map[string]string{"output": output})
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, generateAPIResponse{Error: err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			if err := httpx.NewStreamWriter(w).WriteSSEData(data); err != nil {
+				logging.Errorf("orchestrator", "orchestrator: shard generation stream failed: %v", err)
+			}
+			return
+		}
+	}
 	body, err := marshalGeneratePayload(model, prompt, genReq.Temperature, genReq.MaxTokens)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, generateAPIResponse{Error: err.Error()})
@@ -130,13 +240,15 @@ func (c *nodeClient) streamNodeGenerate(w http.ResponseWriter, r *http.Request, 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		stream := httpx.NewStreamWriter(w)
+		if err := stream.WriteSSEData(data); err != nil {
+			return
+		}
 		if out.Error != "" {
 			errData, _ := json.Marshal(map[string]string{"error": out.Error})
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", errData)
-		}
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
+			if err := stream.WriteSSEData(errData); err != nil {
+				return
+			}
 		}
 		return
 	}
@@ -144,19 +256,16 @@ func (c *nodeClient) streamNodeGenerate(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
+	stream := httpx.NewStreamWriter(w)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 	for scanner.Scan() {
-		if _, err := fmt.Fprintln(w, scanner.Text()); err != nil {
+		if err := stream.WriteLine(scanner.Text()); err != nil {
 			return
-		}
-		if flusher != nil {
-			flusher.Flush()
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		log.Printf("orchestrator: stream from node %s failed: %v", address, err)
+		logging.Errorf("orchestrator", "orchestrator: stream from node %s failed: %v", address, err)
 	}
 }
 
@@ -169,6 +278,24 @@ func (c *nodeClient) callNodeGenerateWithOptions(nodeAddr, model, prompt string,
 }
 
 func (c *nodeClient) callNodeGenerateWithOptionsContext(ctx context.Context, nodeAddr, model, prompt string, temperature float64, maxTokens int) (string, error) {
+	return c.callNodeGenerateWithOptionsContextAndIdempotency(ctx, nodeAddr, model, prompt, temperature, maxTokens, "")
+}
+
+func (c *nodeClient) callNodeGenerateWithOptionsContextAndIdempotency(
+	ctx context.Context,
+	nodeAddr, model, prompt string,
+	temperature float64,
+	maxTokens int,
+	idempotencyKey string,
+) (string, error) {
+	if c.shards != nil {
+		if group, found := c.shards.GroupForModel(model); found {
+			if idempotencyKey != "" {
+				return "", errors.New("idempotency keys are not supported for managed shard generation")
+			}
+			return c.generateShardGroup(ctx, group, nodeAddr, prompt, temperature, maxTokens)
+		}
+	}
 	genPayload, err := marshalGeneratePayload(model, prompt, temperature, maxTokens)
 	if err != nil {
 		return "", err
@@ -179,7 +306,42 @@ func (c *nodeClient) callNodeGenerateWithOptionsContext(ctx context.Context, nod
 		return "", err
 	}
 	genReq.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		genReq.Header.Set(inferroute.HeaderIdempotencyKey, idempotencyKey)
+	}
 	resp, err := c.dispatcher.Do(genReq)
+	if idempotencyKey != "" {
+		if err != nil {
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			return "", fmt.Errorf("node generate request failed: %w", err)
+		}
+		if resp == nil {
+			return "", errors.New("node generate request returned no response")
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+			if readErr != nil {
+				return "", fmt.Errorf("read node error response failed: %w", readErr)
+			}
+			return "", &nodeResponseError{
+				statusCode: resp.StatusCode, status: resp.Status, body: strings.TrimSpace(string(errBody)),
+			}
+		}
+		var result struct {
+			Output string `json:"output"`
+			Error  string `json:"error,omitempty"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", fmt.Errorf("invalid response from node: %w", err)
+		}
+		if result.Error != "" {
+			return "", errors.New(result.Error)
+		}
+		return result.Output, nil
+	}
 	if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		defer resp.Body.Close()
 		var res struct {
@@ -227,6 +389,19 @@ func (c *nodeClient) callNodeGenerateWithOptionsContext(ctx context.Context, nod
 		return "", errors.New(out.Error)
 	}
 	return out.Output, nil
+}
+
+type nodeResponseError struct {
+	statusCode int
+	status     string
+	body       string
+}
+
+func (e *nodeResponseError) Error() string {
+	if e.body == "" {
+		return "node returned " + e.status
+	}
+	return "node returned " + e.status + ": " + e.body
 }
 
 func marshalGeneratePayload(model, prompt string, temperature float64, maxTokens int) ([]byte, error) {

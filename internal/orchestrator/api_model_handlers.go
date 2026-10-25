@@ -10,23 +10,87 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
 func (s *Server) handleListAllModels(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
-	writeJSON(w, http.StatusOK, backend.ListClusterModels())
+	writeJSON(w, http.StatusOK, s.listClusterModels(backend))
+}
+
+func (s *Server) listClusterModels(backend agent.Backend) []agent.ModelInfo {
+	models := backend.ListClusterModels()
+	if s.shards == nil {
+		return models
+	}
+	groups := s.shards.List()
+	groupNames := make(map[string]bool)
+	for _, group := range groups {
+		if group.State == ShardGroupReady {
+			groupNames[strings.ToLower(group.Model.Name)] = true
+		}
+	}
+	filtered := make([]agent.ModelInfo, 0, len(models)+len(groupNames))
+	for _, model := range models {
+		if !groupNames[strings.ToLower(model.Name)] {
+			filtered = append(filtered, model)
+		}
+	}
+	for _, group := range groups {
+		if group.State != ShardGroupReady {
+			continue
+		}
+		headID, headAddress := "", ""
+		members := make([]string, 0, len(group.Members))
+		seen := make(map[string]bool, len(group.Members))
+		for _, member := range group.Members {
+			if !seen[member.NodeID] {
+				members = append(members, member.NodeID)
+				seen[member.NodeID] = true
+			}
+			if member.Role == "head" {
+				headID, headAddress = member.NodeID, member.Address
+			}
+		}
+		filtered = append(filtered, agent.ModelInfo{
+			NodeID: headID, NodeAddr: headAddress, Name: group.Model.Name,
+			Engine: "shard/" + string(group.Mode), Tags: []string{"sharded"},
+			ContextLength: group.Model.RequestedContext,
+			Members:       members, Healthy: true,
+		})
+	}
+	return filtered
 }
 
 func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
-	var req generateAPIRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	idempotencyKey := r.Header.Get(inferroute.HeaderIdempotencyKey)
+	if err := inferroute.ValidateIdempotencyKey(idempotencyKey); err != nil {
 		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
 		return
 	}
+	streaming := strings.EqualFold(r.URL.Query().Get("stream"), "true")
+	if idempotencyKey != "" && streaming {
+		err := apperr.Invalid(errors.New("Idempotency-Key is supported only for non-streaming generate requests"))
+		writeJSONError(w, err, generateAPIResponse{Error: err.Error()})
+		return
+	}
+	req, err := httpx.DecodeJSON[generateAPIRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
+		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
+		return
+	}
+	s.handleGenerateRequest(w, r, req, streaming, idempotencyKey)
+}
+
+func (s *Server) handleGenerateRequest(w http.ResponseWriter, r *http.Request, req generateAPIRequest, streaming bool, idempotencyKey string) {
 	if strings.TrimSpace(req.Prompt) == "" {
 		err := apperr.Invalid(errors.New("prompt is required"))
 		writeJSONError(w, err, generateAPIResponse{Error: err.Error()})
@@ -107,16 +171,37 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	s.registry.IncrementLoad(targetNode.ID, 1)
 	defer s.registry.IncrementLoad(targetNode.ID, -1)
-	if strings.EqualFold(r.URL.Query().Get("stream"), "true") {
+	if streaming {
 		s.streamNodeGenerate(w, r, targetNode.Address, targetModel, req, fullPrompt)
 		return
 	}
 
 	start := time.Now()
-	output, err := s.callNodeGenerateWithOptions(targetNode.Address, targetModel, fullPrompt, req.Temperature, req.MaxTokens)
+	var output string
+	if idempotencyKey != "" {
+		output, err = s.callNodeGenerateWithOptionsContextAndIdempotency(
+			r.Context(), targetNode.Address, targetModel, fullPrompt,
+			req.Temperature, req.MaxTokens, idempotencyKey,
+		)
+	} else {
+		output, err = s.callNodeGenerateWithOptions(targetNode.Address, targetModel, fullPrompt, req.Temperature, req.MaxTokens)
+	}
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
+		var nodeErr *nodeResponseError
+		if idempotencyKey != "" && errors.As(err, &nodeErr) {
+			message := nodeErr.body
+			var backend generateAPIResponse
+			if json.Unmarshal([]byte(nodeErr.body), &backend) == nil && backend.Error != "" {
+				message = backend.Error
+			}
+			writeJSON(w, nodeErr.statusCode, generateAPIResponse{
+				NodeID: targetNode.ID, NodeAddress: targetNode.Address, Model: targetModel,
+				DurationMs: duration, Error: message,
+			})
+			return
+		}
 		appErr := apperr.InternalError(err)
 		writeJSONError(w, appErr, generateAPIResponse{
 			NodeID:      targetNode.ID,
@@ -139,8 +224,10 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNodeGenerate(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
-	var req generateAPIRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[generateAPIRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
 		return
 	}
@@ -153,8 +240,10 @@ func (s *Server) handleNodeGenerate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodeModelGenerate(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
 	model := r.PathValue("model")
-	var req generateAPIRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[generateAPIRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
 		return
 	}
@@ -203,12 +292,19 @@ func (s *Server) handleNodeModelTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
-	models := backend.ListClusterModels()
-	list := make([]openAIModelObj, 0, len(models))
+	models := s.listClusterModels(backend)
+	list := make([]openAIModelObj, 0, len(models)+len(s.shardedModels))
 	seen := make(map[string]bool)
+	shardedSources := make(map[string]struct{}, len(s.shardedModels))
+	for _, model := range s.shardedModels {
+		shardedSources[strings.ToLower(model.SourceModelID)] = struct{}{}
+	}
 	now := time.Now().Unix()
 
 	for _, m := range models {
+		if _, hidden := shardedSources[strings.ToLower(m.Name)]; hidden {
+			continue
+		}
 		if !seen[m.Name] {
 			seen[m.Name] = true
 			list = append(list, openAIModelObj{
@@ -219,6 +315,14 @@ func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	for logicalID := range s.shardedModels {
+		if seen[logicalID] {
+			continue
+		}
+		list = append(list, openAIModelObj{
+			ID: logicalID, Object: "model", Created: now, OwnedBy: "maistr0",
+		})
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
@@ -227,8 +331,10 @@ func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var req openAIChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[openAIChatRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
@@ -236,6 +342,19 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	if len(req.Messages) == 0 {
 		writeError(w, apperr.Invalid(errors.New("messages array is required")))
 		return
+	}
+	if s.shards != nil {
+		if _, found := s.shards.GroupForModel(req.Model); found {
+			body, err := json.Marshal(req)
+			if err != nil {
+				writeError(w, apperr.InternalError(fmt.Errorf("encode shard inference request: %w", err)))
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.SetPathValue("path", "v1/chat/completions")
+			s.handleRouterRequest(w, r)
+			return
+		}
 	}
 
 	// Preserve every message role supported by the engine prompt format.
@@ -254,21 +373,30 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 	}
-
-	genBody, _ := json.Marshal(genReq)
-	generateURL := "/api/generate"
-	if req.Stream {
-		generateURL += "?stream=true"
+	if model, ok := s.shardedModel(req.Model); ok {
+		s.handleShardedOpenAIChatCompletion(w, r, model, genReq.Prompt, engine.GenerationOptions{
+			Temperature: req.Temperature, MaxTokens: req.MaxTokens,
+		}, req.Stream)
+		return
 	}
-	fakeReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, generateURL, bytes.NewReader(genBody))
+	if model, ok := s.shardedSourceModel(req.Model); ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": map[string]string{
+				"message": fmt.Sprintf("use logical model ID %q for this sharded model", model.LogicalID),
+				"type":    "invalid_request_error",
+			},
+		})
+		return
+	}
+
 	if req.Stream {
 		streamWriter := newOpenAIStreamWriter(w, req.Model)
-		s.handleGenerate(streamWriter, fakeReq)
+		s.handleGenerateRequest(streamWriter, r, genReq, true, "")
 		streamWriter.finish()
 		return
 	}
 	rec := &responseCapture{header: make(http.Header), body: new(bytes.Buffer)}
-	s.handleGenerate(rec, fakeReq)
+	s.handleGenerateRequest(rec, r, genReq, false, "")
 
 	if rec.status >= 400 {
 		w.Header().Set("Content-Type", "application/json")
@@ -280,35 +408,31 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	var genResp generateAPIResponse
 	_ = json.Unmarshal(rec.body.Bytes(), &genResp)
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id":                 "chatcmpl-" + genResp.NodeID,
-		"object":             "chat.completion",
-		"created":            time.Now().Unix(),
-		"model":              genResp.Model,
-		"system_fingerprint": "maistr0-" + genResp.NodeID,
-		"choices": []map[string]any{
-			{
-				"index": 0,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": genResp.Output,
-				},
-				"finish_reason": "stop",
-			},
-		},
-		"usage": map[string]int{
-			"prompt_tokens":     len(genReq.Prompt) / 4,
-			"completion_tokens": len(genResp.Output) / 4,
-			"total_tokens":      (len(genReq.Prompt) + len(genResp.Output)) / 4,
-		},
-	})
+	writeJSON(w, http.StatusOK, openAIChatCompletionResponse(
+		genResp.Model, genResp.Output, genReq.Prompt, genResp.NodeID,
+	))
 }
 
 func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request) {
-	var req openAICompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[openAICompletionRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
+	}
+	if s.shards != nil {
+		if _, found := s.shards.GroupForModel(req.Model); found {
+			body, err := json.Marshal(req)
+			if err != nil {
+				writeError(w, apperr.InternalError(fmt.Errorf("encode shard inference request: %w", err)))
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.SetPathValue("path", "v1/completions")
+			s.handleRouterRequest(w, r)
+			return
+		}
 	}
 
 	genReq := generateAPIRequest{
@@ -318,10 +442,8 @@ func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request)
 		MaxTokens:   req.MaxTokens,
 	}
 
-	genBody, _ := json.Marshal(genReq)
-	fakeReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, "/api/generate", bytes.NewReader(genBody))
 	rec := &responseCapture{header: make(http.Header), body: new(bytes.Buffer)}
-	s.handleGenerate(rec, fakeReq)
+	s.handleGenerateRequest(rec, r, genReq, false, "")
 
 	if rec.status >= 400 {
 		w.Header().Set("Content-Type", "application/json")

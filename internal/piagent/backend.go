@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,16 +15,12 @@ import (
 type Backend struct {
 	provider Provider
 	toolHost agent.Backend
+	loop     *agent.AgentLoop[CompletionRequest]
 
 	// mu protects the session map; release it before taking a piSession.mu or
 	// calling toolHost methods, so the locks are never nested.
 	mu       sync.RWMutex
 	sessions map[string]*piSession
-
-	activeCancels map[string]context.CancelFunc
-	// cancelsMu protects cancellation handles independently of mu; invoke
-	// callbacks only after unlocking and never nest these locks.
-	cancelsMu sync.Mutex
 }
 
 type piSession struct {
@@ -38,12 +33,13 @@ func New(provider Provider, toolHost agent.Backend) *Backend {
 	if provider == nil {
 		provider = unavailableProvider{}
 	}
-	return &Backend{
-		provider:      provider,
-		toolHost:      toolHost,
-		sessions:      make(map[string]*piSession),
-		activeCancels: make(map[string]context.CancelFunc),
+	backend := &Backend{
+		provider: provider,
+		toolHost: toolHost,
+		sessions: make(map[string]*piSession),
 	}
+	backend.loop = backend.newAgentLoop()
+	return backend
 }
 
 type unavailableProvider struct{}
@@ -149,25 +145,11 @@ func (b *Backend) DeleteSession(id string) bool {
 }
 
 func (b *Backend) InterruptSession(id string) bool {
-	b.cancelsMu.Lock()
-	cancel, ok := b.activeCancels[id]
-	b.cancelsMu.Unlock()
-	b.toolHost.InterruptSession(id)
-	if ok {
-		cancel()
+	interrupted := b.loop.InterruptSession(id)
+	if b.toolHost != nil {
+		b.toolHost.InterruptSession(id)
 	}
-	b.mu.RLock()
-	state, found := b.sessions[id]
-	b.mu.RUnlock()
-	if found {
-		state.mu.Lock()
-		wasActive := state.session.Active
-		state.session.Active = false
-		state.session.UpdatedAt = time.Now()
-		state.mu.Unlock()
-		return wasActive || ok
-	}
-	return ok
+	return interrupted
 }
 
 func (b *Backend) ListTools() []agent.ToolDef { return b.toolHost.ListTools() }
@@ -203,195 +185,12 @@ func (b *Backend) ExecuteTool(ctx context.Context, sessionID, name string, args 
 
 func (b *Backend) SendMessage(ctx context.Context, sessionID, userText string, streamChan chan<- agent.StreamEvent) (*agent.Message, error) {
 	b.mu.RLock()
-	state, ok := b.sessions[sessionID]
+	state, exists := b.sessions[sessionID]
 	b.mu.RUnlock()
-	if !ok {
+	if !exists {
 		return nil, errors.New("session not found: " + sessionID)
 	}
-	state.mu.Lock()
-	if state.session.Active {
-		state.mu.Unlock()
-		return nil, errors.New("session is currently processing another request")
-	}
-	state.session.Active = true
-	state.session.UpdatedAt = time.Now()
-	state.session.Messages = append(state.session.Messages, agent.Message{
-		ID: newMessageID(), Role: agent.RoleUser, Content: userText, Timestamp: time.Now(),
-	})
-	state.mu.Unlock()
-
-	turnCtx, turnCancel := context.WithCancel(ctx)
-	b.cancelsMu.Lock()
-	b.activeCancels[sessionID] = turnCancel
-	b.cancelsMu.Unlock()
-
-	defer func() {
-		b.cancelsMu.Lock()
-		delete(b.activeCancels, sessionID)
-		b.cancelsMu.Unlock()
-		turnCancel()
-		state.mu.Lock()
-		state.session.Active = false
-		state.session.UpdatedAt = time.Now()
-		state.mu.Unlock()
-	}()
-
-	emit := func(event agent.StreamEvent) {
-		event.SessionID = sessionID
-		if streamChan == nil {
-			return
-		}
-		select {
-		case streamChan <- event:
-		default:
-			select {
-			case streamChan <- event:
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
-	}
-
-	recordInterrupted := func() *agent.Message {
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		for i := len(state.session.Messages) - 1; i >= 0; i-- {
-			if state.session.Messages[i].Role == agent.RoleAssistant && strings.Contains(state.session.Messages[i].Content, "interrupted") {
-				return &state.session.Messages[i]
-			}
-		}
-		interruptedMsg := agent.Message{
-			ID:          newMessageID(),
-			Role:        agent.RoleAssistant,
-			Content:     "⚠️ Session interrupted by user.",
-			Coordinator: b.provider.Name(),
-			Timestamp:   time.Now(),
-		}
-		state.session.Messages = append(state.session.Messages, interruptedMsg)
-		state.session.UpdatedAt = time.Now()
-		return &interruptedMsg
-	}
-
-	tools := b.toolHost.ListTools()
-	maxSteps := state.session.Config.MaxSteps
-	if maxSteps <= 0 {
-		maxSteps = len(tools) + 1
-		if maxSteps < 8 {
-			maxSteps = 8
-		}
-	}
-	var final *agent.Message
-	for step := 1; step <= maxSteps; step++ {
-		if err := turnCtx.Err(); err != nil {
-			emit(agent.StreamEvent{Type: agent.EventInterrupted, Step: step, Content: "Session interrupted."})
-			return recordInterrupted(), err
-		}
-		emit(agent.StreamEvent{Type: agent.EventStepStarted, Step: step})
-		state.mu.Lock()
-		messages := b.providerMessages(state.session)
-		sessionConfig := state.session.Config
-		state.mu.Unlock()
-		completion, err := b.provider.Complete(turnCtx, CompletionRequest{
-			Model: sessionConfig.CoordinatorModel, Temperature: sessionConfig.Temperature,
-			Messages: messages, Tools: tools,
-		}, func(delta string) {
-			emit(agent.StreamEvent{Type: agent.EventTextDelta, Step: step, Content: delta})
-		})
-		if err != nil {
-			if turnCtx.Err() != nil {
-				emit(agent.StreamEvent{Type: agent.EventInterrupted, Step: step, Content: "Session interrupted."})
-				return recordInterrupted(), turnCtx.Err()
-			}
-			emit(agent.StreamEvent{Type: agent.EventError, Error: err.Error()})
-			return nil, err
-		}
-		if completion == nil {
-			err = errors.New("model provider returned an empty completion")
-			emit(agent.StreamEvent{Type: agent.EventError, Error: err.Error()})
-			return nil, err
-		}
-
-		assistant := &agent.Message{
-			ID: newMessageID(), Role: agent.RoleAssistant, Content: completion.Content,
-			Model: sessionConfig.CoordinatorModel, Coordinator: b.provider.Name(), Timestamp: time.Now(),
-		}
-		if assistant.Model == "" {
-			if provider, ok := b.provider.(interface{ Model() string }); ok {
-				assistant.Model = provider.Model()
-			}
-		}
-		for _, call := range completion.ToolCalls {
-			args, _ := parseToolArguments(call.Function.Arguments)
-			callID := call.ID
-			if callID == "" {
-				callID = newMessageID()
-			}
-			assistant.ToolCalls = append(assistant.ToolCalls, agent.ToolCall{
-				ID: callID, Name: call.Function.Name, Arguments: args, RawArgs: call.Function.Arguments,
-			})
-		}
-		state.mu.Lock()
-		state.session.Messages = append(state.session.Messages, *assistant)
-		state.session.UpdatedAt = time.Now()
-		state.mu.Unlock()
-
-		if len(completion.ToolCalls) == 0 {
-			final = assistant
-			emit(agent.StreamEvent{Type: agent.EventFinalMessage, Step: step, Message: final, Content: final.Content})
-			break
-		}
-
-		for i, call := range completion.ToolCalls {
-			if err := turnCtx.Err(); err != nil {
-				emit(agent.StreamEvent{Type: agent.EventInterrupted, Step: step, Content: "Session interrupted."})
-				return recordInterrupted(), err
-			}
-			parsedArgs, parseErr := parseToolArguments(call.Function.Arguments)
-			toolCall := assistant.ToolCalls[i]
-			emit(agent.StreamEvent{Type: agent.EventToolCall, Step: step, ToolCall: &toolCall})
-			start := time.Now()
-			response := agent.ToolResponse{ToolCallID: toolCall.ID, Name: call.Function.Name}
-			if parseErr != nil {
-				response.Error = fmt.Sprintf("invalid tool arguments: %v", parseErr)
-			} else {
-				result, execErr := b.toolHost.ExecuteTool(turnCtx, sessionID, call.Function.Name, parsedArgs)
-				if turnCtx.Err() != nil {
-					emit(agent.StreamEvent{Type: agent.EventInterrupted, Step: step, Content: "Session interrupted."})
-					return recordInterrupted(), turnCtx.Err()
-				}
-				response.Output = result.Output
-				response.NodeID, response.NodeAddr, response.Model = result.NodeID, result.NodeAddr, result.Model
-				response.DurationMs = result.DurationMs
-				if execErr != nil {
-					response.Error = execErr.Error()
-				}
-			}
-			if response.DurationMs == 0 {
-				response.DurationMs = time.Since(start).Milliseconds()
-			}
-			state.mu.Lock()
-			state.session.Messages = append(state.session.Messages, agent.Message{
-				ID: newMessageID(), Role: agent.RoleTool, ToolResponse: &response,
-				NodeID: response.NodeID, Model: response.Model, Timestamp: time.Now(),
-				DurationMs: response.DurationMs,
-			})
-			state.session.UpdatedAt = time.Now()
-			state.mu.Unlock()
-			emit(agent.StreamEvent{Type: agent.EventToolResponse, Step: step, ToolResp: &response})
-		}
-	}
-	if final == nil {
-		final = &agent.Message{
-			ID: newMessageID(), Role: agent.RoleAssistant,
-			Content:     "Reached the maximum number of agent steps without a final response.",
-			Coordinator: b.provider.Name(), Timestamp: time.Now(),
-		}
-		state.mu.Lock()
-		state.session.Messages = append(state.session.Messages, *final)
-		state.mu.Unlock()
-		emit(agent.StreamEvent{Type: agent.EventFinalMessage, Message: final, Content: final.Content})
-	}
-	emit(agent.StreamEvent{Type: agent.EventDone})
-	return final, nil
+	return b.loop.Run(ctx, piConversation{state: state}, userText, streamChan)
 }
 
 func (b *Backend) providerMessages(session *agent.Session) []ChatMessage {

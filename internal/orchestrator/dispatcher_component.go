@@ -4,22 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"runtime"
+	"sync/atomic"
+	"time"
+
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/workpool"
-	"net/http"
-	"runtime"
-	"sync/atomic"
-	"time"
-)
-
-const (
-	maxDispatchAttempts = 5
-	dispatchDeadline    = 3 * time.Minute
-	dispatchBackoff     = 100 * time.Millisecond
-	maxDispatchBackoff  = 800 * time.Millisecond
 )
 
 type dispatchJob struct {
@@ -32,13 +26,20 @@ type dispatchHTTPClient interface {
 }
 
 type dispatcherComponent struct {
-	registry      *cluster.Registry
-	tasks         *taskmgr.Manager
-	memory        memory.Store
-	executeClient dispatchHTTPClient
-	capacityGate  workpool.CapacityGate
-	pool          *workpool.Pool[dispatchJob]
-	limit         int
+	shards          *ShardManager
+	shardModel      *nodeClient
+	registry        *cluster.Registry
+	tasks           *taskmgr.Manager
+	memory          memory.Store
+	metrics         *operationalMetrics
+	executeClient   dispatchHTTPClient
+	capacityGate    workpool.CapacityGate
+	pool            *workpool.Pool[dispatchJob]
+	retryPolicy     dispatchRetryPolicy
+	limit           int
+	dispatchTimeout time.Duration
+	hedgingEnabled  bool
+	hedgeSlots      chan struct{}
 	// These atomics are independent live metrics; they are not guarded by a
 	// mutex and never impose lock ordering on dispatch paths.
 	dependencyWaiters   atomic.Int64
@@ -67,11 +68,14 @@ func newDispatcherComponent(
 	executeClient dispatchHTTPClient,
 	capacityProbe dispatchCapacityProbe,
 	limit int,
+	dispatchTimeout time.Duration,
 ) *dispatcherComponent {
 	dispatcher := &dispatcherComponent{
 		registry: registry, tasks: tasks, memory: store,
 		executeClient: executeClient, capacityGate: newDispatchCapacityGate(registry, capacityProbe, limit),
-		limit: limit,
+		retryPolicy:     defaultDispatchRetryPolicy,
+		limit:           limit,
+		dispatchTimeout: dispatchTimeout,
 	}
 	// Dispatch reloads the task's canonical context instead of inheriting the submitter's request context.
 	dispatcher.pool = workpool.NewWithOptions(
@@ -83,6 +87,14 @@ func newDispatcherComponent(
 		workpool.Options{PropagateSubmitterContext: false},
 	)
 	return dispatcher
+}
+
+func (d *dispatcherComponent) configureSpeculativeHedging(enabled bool, maxConcurrent int) {
+	d.hedgingEnabled = enabled
+	d.hedgeSlots = nil
+	if enabled && maxConcurrent > 0 {
+		d.hedgeSlots = make(chan struct{}, min(maxConcurrent, 4))
+	}
 }
 
 func (d *dispatcherComponent) close() {
@@ -97,6 +109,16 @@ func (d *dispatcherComponent) reservations() workpool.CapacityGate {
 
 func (d *dispatcherComponent) schedulerNodes() []cluster.NodeStatus {
 	nodes := d.registry.Active()
+	if d.shards != nil {
+		groups := d.shards.List()
+		selected := groups[:0]
+		for _, group := range groups {
+			if owner, ok := d.shards.GroupForModel(group.Model.Name); ok && owner.ID == group.ID {
+				selected = append(selected, group)
+			}
+		}
+		nodes = shardSchedulerNodes(nodes, selected)
+	}
 	byID := make(map[string]*cluster.NodeStatus, len(nodes))
 	for i := range nodes {
 		byID[nodes[i].ID] = &nodes[i]

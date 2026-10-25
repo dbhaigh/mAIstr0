@@ -1,8 +1,9 @@
 package orchestrator
 
 import (
-	"log"
+	"github.com/maistr0/maistr0/internal/logging"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -14,8 +15,11 @@ type electionComponent struct {
 	statusProbe interface {
 		discoveredNodeStatus(string) (cluster.NodeStatus, error)
 	}
-	identity         interface{ IsTrustedID(string) bool }
-	discovery        *discovery.Listener
+	identity  interface{ IsTrustedID(string) bool }
+	discovery interface {
+		Snapshot() []discovery.Peer
+		WaitReady(time.Duration) error
+	}
 	selfID           string
 	selfScore        float64
 	discoveryEnabled bool
@@ -23,6 +27,9 @@ type electionComponent struct {
 	leaderMu        sync.Mutex
 	lastLeaderID    string
 	discoveredNodes map[string]bool
+	// retired is set when a failover-promoted instance steps down; it stops
+	// announcing and never reports itself elected until reinstated.
+	retired atomic.Bool
 }
 
 type electionAPI interface {
@@ -37,6 +44,9 @@ type electionAPI interface {
 	syncDiscoveredPeers(func())
 	recordLeader(string)
 	selfIDValue() string
+	setSelfID(string)
+	selfAnnouncement() discovery.Announcement
+	setRetired(bool)
 }
 
 func newElectionComponent(
@@ -59,11 +69,19 @@ func (e *electionComponent) setIdentity(identity interface{ IsTrustedID(string) 
 	e.identity = identity
 }
 
+func (e *electionComponent) setSelfID(id string) {
+	e.selfID = id
+}
+
 func (e *electionComponent) setDiscoveryEnabled(enabled bool) {
 	e.discoveryEnabled = enabled
 }
 
 func (e *electionComponent) setDiscovery(listener *discovery.Listener) {
+	if listener == nil {
+		e.discovery = nil
+		return
+	}
 	e.discovery = listener
 }
 
@@ -91,21 +109,38 @@ func (e *electionComponent) startBeacon(listenAddr string) error {
 	selfAddr := "http://" + discovery.OutboundIP() + portSuffix(listenAddr)
 	peerAddr := "https://" + discovery.OutboundIP() + portSuffix(listenAddr)
 	go discovery.Beacon(func() discovery.Announcement {
-		members := e.registry.Active()
-		_, elected := e.registry.Leader()
-		role := "candidate"
-		if e.isElectedOrchestrator() {
-			role = "orchestrator"
+		if e.retired.Load() {
+			return discovery.Announcement{}
 		}
-		return discovery.Announcement{
-			Role: role, ID: e.selfID, HTTPAddr: selfAddr, PeerAddr: peerAddr,
-			Score: e.selfScore, Members: len(members), Elected: elected,
-		}
+		ann := e.selfAnnouncement()
+		ann.HTTPAddr, ann.PeerAddr = selfAddr, peerAddr
+		return ann
 	}, 5*time.Second, nil)
 	return nil
 }
 
+// selfAnnouncement describes this instance's current election standing
+// without network addresses.
+func (e *electionComponent) selfAnnouncement() discovery.Announcement {
+	members := e.registry.Active()
+	_, elected := e.registry.Leader()
+	role := "candidate"
+	if e.isElectedOrchestrator() {
+		role = "orchestrator"
+	}
+	return discovery.Announcement{
+		Role: role, ID: e.selfID, Score: e.selfScore, Members: len(members), Elected: elected,
+	}
+}
+
+func (e *electionComponent) setRetired(retired bool) {
+	e.retired.Store(retired)
+}
+
 func (e *electionComponent) isElectedOrchestrator() bool {
+	if e.retired.Load() {
+		return false
+	}
 	if !e.discoveryEnabled || e.discovery == nil {
 		return true
 	}
@@ -146,15 +181,25 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 		if peer.Role == "node" && peer.OrchestratorID != "" && peer.OrchestratorID != e.selfID {
 			if status, ok := e.registry.Get(peer.ID); ok && status.Healthy {
 				e.registry.MarkUnhealthy(peer.ID)
-				log.Printf("orchestrator: node %s now announces orchestrator %s; skipping status probe", peer.ID, peer.OrchestratorID)
+				logging.Infof("orchestrator", "orchestrator: node %s now announces orchestrator %s; skipping status probe", peer.ID, peer.OrchestratorID)
 			}
 			delete(e.discoveredNodes, peer.ID)
 			continue
 		}
-		if peer.PeerAddr == "" || e.identity == nil || !e.identity.IsTrustedID(peer.ID) {
+		if e.identity == nil || !e.identity.IsTrustedID(peer.ID) {
 			continue
 		}
 		if !shouldProbeDiscoveredNode(peer, e.selfID) {
+			// A combined-role process advertises its worker and coordinator
+			// with the same ID. Probe the authenticated worker registration,
+			// not the coordinator's advertised endpoint.
+			registered, ok := e.registry.Get(peer.ID)
+			if peer.Role == "node" || !ok || registered.Address == "" {
+				continue
+			}
+			peer.PeerAddr = registered.Address
+		}
+		if peer.PeerAddr == "" {
 			continue
 		}
 		probes.Add(1)
@@ -162,7 +207,7 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 			defer probes.Done()
 			status, err := e.statusProbe.discoveredNodeStatus(peer.PeerAddr)
 			if err != nil {
-				log.Printf("orchestrator: secure status probe for paired node %s failed: %v", peer.ID, err)
+				logging.Errorf("orchestrator", "orchestrator: secure status probe for paired node %s failed: %v", peer.ID, err)
 				return
 			}
 			results <- discoveryResult{peer: peer, status: status}
@@ -183,7 +228,7 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 		}
 		if _, ok := e.registry.Get(id); ok {
 			e.registry.MarkUnhealthy(id)
-			log.Printf("orchestrator: node %s is offline after its LAN announcement expired", id)
+			logging.Infof("orchestrator", "orchestrator: node %s is offline after its LAN announcement expired", id)
 		}
 		delete(e.discoveredNodes, id)
 	}
@@ -195,7 +240,7 @@ func (e *electionComponent) recordLeader(leaderID string) {
 	defer e.leaderMu.Unlock()
 	if leaderID != e.lastLeaderID {
 		if leaderID != "" {
-			log.Printf("orchestrator: cluster leadership passed to %s (most capable node)", leaderID)
+			logging.Infof("orchestrator", "orchestrator: cluster leadership passed to %s (most capable node)", leaderID)
 		}
 		e.lastLeaderID = leaderID
 	}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/activation-tensor.schema.json",
+  "title": "ActivationTensor",
+  "type": "object",
+  "required": ["dtype", "shape"],
+  "properties": {
+    "dtype": {"type": "string", "enum": ["float16", "bfloat16", "float32", "int64", "uint8"]},
+    "shape": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"type": "integer", "minimum": 1}
+    }
+  },
+  "additionalProperties": true
+}

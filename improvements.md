@@ -1,29 +1,48 @@
 # mAIstr0 Improvement Plan
 
-Repo: `C:\Users\ahaigh\source\repos\mAIstr0` (Go 1.27, bbolt, embedded web dashboard)
+This file is the phase prompt pack and acceptance checklist. For a dated
+assessment of implementation and remaining work, see
+[docs/engineering-improvement-plan.md](./docs/engineering-improvement-plan.md).
+The current status below is a working-tree snapshot, not a claim that all
+changes have been reviewed or merged.
 
-Baseline when this plan was written: `go test ./...`, `go vet ./...`, and `node --test web/app_test.js` all pass.
-There are uncommitted changes in the working tree, including new `dispatch_pool.go` files.
+## Current implementation update — 2026-10-19
 
-## Recent implementation update — 2026-10-14
-
-- CI actions now use Node.js 24-based releases. Contract fixture checkouts keep
-  LF line endings on Windows and Linux so golden-file assertions do not report
-  false changes caused by Git's automatic CRLF conversion.
-- Automatic task planning now retries using another advertised node/model when
-  the selected planning model fails, rather than aborting after the first
-  dispatch error. If no candidate succeeds, the planner returns the final
-  model error.
-- Added regression coverage for falling back from a model-load failure to a
-  different planning model.
+- Phases 2–5 and 7–8 are implemented in the current source. Phase 1
+  characterization and contract coverage is complete in the current worktree;
+  review and merge its fixtures with the tests.
+- Phase 6 is implemented for the stated decomposition and size goals: the
+  production Go files in `internal/orchestrator`, `internal/nodeagent`, and
+  `internal/taskmgr` are all below 500 lines, with responsibilities owned by
+  focused components and lock order documented. Further splits should follow a
+  concrete review finding, not the line-count target alone.
+- Phase 0 remains open until the current worktree is reviewed and merged. The
+  Linux race suite has passed previously; native Windows may report the
+  documented ThreadSanitizer shadow-memory allocation limitation.
+- Incremental sync now supports configurable transfer limits and timeouts with
+  the established 64 MiB and 10-minute defaults. Metrics, service examples,
+  normalized config printing, and dashboard connection status are documented
+  and covered by tests; see the README and changelog.
+- bbolt snapshot merges now batch experience/fact and dialogue/watermark updates
+  into transactions instead of writing each record separately, and unchanged
+  dialogue records are not rewritten.
 
 ## Ground rules for every phase
 
 - Each phase goes into its own branch or PR, and the build stays green between phases.
+- Run commands from the repository root and use repository-relative paths.
+  These prompts are platform-neutral; provide both PowerShell and bash forms
+  whenever a shell-specific command or path is needed.
 - Make **no behavior changes** unless the phase explicitly says so. Keep JSON wire formats, API routes,
   on-disk bbolt bucket names, and config keys compatible.
 - Every phase must pass:
   ```powershell
+  go build ./...
+  go vet ./...
+  go test ./...
+  node --test web/app_test.js
+  ```
+  ```sh
   go build ./...
   go vet ./...
   go test ./...
@@ -34,18 +53,25 @@ There are uncommitted changes in the working tree, including new `dispatch_pool.
 
 ## Phase overview
 
-| # | Phase | Depends on | Risk | Outcome |
-|---|-------|-----------|------|---------|
-| 0 | Stabilize baseline | none | Low | Clean, committed, green starting point |
-| 1 | Characterization and contract tests | 0 | Low | Behavior locked down before refactoring |
-| 2 | Config validation and normalization | 1 | Low | One source of truth for config rules |
-| 3 | Separate domain errors from HTTP | 1 | Medium | Domain services don't depend on HTTP |
-| 4 | Unify dispatch/worker pool | 1 | Medium | One tested concurrency primitive |
-| 5 | Persistence behind interfaces | 1 | Medium | bbolt isolated behind repositories |
-| 6 | Split god objects | 3, 4, 5 | High | `Server`, `Agent`, and `Manager` decomposed |
-| 7 | Incremental memory sync | 5 | Medium | Sync no longer needs full snapshots |
+| # | Phase | Depends on | Risk | Outcome | Current status |
+|---|-------|-----------|------|---------|----------------|
+| 0 | Stabilize baseline | none | Low | Clean, reviewed, green starting point | **Partial** — race caveats are documented; the current worktree is not clean |
+| 1 | Characterization and contract tests | 0 | Low | Behavior locked down before refactoring | **Coverage complete in current worktree** — review and merge the test/golden updates |
+| 2 | Config validation and normalization | 1 | Low | One source of truth for config rules | **Implemented** |
+| 3 | Separate domain errors from HTTP | 1 | Medium | Domain services don't depend on HTTP status codes | **Implemented** |
+| 4 | Unify dispatch/worker pool | 1 | Medium | One tested concurrency primitive | **Implemented** |
+| 5 | Persistence behind interfaces | 1 | Medium | bbolt isolated behind repositories | **Implemented** |
+| 6 | Split god objects | 3, 4, 5 | High | `Server`, `Agent`, and `Manager` decomposed | **Implemented in the current worktree** — production files in all three target packages are below 500 lines; component locks and task-manager order are documented |
+| 7 | Incremental memory sync | 5 | Medium | Sync supports watermarks with full-snapshot fallback | **Implemented** |
+| 8 | Language-neutral contracts | 1–7 | Medium | OpenAPI, schemas, fixtures, and porting guide | **Implemented** |
 
 You can run phases 2, 3, 4, and 5 in parallel after Phase 1. Don't start Phase 6 until 3, 4, and 5 are merged.
+
+Phase 8 is a continuing compatibility guardrail, not a one-time final step:
+update it whenever a route, schema, or externally visible payload changes.
+Phase 0 is the stabilization phase in this prompt pack; it is distinct from
+the repository assessment documented in
+[docs/engineering-improvement-plan.md](./docs/engineering-improvement-plan.md).
 
 ---
 
@@ -58,11 +84,11 @@ You can run phases 2, 3, 4, and 5 in parallel after Phase 1. Don't start Phase 6
 - The new `internal/orchestrator/dispatch_pool.go`, `internal/orchestrator/dispatch_pool_test.go`, and
   `internal/nodeagent/dispatch_pool.go` are either committed with tests or reverted.
 - `go test -race ./...` passes on at least one platform where cgo/race is available, or the gap is documented.
-- Stray `.flm/memory.json.*.tmp` files are removed from git, and `.gitignore` covers them.
+- `git ls-files -- '*.tmp'` is empty, and `.gitignore` ignores `.flm/*.tmp`.
 
 ### Prompt 0
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0.
+You are working in the existing mAIstr0 repository. Use repository-relative paths.
 
 Goal: stabilize the baseline before a refactoring program starts. Make no behavior changes.
 
@@ -102,7 +128,7 @@ Done when: all checks are green, the temp files are untracked, and you've given 
 
 ### Prompt 1
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. All tests currently pass.
+You are working in the existing mAIstr0 repository. All tests currently pass; use repository-relative paths.
 
 Goal: add characterization and contract tests that lock down current behavior. Don't change production behavior.
 
@@ -157,7 +183,7 @@ clear messages.
 
 ### Prompt 2
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phase 1 contract tests exist and pass.
+You are working in the existing mAIstr0 repository. Phase 1 contract tests exist and pass; use repository-relative paths.
 
 Goal: centralize configuration normalization and validation in internal/config.
 
@@ -201,7 +227,7 @@ removes `taskCreateError{status:…}` from domain logic.
 
 ### Prompt 3
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phase 1 contract tests exist and pass.
+You are working in the existing mAIstr0 repository. Phase 1 contract tests exist and pass; use repository-relative paths.
 
 Goal: decouple orchestration logic from HTTP status codes without changing API behavior.
 
@@ -248,7 +274,7 @@ with one generic, well-tested primitive.
 
 ### Prompt 4
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phase 1 contract tests exist and pass.
+You are working in the existing mAIstr0 repository. Phase 1 contract tests exist and pass; use repository-relative paths.
 
 Goal: replace the duplicated worker pools with one generic primitive.
 
@@ -296,7 +322,7 @@ Validate with go vet ./... and go test ./....
 
 ### Prompt 5
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phase 1 contract tests exist and pass.
+You are working in the existing mAIstr0 repository. Phase 1 contract tests exist and pass; use repository-relative paths.
 
 Goal: put persistence behind interfaces without changing on-disk formats.
 
@@ -364,7 +390,7 @@ Validate with go vet ./... and go test ./....
 
 ### Prompt 6a: taskmgr
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–5 are merged. Contract tests,
+You are working in the existing mAIstr0 repository. Phases 1–5 are merged. Contract tests,
 apperr, workpool, and persistence interfaces all exist.
 
 Goal: decompose internal/taskmgr/taskmgr.go into cohesive files and components with no behavior change.
@@ -384,7 +410,7 @@ Validate with go vet ./..., go test ./..., and, where available, go test -race .
 
 ### Prompt 6b: nodeagent
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–5 and 6a are merged.
+You are working in the existing mAIstr0 repository. Phases 1–5 and 6a are merged; use repository-relative paths.
 
 Goal: decompose nodeagent.Agent in internal/nodeagent/agent.go, which is about 1,500 lines, into focused
 components with no behavior change.
@@ -411,7 +437,7 @@ Validate with go vet ./... and go test ./....
 
 ### Prompt 6c: orchestrator
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–5, 6a, and 6b are merged.
+You are working in the existing mAIstr0 repository. Phases 1–5, 6a, and 6b are merged; use repository-relative paths.
 
 Goal: decompose orchestrator.Server in internal/orchestrator/server.go into focused components with no behavior
 change.
@@ -451,7 +477,7 @@ fallback and a compatibility path for mixed-version clusters.
 
 ### Prompt 7
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–6 are merged. Memory persistence
+You are working in the existing mAIstr0 repository. Phases 1–6 are merged. Memory persistence
 sits behind interfaces.
 
 Goal: add incremental memory and task-history synchronization while keeping full-snapshot sync as a fallback.
@@ -495,7 +521,7 @@ Validate with go vet ./... and go test ./....
 
 ### Prompt 8
 ```text
-You are working in the Go repo at C:\Users\ahaigh\source\repos\mAIstr0. Phases 1–7 are merged.
+You are working in the existing mAIstr0 repository. Phases 1–7 are merged; use repository-relative paths.
 
 Goal: produce language-neutral contracts and a porting guide
 

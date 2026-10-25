@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>mAIstr0 · Interactive Cluster Orchestrator</title>
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.d1839e27badd.css" />
 </head>
 <body>
   <header>
@@ -21,16 +21,22 @@
         <span class="stat-pill" id="stat-version">Build -</span>
       </div>
     </div>
-    <nav class="nav-tabs">
-      <button class="nav-tab active" data-tab="agent-tab">Orchestrator</button>
-      <button class="nav-tab" data-tab="cluster-tab">Cluster &amp; Workload</button>
-      <button class="nav-tab" data-tab="memory-tab">Memory &amp; Learning</button>
+    <nav class="nav-tabs" role="tablist" aria-label="Dashboard views">
+      <button id="agent-tab-button" class="nav-tab active" type="button" role="tab" aria-controls="agent-tab" aria-selected="true" data-tab="agent-tab">Orchestrator</button>
+      <button id="cluster-tab-button" class="nav-tab" type="button" role="tab" aria-controls="cluster-tab" aria-selected="false" tabindex="-1" data-tab="cluster-tab">Cluster &amp; Workload</button>
+      <button id="memory-tab-button" class="nav-tab" type="button" role="tab" aria-controls="memory-tab" aria-selected="false" tabindex="-1" data-tab="memory-tab">Memory &amp; Learning</button>
     </nav>
   </header>
+  <div class="status-bar">
+    <div id="connection-status" class="connection-status" role="status" aria-live="polite" data-connected="false">
+      Connecting · Last sync not yet
+    </div>
+    <button id="refresh-view-btn" class="icon-button refresh-view-btn" type="button" title="Reload the data shown in the current tab without reloading the page">↻ Refresh view</button>
+  </div>
   <div id="persistence-warning" class="persistence-warning" role="status" hidden></div>
 
   <!-- TAB 1: Interactive Orchestrator Console -->
-  <section id="agent-tab" class="tab-content active">
+  <section id="agent-tab" class="tab-content active" role="tabpanel" aria-labelledby="agent-tab-button">
     <div class="agent-layout">
       <!-- Sidebar / Session List & Tools -->
       <aside class="agent-sidebar" hidden>
@@ -82,9 +88,9 @@
       <div class="agent-chat-container">
         <div class="agent-tabbar">
           <nav class="agent-tabs" role="tablist" aria-label="Chat modes">
-            <button class="agent-tab active" type="button" role="tab" aria-selected="true" data-agent="direct">mAIstr0</button>
-            <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="pi">Pi Agent</button>
-            <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent="deepseek">DeepSeek Agent</button>
+            <button id="agent-mode-direct-tab" class="agent-tab active" type="button" role="tab" aria-controls="chat-messages" aria-selected="true" data-agent="direct">mAIstr0</button>
+            <button id="agent-mode-pi-tab" class="agent-tab" type="button" role="tab" aria-controls="chat-messages" aria-selected="false" tabindex="-1" data-agent="pi">Pi Agent</button>
+            <button id="agent-mode-deepseek-tab" class="agent-tab" type="button" role="tab" aria-controls="chat-messages" aria-selected="false" tabindex="-1" data-agent="deepseek">DeepSeek Agent</button>
           </nav>
           <button id="clear-direct-chat-btn" class="icon-button direct-chat-clear" type="button">Clear chat</button>
         </div>
@@ -125,7 +131,7 @@
   </section>
 
   <!-- TAB 2: Cluster & Workload Workspace -->
-  <main id="cluster-tab" class="tab-content">
+  <main id="cluster-tab" class="tab-content" role="tabpanel" aria-labelledby="cluster-tab-button" hidden>
     <nav class="cluster-workspace-tabs" role="tablist" aria-label="Cluster workspace windows">
       <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-setup-tab" aria-controls="setup-panel" aria-selected="false" data-window="setup-panel">Setup</button>
       <button class="cluster-workspace-tab" type="button" role="tab" id="cluster-submit-tab" aria-controls="submit-panel" aria-selected="false" data-window="submit-panel">Batch submit</button>
@@ -138,7 +144,7 @@
 
     <section id="setup-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-setup-tab" hidden>
       <div class="section-heading">
-        <div><h2>Cluster setup</h2><p class="panel-caption">View cluster members and their current status. Right-click a node to configure it or pair it again.</p></div>
+        <div><h2>Cluster setup</h2><p class="panel-caption">View cluster members and their current status. Ctrl-click a healthy node to configure a shard group; right-click to configure or pair it.</p></div>
       </div>
       <nav class="setup-tabs" role="tablist" aria-label="Cluster setup">
         <button class="setup-tab active" type="button" role="tab" id="setup-pairing-tab" aria-controls="pairing-panel" aria-selected="true">Pairing access</button>
@@ -209,7 +215,7 @@
     </section>
 
     <section id="cluster-overview-panel" class="cluster-window active" role="tabpanel" aria-labelledby="cluster-overview-tab">
-      <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Available nodes and their current status. Expand a node for hardware, engine inventory, and model capabilities. Right-click a node to configure or pair it.</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
+      <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Available nodes and their current status. Expand a node for hardware, engine inventory, and model capabilities. Ctrl-click a healthy node to create a shard group; right-click to configure or pair it.</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
       <nav class="overview-tabs" role="tablist" aria-label="Cluster overview">
         <button class="overview-tab active" type="button" role="tab" id="overview-members-tab" aria-controls="overview-members-panel" aria-selected="true">Available nodes</button>
         <button class="overview-tab" type="button" role="tab" id="overview-activity-tab" aria-controls="overview-activity-panel" aria-selected="false" tabindex="-1">Recent activity</button>
@@ -232,6 +238,27 @@
 
     <section id="routing-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-routing-tab" hidden>
       <h2>Job routing &amp; workload</h2>
+      <section class="pipeline-dashboard-panel" aria-labelledby="pipeline-dashboard-heading">
+        <div class="section-heading">
+          <div>
+            <h3 id="pipeline-dashboard-heading">Model distribution &amp; pipelines</h3>
+            <p class="panel-caption">See which models run whole on nodes and inspect sharded pipeline placement and stage health.</p>
+          </div>
+        </div>
+        <p id="pipeline-action-status" class="pipeline-action-status" role="status" aria-live="polite"></p>
+        <div id="pipeline-model-list" class="cards pipeline-model-list"></div>
+      </section>
+      <section class="pipeline-dashboard-panel" aria-labelledby="shard-dashboard-heading">
+        <div class="section-heading">
+          <div>
+            <h3 id="shard-dashboard-heading">Shard groups</h3>
+            <p class="panel-caption">Review group state, member engines, and placement rationale.</p>
+          </div>
+          <button id="refresh-shard-groups" class="icon-button" type="button">Refresh</button>
+        </div>
+        <p id="shard-group-status" class="pipeline-action-status" role="status" aria-live="polite"></p>
+        <div id="shard-group-list" class="cards pipeline-model-list"></div>
+      </section>
       <div id="routing-list" class="cards"></div>
     </section>
 
@@ -264,7 +291,7 @@
   </main>
 
   <!-- TAB 3: Persistent Memory & Learning -->
-  <main id="memory-tab" class="tab-content memory-grid">
+  <main id="memory-tab" class="tab-content memory-grid" role="tabpanel" aria-labelledby="memory-tab-button" hidden>
     <section id="learning-panel">
       <h2>What the cluster has learned</h2>
       <div id="learning-summary" class="cards"></div>
@@ -322,9 +349,50 @@
     </div>
   </dialog>
 
+  <dialog id="shard-group-setup-dialog" class="pairing-dialog shard-group-setup-dialog" aria-labelledby="shard-group-setup-title">
+    <form method="dialog">
+      <div class="node-properties-header">
+        <div><h2 id="shard-group-setup-title">Create shard group</h2><p class="panel-caption">Select workers first, then choose a model configured for the selected group.</p></div>
+        <button class="dialog-close" type="submit" value="cancel" aria-label="Close shard group setup">Close</button>
+      </div>
+      <label class="shard-setup-label">Shard mode
+        <select id="shard-group-setup-mode">
+          <option value="llamacpp-rpc">llama.cpp RPC</option>
+          <option value="vllm-mp">vLLM multi-node</option>
+        </select>
+      </label>
+      <label class="shard-setup-label">Automatic RPC worker release source
+        <select id="shard-group-setup-source">
+          <option value="official">Official llama.cpp (Vulkan)</option>
+          <option value="xdna">llama-xdna.cpp (XDNA, when a release is available)</option>
+        </select>
+      </label>
+      <fieldset class="shard-setup-fieldset">
+        <legend>Healthy worker nodes</legend>
+        <p class="panel-caption">Selecting a node automatically downloads and installs missing llama.cpp RPC workers. Installer-managed workers check for updates while idle; operator-configured engines are not replaced. vLLM requires manual setup.</p>
+        <div id="shard-group-setup-nodes" class="shard-node-options"></div>
+      </fieldset>
+      <label class="shard-setup-label">Model head node
+        <select id="shard-group-setup-head" disabled><option value="">Select worker nodes first</option></select>
+      </label>
+      <label class="shard-setup-label">Model
+        <select id="shard-group-setup-model" disabled><option value="">Select worker nodes first</option></select>
+      </label>
+      <label class="shard-setup-label">Requested context length
+        <input id="shard-group-setup-context" type="number" min="1" max="1048576" value="4096" required />
+      </label>
+      <p class="panel-caption">The planner uses each selected device's current free memory, assigns a safety margin, and refuses placement that cannot fit the model and requested KV cache.</p>
+      <p id="shard-group-setup-status" class="setup-status" role="status" aria-live="polite"></p>
+      <div class="pairing-dialog-actions">
+        <button class="icon-button" type="submit" value="cancel">Cancel</button>
+        <button id="shard-group-setup-create" class="primary-btn" type="button" disabled>Create and start group</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="node-context-menu" class="context-menu" hidden>
     <button data-action="properties">Edit host properties</button>
-    <button data-action="pair">Pair / re-pair with this cluster</button>
+    <button data-action="pair">Pair / re-pair</button>
     <button data-action="open">Open node interface</button>
     <button data-action="copy">Copy node address</button>
   </div>
@@ -355,7 +423,7 @@
           <h3>Model service</h3>
           <div class="node-properties-grid">
             <label>Default model<input name="default_model" placeholder="Automatic best match" /></label>
-            <label>Engine<select name="engine_name"><option value="ollama">Ollama</option><option value="lmstudio">LM Studio</option><option value="llamacpp">llama.cpp</option><option value="vllm">vLLM</option><option value="fastflowlm">FastFlowLM</option></select></label>
+            <label>Engine<select name="engine_name"><option value="ollama">Ollama</option><option value="lmstudio">LM Studio</option><option value="llamacpp">llama.cpp</option><option value="vllm">vLLM</option><option value="fastflowlm">FastFlowLM</option><option value="tgi">TGI</option><option value="localai">LocalAI</option><option value="mlx">MLX-LM</option><option value="sglang">SGLang</option><option value="openai">OpenAI-compatible</option></select></label>
             <label class="wide-field">Engine URL<input name="engine_url" placeholder="http://127.0.0.1:11434" /></label>
             <label class="wide-field">Disabled models<textarea name="disabled_models" rows="2" placeholder="One model per line"></textarea></label>
           </div>
@@ -374,6 +442,6 @@
     </div>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.10396464156f.js"></script>
 </body>
 </html>

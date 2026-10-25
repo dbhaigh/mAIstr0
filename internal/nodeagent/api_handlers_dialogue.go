@@ -1,10 +1,11 @@
 package nodeagent
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/httpx"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -13,7 +14,12 @@ import (
 func (a *Agent) handleDialogueCreate(w http.ResponseWriter, r *http.Request) {
 	var req createDialogueRequest
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		decoded, err := httpx.DecodeJSON[createDialogueRequest](w, r, httpx.SmallJSONBodyBytes)
+		if err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, apperr.Invalid(err))
+			return
+		}
+		req = decoded
 	}
 
 	id := req.ID
@@ -49,8 +55,10 @@ func (a *Agent) handleDialogueDelete(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) handleDialogueMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var req dialogueMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := httpx.DecodeJSON[dialogueMessageRequest](
+		w, r, httpx.InferenceJSONBodyBytes,
+	)
+	if err != nil {
 		writeJSONError(w, apperr.Invalid(err), dialogueMessageResponse{Error: err.Error()})
 		return
 	}

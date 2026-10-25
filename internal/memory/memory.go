@@ -98,6 +98,9 @@ type Store interface {
 	SaveAgentSession(harness, id string, session []byte) error
 	AgentSessions() ([][]byte, error)
 	DeleteAgentSession(harness, id string) error
+	SaveShardGroup(id string, group []byte) error
+	ShardGroups() ([][]byte, error)
+	DeleteShardGroup(id string) error
 	SaveDialogue(DialogueRecord) error
 	AppendDialogueTurn(id string, participants []string, topic string, turn Turn) error
 	Dialogue(id string) (DialogueRecord, error)
@@ -109,6 +112,11 @@ type Store interface {
 	Insights() Insights
 	Prune(olderThan time.Duration) (int, error)
 	ContextBrief(query, taskType string, limit int) string
+}
+
+// DialogueBatchAppender atomically appends multiple turns when supported.
+type DialogueBatchAppender interface {
+	AppendDialogueTurns(id string, participants []string, topic string, turns []Turn) error
 }
 
 // ChangeSource is optionally implemented by stores that can wake sync loops
@@ -124,6 +132,11 @@ type Snapshot struct {
 	Dialogues    []DialogueRecord  `json:"dialogues"`
 	SyncVersion  int               `json:"sync_version,omitempty"`
 	Watermarks   map[string]uint64 `json:"watermarks,omitempty"`
+}
+
+type Payload struct {
+	RecordIDs []string
+	Snapshot  Snapshot
 }
 
 type SearchFilter struct {
