@@ -1,6 +1,7 @@
 package nodeagent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -51,9 +52,10 @@ func newSyncerComponent(
 	}
 }
 
-func (s *syncerComponent) taskHistorySyncLoop() {
+func (s *syncerComponent) taskHistorySyncLoop(ctx context.Context) {
 	var backoff syncinterval.Backoff
-	if syncinterval.WaitDebounced(
+	if syncinterval.WaitDebouncedContext(
+		ctx,
 		syncinterval.Jitter(backoff.Current()),
 		syncinterval.DebounceInterval,
 		s.tasks.Changes(),
@@ -61,12 +63,13 @@ func (s *syncerComponent) taskHistorySyncLoop() {
 	) {
 		backoff.Reset()
 	}
-	for {
+	for ctx.Err() == nil {
 		changes := s.tasks.Changes()
 		before := s.tasks.Watermarks()
-		s.syncPeerTaskHistory()
+		s.syncPeerTaskHistoryWithContext(ctx)
 		backoff.Observe(syncinterval.WatermarksAdvanced(before, s.tasks.Watermarks()))
-		if syncinterval.WaitDebounced(
+		if syncinterval.WaitDebouncedContext(
+			ctx,
 			syncinterval.Jitter(backoff.Current()),
 			syncinterval.DebounceInterval,
 			changes,
@@ -78,13 +81,20 @@ func (s *syncerComponent) taskHistorySyncLoop() {
 }
 
 func (s *syncerComponent) syncPeerTaskHistory() {
-	if !s.standaloneLeader() {
+	s.syncPeerTaskHistoryWithContext(context.Background())
+}
+
+func (s *syncerComponent) syncPeerTaskHistoryWithContext(ctx context.Context) {
+	if ctx.Err() != nil || !s.standaloneLeader() {
 		return
 	}
 	peers := s.peers()
 	client := s.memorySyncClient()
 	remoteSnapshots := make(map[string]taskSyncSnapshot)
 	for _, peer := range peers {
+		if ctx.Err() != nil {
+			return
+		}
 		if !peer.Healthy || peer.ID == s.nodeID || peer.Address == "" {
 			continue
 		}
@@ -92,7 +102,8 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 		if s.memory != nil {
 			watermarks = taskmgr.FilterTaskWatermarks(s.memory.PeerWatermarks(peer.ID))
 		}
-		tasks, version, watermarks, err := fetchTaskSnapshot(
+		tasks, version, watermarks, err := fetchTaskSnapshotWithContext(
+			ctx,
 			client,
 			strings.TrimRight(peer.Address, "/")+"/tasks",
 			watermarks,
@@ -115,6 +126,9 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 	}
 
 	for _, peer := range peers {
+		if ctx.Err() != nil {
+			return
+		}
 		if !peer.Healthy || peer.ID == s.nodeID || peer.Address == "" {
 			continue
 		}
@@ -126,7 +140,8 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 			watermarks = remote.watermarks
 		}
 		tasks := s.tasks.SnapshotForPeer(version, watermarks)
-		err := postTaskSnapshotPages(
+		err := postTaskSnapshotPagesWithContext(
+			ctx,
 			client,
 			strings.TrimRight(peer.Address, "/")+"/tasks/replica",
 			tasks,
@@ -146,14 +161,15 @@ func (s *syncerComponent) syncPeerTaskHistory() {
 	}
 }
 
-func (s *syncerComponent) syncPeerMemoryLoop() {
+func (s *syncerComponent) syncPeerMemoryLoop(ctx context.Context) {
 	var backoff syncinterval.Backoff
-	for {
+	for ctx.Err() == nil {
 		changes := memorySyncChanges(s.memory)
 		before := memorySyncWatermarks(s.memory)
-		s.syncPeerMemory()
+		s.syncPeerMemoryWithContext(ctx)
 		backoff.Observe(syncinterval.WatermarksAdvanced(before, memorySyncWatermarks(s.memory)))
-		if syncinterval.WaitDebounced(
+		if syncinterval.WaitDebouncedContext(
+			ctx,
 			syncinterval.Jitter(backoff.Current()),
 			syncinterval.DebounceInterval,
 			changes,
@@ -165,7 +181,11 @@ func (s *syncerComponent) syncPeerMemoryLoop() {
 }
 
 func (s *syncerComponent) syncPeerMemory() {
-	if s.memory == nil || !s.standaloneLeader() {
+	s.syncPeerMemoryWithContext(context.Background())
+}
+
+func (s *syncerComponent) syncPeerMemoryWithContext(ctx context.Context) {
+	if ctx.Err() != nil || s.memory == nil || !s.standaloneLeader() {
 		return
 	}
 	peers := s.peers()
@@ -173,6 +193,9 @@ func (s *syncerComponent) syncPeerMemory() {
 	remoteSnapshots := make(map[string]memory.Snapshot)
 	peerVersions := make(map[string]int)
 	for _, peer := range peers {
+		if ctx.Err() != nil {
+			return
+		}
 		if !peer.Healthy || peer.ID == s.nodeID || peer.Address == "" {
 			continue
 		}
@@ -180,7 +203,8 @@ func (s *syncerComponent) syncPeerMemory() {
 		requestID := syncLogRequestID(nil)
 		logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=peer->node event=receive_start %s peer_id=%s body_bytes=unknown",
 			syncLogFields(requestID, s.nodeID, time.Since(fetchStarted), "none"), peer.ID)
-		snapshot, bodyBytes, status, err := fetchMemorySyncSnapshot(
+		snapshot, bodyBytes, status, err := fetchMemorySyncSnapshotWithContext(
+			ctx,
 			client,
 			strings.TrimRight(peer.Address, "/")+"/memory/sync",
 			memory.FilterMemoryWatermarks(s.memory.PeerWatermarks(peer.ID)),
@@ -208,6 +232,9 @@ func (s *syncerComponent) syncPeerMemory() {
 	}
 
 	for _, peer := range peers {
+		if ctx.Err() != nil {
+			return
+		}
 		if !peer.Healthy || peer.ID == s.nodeID || peer.Address == "" {
 			continue
 		}
@@ -236,7 +263,7 @@ func (s *syncerComponent) syncPeerMemory() {
 		}
 		s.bufferMemoryPayload(payload)
 	}
-	if err := s.flushToCluster(peerVersions); err != nil {
+	if err := s.flushToClusterWithContext(ctx, peerVersions); err != nil && ctx.Err() == nil {
 		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: cluster memory batch flush failed: %v", err)
 	}
 }
@@ -283,6 +310,13 @@ func (s *syncerComponent) FlushToCluster() error {
 }
 
 func (s *syncerComponent) flushToCluster(peerVersions map[string]int) error {
+	return s.flushToClusterWithContext(context.Background(), peerVersions)
+}
+
+func (s *syncerComponent) flushToClusterWithContext(ctx context.Context, peerVersions map[string]int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.memoryFlushMu.Lock()
 	defer s.memoryFlushMu.Unlock()
 
@@ -343,6 +377,9 @@ func (s *syncerComponent) flushToCluster(peerVersions map[string]int) error {
 	successfulPeers := 0
 	var flushErrors []error
 	for _, peer := range peers {
+		if err := ctx.Err(); err != nil {
+			return requeue(err)
+		}
 		if !peer.Healthy || peer.ID == s.nodeID || peer.Address == "" {
 			continue
 		}
@@ -350,7 +387,8 @@ func (s *syncerComponent) flushToCluster(peerVersions map[string]int) error {
 		requestID := syncLogRequestID(nil)
 		logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_start %s peer_id=%s body_bytes=%d pages=%d",
 			syncLogFields(requestID, s.nodeID, time.Since(started), "none"), peer.ID, totalBodyBytes, len(bodies))
-		sentBytes, err := postMemorySnapshotPages(
+		sentBytes, err := postMemorySnapshotPagesWithContext(
+			ctx,
 			client,
 			strings.TrimRight(peer.Address, "/")+"/memory/sync",
 			bodies,

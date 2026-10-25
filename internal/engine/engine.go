@@ -8,8 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 // Model describes an LLM available on a node, tagged with the task
@@ -224,7 +225,7 @@ func NewConfiguredWithAPIKey(name, baseURL, apiKey string) Engine {
 }
 
 // httpClient is shared with a short timeout since these are local calls.
-var httpClient = &http.Client{Timeout: 5 * time.Second}
+var httpClient = httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ProbeTimeout})
 
 func postJSON(url string, body any, out any) error {
 	buf, err := json.Marshal(body)

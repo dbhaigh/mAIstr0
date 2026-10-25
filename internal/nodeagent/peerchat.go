@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -403,21 +404,26 @@ func queryInt(r *http.Request, key string, def int) int {
 // performance aggregates upstream so the orchestrator's routing decisions
 // benefit from every node's local experience.
 func (a *Agent) syncMemoryToOrchestrator() {
+	a.syncMemoryToOrchestratorContext(context.Background())
+}
+
+func (a *Agent) syncMemoryToOrchestratorContext(ctx context.Context) {
 	if a.mem == nil {
 		return
 	}
 	var backoff syncinterval.Backoff
-	for {
+	for ctx.Err() == nil {
 		changes := memorySyncChanges(a.mem)
 		before := a.mem.Watermarks()
 		addr := a.getOrchestratorAddr()
 		if addr != "" {
-			if err := a.syncOrchestratorMemory(addr); err != nil {
+			if err := a.syncOrchestratorMemoryWithContext(ctx, addr); err != nil && ctx.Err() == nil {
 				logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync with orchestrator %s failed: %v", addr, err)
 			}
 		}
 		backoff.Observe(syncinterval.WatermarksAdvanced(before, a.mem.Watermarks()))
-		if syncinterval.WaitDebounced(
+		if syncinterval.WaitDebouncedContext(
+			ctx,
 			syncinterval.Jitter(backoff.Current()),
 			syncinterval.DebounceInterval,
 			changes,
@@ -429,6 +435,10 @@ func (a *Agent) syncMemoryToOrchestrator() {
 }
 
 func (a *Agent) syncOrchestratorMemory(addr string) error {
+	return a.syncOrchestratorMemoryWithContext(context.Background(), addr)
+}
+
+func (a *Agent) syncOrchestratorMemoryWithContext(ctx context.Context, addr string) error {
 	if a.mem == nil {
 		return fmt.Errorf("memory store unavailable")
 	}
@@ -441,7 +451,8 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 	requestID := syncLogRequestID(nil)
 	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=receive_start %s peer=%s body_bytes=unknown",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(fetchStarted), "none"), addr)
-	remoteSnapshot, bodyBytes, status, err := fetchMemorySyncSnapshot(
+	remoteSnapshot, bodyBytes, status, err := fetchMemorySyncSnapshotWithContext(
+		ctx,
 		a.memorySyncClient,
 		strings.TrimRight(addr, "/")+"/api/memory/sync",
 		memory.FilterMemoryWatermarks(a.mem.PeerWatermarks(peerID)),
@@ -491,7 +502,8 @@ func (a *Agent) syncOrchestratorMemory(addr string) error {
 	}
 	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->orchestrator event=send_start %s peer=%s body_bytes=%d pages=%d records=%d",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(postStarted), "none"), addr, totalBodyBytes, len(bodies), memorySyncRecordCount(snapshot))
-	sentBytes, err := postMemorySnapshotPages(
+	sentBytes, err := postMemorySnapshotPagesWithContext(
+		ctx,
 		a.memorySyncClient,
 		strings.TrimRight(addr, "/")+"/api/memory/sync",
 		bodies,

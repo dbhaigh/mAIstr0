@@ -5,9 +5,10 @@ machines on a LAN. It combines task planning and scheduling, a transparent
 inference router, interactive Pi and DeepSeek harnesses, and synchronized
 cluster memory. It does not require cloud inference.
 
-Current version: **0.0.24.1**. See the [release notes](./changelog.md#00241)
-for the shard-group setup wizard, cluster reliability improvements, and
-dashboard updates.
+Current version: **0.0.24.2**. See the [release notes](./changelog.md#00242)
+for coalesced dashboard updates, cancellable background services, shared HTTP
+clients, and faster isolated tests. API, configuration, and storage formats
+remain unchanged.
 
 ## Updating nodes and editing shard members
 
@@ -92,6 +93,11 @@ network partition can produce a local winner on each side. Pairing establishes
 certificate pins for remote cluster traffic. Read the
 [architecture guide](./docs/architecture.md) for component boundaries and
 failure assumptions.
+
+Dashboard state updates are built off the request path, coalesced during bursts,
+and skipped when no clients are subscribed. Unchanged snapshots are not resent,
+but newly connected dashboards still receive current state. Service shutdown
+cancels background synchronization and upstream event streams before stores close.
 
 ## Documentation
 

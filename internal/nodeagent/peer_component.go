@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
 	"io"
 	"net/http"
@@ -23,20 +24,49 @@ func (c *peerComponent) peerSnapshot() []cluster.NodeStatus {
 }
 
 func (c *peerComponent) currentTasks() []*taskmgr.Task {
-	if c.isMostCapable() {
-		return c.tasks.All()
-	}
-	leader := c.mostCapableNode()
-	resp, err := c.peerHTTP().Get(leader.Address + "/tasks")
+	tasks, err := c.currentTasksContext(context.Background())
 	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	var tasks []*taskmgr.Task
-	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
-		return nil
+		logging.Errorf("nodeagent", "nodeagent: fetch peer tasks: %v", err)
 	}
 	return tasks
+}
+
+func (c *peerComponent) currentTasksContext(ctx context.Context) ([]*taskmgr.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if c.isMostCapable() {
+		return c.tasks.All(), nil
+	}
+	leader := c.mostCapableNode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, leader.Address+"/tasks", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create peer task request: %w", err)
+	}
+	resp, err := c.peerHTTP().Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("fetch tasks from %s: %w", leader.ID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch tasks from %s: HTTP %s", leader.ID, resp.Status)
+	}
+	limit := c.state.configSnapshot().SyncMaxBytes
+	if limit <= 0 {
+		limit = config.DefaultSyncMaxBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read tasks from %s: %w", leader.ID, err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("tasks from %s exceed the %d-byte sync limit", leader.ID, limit)
+	}
+	var tasks []*taskmgr.Task
+	if err := json.Unmarshal(body, &tasks); err != nil {
+		return nil, fmt.Errorf("decode tasks from %s: %w", leader.ID, err)
+	}
+	return tasks, nil
 }
 
 func (c *peerComponent) dispatchToPeer(ctx context.Context, taskID string, asg scheduler.Assignment) {

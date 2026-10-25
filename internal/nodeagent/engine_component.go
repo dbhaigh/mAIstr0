@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -494,12 +495,17 @@ func (c *engineComponent) refreshReportedModelsWithForce(force bool) {
 }
 
 func (c *engineComponent) modelRefreshLoop() {
-	c.refreshReportedModels()
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		c.refreshReportedModels()
+	c.modelRefreshLoopContext(context.Background())
+}
+
+func (c *engineComponent) modelRefreshLoopContext(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
 	}
+	c.refreshReportedModels()
+	background.RunEvery(ctx, 10*time.Second, func(context.Context) {
+		c.refreshReportedModels()
+	})
 }
 
 func (c *engineComponent) engineFor(model string) engine.Engine {

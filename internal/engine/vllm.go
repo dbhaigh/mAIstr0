@@ -10,7 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 // VLLM contains the shared OpenAI-compatible client used by vLLM, llama.cpp,
@@ -40,8 +41,8 @@ func newOpenAICompatibleEngineWithAPIKey(baseURL, engineName, apiKey string) *VL
 		baseURL:     strings.TrimRight(baseURL, "/"),
 		engineName:  engineName,
 		apiKey:      apiKey,
-		client:      &http.Client{Timeout: 10 * time.Minute},
-		probeClient: &http.Client{Timeout: 5 * time.Second},
+		client:      httpx.NewClient(httpx.ClientOptions{Timeout: httpx.InferenceTimeout}),
+		probeClient: httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ProbeTimeout}),
 	}
 }
 

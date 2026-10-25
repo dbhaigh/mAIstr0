@@ -1,0 +1,67 @@
+name: Scheduled benchmarks
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmarks:
+    name: Snapshot, scheduler, and sync paging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOMAXPROCS: "2"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Record benchmark environment
+        shell: bash
+        run: |
+          mkdir -p benchmark-results
+          {
+            printf 'commit=%s\nrun_id=%s\nrunner=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$RUNNER_OS"
+            printf 'GOMAXPROCS=%s\n' "$GOMAXPROCS"
+            go version
+            go env GOOS GOARCH
+            lscpu
+          } > benchmark-results/environment.txt
+      - name: Run repeatable focused benchmarks
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -json -run '^$' \
+            -bench '^(BenchmarkBuildSnapshot|BenchmarkPublishSnapshotRequests|BenchmarkPublisherRequest|BenchmarkAssignWithConfigNodes80|BenchmarkAssignWithExperienceNodes32ManyModels|BenchmarkAssignWithExperienceNodeModels|BenchmarkMemoryHistoryPageTransfer)$' \
+            -benchmem -benchtime=1s -count=5 \
+            ./internal/orchestrator ./internal/hub ./internal/scheduler ./internal/memory \
+            | tee benchmark-results/benchmarks.json
+      - name: Export benchstat-compatible results
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("benchmark-results")
+          source = root / "benchmarks.json"
+          if source.exists():
+              with (root / "benchmarks.txt").open("w") as output:
+                  for line in source.read_text().splitlines():
+                      event = json.loads(line)
+                      if event.get("Action") == "output":
+                          output.write(event.get("Output", ""))
+          PY
+      - name: Upload benchmark samples and environment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: benchmark-results/
+          retention-days: 90
+          if-no-files-found: error

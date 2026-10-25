@@ -204,7 +204,7 @@ func (a *Agent) handleManagedEngineProxy(w http.ResponseWriter, r *http.Request)
 	}
 	request.Header = r.Header.Clone()
 	stripManagedProxyHopHeaders(request.Header)
-	response, err := http.DefaultClient.Do(request)
+	response, err := httpx.NewClient(httpx.ClientOptions{}).Do(request)
 	if err != nil {
 		http.Error(w, "managed engine request failed", http.StatusBadGateway)
 		return

@@ -1,8 +1,10 @@
 package nodeagent
 
 import (
+	"context"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/hardware"
 )
@@ -147,12 +149,17 @@ func (c *telemetryComponent) recordHardwareUsage(usage hardwareUsageSample) {
 }
 
 func (c *telemetryComponent) hardwareUsageLoop() {
-	c.refreshHardwareUsage()
-	ticker := time.NewTicker(hardwareProbeInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		c.refreshHardwareUsage()
+	c.hardwareUsageLoopContext(context.Background())
+}
+
+func (c *telemetryComponent) hardwareUsageLoopContext(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
 	}
+	c.refreshHardwareUsage()
+	background.RunEvery(ctx, hardwareProbeInterval, func(context.Context) {
+		c.refreshHardwareUsage()
+	})
 }
 
 const gpuHistoryLimit = 60

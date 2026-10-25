@@ -1,0 +1,5 @@
+static/*.js text eol=lf
+static/*.css text eol=lf
+static/*.html text eol=lf
+static/*.gz binary
+static/*.br binary

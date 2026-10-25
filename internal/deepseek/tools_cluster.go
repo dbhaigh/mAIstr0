@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/engine"
-	"net/http"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"strings"
 	"time"
 )
@@ -359,7 +359,7 @@ func (t *GetNodeDialogueTool) Execute(ctx context.Context, h *Harness, s *Sessio
 		return nil, nodeID, "", "", fmt.Errorf("node %s not found or offline", nodeID)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ProbeTimeout})
 	resp, err := client.Get(fmt.Sprintf("%s/dialogues/%s", node.Address, dialogueID))
 	if err != nil {
 		return nil, node.ID, node.Address, "", err

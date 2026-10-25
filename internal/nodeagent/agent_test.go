@@ -33,15 +33,21 @@ type blockingExecutionEngine struct {
 
 func mustNewTestAgent(t *testing.T, cfg config.NodeConfig) *Agent {
 	t.Helper()
-	agent, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
+	if cfg.MemoryPath == "" {
+		cfg.MemoryPath = filepath.Join(t.TempDir(), "node.db")
 	}
+	if cfg.AdvertiseAddr == "" {
+		cfg.AdvertiseAddr = "https://127.0.0.1:7451"
+	}
+	agent := mustNewTestAgentWithEngineDetector(t, cfg, taskmgr.NewManager(), func() []engine.Engine { return nil })
+	t.Cleanup(func() { _ = agent.Close() })
 	return agent
 }
 
 func mustNewTestAgentWithEngineDetector(t *testing.T, cfg config.NodeConfig, tasks *taskmgr.Manager, detector func() []engine.Engine) *Agent {
 	t.Helper()
+	// Inventory probing belongs to hardware tests, not these agent fixtures.
+	t.Setenv("PATH", "")
 	agent, err := newAgentWithEngineDetector(cfg, tasks, detector)
 	if err != nil {
 		t.Fatal(err)

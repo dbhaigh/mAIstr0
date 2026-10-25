@@ -11,7 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 const (
@@ -161,10 +162,10 @@ func (stream *StageActivationStream) Read(buffer []byte) (int, error) {
 // HTTPPipelineStageEngine adapts a local serving runtime that implements the
 // stage HTTP endpoints to the optional PipelineStageEngine capability.
 type HTTPPipelineStageEngine struct {
-	name              string
-	baseURL           string
-	client            *http.Client
-	capabilityClient  *http.Client
+	name             string
+	baseURL          string
+	client           *http.Client
+	capabilityClient *http.Client
 }
 
 func NewHTTPPipelineStageEngine(name, baseURL string, client *http.Client) (*HTTPPipelineStageEngine, error) {
@@ -173,11 +174,11 @@ func NewHTTPPipelineStageEngine(name, baseURL string, client *http.Client) (*HTT
 		return nil, fmt.Errorf("invalid pipeline stage server URL %q", baseURL)
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Minute}
+		client = httpx.NewClient(httpx.ClientOptions{Timeout: httpx.InferenceTimeout})
 	}
 	return &HTTPPipelineStageEngine{
 		name: name, baseURL: strings.TrimRight(baseURL, "/"), client: client,
-		capabilityClient: &http.Client{Timeout: 5 * time.Second},
+		capabilityClient: httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ProbeTimeout}),
 	}, nil
 }
 

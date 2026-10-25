@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"io"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type EvalExpressionTool struct{}
@@ -144,7 +144,7 @@ func (t *FetchWebTool) Execute(ctx context.Context, h *Harness, s *Session, args
 		return nil, "", "", "", errors.New("url is required")
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ControlTimeout})
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return nil, "", "", "", err

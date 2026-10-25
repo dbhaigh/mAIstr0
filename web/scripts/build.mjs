@@ -30,7 +30,7 @@ if (warnings.length > 0) {
 }
 const bundle = code;
 const bundleHash = createHash("sha256").update(bundle).digest("hex").slice(0, 12);
-const css = await readFile(path.join(staticDir, "style.css"));
+const css = Buffer.from((await readFile(path.join(staticDir, "style.css"), "utf8")).replace(/\r\n/g, "\n"));
 const cssHash = createHash("sha256").update(css).digest("hex").slice(0, 12);
 const bundleName = `app.${bundleHash}.js`;
 const cssName = `style.${cssHash}.css`;
@@ -52,7 +52,11 @@ await writeFile(indexPath, index);
 
 for (const name of await readdir(staticDir)) {
   if (/\.(?:br|gz)$/.test(name)) continue;
-  const asset = await readFile(path.join(staticDir, name));
+  let asset = await readFile(path.join(staticDir, name));
+  if (/\.(?:html|js|css)$/.test(name)) {
+    asset = Buffer.from(asset.toString("utf8").replace(/\r\n/g, "\n"));
+    await writeFile(path.join(staticDir, name), asset);
+  }
   await writeFile(path.join(staticDir, `${name}.gz`), gzipSync(asset, { level: 9 }));
   await writeFile(
     path.join(staticDir, `${name}.br`),

@@ -3,10 +3,13 @@ package nodeagent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/version"
@@ -184,15 +187,15 @@ func (a *Agent) DemoteFromOrchestrator(orchestratorID, address string) {
 	c.joinedMu.Unlock()
 }
 
-func (c *orchestratorLink) resolveOrchestratorAndRegister() {
+func (c *orchestratorLink) resolveOrchestratorAndRegister(ctx context.Context) {
 	if c.getOrchestratorAddr() == "" && c.discoveryListener == nil {
 		logging.Infof("nodeagent", "nodeagent: discovery disabled and no orchestrator configured; registration will retry")
 	}
-	c.registrationLoop()
+	c.registrationLoop(ctx)
 }
 
-func (c *orchestratorLink) registrationLoop() {
-	register := func() {
+func (c *orchestratorLink) registrationLoop(ctx context.Context) {
+	register := func(ctx context.Context) {
 		candidates := c.orchestratorCandidates()
 		if len(candidates) == 0 {
 			c.joinedMu.Lock()
@@ -210,12 +213,18 @@ func (c *orchestratorLink) registrationLoop() {
 				continue
 			}
 			if !c.trust.IsTrustedID(candidate.id) {
-				if pairErr := c.pairOrchestrator(candidate); pairErr != nil {
+				if pairErr := c.pairOrchestratorContext(ctx, candidate); pairErr != nil {
 					logging.Errorf("nodeagent", "nodeagent: pairing candidate %s failed: %v", candidate.id, pairErr)
 					continue
 				}
 			}
-			resp, postErr := c.peerClient.Post(candidate.address+"/api/nodes/register", "application/json", bytes.NewReader(body))
+			request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, candidate.address+"/api/nodes/register", bytes.NewReader(body))
+			if requestErr != nil {
+				logging.Errorf("nodeagent", "nodeagent: create registration request: %v", requestErr)
+				continue
+			}
+			request.Header.Set("Content-Type", "application/json")
+			resp, postErr := c.peerClient.Do(request)
 			if postErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				resp.Body.Close()
 				if candidate.role == "orchestrator" {
@@ -254,13 +263,11 @@ func (c *orchestratorLink) registrationLoop() {
 		logging.Infof("nodeagent", "nodeagent: no elected orchestrator accepted registration; discovery remains active")
 	}
 
-	time.Sleep(1500 * time.Millisecond)
-	register()
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		register()
+	if !background.Wait(ctx, 1500*time.Millisecond) {
+		return
 	}
+	register(ctx)
+	background.RunEvery(ctx, 5*time.Second, register)
 }
 
 func (c *orchestratorLink) orchestratorCandidates() []orchestratorCandidate {
@@ -317,13 +324,13 @@ func sortOrchestratorCandidates(candidates []orchestratorCandidate) {
 	})
 }
 
-func (c *orchestratorLink) peerPollLoop() {
-	poll := func() {
+func (c *orchestratorLink) peerPollLoop(ctx context.Context) {
+	poll := func(ctx context.Context) {
 		addr := c.getOrchestratorAddr()
 		if addr == "" {
 			return
 		}
-		resp, err := c.peerClient.Get(addr + "/api/nodes")
+		resp, err := getWithContext(ctx, c.peerClient, addr+"/api/nodes")
 		if err != nil {
 			logging.Errorf("nodeagent", "nodeagent: peer poll failed: %v", err)
 			return
@@ -334,7 +341,7 @@ func (c *orchestratorLink) peerPollLoop() {
 			return
 		}
 		c.state.replacePeers(nodes)
-		rosterResp, err := c.peerClient.Get(addr + "/api/pairing/roster")
+		rosterResp, err := getWithContext(ctx, c.peerClient, addr+"/api/pairing/roster")
 		if err != nil {
 			logging.Errorf("nodeagent", "nodeagent: paired-peer roster refresh failed: %v", err)
 		} else {
@@ -369,32 +376,40 @@ func (c *orchestratorLink) peerPollLoop() {
 		}
 	}
 
-	time.Sleep(1500 * time.Millisecond)
-	poll()
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		poll()
+	if !background.Wait(ctx, 1500*time.Millisecond) {
+		return
 	}
+	poll(ctx)
+	background.RunEvery(ctx, 10*time.Second, poll)
 }
 
-func (c *orchestratorLink) sseSubscribeLoop() {
-	time.Sleep(1500 * time.Millisecond)
-	for {
+func (c *orchestratorLink) sseSubscribeLoop(ctx context.Context) {
+	if !background.Wait(ctx, 1500*time.Millisecond) {
+		return
+	}
+	for ctx.Err() == nil {
 		addr := c.getOrchestratorAddr()
 		if addr == "" {
-			time.Sleep(time.Second)
+			if !background.Wait(ctx, time.Second) {
+				return
+			}
 			continue
 		}
-		if err := c.subscribeOnce(addr); err != nil {
+		if err := c.subscribeOnceContext(ctx, addr); err != nil && ctx.Err() == nil {
 			logging.Errorf("nodeagent", "nodeagent: event stream to orchestrator lost, retrying: %v", err)
 		}
-		time.Sleep(2 * time.Second)
+		if !background.Wait(ctx, 2*time.Second) {
+			return
+		}
 	}
 }
 
 func (c *orchestratorLink) subscribeOnce(addr string) error {
-	req, err := http.NewRequest(http.MethodGet, addr+"/api/events", nil)
+	return c.subscribeOnceContext(context.Background(), addr)
+}
+
+func (c *orchestratorLink) subscribeOnceContext(ctx context.Context, addr string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr+"/api/events", nil)
 	if err != nil {
 		return err
 	}
@@ -432,20 +447,43 @@ func (c *orchestratorLink) subscribeOnce(addr string) error {
 	return scanner.Err()
 }
 
-func (c *orchestratorLink) broadcastLoop() {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		c.publishSnapshot()
-	}
+func (c *orchestratorLink) broadcastLoop(ctx context.Context) {
+	c.snapshotPublisher().Run(ctx)
 }
 
 func (c *orchestratorLink) publishSnapshot() {
+	// currentTasks may fetch the full task list from a peer, so skip the
+	// snapshot entirely when no dashboard is listening.
+	if !c.events.HasSubscribers() {
+		return
+	}
+	c.snapshotPublisher().Request()
+}
+
+func (c *orchestratorLink) snapshotPublisher() *hub.Publisher {
+	c.publisherOnce.Do(func() {
+		c.publisher = hub.NewPublisher(c.events, c.buildSnapshot)
+	})
+	return c.publisher
+}
+
+func (c *orchestratorLink) serveEvents(w http.ResponseWriter, r *http.Request) {
+	c.events.ServeHTTP(w, r)
+}
+
+func (c *orchestratorLink) buildSnapshot(ctx context.Context) ([]byte, error) {
 	var discoveryPeers []discovery.Peer
 	if c.discoveryListener != nil {
 		discoveryPeers = c.discoveryListener.Snapshot()
 	}
 	nodes := c.state.peersSnapshot()
+	tasks, err := c.currentTasks(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		logging.Errorf("nodeagent", "nodeagent: fetch tasks for event snapshot: %v", err)
+	}
 	snapshot := struct {
 		Nodes        []cluster.NodeStatus `json:"nodes"`
 		Tasks        []*taskmgr.Task      `json:"tasks"`
@@ -453,14 +491,18 @@ func (c *orchestratorLink) publishSnapshot() {
 		BuildVersion string               `json:"build_version"`
 		MemberCount  int                  `json:"member_count"`
 	}{
-		Nodes: nodes, Tasks: c.currentTasks(), Discovery: discoveryPeers,
+		Nodes: nodes, Tasks: tasks, Discovery: discoveryPeers,
 		BuildVersion: version.String(), MemberCount: len(nodes),
 	}
-	data, err := json.Marshal(snapshot)
+	return json.Marshal(snapshot)
+}
+
+func getWithContext(ctx context.Context, client *http.Client, address string) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
-		return
+		return nil, err
 	}
-	c.events.Broadcast(data)
+	return client.Do(request)
 }
 
 func (a *Agent) getOrchestratorAddr() string {
@@ -478,26 +520,32 @@ func (a *Agent) isJoined() bool {
 }
 
 func (a *Agent) resolveOrchestratorAndRegister() {
-	a.orchestratorLink.resolveOrchestratorAndRegister()
+	a.orchestratorLink.resolveOrchestratorAndRegister(a.orchestratorLink.background.Context())
 }
 
-func (a *Agent) registrationLoop() { a.orchestratorLink.registrationLoop() }
+func (a *Agent) registrationLoop() {
+	a.orchestratorLink.registrationLoop(a.orchestratorLink.background.Context())
+}
 
 func (a *Agent) orchestratorCandidates() []orchestratorCandidate {
 	return a.orchestratorLink.orchestratorCandidates()
 }
 
-func (a *Agent) peerPollLoop() { a.orchestratorLink.peerPollLoop() }
+func (a *Agent) peerPollLoop() {
+	a.orchestratorLink.peerPollLoop(a.orchestratorLink.background.Context())
+}
 
 func (a *Agent) sseSubscribeLoop() {
-	a.orchestratorLink.sseSubscribeLoop()
+	a.orchestratorLink.sseSubscribeLoop(a.orchestratorLink.background.Context())
 }
 
 func (a *Agent) subscribeOnce(addr string) error {
 	return a.orchestratorLink.subscribeOnce(addr)
 }
 
-func (a *Agent) broadcastLoop() { a.orchestratorLink.broadcastLoop() }
+func (a *Agent) broadcastLoop() {
+	a.orchestratorLink.broadcastLoop(a.orchestratorLink.background.Context())
+}
 
 func (a *Agent) publishSnapshot() {
 	a.orchestratorLink.publishSnapshot()

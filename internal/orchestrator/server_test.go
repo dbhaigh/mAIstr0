@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -37,9 +38,27 @@ import (
 // the test's temp directory so runs never touch the real user store.
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	// Component tests supply worker hardware explicitly; do not invoke optional
+	// host inventory tools (PowerShell, nvidia-smi, etc.) for every fixture.
+	t.Setenv("PATH", "")
 	srv, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "orch.db"), "deepseek")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Unavailable placeholder workers must fail deterministically, not wait for
+	// DNS, a proxy, or a real service outside the test's loopback servers.
+	transport := routerRoundTripper(func(request *http.Request) (*http.Response, error) {
+		host := request.URL.Hostname()
+		if host != "localhost" && !net.ParseIP(host).IsLoopback() {
+			return nil, fmt.Errorf("test worker unavailable: %s", host)
+		}
+		return http.DefaultTransport.RoundTrip(request)
+	})
+	for _, client := range []*http.Client{
+		srv.nodeClient.client, srv.nodeClient.dispatcher, srv.nodeClient.status,
+		srv.nodeClient.managed, srv.nodeClient.modelPull, srv.nodeClient.sync,
+	} {
+		client.Transport = &requestIDTransport{next: transport}
 	}
 	t.Cleanup(func() {
 		_ = srv.Close()

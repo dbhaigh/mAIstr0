@@ -3,22 +3,23 @@
 This file is the phase prompt pack and acceptance checklist. For a dated
 assessment of implementation and remaining work, see
 [docs/engineering-improvement-plan.md](./docs/engineering-improvement-plan.md).
-The current status below is a working-tree snapshot, not a claim that all
-changes have been reviewed or merged.
+The current status below describes the implementation packaged in release
+`0.0.24.2`; remote CI and merge status must still be checked independently.
 
-## Current implementation update — 2026-10-19
+## Current implementation update — 2026-10-25
 
-- Phases 2–5 and 7–8 are implemented in the current source. Phase 1
-  characterization and contract coverage is complete in the current worktree;
-  review and merge its fixtures with the tests.
-- Phase 6 is implemented for the stated decomposition and size goals: the
-  production Go files in `internal/orchestrator`, `internal/nodeagent`, and
-  `internal/taskmgr` are all below 500 lines, with responsibilities owned by
-  focused components and lock order documented. Further splits should follow a
-  concrete review finding, not the line-count target alone.
-- Phase 0 remains open until the current worktree is reviewed and merged. The
-  Linux race suite has passed previously; native Windows may report the
-  documented ThreadSanitizer shadow-memory allocation limitation.
+- Phases 1–5 and 7–8 have existing implementations and characterization tests.
+  The follow-up implementation started from clean commit `99b1520` on
+  `copilot/ubuntu-race-validation`; it is not the older mixed worktree.
+- Phase 6 is continuing maintenance, not a blanket file-size guarantee.
+  The supervisor manager, shard-group manager, and shard planner now have
+  responsibility-based extractions below 500 lines each. Routing and pipeline
+  dispatch still have larger files; split only around concrete ownership.
+- Reusable snapshot publishing, joined background cancellation, shared HTTP
+  timeout profiles, bounded peer task reads, and benchmark/test feedback extend
+  the original phases. See the dated assessment for implementation details.
+- Go 1.27.3 is installed in the WSL user's home directory for Linux race checks.
+  Native Windows race builds currently fail in cgo; CI remains the release gate.
 - Incremental sync now supports configurable transfer limits and timeouts with
   the established 64 MiB and 10-minute defaults. Metrics, service examples,
   normalized config printing, and dashboard connection status are documented
@@ -55,13 +56,13 @@ changes have been reviewed or merged.
 
 | # | Phase | Depends on | Risk | Outcome | Current status |
 |---|-------|-----------|------|---------|----------------|
-| 0 | Stabilize baseline | none | Low | Clean, reviewed, green starting point | **Partial** — race caveats are documented; the current worktree is not clean |
-| 1 | Characterization and contract tests | 0 | Low | Behavior locked down before refactoring | **Coverage complete in current worktree** — review and merge the test/golden updates |
+| 0 | Stabilize baseline | none | Low | Clean, reviewed, green starting point | **Clean starting commit `99b1520`** — follow-up implementation still requires review and CI |
+| 1 | Characterization and contract tests | 0 | Low | Behavior locked down before refactoring | **Implemented** — existing goldens plus SSE and cancellation regression coverage |
 | 2 | Config validation and normalization | 1 | Low | One source of truth for config rules | **Implemented** |
 | 3 | Separate domain errors from HTTP | 1 | Medium | Domain services don't depend on HTTP status codes | **Implemented** |
 | 4 | Unify dispatch/worker pool | 1 | Medium | One tested concurrency primitive | **Implemented** |
 | 5 | Persistence behind interfaces | 1 | Medium | bbolt isolated behind repositories | **Implemented** |
-| 6 | Split god objects | 3, 4, 5 | High | `Server`, `Agent`, and `Manager` decomposed | **Implemented in the current worktree** — production files in all three target packages are below 500 lines; component locks and task-manager order are documented |
+| 6 | Split god objects | 3, 4, 5 | High | `Server`, `Agent`, and `Manager` decomposed | **Implemented; continuing maintenance** — supervisor/shard responsibilities are extracted; other large files remain |
 | 7 | Incremental memory sync | 5 | Medium | Sync supports watermarks with full-snapshot fallback | **Implemented** |
 | 8 | Language-neutral contracts | 1–7 | Medium | OpenAPI, schemas, fixtures, and porting guide | **Implemented** |
 
