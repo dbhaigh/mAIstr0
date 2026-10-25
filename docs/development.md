@@ -193,8 +193,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
 
 ### Rapid iteration releases
 
-The source release number is now `0.0.24.2`. Increment the fourth numeric
-component for rapid iterations (`0.0.24.3`, ..., `0.0.24.10`); use the next
+The source release number is now `0.0.24.3`. Increment the fourth numeric
+component for rapid iterations (`0.0.24.4`, ..., `0.0.24.10`); use the next
 third component for a new patch series. This is a numeric four-component
 release convention, not SemVer. Peer manifests accept both three and four
 components and compare components numerically, with an omitted fourth
