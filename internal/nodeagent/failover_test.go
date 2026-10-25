@@ -38,4 +38,16 @@ func TestPromoteToOrchestratorKeepsNodeIdentity(t *testing.T) {
 	if got := agent.orchestratorLink.electionCandidateAddrValue(); got != "" {
 		t.Fatalf("candidate announcement address = %q after promotion, want empty", got)
 	}
+
+	const winnerAddr = "https://192.0.2.20:7450"
+	agent.DemoteFromOrchestrator("orchestrator-original", winnerAddr)
+	if agent.localOrchestratorIDValue() != "" {
+		t.Fatalf("local coordinator ID = %q after demotion, want empty", agent.localOrchestratorIDValue())
+	}
+	if agent.getOrchestratorID() != "orchestrator-original" || agent.getOrchestratorAddr() != winnerAddr {
+		t.Fatalf("demoted coordinator state = (%q, %q)", agent.getOrchestratorID(), agent.getOrchestratorAddr())
+	}
+	if agent.isJoined() {
+		t.Fatal("demoted node still reports a joined orchestrator before re-registering")
+	}
 }

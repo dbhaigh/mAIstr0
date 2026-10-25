@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -1608,5 +1609,88 @@ func TestTaskSubmissionProxyUsesLongTimeoutClient(t *testing.T) {
 	agent.handleAPITasksPost(response, request)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("proxied task submission returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestReadOnlyClusterViewsProxyToOrchestrator(t *testing.T) {
+	var gotURI string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	tests := []struct {
+		name       string
+		joined     bool
+		target     string
+		handler    func(*Agent) http.HandlerFunc
+		wantStatus int
+		wantURI    string
+	}{
+		{name: "cluster health", joined: true, target: "/api/cluster/health", handler: func(a *Agent) http.HandlerFunc { return a.handleAPIOrchestratorRead }, wantStatus: http.StatusOK, wantURI: "GET /api/cluster/health"},
+		{name: "shard groups", joined: true, target: "/api/shards", handler: func(a *Agent) http.HandlerFunc { return a.handleAPIOrchestratorRead }, wantStatus: http.StatusOK, wantURI: "GET /api/shards"},
+		{name: "task page keeps query", joined: true, target: "/api/tasks?page_size=50&cursor=abc", handler: func(a *Agent) http.HandlerFunc { return a.handleAPITasksList }, wantStatus: http.StatusOK, wantURI: "GET /api/tasks?page_size=50&cursor=abc"},
+		{name: "not joined", target: "/api/cluster/health", handler: func(a *Agent) http.HandlerFunc { return a.handleAPIOrchestratorRead }, wantStatus: http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotURI = ""
+			agent := mustNewTestAgent(t, config.NodeConfig{})
+			if tt.joined {
+				agent.orchestratorAddr = upstream.URL
+			}
+			agent.peerClient = upstream.Client()
+			response := httptest.NewRecorder()
+			tt.handler(agent)(response, httptest.NewRequest(http.MethodGet, tt.target, nil))
+			if response.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, tt.wantStatus, response.Body.String())
+			}
+			if gotURI != tt.wantURI {
+				t.Fatalf("upstream request = %q, want %q", gotURI, tt.wantURI)
+			}
+		})
+	}
+}
+
+func TestNodeDashboardProxiesShardCreationAndProfileReadsToOrchestrator(t *testing.T) {
+	var gotMethod, gotURI, gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotURI = r.URL.RequestURI()
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read proxied request body: %v", err)
+		}
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	agent := mustNewTestAgent(t, config.NodeConfig{})
+	agent.orchestratorAddr = upstream.URL
+	agent.peerClient = upstream.Client()
+
+	createResponse := httptest.NewRecorder()
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/shards", strings.NewReader(`{"mode":"llamacpp-rpc"}`))
+	agent.handleAPIOrchestratorProxy(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK || gotMethod != http.MethodPost ||
+		gotURI != "/api/shards" || gotBody != `{"mode":"llamacpp-rpc"}` {
+		t.Fatalf("shard create proxy = %d %s %s %q", createResponse.Code, gotMethod, gotURI, gotBody)
+	}
+
+	gotMethod, gotURI, gotBody = "", "", ""
+	profileResponse := httptest.NewRecorder()
+	profileRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/nodes/worker/engines/managed/engine/profile?requested_context=4096",
+		nil,
+	)
+	agent.handleAPINodeControl(profileResponse, profileRequest)
+	if profileResponse.Code != http.StatusOK || gotMethod != http.MethodGet ||
+		gotURI != "/api/nodes/worker/engines/managed/engine/profile?requested_context=4096" {
+		t.Fatalf("model profile proxy = %d %s %s", profileResponse.Code, gotMethod, gotURI)
 	}
 }

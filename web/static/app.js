@@ -357,6 +357,7 @@ let terminalDialogueId = null;
       const signature = signatureOf(item, index);
       let entry = previous.get(key);
       if (entry && entry.signature !== signature) {
+        while (cursor && entry.nodes.includes(cursor)) cursor = cursor.nextElementSibling;
         entry.nodes.forEach((node) => node.remove());
         entry = null;
       }
@@ -1481,6 +1482,131 @@ function nodeContextDetailsMarkup(node, expanded) {
     </div>
   </details>`;
 }
+function isClusterStatusQuestion(text) {
+  const query = text.toLowerCase();
+  const subject = /\b(cluster|nodes?|workers?|orchestrators?|peers?|engines?|models?|llms?|gpus?|npus?|cpus?|ram|vram|memory|hardware|capacity|telemetry|shards?|pipelines?|tasks?|queues?|versions?|leader|leadership|maistr0|network)\b/.test(query);
+  const read = /^(?:(?:hi|hello|please)[,.! ]+)*(?:what|which|who|where|when|why|how|is|are|do|does|can|could|would|has|have|show|list|tell|check|inspect|describe|compare|report|status|cluster)\b/.test(query.trim()) || /\b(status|health|inventory|available|online|offline|running|common|shared|same)\b/.test(query);
+  const capability = /^(?:what|which|can|could|does|do|is|are)\b/.test(query.trim()) && (/\b(enough|support|capable|able)\b/.test(query) || /\b(?:can|could)\s+(?:(?:the|this|my|our)\s+)?(?:cluster|nodes?|workers?|hardware|gpus?|npus?|cpus?|i)\b/.test(query));
+  const mutation = /\b(install|uninstall|download|pull|delete|remove|restart|reboot|stop|start|kill|deploy|configure|change|update|upgrade|enable|disable|create|build|write|implement|schedule|dispatch|benchmark|test|fix|repair|optimize|optimise)\b/.test(query) || /\brun\b/.test(query) && !capability;
+  return subject && read && !mutation;
+}
+async function answerClusterStatusQuestion(nodes) {
+  const sources = [
+    ["/api/cluster/health", "Capacity and telemetry"],
+    ["/api/status", "Orchestrator status"],
+    ["/api/shards", "Shard groups"],
+    ["/api/tasks?page_size=50", "Recent tasks"],
+    ["/api/version", "Build version"]
+  ];
+  const results = await Promise.allSettled(sources.map(([url]) => fetchJSON(url)));
+  const data = {};
+  const errors = [];
+  results.forEach((result, index) => {
+    const [url, label] = sources[index];
+    if (result.status === "fulfilled") {
+      if (url.startsWith("/api/tasks") && Array.isArray(result.value)) {
+        data[url] = { items: result.value.slice(0, 50), has_more: result.value.length > 50 };
+      } else if (!result.value || typeof result.value !== "object" || Array.isArray(result.value)) {
+        errors.push(`${label} unavailable: invalid API response`);
+      } else {
+        data[url] = result.value;
+      }
+    } else {
+      errors.push(`${label} unavailable: ${result.reason.message}`);
+    }
+  });
+  return formatClusterStatusAnswer(nodes, data, errors);
+}
+function formatClusterStatusAnswer(nodes, data, errors = []) {
+  const health = data["/api/cluster/health"];
+  const status = data["/api/status"];
+  const shardList = data["/api/shards"];
+  const taskPage = data["/api/tasks?page_size=50"];
+  const online = nodes.filter((node) => node.healthy);
+  const offline = nodes.filter((node) => !node.healthy);
+  const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
+  const number = (value, suffix = "") => typeof value === "number" && Number.isFinite(value) ? `${value}${suffix}` : "unknown";
+  const utilization = (available, value) => available ? number(value ?? 0, "%") : "unknown";
+  const lines = [
+    "Live cluster status (read-only; no LLM planner or task dispatch).",
+    "These are reported snapshots, not fresh engine probes. Model names identify advertised models, not verified identical weights or revisions.",
+    `Nodes: ${online.length} online, ${offline.length} offline, ${nodes.length} registered.`
+  ];
+  const modelNames = (node) => new Set((node.models || []).map((model) => model.name).filter(Boolean));
+  const inventoryUnknown = (node) => !node.healthy || (node.engines || []).some((engine) => !engine.ready || !["available", "empty"].includes(dashboardViewModel.engineInventoryState(engine)));
+  const intersection = (members) => {
+    if (!members.length) return [];
+    return [...modelNames(members[0])].filter((name) => members.every((node) => modelNames(node).has(name))).sort();
+  };
+  const common = intersection(online);
+  if (!nodes.length) {
+    lines.push("No registered nodes; common models cannot be determined.");
+  } else if (nodes.some(inventoryUnknown)) {
+    lines.push("Models available on ALL registered nodes: unknown; at least one node is offline or has an unavailable engine/inventory.");
+  } else {
+    lines.push(`Models reported on ALL ${nodes.length} registered nodes: ${common.length ? common.join(", ") : "none"}.`);
+  }
+  if (online.length) {
+    lines.push(`Common advertised model names across ${online.length} online node(s): ${common.length ? common.join(", ") : "none"}.`);
+    if (online.some(inventoryUnknown)) lines.push("Online model inventory is incomplete; common names above are not a readiness guarantee.");
+    if (online.length === 1) lines.push("Only one node is online; this does not establish multi-node model availability.");
+  }
+  const capacity = new Map((health?.nodes || []).map((node) => [node.node_id, node]));
+  for (const node of sorted) {
+    const hardware = node.hardware || {};
+    const load = capacity.get(node.id);
+    lines.push("", `${node.id}: ${node.healthy ? "online" : "OFFLINE"}${node.leader ? ", leader" : ""}; version ${node.version || "unknown"}.`);
+    lines.push(`  Address: ${node.address || "unknown"}; OS: ${hardware.os || "unknown"}/${hardware.arch || "unknown"}.`);
+    lines.push(`  Last seen: ${node.last_seen || "unknown"}; telemetry: ${load?.telemetry_state || "unknown"}; sampled at ${node.telemetry_at || "unknown"}.`);
+    lines.push(`  CPU: ${number(hardware.cpu_cores)} cores; utilization: ${utilization(hardware.cpu_stats_available, hardware.cpu_utilization_percent)}.`);
+    lines.push(`  RAM: ${number(hardware.total_ram_mb, " MiB")}; utilization: ${utilization(hardware.memory_stats_available, hardware.memory_usage_percent)}.`);
+    lines.push(`  GPU: ${hardware.has_gpu ? hardware.gpu_vendor || "detected" : "not reported"}; utilization: ${utilization(hardware.gpu_stats_available, hardware.gpu_utilization_percent)}; free memory: ${number(hardware.gpu_memory_free_mb, " MiB")}.`);
+    lines.push(`  NPU: ${hardware.has_npu ? hardware.npu_vendor || "detected" : "not reported"}; utilization: ${utilization(hardware.npu_stats_available, hardware.npu_utilization_percent)}.`);
+    for (const device of hardware.devices || []) {
+      lines.push(`  Device ${device.kind}:${device.index} ${device.name || device.vendor || ""}: memory ${number(device.memory_mb, " MiB")}, free ${number(device.free_memory_mb, " MiB")} (omitted memory is unknown).`);
+    }
+    for (const link of hardware.network_links || []) {
+      lines.push(`  Network ${link.name}: ${number(link.speed_mbps, " Mbps")}; trusted ${link.trusted === true ? "yes" : "not reported"}; RDMA ${link.rdma === true ? "yes" : "not reported"}.`);
+    }
+    lines.push(`  Tasks: ${number(node.active_tasks)} active; capacity: ${number(load?.remaining)} remaining / ${number(load?.max)} slots.`);
+    lines.push(`  Default model: ${node.default_model || "not set"}.`);
+    const models = [...modelNames(node)].sort();
+    lines.push(`  ${inventoryUnknown(node) ? "Last reported models (availability unconfirmed)" : "Reported models"}: ${models.length ? models.join(", ") : "none reported"}.`);
+    const engines = node.engines || [];
+    lines.push(`  Engines: ${engines.length ? engines.map((engine) => `${engine.name}: ${engine.ready ? "ready" : "not ready"}, inventory ${dashboardViewModel.engineInventoryState(engine)}${engine.last_error ? `, error ${engine.last_error}` : ""}`).join("; ") : node.version ? "none configured or detected" : "readiness not reported (legacy node)"}.`);
+    if (node.version_error) lines.push(`  Version warning: ${node.version_error}`);
+  }
+  if (status) {
+    lines.push("", `Orchestrator: ${status.role || "unknown role"}; mode ${status.mode || "full"}; version ${data["/api/version"]?.version || "unknown"}.`);
+    lines.push(`Persistence: ${status.persistence?.available === true ? "available" : status.persistence?.available === false ? "unavailable" : "not reported"}${status.persistence?.warning ? `; ${status.persistence.warning}` : ""}.`);
+  }
+  if (health) {
+    const dispatch = health.global_dispatch || {};
+    lines.push("", `Dispatch: ${number(dispatch.active_slots)} active slots / ${number(dispatch.global_limit)} limit; ${number(dispatch.queue_depth)} queued; ${number(dispatch.active_workers)} active workers.`);
+    const engines = health.engine_readiness || {};
+    lines.push(`Engine readiness: ${number(engines.ready_engines)} / ${number(engines.total_engines)} ready.`);
+    const telemetry = health.telemetry_freshness || {};
+    lines.push(`Telemetry: ${number(telemetry.fresh_nodes)} fresh, ${number(telemetry.stale_nodes)} stale, ${number(telemetry.unavailable_nodes)} unavailable.`);
+    for (const warning of health.warnings || []) lines.push(`Warning: ${warning}`);
+  }
+  if (Array.isArray(shardList?.groups)) {
+    lines.push("", `Shard groups: ${shardList.groups.length}.`);
+    for (const group of shardList.groups) {
+      lines.push(`  ${group.id}: ${group.model?.name || "unknown model"}, ${group.mode}, ${group.state}${group.error ? `; ${group.error}` : ""}.`);
+      lines.push(`  Members: ${(group.members || []).map((member) => `${member.node_id}/${member.engine_id} (${member.role})`).join(", ") || "none"}.`);
+    }
+  } else if (shardList) {
+    errors = [...errors, "Shard groups unavailable: invalid API response"];
+  }
+  if (Array.isArray(taskPage?.items)) {
+    lines.push("", `Recent tasks: ${taskPage.items.length}${taskPage.has_more ? " (more history available in Tasks)" : ""}.`);
+    for (const task of taskPage.items) lines.push(`  ${task.id}: ${task.status}; updated ${task.updated_at || "unknown"}.`);
+  } else if (taskPage) {
+    errors = [...errors, "Recent tasks unavailable: invalid API response"];
+  }
+  if (errors.length) lines.push("", "Incomplete status:", ...errors);
+  return lines.join("\n");
+}
 function renderDirectMessages() {
   if (!chatMessagesEl) return;
   dashboardDOM.resetVirtualList(chatMessagesEl, { estimateHeight: 140, threshold: 50, overscan: 6 });
@@ -1495,6 +1621,12 @@ function renderDirectMessages() {
     appendMessageToChat({ ...message, coordinator: "mAIstr0" });
   }
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+function appendChatItem(node) {
+  for (const welcome of chatMessagesEl.querySelectorAll(".welcome-card")) {
+    dashboardDOM.removeVirtualListItem(chatMessagesEl, welcome);
+  }
+  dashboardDOM.appendVirtualListItem(chatMessagesEl, node);
 }
 function appendMessageToChat(msg) {
   if (!chatMessagesEl) return;
@@ -1535,7 +1667,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
       </div>
       ${bodyHTML}
     `;
-    dashboardDOM.appendVirtualListItem(chatMessagesEl, card);
+    appendChatItem(card);
     return;
   }
   const msgDiv = document.createElement("div");
@@ -1573,7 +1705,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
     ${toolsHTML}
     ${contentHTML}
   `;
-  dashboardDOM.appendVirtualListItem(chatMessagesEl, msgDiv);
+  appendChatItem(msgDiv);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 function formatDirectTaskDispatch(task) {
@@ -1592,19 +1724,27 @@ function formatDirectTaskDispatch(task) {
 }
 async function dispatchDirectTask(description) {
   if (!description || isSending) return;
+  const statusQuestion = isClusterStatusQuestion(description);
   isSending = true;
   if (sendMsgBtn) sendMsgBtn.disabled = true;
   if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
   agentTabs.forEach((tab) => {
     tab.disabled = true;
   });
-  if (chatStatus) chatStatus.textContent = "Planning against live capabilities and routing to suitable nodes…";
+  if (chatStatus) chatStatus.textContent = statusQuestion ? "Reading live cluster status…" : "Planning against live capabilities and routing to suitable nodes…";
   directMessages.push({ role: "user", content: description });
   appendMessageToChat({ role: "user", content: description });
   chatInput.value = "";
   try {
     const nodes = await fetchJSON("/api/nodes/all");
     if (!Array.isArray(nodes)) throw new Error("Could not load the current cluster inventory.");
+    if (statusQuestion) {
+      const summary2 = await answerClusterStatusQuestion(nodes);
+      directMessages.push({ role: "assistant", content: summary2 });
+      appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: summary2 });
+      if (chatStatus) chatStatus.textContent = "";
+      return;
+    }
     if (!nodes.some((node) => node.healthy)) {
       throw new Error("No healthy cluster nodes are available to plan or run this task.");
     }
@@ -1619,7 +1759,7 @@ async function dispatchDirectTask(description) {
     if (chatStatus) chatStatus.textContent = "";
     void refresh();
   } catch (err) {
-    const message = `Task dispatch failed: ${err.message}`;
+    const message = `${statusQuestion ? "Cluster status failed" : "Task dispatch failed"}: ${err.message}`;
     directMessages.push({ role: "assistant", content: message });
     appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: message });
     if (chatStatus) chatStatus.textContent = message;
@@ -1718,13 +1858,13 @@ function handleStreamEvent(event) {
     const thoughtBox = document.createElement("div");
     thoughtBox.className = "thought-box";
     thoughtBox.innerHTML = `💭 <strong>Step ${event.step || 1}:</strong> ${escapeHtml(event.content)}`;
-    dashboardDOM.appendVirtualListItem(chatMessagesEl, thoughtBox);
+    appendChatItem(thoughtBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "node_output" && event.output) {
     const outputBox = document.createElement("div");
     outputBox.className = "node-output-box";
     outputBox.innerHTML = `<strong>Orchestrator coordinator output · ${escapeHtml(event.node_id || "node")} · ${escapeHtml(event.model || "")}</strong><pre>${escapeHtml(event.output)}</pre>`;
-    dashboardDOM.appendVirtualListItem(chatMessagesEl, outputBox);
+    appendChatItem(outputBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "tool_call" && event.tool_call) {
     if (chatStatus) chatStatus.textContent = `⚡ Spreading work: Calling tool ${event.tool_call.name}...`;
@@ -1746,7 +1886,7 @@ function handleStreamEvent(event) {
       const bubble2 = document.createElement("div");
       bubble2.className = "msg-bubble";
       streamingAssistantEl.append(meta, bubble2);
-      dashboardDOM.appendVirtualListItem(chatMessagesEl, streamingAssistantEl);
+      appendChatItem(streamingAssistantEl);
     }
     const bubble = streamingAssistantEl.querySelector(".msg-bubble");
     if (bubble) bubble.textContent += event.content;
@@ -2296,6 +2436,197 @@ overviewActivity?.addEventListener("click", (event) => {
   node.classList.add("highlighted");
   setTimeout(() => node.classList.remove("highlighted"), 1200);
 });
+const shardSetupDialog = document.getElementById("shard-group-setup-dialog");
+const shardSetupNodes = document.getElementById("shard-group-setup-nodes");
+const shardSetupMode = document.getElementById("shard-group-setup-mode");
+const shardSetupModel = document.getElementById("shard-group-setup-model");
+const shardSetupContext = document.getElementById("shard-group-setup-context");
+const shardSetupStatus = document.getElementById("shard-group-setup-status");
+const shardSetupCreate = document.getElementById("shard-group-setup-create");
+let shardSetupProfiles = /* @__PURE__ */ new Map();
+let shardSetupGeneration = 0;
+let shardSetupPending = false;
+function openShardGroupWizard(nodeID) {
+  if (!shardSetupDialog) return;
+  const node = dashboardState.nodes.find((item) => item.id === nodeID);
+  if (!node?.healthy) return;
+  shardSetupProfiles = /* @__PURE__ */ new Map();
+  shardSetupPending = false;
+  shardSetupMode.value = "llamacpp-rpc";
+  shardSetupContext.value = "4096";
+  renderShardSetupNodes(nodeID, true);
+  shardSetupDialog.showModal();
+  void loadShardSetupModels();
+}
+function renderShardSetupNodes(selectedNodeID, reset = false) {
+  const selected = reset ? /* @__PURE__ */ new Set([selectedNodeID]) : new Set(
+    [...shardSetupDialog.querySelectorAll("[data-node-id]:checked")].map((input) => input.dataset.nodeId)
+  );
+  const nodes = dashboardState.nodes.filter((node) => node.healthy);
+  shardSetupNodes.innerHTML = nodes.length ? nodes.map((node) => {
+    const freeMemory = (node.hardware?.devices || []).reduce((total, device) => total + Number(device.free_memory_mb || 0), 0);
+    const memory = freeMemory > 0 ? `${(freeMemory / 1024).toFixed(1)} GB free device memory` : "Free device memory unavailable";
+    return `
+        <label class="shard-node-option">
+          <input type="checkbox" data-node-id="${escapeHtml(node.id)}" ${selected.has(node.id) ? "checked" : ""} />
+          <span><strong>${escapeHtml(node.id)}</strong><small>${escapeHtml(memory)}</small></span>
+        </label>`;
+  }).join("") : '<p class="setup-empty">No healthy nodes are available.</p>';
+  shardSetupNodes.querySelectorAll("[data-node-id]").forEach((input) => {
+    input.addEventListener("change", () => void loadShardSetupModels());
+  });
+}
+async function loadShardSetupModels() {
+  const generation = ++shardSetupGeneration;
+  const nodeIDs = [...shardSetupDialog.querySelectorAll("[data-node-id]:checked")].map((input) => input.dataset.nodeId);
+  const mode = shardSetupMode.value;
+  shardSetupProfiles = /* @__PURE__ */ new Map();
+  shardSetupModel.innerHTML = '<option value="">Loading compatible models…</option>';
+  shardSetupModel.disabled = true;
+  shardSetupCreate.disabled = true;
+  shardSetupStatus.textContent = "Checking managed engines and reading model metadata…";
+  if (!nodeIDs.length) {
+    shardSetupModel.innerHTML = '<option value="">Select at least one node</option>';
+    shardSetupStatus.textContent = "Select healthy nodes to continue.";
+    return;
+  }
+  const inventory = await Promise.all(nodeIDs.map(async (nodeID) => {
+    try {
+      const engines = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeID)}/engines/managed`);
+      if (!Array.isArray(engines)) throw new Error("managed-engine response was not an array");
+      return { nodeID, engines };
+    } catch (error) {
+      return { nodeID, error: error.message, engines: [] };
+    }
+  }));
+  if (generation !== shardSetupGeneration) return;
+  const requiredKind = mode === "vllm-mp" ? "vllm" : "ggml-rpc-server";
+  const unavailable = inventory.filter(
+    ({ nodeID, engines }) => !engines.some((engine) => engine.kind?.toLowerCase() === requiredKind)
+  );
+  const failedInventory = inventory.filter((item) => item.error);
+  if (unavailable.length || failedInventory.length) {
+    const details = [
+      ...unavailable.map(({ nodeID }) => `${nodeID} has no configured ${requiredKind}`),
+      ...failedInventory.map(({ nodeID, error }) => `${nodeID}: ${error}`)
+    ];
+    shardSetupModel.innerHTML = '<option value="">No compatible model setup</option>';
+    shardSetupStatus.textContent = details.join("; ");
+    return;
+  }
+  const profileEngines = mode === "vllm-mp" ? inventory.map((item) => ({
+    nodeID: item.nodeID,
+    engine: item.engines.find((entry) => entry.kind?.toLowerCase() === "vllm")
+  })) : inventory.flatMap((item) => {
+    const hasWorker = item.engines.some((entry) => entry.kind?.toLowerCase() === "ggml-rpc-server");
+    const head = item.engines.find((entry) => entry.kind?.toLowerCase() === "llama-server");
+    return hasWorker && head ? [{ nodeID: item.nodeID, engine: head }] : [];
+  });
+  if (!profileEngines.length) {
+    shardSetupModel.innerHTML = '<option value="">No model head is configured</option>';
+    shardSetupStatus.textContent = mode === "vllm-mp" ? "No vLLM engine is configured on every selected node." : "At least one selected worker must also have a managed llama-server for the model head.";
+    return;
+  }
+  const profilesByEngine = await Promise.all(profileEngines.map(async ({ nodeID, engine }) => {
+    try {
+      const profile = await fetchJSON(
+        `/api/nodes/${encodeURIComponent(nodeID)}/engines/managed/${encodeURIComponent(engine.id)}/profile?requested_context=4096`
+      );
+      return { nodeID, profile };
+    } catch (error) {
+      return { nodeID, error: `${engine.id}: ${error.message}` };
+    }
+  }));
+  if (generation !== shardSetupGeneration) return;
+  const usable = profilesByEngine.filter((item) => item.profile && validShardModelProfile(item.profile));
+  const profileErrors = profilesByEngine.filter((item) => item.error).map((item) => `${item.nodeID}: ${item.error}`);
+  if (!usable.length) {
+    shardSetupModel.innerHTML = '<option value="">No readable model metadata</option>';
+    shardSetupStatus.textContent = profileErrors.length ? profileErrors.join("; ") : "Configured models are missing dimensions or a measurable weight size.";
+    return;
+  }
+  let candidates;
+  if (mode === "vllm-mp") {
+    const profilesByNode = new Map(usable.map((item) => [item.nodeID, item.profile]));
+    const first = profilesByNode.get(nodeIDs[0]);
+    const matching = first && nodeIDs.every((nodeID) => sameShardModelProfile(first, profilesByNode.get(nodeID)));
+    candidates = matching ? [first] : [];
+  } else {
+    const expectedHeadCount = inventory.filter(
+      (item) => item.engines.some((entry) => entry.kind?.toLowerCase() === "llama-server")
+    ).length;
+    const byName = /* @__PURE__ */ new Map();
+    for (const { profile } of usable) {
+      const key = profile.name.toLowerCase();
+      const entry = byName.get(key) || { profile, count: 0, consistent: true };
+      entry.consistent = entry.consistent && sameShardModelProfile(entry.profile, profile);
+      entry.count++;
+      byName.set(key, entry);
+    }
+    candidates = [...byName.values()].filter((entry) => entry.consistent && entry.count === expectedHeadCount).map((entry) => entry.profile);
+  }
+  shardSetupProfiles = new Map(candidates.map((profile) => [profile.name, profile]));
+  const previous = shardSetupModel.value;
+  shardSetupModel.innerHTML = candidates.length ? candidates.map((profile) => `<option value="${escapeHtml(profile.name)}">${escapeHtml(profile.name)} · ${profile.layer_count} layers · ${formatBytes(profile.weights_size_bytes || profile.file_size_bytes)}</option>`).join("") : '<option value="">No compatible model across selected nodes</option>';
+  if (candidates.some((profile) => profile.name === previous)) shardSetupModel.value = previous;
+  shardSetupModel.disabled = candidates.length === 0;
+  shardSetupCreate.disabled = candidates.length === 0;
+  shardSetupStatus.textContent = candidates.length ? `${candidates.length} model${candidates.length === 1 ? "" : "s"} have readable metadata. Placement will use current free device memory and a safety margin.` : [
+    mode === "vllm-mp" ? "The selected nodes must have the same configured vLLM model and matching profile metadata." : "The selected workers need compatible model-head engines with readable metadata.",
+    ...profileErrors
+  ].join(" ");
+}
+function validShardModelProfile(profile) {
+  return Boolean(
+    profile && typeof profile.name === "string" && profile.name.trim() && Number.isInteger(profile.layer_count) && profile.layer_count > 0 && Number.isInteger(profile.hidden_size) && profile.hidden_size > 0 && Number.isInteger(profile.kv_heads) && profile.kv_heads > 0 && Number.isInteger(profile.head_dim) && profile.head_dim > 0 && (Number(profile.weights_size_bytes) > 0 || Number(profile.file_size_bytes) > 0)
+  );
+}
+function sameShardModelProfile(left, right) {
+  return Boolean(right && left.name.toLowerCase() === right.name.toLowerCase() && left.architecture === right.architecture && left.parameters === right.parameters && left.layer_count === right.layer_count && left.hidden_size === right.hidden_size && left.kv_heads === right.kv_heads && left.head_dim === right.head_dim && left.vocab_size === right.vocab_size && left.quantization === right.quantization && (left.weights_size_bytes || left.file_size_bytes) === (right.weights_size_bytes || right.file_size_bytes));
+}
+async function createShardGroupFromWizard(event) {
+  event.preventDefault();
+  if (shardSetupPending) return;
+  const nodeIDs = [...shardSetupDialog.querySelectorAll("[data-node-id]:checked")].map((input) => input.dataset.nodeId);
+  const selectedProfile = shardSetupProfiles.get(shardSetupModel.value);
+  const requestedContext = Number(shardSetupContext.value);
+  if (!nodeIDs.length || !selectedProfile || !Number.isInteger(requestedContext) || requestedContext < 1 || requestedContext > 1 << 20) {
+    shardSetupStatus.textContent = "Choose healthy nodes, a model with readable metadata, and a valid context length.";
+    return;
+  }
+  const model = { ...selectedProfile, requested_context: requestedContext };
+  shardSetupPending = true;
+  shardSetupCreate.disabled = true;
+  shardSetupStatus.textContent = "Planning memory-aware placement and starting managed engines…";
+  try {
+    const group = await fetchJSON("/api/shards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, mode: shardSetupMode.value, pinned_nodes: nodeIDs })
+    });
+    if (!group || group.state !== "ready") throw new Error("the API did not confirm a ready shard group");
+    dashboardState.shardGroups = [
+      ...dashboardState.shardGroups.filter((existing) => existing.id !== group.id),
+      group
+    ];
+    dashboardState.shardGroupsError = "";
+    const allocations = (group.plan?.nodes || []).map((entry) => `${entry.node_id}: layers ${entry.start_layer}–${entry.end_layer}`).join("; ");
+    shardSetupStatus.textContent = `Shard group ready: ${group.id}${allocations ? ` · ${allocations}` : ""}`;
+    renderShardGroups();
+    void refreshShardGroups();
+  } catch (error) {
+    shardSetupStatus.textContent = `Shard group creation failed: ${error.message}`;
+    shardSetupCreate.disabled = false;
+  } finally {
+    shardSetupPending = false;
+  }
+}
+shardSetupMode?.addEventListener("change", () => void loadShardSetupModels());
+shardSetupCreate?.addEventListener("click", createShardGroupFromWizard);
+shardSetupDialog?.addEventListener("close", () => {
+  shardSetupGeneration++;
+  shardSetupPending = false;
+});
 function renderNodes(nodes) {
   dashboardState.nodes = nodes || [];
   if (!nodesList) return;
@@ -2621,7 +2952,17 @@ function showNodeMenu(x, y) {
   menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
 }
 function attachNodeContextMenu(element, node) {
+  element.addEventListener("click", (event) => {
+    if (!event.ctrlKey || !node.healthy || event.target.closest("button, input, select, textarea, a")) return;
+    event.preventDefault();
+    openShardGroupWizard(node.id);
+  });
   element.addEventListener("contextmenu", (event) => {
+    if (event.ctrlKey && node.healthy) {
+      event.preventDefault();
+      if (!document.getElementById("shard-group-setup-dialog")?.open) openShardGroupWizard(node.id);
+      return;
+    }
     event.preventDefault();
     contextNode = node;
     showNodeMenu(event.clientX, event.clientY);
@@ -3761,3 +4102,101 @@ setInterval(() => {
   }
 }, 15e3);
 connectEvents();
+const VIEW_STATE_KEY = "maistr0.viewState";
+const DIRECT_CHAT_KEY = "maistr0.directChat";
+const MAX_SAVED_DIRECT_MESSAGES = 100;
+const SUB_TAB_SELECTOR = ".cluster-workspace-tab, .setup-tab, .overview-tab";
+const refreshViewBtn = document.getElementById("refresh-view-btn");
+function readSessionJSON(key) {
+  try {
+    return JSON.parse(globalThis.sessionStorage?.getItem(key) || "null");
+  } catch {
+    return null;
+  }
+}
+function writeSessionJSON(key, value) {
+  try {
+    globalThis.sessionStorage?.setItem(key, JSON.stringify(value));
+  } catch {
+  }
+}
+function captureViewState() {
+  return {
+    primary: document.querySelector(".nav-tab.active")?.id || "",
+    agent: document.querySelector(".agent-tab.active")?.dataset.agent || "direct",
+    subTabs: [...document.querySelectorAll(SUB_TAB_SELECTOR)].filter((tab) => tab.id && tab.getAttribute("aria-selected") === "true").map((tab) => tab.id)
+  };
+}
+function savedDirectMessages(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((message) => message && ["user", "assistant"].includes(message.role) && typeof message.content === "string").map((message) => ({ role: message.role, content: message.content })).slice(-MAX_SAVED_DIRECT_MESSAGES);
+}
+function saveViewState() {
+  writeSessionJSON(VIEW_STATE_KEY, captureViewState());
+  writeSessionJSON(DIRECT_CHAT_KEY, savedDirectMessages(directMessages));
+}
+function selectSavedTab(id) {
+  const tab = id ? document.getElementById(id) : null;
+  if (tab?.getAttribute("role") === "tab" && tab.getAttribute("aria-selected") !== "true") tab.click();
+}
+function restoreViewState() {
+  const messages = savedDirectMessages(readSessionJSON(DIRECT_CHAT_KEY));
+  if (messages.length) {
+    directMessages = messages;
+    if (activeChatMode === "direct") renderDirectMessages();
+  }
+  const saved = readSessionJSON(VIEW_STATE_KEY);
+  if (!saved || typeof saved !== "object") return;
+  for (const id of Array.isArray(saved.subTabs) ? saved.subTabs : []) selectSavedTab(id);
+  selectSavedTab(saved.primary);
+  if (saved.agent && saved.agent !== "direct") {
+    document.querySelector(`.agent-tab[data-agent="${CSS.escape(saved.agent)}"]`)?.click();
+  }
+}
+function activeSubPanel(selector) {
+  return document.querySelector(`${selector}[aria-selected="true"]`)?.getAttribute("aria-controls") || "";
+}
+async function refreshActiveView() {
+  for (const key of Object.keys(window)) {
+    if (/^last\w*Signature$/.test(key)) window[key] = void 0;
+  }
+  const primary = document.querySelector(".nav-tab.active")?.dataset.tab;
+  if (primary === "memory-tab") return refreshMemory();
+  if (primary === "agent-tab") {
+    if (activeChatMode === "direct") {
+      renderDirectMessages();
+      return;
+    }
+    if (activeSessionId) await selectSession(activeSessionId);
+    return;
+  }
+  if (primary !== "cluster-tab") return;
+  const work = [refresh()];
+  const panel = activeSubPanel(".cluster-workspace-tab");
+  if (panel === "tasks-panel") work.push(refreshTaskHistory(true));
+  if (panel === "discovery-panel") work.push(refreshDiscovery());
+  if (panel === "routing-panel") work.push(refreshShardGroups());
+  if (panel === "setup-panel") {
+    const setupPanel = activeSubPanel(".setup-tab");
+    if (setupPanel === "pairing-panel") work.push(loadPairingStatus());
+    if (setupPanel === "setup-readiness-panel") work.push(checkSetupReadiness());
+    if (setupPanel === "setup-catalog-panel") work.push(loadModelCatalog());
+  }
+  await Promise.allSettled(work);
+}
+refreshViewBtn?.addEventListener("click", async () => {
+  if (refreshViewBtn.disabled) return;
+  refreshViewBtn.disabled = true;
+  refreshViewBtn.textContent = "↻ Refreshing…";
+  try {
+    await refreshActiveView();
+    markDashboardSynced();
+  } catch (err) {
+    console.error("refreshing the active view failed", err);
+  } finally {
+    refreshViewBtn.disabled = false;
+    refreshViewBtn.textContent = "↻ Refresh view";
+  }
+});
+window.addEventListener("pagehide", saveViewState);
+restoreViewState();

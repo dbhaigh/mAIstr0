@@ -63,6 +63,21 @@ func TestShardManagerStartsWorkersBeforeHeadAndDeletesInReverse(t *testing.T) {
 	}
 }
 
+func TestShardManagerPlansWithPerDeviceSafetyMargin(t *testing.T) {
+	manager, _, _, _, _ := newTestShardManager(t, "")
+	var got shard.Policy
+	manager.planner = func(model shard.ModelProfile, candidates []shard.CandidateNode, policy shard.Policy) (shard.ShardPlan, error) {
+		got = policy
+		return testShardPlanner(model, candidates, policy)
+	}
+	if _, err := manager.Create(context.Background(), testShardRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if got.SafetyMarginMB != managedShardSafetyMarginMB {
+		t.Fatalf("shard safety margin = %d MiB, want %d MiB", got.SafetyMarginMB, managedShardSafetyMarginMB)
+	}
+}
+
 func TestShardManagerCleansUpPartialStartFailure(t *testing.T) {
 	manager, _, engines, capacity, _ := newTestShardManager(t, "llama-head")
 

@@ -167,6 +167,12 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/engines") {
 		path = "/engine"
 	}
+	if strings.HasSuffix(r.URL.Path, "/engines/managed") {
+		path = "/api/engines/managed"
+	}
+	if engineID := r.PathValue("engine_id"); engineID != "" {
+		path = "/api/engines/managed/" + url.PathEscape(engineID) + "/profile"
+	}
 	if strings.HasSuffix(r.URL.Path, "/pull") {
 		path = "/models/pull"
 	}
@@ -181,7 +187,11 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, n.Address+path, bytes.NewReader(body))
+	target := n.Address + path
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(err))
 		return

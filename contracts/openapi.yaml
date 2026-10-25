@@ -361,6 +361,37 @@ paths:
       - $ref: "#/components/parameters/ID"
     get:
       responses: {"200": {description: List node engines}}
+  /api/nodes/{id}/engines/managed:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: List managed engines configured on a node
+      responses:
+        "200":
+          description: Configured managed engine status
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/ManagedEngineStatus"}
+        "404": {description: Node does not exist}
+  /api/nodes/{id}/engines/managed/{engine_id}/profile:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+      - name: engine_id
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: Read a configured model's profile for memory-aware shard planning
+      responses:
+        "200":
+          description: Model architecture and measured weight metadata
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardModelProfile"}
+        "404": {description: Node or managed engine does not exist}
+        "422": {description: Model metadata is unavailable or cannot be measured safely}
   /api/shards:
     get:
       summary: List shard groups
@@ -424,6 +455,29 @@ paths:
                 type: array
                 items: {$ref: "#/components/schemas/ManagedEngineStatus"}
         "403": {description: Request is not from the current paired orchestrator}
+  /api/engines/managed/{id}/profile:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Read a configured model profile from approved local metadata
+      description: Parses an allow-listed GGUF or Hugging Face config and measures local weight-file sizes without exposing model paths. Requires the current paired orchestrator.
+      security:
+        - PairedOrchestrator: []
+      responses:
+        "200":
+          description: Model architecture and weight profile
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardModelProfile"}
+        "400": {description: Requested context is invalid}
+        "403": {description: Request is not from the current paired orchestrator}
+        "404": {description: Managed engine does not exist}
+        "422": {description: Model metadata is unavailable or cannot be measured safely}
+      parameters:
+        - name: requested_context
+          in: query
+          required: true
+          schema: {type: integer, minimum: 1, maximum: 1048576}
   /api/engines/managed/{id}/start:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -1162,6 +1216,8 @@ x-maistr0-registered-routes:
   - "orchestrator|GET /api/nodes/{id}/properties"
   - "orchestrator|PATCH /api/nodes/{id}/properties"
   - "orchestrator|GET /api/nodes/{id}/engines"
+  - "orchestrator|GET /api/nodes/{id}/engines/managed"
+  - "orchestrator|GET /api/nodes/{id}/engines/managed/{engine_id}/profile"
   - "orchestrator|POST /api/shards"
   - "orchestrator|GET /api/shards"
   - "orchestrator|GET /api/shards/{id}"
@@ -1170,6 +1226,9 @@ x-maistr0-registered-routes:
   - "orchestrator|POST /api/nodes/{id}/models/refresh"
   - "orchestrator|POST /api/nodes/{id}/models/pull"
   - "orchestrator|GET /api/discovery"
+  - "node|GET /api/cluster/health"
+  - "node|GET /api/shards"
+  - "node|POST /api/shards"
   - "orchestrator|POST /api/discovery/{id}/pairing/invite"
   - "orchestrator|GET /api/events"
   - "orchestrator|POST /api/pipelines/{model_id}/reshard"
@@ -1283,7 +1342,10 @@ x-maistr0-registered-routes:
   - "node|GET /api/nodes/{id}/properties"
   - "node|PATCH /api/nodes/{id}/properties"
   - "node|GET /api/nodes/{id}/engines"
+  - "node|GET /api/nodes/{id}/engines/managed"
+  - "node|GET /api/nodes/{id}/engines/managed/{engine_id}/profile"
   - "node|GET /api/engines/managed"
+  - "node|GET /api/engines/managed/{id}/profile"
   - "node|POST /api/engines/managed/{id}/start"
   - "node|POST /api/engines/managed/{id}/stop"
   - "node|POST /api/engines/managed/{id}/restart"

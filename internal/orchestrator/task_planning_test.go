@@ -203,8 +203,8 @@ func TestAutoPlanCacheDoesNotStoreInvalidPlans(t *testing.T) {
 			t.Fatal("invalid planner output was accepted")
 		}
 	}
-	if model.calls != 2 {
-		t.Fatalf("planner calls = %d, want retry after both invalid plans", model.calls)
+	if model.calls != 4 {
+		t.Fatalf("planner calls = %d, want a corrective retry on each uncached request", model.calls)
 	}
 }
 

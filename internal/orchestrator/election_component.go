@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"github.com/maistr0/maistr0/internal/logging"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -23,6 +24,9 @@ type electionComponent struct {
 	leaderMu        sync.Mutex
 	lastLeaderID    string
 	discoveredNodes map[string]bool
+	// retired is set when a failover-promoted instance steps down; it stops
+	// announcing and never reports itself elected until reinstated.
+	retired atomic.Bool
 }
 
 type electionAPI interface {
@@ -38,6 +42,8 @@ type electionAPI interface {
 	recordLeader(string)
 	selfIDValue() string
 	setSelfID(string)
+	selfAnnouncement() discovery.Announcement
+	setRetired(bool)
 }
 
 func newElectionComponent(
@@ -96,21 +102,38 @@ func (e *electionComponent) startBeacon(listenAddr string) error {
 	selfAddr := "http://" + discovery.OutboundIP() + portSuffix(listenAddr)
 	peerAddr := "https://" + discovery.OutboundIP() + portSuffix(listenAddr)
 	go discovery.Beacon(func() discovery.Announcement {
-		members := e.registry.Active()
-		_, elected := e.registry.Leader()
-		role := "candidate"
-		if e.isElectedOrchestrator() {
-			role = "orchestrator"
+		if e.retired.Load() {
+			return discovery.Announcement{}
 		}
-		return discovery.Announcement{
-			Role: role, ID: e.selfID, HTTPAddr: selfAddr, PeerAddr: peerAddr,
-			Score: e.selfScore, Members: len(members), Elected: elected,
-		}
+		ann := e.selfAnnouncement()
+		ann.HTTPAddr, ann.PeerAddr = selfAddr, peerAddr
+		return ann
 	}, 5*time.Second, nil)
 	return nil
 }
 
+// selfAnnouncement describes this instance's current election standing
+// without network addresses.
+func (e *electionComponent) selfAnnouncement() discovery.Announcement {
+	members := e.registry.Active()
+	_, elected := e.registry.Leader()
+	role := "candidate"
+	if e.isElectedOrchestrator() {
+		role = "orchestrator"
+	}
+	return discovery.Announcement{
+		Role: role, ID: e.selfID, Score: e.selfScore, Members: len(members), Elected: elected,
+	}
+}
+
+func (e *electionComponent) setRetired(retired bool) {
+	e.retired.Store(retired)
+}
+
 func (e *electionComponent) isElectedOrchestrator() bool {
+	if e.retired.Load() {
+		return false
+	}
 	if !e.discoveryEnabled || e.discovery == nil {
 		return true
 	}

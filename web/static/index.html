@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>mAIstr0 · Interactive Cluster Orchestrator</title>
-  <link rel="stylesheet" href="/style.9c8ef1849de9.css" />
+  <link rel="stylesheet" href="/style.426ffc8e3d92.css" />
 </head>
 <body>
   <header>
@@ -27,8 +27,11 @@
       <button id="memory-tab-button" class="nav-tab" type="button" role="tab" aria-controls="memory-tab" aria-selected="false" tabindex="-1" data-tab="memory-tab">Memory &amp; Learning</button>
     </nav>
   </header>
-  <div id="connection-status" class="connection-status" role="status" aria-live="polite" data-connected="false">
-    Connecting · Last sync not yet
+  <div class="status-bar">
+    <div id="connection-status" class="connection-status" role="status" aria-live="polite" data-connected="false">
+      Connecting · Last sync not yet
+    </div>
+    <button id="refresh-view-btn" class="icon-button refresh-view-btn" type="button" title="Reload the data shown in the current tab without reloading the page">↻ Refresh view</button>
   </div>
   <div id="persistence-warning" class="persistence-warning" role="status" hidden></div>
 
@@ -141,7 +144,7 @@
 
     <section id="setup-panel" class="cluster-window" role="tabpanel" aria-labelledby="cluster-setup-tab" hidden>
       <div class="section-heading">
-        <div><h2>Cluster setup</h2><p class="panel-caption">View cluster members and their current status. Right-click a node to configure it or pair it again.</p></div>
+        <div><h2>Cluster setup</h2><p class="panel-caption">View cluster members and their current status. Ctrl-click a healthy node to configure a shard group; right-click to configure or pair it.</p></div>
       </div>
       <nav class="setup-tabs" role="tablist" aria-label="Cluster setup">
         <button class="setup-tab active" type="button" role="tab" id="setup-pairing-tab" aria-controls="pairing-panel" aria-selected="true">Pairing access</button>
@@ -212,7 +215,7 @@
     </section>
 
     <section id="cluster-overview-panel" class="cluster-window active" role="tabpanel" aria-labelledby="cluster-overview-tab">
-      <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Available nodes and their current status. Expand a node for hardware, engine inventory, and model capabilities. Right-click a node to configure or pair it.</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
+      <div class="section-heading"><div><h2>Cluster overview</h2><p class="panel-caption">Available nodes and their current status. Expand a node for hardware, engine inventory, and model capabilities. Ctrl-click a healthy node to create a shard group; right-click to configure or pair it.</p></div><span id="cluster-overview-status" class="panel-caption"></span></div>
       <nav class="overview-tabs" role="tablist" aria-label="Cluster overview">
         <button class="overview-tab active" type="button" role="tab" id="overview-members-tab" aria-controls="overview-members-panel" aria-selected="true">Available nodes</button>
         <button class="overview-tab" type="button" role="tab" id="overview-activity-tab" aria-controls="overview-activity-panel" aria-selected="false" tabindex="-1">Recent activity</button>
@@ -346,6 +349,38 @@
     </div>
   </dialog>
 
+  <dialog id="shard-group-setup-dialog" class="pairing-dialog shard-group-setup-dialog" aria-labelledby="shard-group-setup-title">
+    <form method="dialog">
+      <div class="node-properties-header">
+        <div><h2 id="shard-group-setup-title">Create shard group</h2><p class="panel-caption">Select workers first, then choose a model configured for the selected group.</p></div>
+        <button class="dialog-close" type="submit" value="cancel" aria-label="Close shard group setup">Close</button>
+      </div>
+      <label class="shard-setup-label">Shard mode
+        <select id="shard-group-setup-mode">
+          <option value="llamacpp-rpc">llama.cpp RPC</option>
+          <option value="vllm-mp">vLLM multi-node</option>
+        </select>
+      </label>
+      <fieldset class="shard-setup-fieldset">
+        <legend>Healthy worker nodes</legend>
+        <p class="panel-caption">Every selected node must have the managed worker engine required by the chosen mode.</p>
+        <div id="shard-group-setup-nodes" class="shard-node-options"></div>
+      </fieldset>
+      <label class="shard-setup-label">Model
+        <select id="shard-group-setup-model" disabled><option value="">Select worker nodes first</option></select>
+      </label>
+      <label class="shard-setup-label">Requested context length
+        <input id="shard-group-setup-context" type="number" min="1" max="1048576" value="4096" required />
+      </label>
+      <p class="panel-caption">The planner uses each selected device's current free memory, assigns a safety margin, and refuses placement that cannot fit the model and requested KV cache.</p>
+      <p id="shard-group-setup-status" class="setup-status" role="status" aria-live="polite"></p>
+      <div class="pairing-dialog-actions">
+        <button class="icon-button" type="submit" value="cancel">Cancel</button>
+        <button id="shard-group-setup-create" class="primary-btn" type="button" disabled>Create and start group</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="node-context-menu" class="context-menu" hidden>
     <button data-action="properties">Edit host properties</button>
     <button data-action="pair">Pair / re-pair</button>
@@ -398,6 +433,6 @@
     </div>
   </div>
 
-  <script src="/app.34b4cd425d5c.js"></script>
+  <script src="/app.a4bf2d79b545.js"></script>
 </body>
 </html>

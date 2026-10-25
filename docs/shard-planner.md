@@ -20,6 +20,9 @@ unless `AllowCPUOffload` is true and the candidate explicitly supplies free
 memory for that CPU device. The KV-cache estimate is
 `2 * layers * kv_heads * head_dim * requested_context * bytes_per_element`;
 the element size defaults to two bytes and can be set in policy.
+Managed shard-group creation currently reserves a fixed 2048 MiB per device;
+the dashboard reports this margin and the planner refuses a placement that
+cannot fit weights, KV cache, and the reserve together.
 
 ## Modes
 

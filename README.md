@@ -5,9 +5,9 @@ machines on a LAN. It combines task planning and scheduling, a transparent
 inference router, interactive Pi and DeepSeek harnesses, and synchronized
 cluster memory. It does not require cloud inference.
 
-Current version: **0.0.23**. See the [release notes](./changelog.md#0023---2026-10-24)
-for sharding lifecycle validation, protected shard networking, and hardware
-validation guidance.
+Current version: **0.0.24**. See the [release notes](./changelog.md#0024---2026-10-24)
+for the shard-group setup wizard, cluster reliability improvements, and
+dashboard updates.
 
 ## Quick start
 
@@ -101,8 +101,10 @@ recorded in the [changelog](./changelog.md).
 
 A managed shard group runs one model across multiple machines. It is different
 from distributing independent tasks or replicating a whole model on each node.
-The **Shards** dashboard and `POST /api/shards` plan placement, reserve member
-capacity, start workers before the head, and expose the ready head through
+The **Shard groups** panel under Job routing shows group state and placement
+details. Ctrl-click a healthy node in the cluster view to configure a group;
+the orchestrator plans placement, reserves member capacity, starts workers
+before the head, and exposes a ready head through
 `POST /router/v1/chat/completions` using the group's model name.
 
 - `llamacpp-rpc`: compatible RPC-enabled llama.cpp worker and head builds;
@@ -119,9 +121,34 @@ capacity, start workers before the head, and expose the ready head through
   group API does not enable CPU offload. NPU layer sharding requires explicit
   operator validation; a detected NPU is not proof of RPC support.
 
-For example, after configuring and pairing two eligible workers, send this to
-the local orchestrator's `POST /api/shards` (replace the model metadata and IDs
-with the actual values):
+### Create a shard group from the dashboard
+
+1. Start the orchestrator and worker nodes, pair them, and configure the
+   appropriate managed engines. For `llamacpp-rpc`, configure
+   `ggml-rpc-server` on each worker and `llama-server` on a head-capable node.
+   For `vllm-mp`, configure vLLM on every selected node. See
+   [managed engine configuration](./docs/configuration.md#managed-engine-processes).
+2. Ctrl-click a healthy node in the cluster view to open **Create shard group**.
+   Select the worker nodes and sharding mode. Every selected node must have the
+   mode's managed worker engine configured.
+3. Choose a model offered for that selected group and enter its requested
+   context length. The picker inspects managed engine model sources: local
+   allow-listed GGUF files, local Hugging Face model directories, or cached
+   Hugging Face `model_id` configs and weight files. Ordinary Ollama/LM Studio
+   inventory entries are not eligible unless configured as a managed shard
+   engine. A model is offered only when its architecture and weight size can
+   be read and measured safely.
+4. Choose **Create and start group**. The orchestrator calculates the placement
+   from each device's current free memory, holds back a 2 GiB safety margin per
+   device, and refuses the plan if the model weights and KV cache do not fit.
+   For `llamacpp-rpc`, layer ranges are weighted by device capacity; vLLM
+   requires homogeneous node resources and uses the configured parallel layout.
+5. The dialog reports the ready group and its assigned layers. The **Shard
+   groups** panel under Job routing shows the group state and placement details.
+
+The same create operation is available through the API. For example, after
+configuring the engines and choosing eligible node IDs, send this payload to
+`POST /api/shards` (replace the model metadata and IDs with actual values):
 
 ```json
 {
@@ -143,9 +170,20 @@ with the actual values):
 }
 ```
 
-Creation returns `201` only when ready. Read `GET /api/shards` or
-`GET /api/shards/{id}` for the plan, rationale, members, and state. Requests
-within a group are serialized. Member/process loss first produces `degraded`;
+Save the JSON as `shard-group.json` and submit it with
+PowerShell's `curl.exe` (replace the URL with the orchestrator's listener URL):
+
+```powershell
+curl.exe --fail-with-body `
+  -H "Content-Type: application/json" `
+  --data-binary "@shard-group.json" `
+  "http://127.0.0.1:7450/api/shards"
+```
+
+A successful request returns `201` with the ready group. Check `GET /api/shards`
+or `GET /api/shards/{id}` for the plan, rationale, members, and state.
+
+Requests within a group are serialized. Member/process loss first produces `degraded`;
 the next health sweep tears down the group and marks it `failed`. Neither
 state accepts inference. Rebuild by creating a new group with the same model
 name after fixing the cause; a failed group may remain for diagnosis.
@@ -290,3 +328,26 @@ models/backends, and native Windows vLLM launches. A `degraded` group is not a
 reduced-capacity service: wait for teardown, fix the cause, and rebuild.
 The [troubleshooting guide](./docs/sharding-troubleshooting.md) includes
 safe diagnostic steps and evidence to record before retrying.
+## Asking mAIstr0 about cluster status
+
+The dashboard's **Ask mAIstr0** action answers read-only cluster-status
+questions directly from the node inventory, health/capacity, recent-task,
+shard-group, and version APIs. It does not call an LLM or create a task for
+questions such as "What common LLMs are on the cluster?", "Which nodes are
+offline?", or "What engines are running?". The answer includes reported model
+names per node and their intersection across all online nodes. An offline
+node or unavailable engine inventory makes availability on **all registered
+nodes** unknown, not a successful match. Identical advertised model names are
+not proof of identical weights, quantization, or revisions.
+
+This is a snapshot report, not a new engine probe or a diagnosis of an
+unreported failure. Missing telemetry and failed API reads are marked
+explicitly. It also works when no nodes are healthy. Requests that change
+state, such as installing models or restarting workers, remain on the task
+path; ambiguous/general requests still use the workflow planner.
+
+For work requiring automatic planning, malformed JSON or invalid task graphs
+get one corrective retry on the selected model before trying another eligible
+node/model. If every attempt fails, mAIstr0 reports the planning error rather
+than silently substituting a heuristic plan. Model output is not echoed into
+corrective prompts or logged.

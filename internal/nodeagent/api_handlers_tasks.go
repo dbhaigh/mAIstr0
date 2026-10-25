@@ -142,7 +142,7 @@ func (a *Agent) handleAPITasksPost(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) handleAPITasksList(w http.ResponseWriter, r *http.Request) {
 	if addr := a.getOrchestratorAddr(); addr != "" {
-		a.proxy(w, r, addr, "/api/tasks")
+		a.proxy(w, r, addr, withRawQuery("/api/tasks", r))
 		return
 	}
 	if a.isMostCapable() {

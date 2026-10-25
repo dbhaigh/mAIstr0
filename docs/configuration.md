@@ -313,6 +313,15 @@ Configure absolute allow-list directories for executable binaries and local
 model files/directories. Paths are resolved before validation, so a symlink
 cannot escape an approved directory. Managed commands are built from typed
 options as argv arrays; command strings and shell scripts are not accepted.
+The current paired orchestrator can read a managed engine's model profile with
+`GET /api/engines/managed/{id}/profile`. This parses an allow-listed GGUF file
+or Hugging Face `config.json` and measures model weight files without returning
+local paths. For a configured `model_id`, the model must already be in the
+standard Hugging Face hub cache or under `HF_HUB_CACHE`/`HF_HOME`; this read
+does not download model files. Profiles without measurable weights are
+rejected so the shard planner does not guess at memory requirements. Supply a
+positive `requested_context` query value; it is used to estimate KV-cache
+memory for the selected group.
 
 ```json
 {

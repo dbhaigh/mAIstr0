@@ -14,6 +14,15 @@ function renderDirectMessages() {
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
+// The welcome card switches the chat to its centered, non-scrolling empty
+// layout, so it must leave the list before the first real message is shown.
+function appendChatItem(node) {
+  for (const welcome of chatMessagesEl.querySelectorAll(".welcome-card")) {
+    dashboardDOM.removeVirtualListItem(chatMessagesEl, welcome);
+  }
+  dashboardDOM.appendVirtualListItem(chatMessagesEl, node);
+}
+
 function appendMessageToChat(msg) {
   if (!chatMessagesEl) return;
   const isUser = msg.role === "user";
@@ -57,7 +66,7 @@ function appendMessageToChat(msg) {
       </div>
       ${bodyHTML}
     `;
-    dashboardDOM.appendVirtualListItem(chatMessagesEl, card);
+    appendChatItem(card);
     return;
   }
 
@@ -103,7 +112,7 @@ function appendMessageToChat(msg) {
     ${contentHTML}
   `;
 
-  dashboardDOM.appendVirtualListItem(chatMessagesEl, msgDiv);
+  appendChatItem(msgDiv);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
@@ -124,11 +133,14 @@ function formatDirectTaskDispatch(task) {
 
 async function dispatchDirectTask(description) {
   if (!description || isSending) return;
+  const statusQuestion = isClusterStatusQuestion(description);
   isSending = true;
   if (sendMsgBtn) sendMsgBtn.disabled = true;
   if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
   agentTabs.forEach((tab) => { tab.disabled = true; });
-  if (chatStatus) chatStatus.textContent = "Planning against live capabilities and routing to suitable nodes…";
+  if (chatStatus) chatStatus.textContent = statusQuestion
+    ? "Reading live cluster status…"
+    : "Planning against live capabilities and routing to suitable nodes…";
 
   directMessages.push({ role: "user", content: description });
   appendMessageToChat({ role: "user", content: description });
@@ -136,6 +148,13 @@ async function dispatchDirectTask(description) {
   try {
     const nodes = await fetchJSON("/api/nodes/all");
     if (!Array.isArray(nodes)) throw new Error("Could not load the current cluster inventory.");
+    if (statusQuestion) {
+      const summary = await answerClusterStatusQuestion(nodes);
+      directMessages.push({ role: "assistant", content: summary });
+      appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: summary });
+      if (chatStatus) chatStatus.textContent = "";
+      return;
+    }
     if (!nodes.some((node) => node.healthy)) {
       throw new Error("No healthy cluster nodes are available to plan or run this task.");
     }
@@ -150,7 +169,7 @@ async function dispatchDirectTask(description) {
     if (chatStatus) chatStatus.textContent = "";
     void refresh();
   } catch (err) {
-    const message = `Task dispatch failed: ${err.message}`;
+    const message = `${statusQuestion ? "Cluster status failed" : "Task dispatch failed"}: ${err.message}`;
     directMessages.push({ role: "assistant", content: message });
     appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: message });
     if (chatStatus) chatStatus.textContent = message;
@@ -254,13 +273,13 @@ function handleStreamEvent(event) {
     const thoughtBox = document.createElement("div");
     thoughtBox.className = "thought-box";
     thoughtBox.innerHTML = `💭 <strong>Step ${event.step || 1}:</strong> ${escapeHtml(event.content)}`;
-    dashboardDOM.appendVirtualListItem(chatMessagesEl, thoughtBox);
+    appendChatItem(thoughtBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "node_output" && event.output) {
     const outputBox = document.createElement("div");
     outputBox.className = "node-output-box";
     outputBox.innerHTML = `<strong>Orchestrator coordinator output · ${escapeHtml(event.node_id || "node")} · ${escapeHtml(event.model || "")}</strong><pre>${escapeHtml(event.output)}</pre>`;
-    dashboardDOM.appendVirtualListItem(chatMessagesEl, outputBox);
+    appendChatItem(outputBox);
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   } else if (event.type === "tool_call" && event.tool_call) {
     if (chatStatus) chatStatus.textContent = `⚡ Spreading work: Calling tool ${event.tool_call.name}...`;
@@ -282,7 +301,7 @@ function handleStreamEvent(event) {
       const bubble = document.createElement("div");
       bubble.className = "msg-bubble";
       streamingAssistantEl.append(meta, bubble);
-      dashboardDOM.appendVirtualListItem(chatMessagesEl, streamingAssistantEl);
+      appendChatItem(streamingAssistantEl);
     }
     const bubble = streamingAssistantEl.querySelector(".msg-bubble");
     if (bubble) bubble.textContent += event.content;

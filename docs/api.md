@@ -77,6 +77,18 @@ OpenAI-compatible chat preserves system, user, assistant, and tool message
 roles. Task history records selected node/model/engine, status, and failure
 class for each bounded dispatch attempt.
 
+## Managed shard groups
+
+The dashboard starts a shard setup wizard when a healthy node is Ctrl-clicked.
+It lists only models with configured managed shard engines and readable model
+profiles. The orchestrator proxies profile reads through
+`GET /api/nodes/{id}/engines/managed/{engine_id}/profile`; the node endpoint is
+restricted to the current paired orchestrator and does not expose model paths.
+`POST /api/shards` accepts the selected profile, mode, and pinned node IDs.
+Placement uses current free device memory with a 2 GiB per-device safety
+margin; insufficient or unknown memory is rejected rather than estimated from
+host RAM.
+
 ## Transparent router
 
 The transparent router does not invoke task planning or translate provider

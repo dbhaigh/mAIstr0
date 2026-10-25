@@ -90,6 +90,20 @@ header h1 {
   font-size: 0.75rem;
 }
 
+.status-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-right: 1.5rem;
+}
+
+.refresh-view-btn {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.75rem;
+}
+
 .connection-status[data-connected="true"] {
   color: #80d6a5;
 }
@@ -602,6 +616,18 @@ main {
 .pairing-dialog::backdrop { background: #050812cc; }
 .pairing-dialog form { margin: 0; }
 .pairing-dialog-actions { display: flex; justify-content: flex-end; gap: 0.65rem; margin-top: 1rem; }
+.shard-group-setup-dialog { width: min(680px, calc(100% - 2rem)); max-height: min(90vh, 820px); overflow-y: auto; }
+.shard-group-setup-dialog form { display: grid; gap: 0.8rem; }
+.shard-setup-label { display: grid; gap: 0.3rem; color: var(--muted); font-size: 0.82rem; }
+.shard-setup-label select, .shard-setup-label input { width: 100%; background: #0c101b; color: var(--text); border: 1px solid #2a3350; border-radius: 5px; padding: 0.5rem; font: inherit; }
+.shard-setup-fieldset { min-width: 0; border: 1px solid #2a3350; border-radius: 6px; padding: 0.6rem; }
+.shard-setup-fieldset legend { color: var(--muted); font-size: 0.82rem; }
+.shard-setup-fieldset .panel-caption { margin: 0.1rem 0 0.55rem; }
+.shard-node-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.4rem; max-height: 220px; overflow-y: auto; }
+.shard-node-option { display: flex; gap: 0.5rem; align-items: flex-start; padding: 0.5rem; border: 1px solid #232b40; border-radius: 5px; cursor: pointer; }
+.shard-node-option span { display: grid; gap: 0.2rem; }
+.shard-node-option small { color: var(--muted); }
+.shard-group-setup-dialog .setup-status { margin: 0; white-space: pre-wrap; }
 .pairing-panel [hidden] { display: none; }
 @media (max-width: 600px) {
   .pairing-panel { padding: 1rem; }
@@ -1746,6 +1772,15 @@ button:hover { filter: brightness(1.1); }
   .connection-status[data-connected="true"] { color: var(--ok); }
   .connection-status[data-connected="false"] { color: var(--warn); }
   .persistence-warning { color: #713f12; background: #fef3c7; border-color: #fcd34d; }
+  .chat-msg.assistant .msg-bubble, .dialogue-exchange, .node-msg, .node-output-box {
+    color: var(--text);
+    background: var(--surface);
+    border-color: var(--border);
+  }
+  .thought-box { color: var(--muted); background: var(--surface-raised); }
+  .tool-body, .orch-msg { color: var(--muted); }
+  .tool-body, .chat-input-container { border-color: var(--border); }
+  .chat-input-container { background: var(--panel); }
 }
 
 @media (max-width: 900px) {

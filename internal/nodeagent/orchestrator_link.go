@@ -168,6 +168,22 @@ func (a *Agent) PromoteToOrchestrator(address string) error {
 	return nil
 }
 
+// DemoteFromOrchestrator returns a failover-promoted node to worker duty and
+// points it at the orchestrator it is yielding to. Registration then joins
+// that orchestrator and the node's own LAN announcement resumes.
+func (a *Agent) DemoteFromOrchestrator(orchestratorID, address string) {
+	c := a.orchestratorLink
+	c.orchMu.Lock()
+	c.localOrchestratorID = ""
+	c.orchestratorID = orchestratorID
+	c.orchestratorAddr = address
+	c.electionCandidateAddr = ""
+	c.orchMu.Unlock()
+	c.joinedMu.Lock()
+	c.joined = false
+	c.joinedMu.Unlock()
+}
+
 func (c *orchestratorLink) resolveOrchestratorAndRegister() {
 	if c.getOrchestratorAddr() == "" && c.discoveryListener == nil {
 		logging.Infof("nodeagent", "nodeagent: discovery disabled and no orchestrator configured; registration will retry")

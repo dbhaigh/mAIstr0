@@ -318,6 +318,8 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/nodes/{id}/properties", s.handleNodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", s.handleNodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", s.handleNodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed", s.handleNodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/{engine_id}/profile", s.handleNodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", s.handleNodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", s.handleNodeControl)
 	mux.HandleFunc("GET /api/discovery", s.handleDiscovery)

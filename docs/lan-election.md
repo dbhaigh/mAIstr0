@@ -35,6 +35,36 @@ Failover remains partition-local. Simultaneous elections on disconnected
 network segments may promote different nodes, and recovery does not provide
 quorum-based conflict resolution or globally exclusive writes.
 
+### Stepping down after failover
+
+A failover-promoted orchestrator checks its discovery view every five seconds
+for a trusted active orchestrator that should lead instead: one that outranks
+it, the orchestrator it replaced (when that one leads at least as many
+members), or one that leads more members. The challenger must also answer the
+promoted node's mutual-TLS `GET /api/status` with a 2xx response, meaning it
+still considers itself elected; an orchestrator that can see a higher-ranked
+promoted node yields with HTTP 503 instead, so only one side steps down. The
+same challenger must qualify on two consecutive checks.
+
+On stepping down, the promoted orchestrator stops announcing itself and
+answers as a yielded instance (HTTP 503). Its node agent points at the
+challenger, registers there, and resumes its ordinary node announcement. The
+retired orchestrator keeps its listener bound and is reinstated if a later
+failover elects the same node again. This heals one-way visibility, where the
+original orchestrator cannot hear the promoted node's announcements, but it is
+still not consensus: neither side can resolve a partition it cannot see.
+
+### Multi-homed hosts
+
+Announcements are sent from a socket bound to each local IPv4 LAN address to
+that interface's subnet broadcast address. On a host with several interfaces
+on one subnet (for example a Hyper-V external switch and a network bridge), an
+unbound socket would let the OS route every broadcast through one preferred
+interface, which other nodes might not hear. If binding an address fails, that
+interface falls back to the OS default route. The discovery listener logs read
+errors and rebinds UDP port 7999 with capped backoff instead of silently
+stopping.
+
 ## Write authority and trust
 
 Election is evaluated against each process's current discovery snapshot. An

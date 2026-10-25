@@ -98,10 +98,15 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("GET /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", a.handleAPINodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed", a.handleAPINodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/{engine_id}/profile", a.handleAPINodeControl)
 	registerManagedEngineRoutes(mux, a)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", a.handleAPINodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/discovery", a.handleAPIDiscovery)
+	mux.HandleFunc("GET /api/cluster/health", a.handleAPIOrchestratorRead)
+	mux.HandleFunc("GET /api/shards", a.handleAPIOrchestratorRead)
+	mux.HandleFunc("POST /api/shards", a.handleAPIOrchestratorProxy)
 	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", a.handleAPIDiscoveryPairingInvite)
 	mux.HandleFunc("GET /api/events", a.orchestratorLink.events.ServeHTTP)
 	mux.HandleFunc("POST /api/tasks", a.handleAPITasksPost)
@@ -207,6 +212,7 @@ func (a *Agent) Run() error {
 
 func registerManagedEngineRoutes(mux *http.ServeMux, agent *Agent) {
 	mux.Handle("GET /api/engines/managed", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStatus)))
+	mux.Handle("GET /api/engines/managed/{id}/profile", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineModelProfile)))
 	mux.Handle("POST /api/engines/managed/{id}/start", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStart)))
 	mux.Handle("POST /api/engines/managed/{id}/stop", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStop)))
 	mux.Handle("POST /api/engines/managed/{id}/restart", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineRestart)))

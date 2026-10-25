@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/inferroute"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 )
 
@@ -35,6 +37,26 @@ func (a *Agent) requireManagedEngineOrchestrator(next http.Handler) http.Handler
 
 func (a *Agent) handleManagedEngineStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, a.managedEngines.Statuses())
+}
+
+func (a *Agent) handleManagedEngineModelProfile(w http.ResponseWriter, r *http.Request) {
+	rawContext := r.URL.Query().Get("requested_context")
+	parsedContext, err := strconv.Atoi(rawContext)
+	if err != nil || parsedContext < 1 || parsedContext > 1<<20 {
+		http.Error(w, "requested_context must be an integer from 1 to 1048576", http.StatusBadRequest)
+		return
+	}
+	profile, err := a.managedEngines.ModelProfile(r.PathValue("id"), parsedContext)
+	if err != nil {
+		if errors.Is(err, supervisor.ErrNotFound) {
+			http.Error(w, "managed engine not found", http.StatusNotFound)
+			return
+		}
+		logging.Errorf("nodeagent", "nodeagent: managed model profile read failed for engine %s: %v", r.PathValue("id"), err)
+		http.Error(w, "model profile is unavailable; verify the configured model metadata and weight files", http.StatusUnprocessableEntity)
+		return
+	}
+	writeJSON(w, http.StatusOK, profile)
 }
 
 func (a *Agent) handleManagedEngineStart(w http.ResponseWriter, r *http.Request) {

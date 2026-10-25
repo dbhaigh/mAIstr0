@@ -343,7 +343,17 @@ function showNodeMenu(x, y) {
 }
 
 function attachNodeContextMenu(element, node) {
+  element.addEventListener("click", (event) => {
+    if (!event.ctrlKey || !node.healthy || event.target.closest("button, input, select, textarea, a")) return;
+    event.preventDefault();
+    openShardGroupWizard(node.id);
+  });
   element.addEventListener("contextmenu", (event) => {
+    if (event.ctrlKey && node.healthy) {
+      event.preventDefault();
+      if (!document.getElementById("shard-group-setup-dialog")?.open) openShardGroupWizard(node.id);
+      return;
+    }
     event.preventDefault();
     contextNode = node;
     showNodeMenu(event.clientX, event.clientY);

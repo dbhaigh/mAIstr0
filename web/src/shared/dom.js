@@ -27,6 +27,8 @@
       const signature = signatureOf(item, index);
       let entry = previous.get(key);
       if (entry && entry.signature !== signature) {
+        // Never anchor an insertion on a node that is about to be detached.
+        while (cursor && entry.nodes.includes(cursor)) cursor = cursor.nextElementSibling;
         entry.nodes.forEach((node) => node.remove());
         entry = null;
       }

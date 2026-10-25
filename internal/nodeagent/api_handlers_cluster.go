@@ -9,6 +9,34 @@ import (
 	"strings"
 )
 
+// handleAPIOrchestratorProxy forwards dashboard operations to the joined
+// orchestrator so node-served dashboards use the same cluster APIs.
+func (a *Agent) handleAPIOrchestratorProxy(w http.ResponseWriter, r *http.Request) {
+	addr := a.getOrchestratorAddr()
+	if addr == "" {
+		writeError(w, apperr.UnavailableError(errors.New("this node has not joined an orchestrator")))
+		return
+	}
+	a.proxy(w, r, addr, withRawQuery(r.URL.Path, r))
+}
+
+func (a *Agent) handleAPIOrchestratorRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, apperr.Invalid(errors.New("cluster view only supports GET")))
+		return
+	}
+	a.handleAPIOrchestratorProxy(w, r)
+}
+
+// withRawQuery keeps the caller's query string (for example pagination) when
+// proxying to the orchestrator.
+func withRawQuery(path string, r *http.Request) string {
+	if r.URL.RawQuery == "" {
+		return path
+	}
+	return path + "?" + r.URL.RawQuery
+}
+
 func (a *Agent) handlePeersGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.Peers())
 }
@@ -78,6 +106,15 @@ func (a *Agent) handleAPINodeModelsPatch(w http.ResponseWriter, r *http.Request)
 
 func (a *Agent) handleAPINodeControl(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
+	if strings.Contains(r.URL.Path, "/engines/managed") {
+		orchestratorAddr := a.getOrchestratorAddr()
+		if orchestratorAddr == "" {
+			writeError(w, apperr.UnavailableError(errors.New("orchestrator unavailable")))
+			return
+		}
+		a.proxy(w, r, orchestratorAddr, r.URL.RequestURI())
+		return
+	}
 	path := "/properties"
 	if strings.HasSuffix(r.URL.Path, "/engines") {
 		path = "/engine"

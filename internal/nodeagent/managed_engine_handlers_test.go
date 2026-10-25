@@ -88,6 +88,44 @@ func TestManagedEngineRoutesRequirePinnedCurrentOrchestrator(t *testing.T) {
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("unknown managed engine start returned %d, want 404: %s", response.Code, response.Body.String())
 	}
+
+	profileRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/engines/managed/missing/profile?requested_context=-1",
+		nil,
+	)
+	profileRequest.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{certificateFromPEM(t, currentOrchestrator.CertificatePEM())},
+	}
+	profileResponse := httptest.NewRecorder()
+	mux.ServeHTTP(profileResponse, profileRequest)
+	if profileResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid model-profile context returned %d, want 400: %s", profileResponse.Code, profileResponse.Body.String())
+	}
+
+	profileRequest = httptest.NewRequest(http.MethodGet, "/api/engines/managed/missing/profile", nil)
+	profileRequest.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{certificateFromPEM(t, currentOrchestrator.CertificatePEM())},
+	}
+	profileResponse = httptest.NewRecorder()
+	mux.ServeHTTP(profileResponse, profileRequest)
+	if profileResponse.Code != http.StatusBadRequest {
+		t.Fatalf("missing model-profile context returned %d, want 400: %s", profileResponse.Code, profileResponse.Body.String())
+	}
+
+	profileRequest = httptest.NewRequest(
+		http.MethodGet,
+		"/api/engines/managed/missing/profile?requested_context=4096",
+		nil,
+	)
+	profileRequest.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{certificateFromPEM(t, currentOrchestrator.CertificatePEM())},
+	}
+	profileResponse = httptest.NewRecorder()
+	mux.ServeHTTP(profileResponse, profileRequest)
+	if profileResponse.Code != http.StatusNotFound {
+		t.Fatalf("unknown managed engine profile returned %d, want 404: %s", profileResponse.Code, profileResponse.Body.String())
+	}
 }
 
 func mustIdentity(t *testing.T, id string) *peeridentity.Identity {

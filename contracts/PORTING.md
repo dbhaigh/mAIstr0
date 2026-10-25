@@ -36,6 +36,16 @@ upstream start failures `502`. `GET /api/shards` returns `{"groups":[]}`;
 `GET /api/shards/{id}` returns a group or `404`. Deletion stops the head before
 workers and returns `204`, or an error if teardown/persistence fails.
 
+Dashboard shard setup reads configured engine model profiles through
+`GET /api/nodes/{id}/engines/managed/{engine_id}/profile`. The node-local
+`GET /api/engines/managed/{id}/profile` route is restricted to the current
+paired orchestrator, parses allow-listed GGUF or Hugging Face metadata, and
+measures model weight files without exposing their paths. Supply a positive
+`requested_context` query value to include the KV-cache context in the profile.
+Do not substitute model-name/size estimates when profile metadata or measurable
+weight files are unavailable; reject the candidate and let the planner explain
+placement refusals.
+
 Preserve the lifecycle values `planning`, `starting_workers`, `starting_head`,
 `ready`, `degraded`, `failed`, and `stopping`. Do not infer readiness from node
 heartbeats or a loaded persisted record. Member loss first degrades the group;
@@ -99,6 +109,10 @@ generator is a wire-format reference, not a database migration. See
   only the provider paths listed in the OpenAPI document and does not invoke
   workflow planning. Router events contain request/attempt metadata only, not
   prompts or response bodies. Retries stop once response content is committed.
+- Node agents serve read-only `GET /api/cluster/health` and `GET /api/shards`
+  by proxying them, unchanged, to the joined orchestrator; they return `503`
+  before a node has joined. Node `GET /api/tasks` forwards its query string, so
+  pagination parameters behave as they do on the orchestrator.
 - Nodes that omit engine status remain compatible with older clients. Once a
   node reports engines, scheduling should use each engine's readiness and
   advertised protocol capabilities.

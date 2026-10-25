@@ -14,6 +14,34 @@ func (s *Server) SetDiscovery(listener *discovery.Listener) { s.electionPort().s
 
 func (s *Server) SelfID() string { return s.electionPort().selfIDValue() }
 
+// LeadershipAnnouncement reports this instance's ID, score, member count, and
+// whether it currently considers itself the elected orchestrator.
+func (s *Server) LeadershipAnnouncement() discovery.Announcement {
+	if s.election == nil {
+		return discovery.Announcement{}
+	}
+	return s.electionPort().selfAnnouncement()
+}
+
+// Retire makes a failover-promoted orchestrator step down: it stops LAN
+// announcements and answers as a yielded instance until Reinstate is called.
+// The HTTP listener stays bound so the same instance can be reinstated.
+func (s *Server) Retire() {
+	if s.election != nil {
+		s.electionPort().setRetired(true)
+	}
+}
+
+// Reinstate resumes leadership after Retire, subject to normal LAN ranking.
+func (s *Server) Reinstate() {
+	if s.election != nil {
+		s.electionPort().setRetired(false)
+	}
+}
+
+// Elected reports whether this instance currently serves as orchestrator.
+func (s *Server) Elected() bool { return s.isElectedOrchestrator() }
+
 func (s *Server) isElectedOrchestrator() bool {
 	return s.election == nil || s.electionPort().isElectedOrchestrator()
 }

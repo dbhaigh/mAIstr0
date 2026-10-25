@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+## 0.0.24 - 2026-10-24
+
+### Added
+
+- Let operators Ctrl-click a healthy cluster node to open the shard-group
+  setup wizard, select compatible managed engines and models, and create
+  memory-aware placements with a 2 GiB per-device safety margin.
+- Expose protected model-profile inspection for allow-listed GGUF files and
+  cached/local Hugging Face models without returning their filesystem paths.
+- Add a dashboard "Refresh view" button that re-fetches only the active tab's
+  data. A browser reload now restores the active tab, sub-tab and mAIstr0 chat
+  transcript for that browser tab (stored in `sessionStorage`).
+
+### Fixed
+
+- Make mAIstr0 chat replies readable in the light colour scheme, which
+  previously showed dark text on a hard-coded black bubble.
+- Remove the welcome card when the first chat message appears, so replies
+  scroll inside the chat instead of overflowing the page until a reload.
+- Answer read-only cluster-status questions directly from live inventory,
+  health, task, shard, and version APIs instead of requiring an LLM-generated
+  JSON task plan. Report common model names, offline nodes, unavailable
+  inventories, and partial API failures explicitly.
+- Retry invalid automatic task plans once per selected model, then try another
+  eligible model. Validate JSON, graph dependencies, and task contracts before
+  accepting/caching a plan; preserve cancellation and terminal error responses.
+- Send LAN discovery announcements from every local IPv4 address so
+  multi-homed hosts (for example a Hyper-V switch plus a bridge on one subnet)
+  stay visible; previously one OS-chosen interface could leave a node's
+  announcements unheard and cause a split brain.
+- Stop dashboard node lists from flickering, dropping, or duplicating cards.
+  The keyed DOM patcher anchored insertions on an element it had just removed
+  whenever a card's live telemetry changed, so most live updates threw and
+  left the Overview, Nodes, and Local network lists partially rendered.
+- Log and rebind the discovery listener after UDP read errors instead of
+  silently stopping discovery.
+- Make a failover-promoted orchestrator step down and rejoin as a node when a
+  trusted orchestrator that still answers as elected outranks it, is the one
+  it replaced, or leads more members. A later failover reinstates it.
+- Answer cluster-status questions from node dashboards: node agents now proxy
+  read-only `GET /api/cluster/health` and `GET /api/shards` to the joined
+  orchestrator, and forward the `GET /api/tasks` query string (pagination).
+  Nodes without engines are reported as "none configured or detected" instead
+  of "legacy node".
+
 ## 0.0.23 - 2026-10-24
 
 ### Added

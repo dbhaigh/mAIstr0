@@ -36,6 +36,8 @@ const (
 	ShardGroupStopping        ShardGroupState = "stopping"
 )
 
+const managedShardSafetyMarginMB = 2048
+
 type ShardGroup struct {
 	ID          string             `json:"id"`
 	Model       shard.ModelProfile `json:"model"`
@@ -318,7 +320,9 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 	if err != nil {
 		return m.failCreate(id, err)
 	}
-	plan, err := m.planner(request.Model, candidates, shard.Policy{Mode: request.Mode})
+	plan, err := m.planner(request.Model, candidates, shard.Policy{
+		Mode: request.Mode, SafetyMarginMB: managedShardSafetyMarginMB,
+	})
 	if err != nil {
 		return m.failCreate(id, err)
 	}

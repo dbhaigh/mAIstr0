@@ -13,6 +13,10 @@ const moduleSources = [...entrySource.matchAll(/^import\s+"([^"]+)";$/gm)]
 const source = moduleSources.join("\n");
 const pipelineViewSource = fs.readFileSync(path.join(__dirname, "src", "views", "pipelines.js"), "utf8");
 const shardViewSource = fs.readFileSync(path.join(__dirname, "src", "views", "shards.js"), "utf8");
+const shardSetupSource = fs.readFileSync(path.join(__dirname, "src", "views", "shard-setup.js"), "utf8");
+const statusQuestionSource = fs.readFileSync(path.join(__dirname, "src", "views", "status-questions.js"), "utf8");
+const directChatSource = fs.readFileSync(path.join(__dirname, "src", "views", "orchestrator-chat.js"), "utf8");
+const directDispatchSource = directChatSource.slice(directChatSource.indexOf("function formatDirectTaskDispatch("), directChatSource.indexOf("async function sendInteractiveMessage("));
 const sharedSource = fs.readFileSync(path.join(__dirname, "src", "shared", "api.js"), "utf8");
 const applySnapshotStart = source.indexOf("function applySnapshot(snap) {");
 const applySnapshotSource = source.slice(applySnapshotStart, source.indexOf("\nfunction refreshOverviewTimes(", applySnapshotStart));
@@ -94,6 +98,36 @@ test("Shard dashboard renders group state, members, and escaped rationale", () =
   assert.match(elements["shard-group-list"].innerHTML, /GPU &lt;memory&gt; fit/);
   assert.match(elements["shard-group-list"].innerHTML, /badge healthy/);
   assert.equal(elements["shard-group-status"].textContent, "1 shard group");
+});
+
+test("Node Ctrl-click opens a shard setup wizard with verified model profiles", () => {
+  assert.match(indexSource, /id="shard-group-setup-dialog"/);
+  assert.match(indexSource, /id="shard-group-setup-create"/);
+  assert.match(source, /if \(!event\.ctrlKey \|\| !node\.healthy/);
+  assert.match(shardSetupSource, /\/api\/nodes\/\$\{encodeURIComponent\(nodeID\)\}\/engines\/managed/);
+  assert.match(shardSetupSource, /\/profile/);
+  assert.match(shardSetupSource, /pinned_nodes: nodeIDs/);
+  const element = { addEventListener() {}, querySelectorAll() { return []; } };
+  const context = vm.createContext({
+    document: { getElementById: () => element },
+    dashboardState: { nodes: [], shardGroups: [], shardGroupsError: "" },
+    escapeHtml: dashboardFormat.escapeHtml,
+    formatBytes: dashboardFormat.formatBytes,
+    fetchJSON: async () => [],
+  });
+  vm.runInContext(shardSetupSource, context);
+  const valid = {
+    name: "org/model",
+    layer_count: 32,
+    hidden_size: 4096,
+    kv_heads: 8,
+    head_dim: 128,
+    file_size_bytes: 1024,
+  };
+  assert.equal(context.validShardModelProfile(valid), true);
+  assert.equal(context.validShardModelProfile({ ...valid, layer_count: 0 }), false);
+  assert.equal(context.sameShardModelProfile(valid, { ...valid }), true);
+  assert.equal(context.sameShardModelProfile(valid, { ...valid, file_size_bytes: 2048 }), false);
 });
 
 test("Dashboard status view model renders node, model, load, memory, and version counts", () => {
@@ -416,8 +450,11 @@ test("Keyed DOM diff reuses stable nodes and replaces only changed items", () =>
         const oldIndex = node.parentNode.children.indexOf(node);
         node.parentNode.children.splice(oldIndex, 1);
       }
+      if (anchor && anchor.parentNode !== this) {
+        throw new Error("NotFoundError: anchor is not a child of this node");
+      }
       const index = anchor ? this.children.indexOf(anchor) : this.children.length;
-      this.children.splice(index < 0 ? this.children.length : index, 0, node);
+      this.children.splice(index, 0, node);
       node.parentNode = this;
     }
     remove() {
@@ -454,6 +491,15 @@ test("Keyed DOM diff reuses stable nodes and replaces only changed items", () =>
   assert.equal(container.children[0], originalB);
   assert.equal(container.children[1].value, "updated");
   assert.notEqual(container.children[1], originalA);
+
+  // Live telemetry changes the first rendered item in place on most snapshots.
+  dashboardDOM.patchKeyedChildren(container, [
+    { id: "b", value: "two-live" },
+    { id: "a", value: "updated-live" },
+    { id: "c", value: "three" },
+  ], options);
+  assert.deepEqual(container.children.map((child) => child.value), ["two-live", "updated-live", "three"]);
+  assert.deepEqual(container.children.map((child) => child.dataset.renderKey), ["b", "a", "c"]);
 });
 
 test("Node properties allow configuring supported inference engines", () => {
@@ -553,7 +599,7 @@ test("minimal mode hides harness and learning controls without loading optional 
   assert.equal(memoryTab.hidden, true);
 });
 
-test("mAIstr0 sends questions and work through one task submission action", async () => {
+test("mAIstr0 uses one submission action for status questions and work", async () => {
   const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
   assert.doesNotMatch(index, /dispatch-direct-task-btn/);
   assert.match(index, /id="send-msg-btn"[^>]*>Ask mAIstr0<\/button>/);
@@ -566,6 +612,217 @@ test("mAIstr0 sends questions and work through one task submission action", asyn
   vm.runInContext(sendInteractiveSource, context);
   await context.sendInteractiveMessage("Which node has the most available memory?");
   assert.deepEqual(submitted, ["Which node has the most available memory?"]);
+});
+
+test("Cluster status questions are read-only while work stays on the task path", () => {
+  const context = vm.createContext({});
+  vm.runInContext(statusQuestionSource, context);
+  for (const question of [
+    "what common llms are on the cluster - Ie. is the same LLM model available on all cluster nodes?",
+    "Is the same model available on all nodes?",
+    "Which node has the most available memory?",
+    "How busy is the cluster?",
+    "Are any workers offline?",
+    "Show all GPU and NPU hardware",
+    "List models on each node",
+    "What engines are running?",
+    "What version of mAIstr0 is running?",
+    "Who is the cluster leader?",
+    "Why is the shard group degraded?",
+    "What tasks are queued?",
+    "Cluster status",
+    "Please check the cluster health",
+    "How fast is the network?",
+    "Can the cluster run this model?",
+    "Does the cluster have enough memory to run llama?",
+  ]) assert.equal(context.isClusterStatusQuestion(question), true, question);
+  for (const task of [
+    "Write a report about LLM models",
+    "Install a common model on all cluster nodes",
+    "Which model should I install on the cluster?",
+    "Check cluster health and restart offline workers",
+    "Run a benchmark on all GPUs",
+    "Can you run llama on the cluster?",
+    "Create a shard group",
+    "Research the history of AI",
+    "What is the capital of France?",
+  ]) assert.equal(context.isClusterStatusQuestion(task), false, task);
+});
+
+test("Common model inventory uses exact names, every node, and honest readiness", () => {
+  const context = vm.createContext({ dashboardViewModel });
+  vm.runInContext(statusQuestionSource, context);
+  const node = (id, names, healthy = true) => ({
+    id, healthy, models: names.map((name) => ({ name })),
+    engines: [{ name: "ollama", ready: true, inventory_state: "available" }],
+  });
+  const cases = [
+    {
+      nodes: [node("a", ["qwen:7b", "qwen:7b", "llama:8b"]), node("b", ["qwen:7b"])],
+      expected: /Models reported on ALL 2 registered nodes: qwen:7b\./,
+    },
+    {
+      nodes: [node("a", ["qwen:7b"]), node("b", ["qwen:14b"])],
+      expected: /Models reported on ALL 2 registered nodes: none\./,
+    },
+    {
+      nodes: [node("a", ["qwen"]), node("b", ["Qwen"])],
+      expected: /Models reported on ALL 2 registered nodes: none\./,
+    },
+    {
+      nodes: [node("a", ["qwen"]), node("b", [])],
+      expected: /Models reported on ALL 2 registered nodes: none\./,
+    },
+    {
+      nodes: [node("a", ["qwen"]), node("b", ["qwen"], false)],
+      expected: /Models available on ALL registered nodes: unknown/,
+    },
+    { nodes: [], expected: /No registered nodes/ },
+  ];
+  for (const { nodes, expected } of cases) {
+    assert.match(context.formatClusterStatusAnswer(nodes, {}), expected);
+  }
+  const unknown = node("unavailable", ["qwen"]);
+  unknown.engines[0].inventory_state = "error";
+  const answer = context.formatClusterStatusAnswer([node("online", ["qwen"]), unknown], {});
+  assert.match(answer, /availability unconfirmed/);
+  assert.match(answer, /Online model inventory is incomplete/);
+  assert.doesNotMatch(answer, /Models reported on ALL 2/);
+  assert.match(context.formatClusterStatusAnswer([node("single", ["qwen"])], {}), /Only one node is online/);
+});
+
+test("Status reports include health, hardware, shards and task states without fabricating counters", () => {
+  const context = vm.createContext({ dashboardViewModel });
+  vm.runInContext(statusQuestionSource, context);
+  const nodes = [{
+    id: "worker", healthy: true, leader: true, version: "test-version",
+    hardware: {
+      cpu_cores: 8, cpu_stats_available: true, memory_stats_available: false,
+      has_gpu: true, gpu_vendor: "NVIDIA", gpu_stats_available: true, gpu_utilization_percent: 42,
+      has_npu: true, npu_stats_available: false,
+    },
+  }];
+  const answer = context.formatClusterStatusAnswer(nodes, {
+    "/api/cluster/health": {
+      nodes: [{ node_id: "worker", remaining: 0, max: 2, telemetry_state: "stale" }],
+      global_dispatch: { active_slots: 2, global_limit: 2, queue_depth: 3, active_workers: 1 },
+      warnings: ["Telemetry is stale"],
+    },
+    "/api/shards": { groups: [{ id: "group-1", model: { name: "llama" }, mode: "llamacpp-rpc", state: "degraded" }] },
+    "/api/tasks?page_size=50": { items: [{ id: "task-1", status: "running" }], has_more: true },
+  });
+  assert.match(answer, /CPU: 8 cores; utilization: 0%/);
+  assert.match(answer, /RAM: unknown; utilization: unknown/);
+  assert.match(answer, /GPU: NVIDIA; utilization: 42%; free memory: unknown/);
+  assert.match(answer, /NPU: detected; utilization: unknown/);
+  assert.match(answer, /capacity: 0 remaining \/ 2 slots/);
+  assert.match(answer, /telemetry: stale/);
+  assert.match(answer, /3 queued/);
+  assert.match(answer, /group-1: llama, llamacpp-rpc, degraded/);
+  assert.match(answer, /task-1: running/);
+  assert.match(answer, /more history available in Tasks/);
+  assert.match(answer, /Warning: Telemetry is stale/);
+});
+
+test("Direct cluster status reads live APIs without planning, even with no healthy nodes", async () => {
+  const calls = [];
+  const messages = [];
+  const context = vm.createContext({
+    dashboardViewModel, isSending: false, sendMsgBtn: {}, clearDirectChatBtn: {},
+    agentTabs: [], chatStatus: {}, directMessages: [], chatInput: { value: "question" },
+    appendMessageToChat: (message) => messages.push(message),
+    fetchJSON: async (url, opts) => {
+      calls.push([url, opts]);
+      if (url === "/api/nodes/all") return [{ id: "offline", healthy: false, models: [] }];
+      if (url === "/api/cluster/health") return { nodes: [], warnings: ["offline"] };
+      if (url === "/api/status") return { role: "orchestrator", persistence: { available: true } };
+      if (url === "/api/shards") return { groups: [] };
+      if (url === "/api/tasks?page_size=50") return { items: [], has_more: false };
+      if (url === "/api/version") return { version: "test-version" };
+      throw new Error(`Unexpected API call: ${url}`);
+    },
+  });
+  vm.runInContext(statusQuestionSource + "\n" + directDispatchSource, context);
+  await context.dispatchDirectTask("what common llms are on the cluster - Ie. is the same LLM model available on all cluster nodes?");
+  assert.equal(calls.length, 6);
+  assert.ok(calls.every(([, opts]) => opts === undefined));
+  assert.ok(calls.every(([url]) => url !== "/api/tasks"));
+  assert.match(messages.at(-1).content, /0 online, 1 offline/);
+  assert.match(messages.at(-1).content, /Models available on ALL registered nodes: unknown/);
+  assert.match(messages.at(-1).content, /test-version/);
+  assert.equal(context.isSending, false);
+  assert.equal(context.sendMsgBtn.disabled, false);
+});
+
+test("Cluster status API failures are explicit and never fall through to planning", async () => {
+  const messages = [];
+  const context = vm.createContext({
+    dashboardViewModel, isSending: false, sendMsgBtn: {}, clearDirectChatBtn: {},
+    agentTabs: [], chatStatus: {}, directMessages: [], chatInput: {},
+    appendMessageToChat: (message) => messages.push(message),
+    fetchJSON: async (url) => {
+      if (url === "/api/nodes/all") return [];
+      throw new Error("status service unavailable");
+    },
+  });
+  vm.runInContext(statusQuestionSource + "\n" + directDispatchSource, context);
+  await context.dispatchDirectTask("Show cluster status");
+  assert.match(messages.at(-1).content, /Incomplete status:/);
+  assert.match(messages.at(-1).content, /status service unavailable/);
+  context.fetchJSON = async () => { throw new Error("inventory unavailable"); };
+  await context.dispatchDirectTask("Show cluster status");
+  assert.match(messages.at(-1).content, /Cluster status failed: inventory unavailable/);
+  assert.equal(context.isSending, false);
+});
+
+test("Malformed optional status responses are reported as incomplete", async () => {
+  const context = vm.createContext({
+    dashboardViewModel,
+    fetchJSON: async (url) => {
+      if (url === "/api/shards" || url === "/api/tasks?page_size=50") return {};
+      return [];
+    },
+  });
+  vm.runInContext(statusQuestionSource, context);
+  const answer = await context.answerClusterStatusQuestion([]);
+  assert.match(answer, /Incomplete status:/);
+  for (const label of ["Capacity and telemetry", "Orchestrator status", "Shard groups", "Recent tasks", "Build version"]) {
+    assert.ok(answer.includes(`${label} unavailable: invalid API response`));
+  }
+  assert.doesNotMatch(answer, /Shard groups: 0|Recent tasks: 0/);
+});
+
+test("Status answers accept unpaged task arrays and label nodes without engines", async () => {
+  const tasks = Array.from({ length: 51 }, (_, index) => ({ id: `task-${index}`, status: "completed" }));
+  const context = vm.createContext({
+    dashboardViewModel,
+    fetchJSON: async (url) => (url === "/api/tasks?page_size=50" ? tasks : {}),
+  });
+  vm.runInContext(statusQuestionSource, context);
+  const answer = await context.answerClusterStatusQuestion([
+    { id: "current", healthy: true, version: "0.0.23" },
+    { id: "legacy", healthy: true },
+  ]);
+  assert.match(answer, /Recent tasks: 50 \(more history available in Tasks\)/);
+  assert.doesNotMatch(answer, /Recent tasks unavailable/);
+  assert.match(answer, /current: online[\s\S]*Engines: none configured or detected\./);
+  assert.match(answer, /legacy: online[\s\S]*Engines: readiness not reported \(legacy node\)\./);
+});
+
+test("Non-status work still submits an auto-planned task", async () => {
+  const calls = [];
+  const context = vm.createContext({
+    isSending: false, sendMsgBtn: {}, clearDirectChatBtn: {}, agentTabs: [],
+    chatStatus: {}, directMessages: [], chatInput: {}, appendMessageToChat() {}, refresh: async () => {},
+    fetchJSON: async (url, opts) => {
+      calls.push([url, opts]);
+      return url === "/api/nodes/all" ? [{ id: "worker", healthy: true }] : { id: "task-1", status: "pending", subtasks: [] };
+    },
+  });
+  vm.runInContext(statusQuestionSource + "\n" + directDispatchSource, context);
+  await context.dispatchDirectTask("Write a report about LLM models");
+  assert.equal(calls[1][0], "/api/tasks");
+  assert.equal(JSON.parse(calls[1][1].body).plan_mode, "auto");
 });
 
 test("Nodes page combines GPU, NPU, CPU, and RAM histories in one graph", () => {
@@ -1381,4 +1638,134 @@ test("Pairing a selected orchestrator sends its expected identity to the local n
     orchestrator_id: "selected-orchestrator",
   });
   assert.match(context.pairingStatus.textContent, /Connected to selected-orchestrator/);
+});
+
+test("Direct chat removes the welcome card before showing the first message", () => {
+  const removed = [];
+  const appended = [];
+  const welcome = { className: "welcome-card" };
+  const chatMessagesEl = {
+    querySelectorAll: (selector) => (selector === ".welcome-card" && !removed.includes(welcome) ? [welcome] : []),
+  };
+  const helperSource = directChatSource.slice(
+    directChatSource.indexOf("function appendChatItem("),
+    directChatSource.indexOf("function appendMessageToChat("),
+  );
+  const context = vm.createContext({
+    chatMessagesEl,
+    dashboardDOM: {
+      removeVirtualListItem: (_container, node) => removed.push(node),
+      appendVirtualListItem: (_container, node) => appended.push(node),
+    },
+  });
+  vm.runInContext(helperSource, context);
+  const reply = { className: "chat-msg assistant" };
+  context.appendChatItem(reply);
+  context.appendChatItem({ className: "chat-msg user" });
+  assert.deepEqual(removed, [welcome]);
+  assert.equal(appended[0], reply);
+  assert.equal(appended.length, 2);
+});
+
+test("Light theme gives chat replies a readable light surface", () => {
+  const css = fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8");
+  const light = css.slice(css.indexOf("@media (prefers-color-scheme: light)"));
+  const rule = light.match(/\.chat-msg\.assistant \.msg-bubble[^{]*\{([^}]*)\}/);
+  assert.ok(rule, "light theme must override the dark assistant bubble");
+  assert.match(rule[1], /background:\s*var\(--surface\)/);
+  assert.match(rule[1], /color:\s*var\(--text\)/);
+});
+
+function viewStateHarness({ stored = {}, chatMode = "direct" } = {}) {
+  const storage = new Map(Object.entries(stored));
+  const tabs = new Map();
+  const clicks = [];
+  const makeTab = (id, cls, selected, extra = {}) => {
+    const tab = {
+      id, className: cls, dataset: extra.dataset || {}, attrs: { role: "tab", "aria-selected": String(selected), ...extra.attrs },
+      getAttribute(name) { return this.attrs[name] ?? null; },
+      click() { clicks.push(id); },
+    };
+    tabs.set(id, tab);
+    return tab;
+  };
+  makeTab("agent-tab-button", "nav-tab active", true, { dataset: { tab: "agent-tab" } });
+  makeTab("cluster-tab-button", "nav-tab", false, { dataset: { tab: "cluster-tab" } });
+  makeTab("cluster-overview-tab", "cluster-workspace-tab", true, { attrs: { "aria-controls": "cluster-overview-panel" } });
+  makeTab("cluster-tasks-tab", "cluster-workspace-tab", false, { attrs: { "aria-controls": "tasks-panel" } });
+  const calls = [];
+  let pagehide;
+  const context = vm.createContext({
+    window: { addEventListener: (name, fn) => { if (name === "pagehide") pagehide = fn; } },
+    sessionStorage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) },
+    CSS: { escape: (value) => value },
+    document: {
+      getElementById: (id) => tabs.get(id) || null,
+      querySelector: (selector) => {
+        if (selector === ".nav-tab.active") return [...tabs.values()].find((tab) => tab.className === "nav-tab active") || null;
+        if (selector === ".agent-tab.active") return { dataset: { agent: chatMode } };
+        if (selector === '.cluster-workspace-tab[aria-selected="true"]') {
+          return [...tabs.values()].find((tab) => tab.className === "cluster-workspace-tab" && tab.attrs["aria-selected"] === "true") || null;
+        }
+        return null;
+      },
+      querySelectorAll: () => [...tabs.values()].filter((tab) => tab.className === "cluster-workspace-tab"),
+    },
+    directMessages: [],
+    activeChatMode: chatMode,
+    activeSessionId: "",
+    renderDirectMessages: () => calls.push("renderDirectMessages"),
+    refresh: async () => calls.push("refresh"),
+    refreshTaskHistory: async (reset) => calls.push(`refreshTaskHistory:${reset}`),
+    refreshDiscovery: async () => calls.push("refreshDiscovery"),
+    refreshShardGroups: async () => calls.push("refreshShardGroups"),
+    refreshMemory: async () => calls.push("refreshMemory"),
+    selectSession: async (id) => calls.push(`selectSession:${id}`),
+    loadPairingStatus: async () => calls.push("loadPairingStatus"),
+    checkSetupReadiness: async () => calls.push("checkSetupReadiness"),
+    loadModelCatalog: async () => calls.push("loadModelCatalog"),
+    markDashboardSynced: () => {},
+    console,
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "src", "views", "view-state.js"), "utf8"), context);
+  return { context, storage, tabs, clicks, calls, pagehide: () => pagehide() };
+}
+
+test("Reloading restores the selected tabs and the direct chat transcript", () => {
+  const first = viewStateHarness();
+  first.context.directMessages = [
+    { role: "user", content: "what models are available?" },
+    { role: "assistant", content: "Live cluster status" },
+    { role: "tool", content: "ignored" },
+  ];
+  first.tabs.get("cluster-tab-button").className = "nav-tab active";
+  first.tabs.get("agent-tab-button").className = "nav-tab";
+  first.tabs.get("cluster-overview-tab").attrs["aria-selected"] = "false";
+  first.tabs.get("cluster-tasks-tab").attrs["aria-selected"] = "true";
+  first.pagehide();
+
+  const reloaded = viewStateHarness({ stored: Object.fromEntries(first.storage) });
+  assert.deepEqual(JSON.parse(JSON.stringify(reloaded.context.directMessages)), [
+    { role: "user", content: "what models are available?" },
+    { role: "assistant", content: "Live cluster status" },
+  ]);
+  assert.ok(reloaded.calls.includes("renderDirectMessages"));
+  assert.deepEqual(reloaded.clicks, ["cluster-tasks-tab", "cluster-tab-button"]);
+});
+
+test("Refresh view reloads only the active tab's data", async () => {
+  const harness = viewStateHarness();
+  harness.tabs.get("cluster-tab-button").className = "nav-tab active";
+  harness.tabs.get("agent-tab-button").className = "nav-tab";
+  harness.tabs.get("cluster-overview-tab").attrs["aria-selected"] = "false";
+  harness.tabs.get("cluster-tasks-tab").attrs["aria-selected"] = "true";
+  harness.calls.length = 0;
+  await harness.context.refreshActiveView();
+  assert.deepEqual(harness.calls, ["refresh", "refreshTaskHistory:true"]);
+
+  harness.tabs.get("cluster-tab-button").className = "nav-tab";
+  harness.tabs.get("agent-tab-button").className = "nav-tab active";
+  harness.calls.length = 0;
+  await harness.context.refreshActiveView();
+  assert.deepEqual(harness.calls, ["renderDirectMessages"]);
 });
