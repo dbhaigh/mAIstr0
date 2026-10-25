@@ -114,7 +114,7 @@ func (d *dispatcherComponent) executeCandidateWithHedge(
 	reserveCtx, cancelReserve := context.WithCancel(ctx)
 	reservationResults := make(chan hedgeReservationResult, 1)
 	go func() {
-		reservation, reserveErr := reserveDispatchCapacity(reserveCtx, d.capacityGate, d.registry, hedge)
+		reservation, reserveErr := d.reserveTaskCapacity(reserveCtx, hedge)
 		reservationResults <- hedgeReservationResult{reservation: reservation, err: reserveErr}
 	}()
 

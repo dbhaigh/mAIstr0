@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -14,6 +15,7 @@ import (
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/version"
 )
 
@@ -170,6 +172,14 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/engines/managed") {
 		path = "/api/engines/managed"
 	}
+	if strings.HasSuffix(r.URL.Path, "/engines/managed/install-worker") {
+		path = "/api/engines/managed/install-worker"
+	}
+	for _, operation := range []string{"head-models", "configure-head", "download-model"} {
+		if strings.HasSuffix(r.URL.Path, "/engines/managed/"+operation) {
+			path = "/api/engines/managed/" + operation
+		}
+	}
 	if engineID := r.PathValue("engine_id"); engineID != "" {
 		path = "/api/engines/managed/" + url.PathEscape(engineID) + "/profile"
 	}
@@ -201,12 +211,37 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 			req.Header.Add(k, value)
 		}
 	}
-	resp, err := s.nodeClientPort().DoDispatch(req)
+	var resp *http.Response
+	if path == "/api/engines/managed/install-worker" || path == "/api/engines/managed/download-model" {
+		client, ok := s.nodeClientPort().(interface {
+			DoModelPull(*http.Request) (*http.Response, error)
+		})
+		if !ok {
+			writeError(w, apperr.UnavailableError(errors.New("worker installation client is unavailable")))
+			return
+		}
+		resp, err = client.DoModelPull(req)
+	} else {
+		resp, err = s.nodeClientPort().DoDispatch(req)
+	}
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node communication error: %w", err)))
 		return
 	}
 	defer resp.Body.Close()
+	if path == "/api/engines/managed/install-worker" && resp.StatusCode == http.StatusOK {
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, httpx.ControlJSONBodyBytes+1))
+		var result supervisor.WorkerInstallResult
+		if readErr != nil || len(data) > int(httpx.ControlJSONBodyBytes) || json.Unmarshal(data, &result) != nil {
+			writeError(w, apperr.UpstreamError(errors.New("invalid worker installation response")))
+			return
+		}
+		if result.Devices != nil && !s.registry.UpdateDevices(n.ID, n.Address, result.Devices) {
+			writeError(w, apperr.UnavailableError(errors.New("node changed while refreshing device memory; retry installation")))
+			return
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(data))
+	}
 	for k, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(k, value)

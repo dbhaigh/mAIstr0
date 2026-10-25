@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/configure-local-head.schema.json",
+  "title": "ConfigureLocalHead",
+  "type": "object",
+  "required": ["model_id", "requested_context"],
+  "properties": {
+    "model_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "requested_context": {"type": "integer", "minimum": 1, "maximum": 1048576}
+  },
+  "additionalProperties": false
+}

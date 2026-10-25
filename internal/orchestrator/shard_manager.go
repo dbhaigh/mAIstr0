@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ const (
 	ShardGroupDegraded        ShardGroupState = "degraded"
 	ShardGroupFailed          ShardGroupState = "failed"
 	ShardGroupStopping        ShardGroupState = "stopping"
+	ShardGroupStopped         ShardGroupState = "stopped"
 )
 
 const managedShardSafetyMarginMB = 2048
@@ -66,9 +68,13 @@ type ShardGroupMember struct {
 }
 
 type CreateShardGroupRequest struct {
-	Model       shard.ModelProfile `json:"model"`
-	Mode        shard.Mode         `json:"mode"`
-	PinnedNodes []string           `json:"pinned_nodes,omitempty"`
+	Model           shard.ModelProfile `json:"model"`
+	Mode            shard.Mode         `json:"mode"`
+	PinnedNodes     []string           `json:"pinned_nodes,omitempty"`
+	HeadNodeID      string             `json:"head_node_id,omitempty"`
+	HeadEngineID    string             `json:"head_engine_id,omitempty"`
+	nodeSnapshots   map[string]cluster.NodeStatus
+	requireAllNodes bool
 }
 
 type ShardGroupStore interface {
@@ -83,6 +89,8 @@ type ShardNodeRegistry interface {
 }
 
 type ManagedEngineControl interface {
+	NodeStatus(ctx context.Context, address string) (cluster.NodeStatus, error)
+	VerifyModel(ctx context.Context, address, id string, expected shard.ModelProfile, restore bool) error
 	List(ctx context.Context, address string) ([]supervisor.Status, error)
 	Start(ctx context.Context, address, id string, plan *supervisor.ShardPlan) (supervisor.Status, error)
 	Stop(ctx context.Context, address, id string) (supervisor.Status, error)
@@ -163,7 +171,7 @@ func NewShardManager(
 			return nil, errors.New("decode persisted shard group: id is required")
 		}
 		manager.recovery[group.ID] = group.State
-		if group.State != ShardGroupFailed {
+		if group.State != ShardGroupFailed && group.State != ShardGroupStopped {
 			group.State = ShardGroupDegraded
 			group.Error = "awaiting startup verification"
 		}
@@ -268,6 +276,12 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 		return ShardGroup{}, fmt.Errorf("%w: model.name is required", errShardGroupInvalid)
 	}
 	request.Model.Name = strings.TrimSpace(request.Model.Name)
+	if (request.HeadNodeID == "") != (request.HeadEngineID == "") || (request.HeadNodeID != "" && request.Mode != shard.ModeLlamaCPPRPC) {
+		return ShardGroup{}, fmt.Errorf("%w: head_node_id and head_engine_id must be supplied together for llama.cpp RPC", errShardGroupInvalid)
+	}
+	if request.HeadNodeID != "" && len(request.PinnedNodes) > 0 && !slices.Contains(request.PinnedNodes, request.HeadNodeID) {
+		return ShardGroup{}, fmt.Errorf("%w: selected head must be one of the pinned nodes", errShardGroupInvalid)
+	}
 	if len(request.PinnedNodes) > 0 {
 		seen := make(map[string]struct{}, len(request.PinnedNodes))
 		for _, nodeID := range request.PinnedNodes {
@@ -301,7 +315,7 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 	}
 	m.mu.Lock()
 	for _, existing := range m.groups {
-		if strings.EqualFold(existing.Model.Name, group.Model.Name) && existing.State != ShardGroupFailed {
+		if strings.EqualFold(existing.Model.Name, group.Model.Name) && (existing.State != ShardGroupFailed || m.operations[existing.ID]) {
 			m.mu.Unlock()
 			return ShardGroup{}, fmt.Errorf("%w: a shard group for model %q already exists", errShardGroupConflict, group.Model.Name)
 		}
@@ -315,7 +329,10 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 		m.removeInMemory(id)
 		return ShardGroup{}, fmt.Errorf("persist initial shard group: %w", err)
 	}
+	return m.startGroup(ctx, id, request)
+}
 
+func (m *ShardManager) startGroup(ctx context.Context, id string, request CreateShardGroupRequest) (ShardGroup, error) {
 	candidates, engineByNode, err := m.candidates(ctx, request)
 	if err != nil {
 		return m.failCreate(id, err)
@@ -325,6 +342,13 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 	})
 	if err != nil {
 		return m.failCreate(id, err)
+	}
+	if request.requireAllNodes {
+		for _, nodeID := range request.PinnedNodes {
+			if !slices.ContainsFunc(plan.Nodes, func(node shard.NodePlan) bool { return node.NodeID == nodeID }) {
+				return m.failCreate(id, fmt.Errorf("%w: selected member %q cannot receive layers; check free device memory and plan compatibility", errShardGroupUnavailable, nodeID))
+			}
+		}
 	}
 	networkWarnings, err := shardPlanNetworkWarnings(plan, candidates)
 	if err != nil {
@@ -336,17 +360,11 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 			logging.FileWarnf("shard", "%s", rationale)
 		}
 	}
-	members, err := buildShardMembers(plan, engineByNode, m.registry)
+	members, err := buildShardMembers(plan, engineByNode, m.registry, request.HeadNodeID)
 	if err != nil {
 		return m.failCreate(id, err)
 	}
-	if err := m.mutate(id, func(current *ShardGroup) {
-		current.Plan = plan
-		current.Members = members
-		current.Rationale = append([]string(nil), plan.Rationale...)
-		current.Error = ""
-		current.State = ShardGroupStartingWorkers
-	}); err != nil {
+	if err := m.claimMembers(id, plan, members); err != nil {
 		return m.failCreate(id, err)
 	}
 
@@ -357,6 +375,13 @@ func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupReque
 	m.mu.Lock()
 	m.reservations[id] = reservation
 	m.mu.Unlock()
+	for _, member := range members {
+		if member.Role == "head" {
+			if err := m.engines.VerifyModel(ctx, member.Address, member.EngineID, request.Model, true); err != nil {
+				return m.failCreate(id, fmt.Errorf("verify saved model on head %s: %w", member.NodeID, err))
+			}
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return m.failCreate(id, err)
 	}
@@ -440,7 +465,7 @@ func (m *ShardManager) Recover(ctx context.Context) error {
 		m.mu.RLock()
 		previousState := m.recovery[group.ID]
 		m.mu.RUnlock()
-		if previousState == ShardGroupFailed || group.State == ShardGroupFailed {
+		if previousState == ShardGroupFailed || group.State == ShardGroupFailed || group.State == ShardGroupStopped {
 			m.mu.Lock()
 			m.verified[group.ID] = true
 			delete(m.recovery, group.ID)
@@ -448,7 +473,7 @@ func (m *ShardManager) Recover(ctx context.Context) error {
 			continue
 		}
 		if previousState == ShardGroupStopping {
-			if err := m.stopMembers(ctx, group, true); err != nil {
+			if err := m.stopMembers(ctx, group, false); err != nil {
 				if mutateErr := m.mutate(group.ID, func(current *ShardGroup) {
 					current.State = ShardGroupFailed
 					current.Error = "startup cleanup failed: " + err.Error()
@@ -458,13 +483,15 @@ func (m *ShardManager) Recover(ctx context.Context) error {
 				continue
 			}
 			m.releaseReservation(group.ID)
-			m.persistMu.Lock()
-			err := m.store.DeleteShardGroup(group.ID)
-			m.persistMu.Unlock()
-			if err != nil {
+			if err := m.mutate(group.ID, func(current *ShardGroup) {
+				current.State = ShardGroupStopped
+				current.Error = ""
+			}); err != nil {
 				return fmt.Errorf("finish stopping shard group %s: %w", group.ID, err)
 			}
-			m.removeInMemory(group.ID)
+			m.mu.Lock()
+			delete(m.recovery, group.ID)
+			m.mu.Unlock()
 			continue
 		}
 		ready, verifyErr := m.verifyGroup(ctx, group)
@@ -533,6 +560,11 @@ func (m *ShardManager) CheckHealth(ctx context.Context) error {
 			if err := m.beginOperation(group.ID); err != nil {
 				continue
 			}
+			group, _ = m.Get(group.ID)
+			if group.State != ShardGroupReady {
+				m.finishOperation(group.ID)
+				continue
+			}
 			ready, checkErr := m.verifyGroup(ctx, group)
 			if checkErr != nil {
 				result = errors.Join(result, checkErr)
@@ -552,6 +584,11 @@ func (m *ShardManager) CheckHealth(ctx context.Context) error {
 			m.finishOperation(group.ID)
 		case ShardGroupDegraded:
 			if err := m.beginOperation(group.ID); err != nil {
+				continue
+			}
+			group, _ = m.Get(group.ID)
+			if group.State != ShardGroupDegraded {
+				m.finishOperation(group.ID)
 				continue
 			}
 			if err := m.waitForRequestIdle(ctx, group.ID); err != nil {
@@ -577,7 +614,7 @@ func (m *ShardManager) CheckHealth(ctx context.Context) error {
 func (m *ShardManager) Close(ctx context.Context) error {
 	var result error
 	for _, group := range m.List() {
-		if group.State == ShardGroupFailed || group.State == ShardGroupPlanning {
+		if group.State == ShardGroupFailed || group.State == ShardGroupPlanning || group.State == ShardGroupStopped {
 			continue
 		}
 		if err := m.beginOperation(group.ID); err != nil {
@@ -624,6 +661,9 @@ func (m *ShardManager) candidates(
 	var candidates []shard.CandidateNode
 	engineByNode := make(map[string]map[string]supervisor.Status)
 	for _, node := range nodes {
+		if snapshot, ok := request.nodeSnapshots[node.ID]; ok {
+			node = snapshot
+		}
 		if !node.Healthy {
 			continue
 		}
@@ -640,6 +680,10 @@ func (m *ShardManager) candidates(
 		byKind := make(map[string]supervisor.Status)
 		for _, status := range statuses {
 			kind := strings.ToLower(status.Kind)
+			if kind == "llama-server" && request.HeadNodeID != "" &&
+				(node.ID != request.HeadNodeID || status.ID != request.HeadEngineID) {
+				continue
+			}
 			if _, exists := byKind[kind]; !exists {
 				byKind[kind] = status
 			}
@@ -839,6 +883,7 @@ func buildShardMembers(
 	plan shard.ShardPlan,
 	engineByNode map[string]map[string]supervisor.Status,
 	registry ShardNodeRegistry,
+	selectedHead string,
 ) ([]ShardGroupMember, error) {
 	if len(plan.Nodes) == 0 {
 		return nil, errors.New("shard planner returned an empty node list")
@@ -858,7 +903,14 @@ func buildShardMembers(
 			})
 		}
 		var head ShardGroupMember
+		if selectedHead != "" {
+			status := engineByNode[selectedHead]["llama-server"]
+			head = ShardGroupMember{NodeID: selectedHead, Role: "head", EngineID: status.ID, EngineKind: status.Kind}
+		}
 		for _, node := range plan.Nodes {
+			if selectedHead != "" {
+				break
+			}
 			if status := engineByNode[node.NodeID]["llama-server"]; status.ID != "" {
 				head = ShardGroupMember{
 					NodeID: node.NodeID, Role: "head", EngineID: status.ID,
@@ -1000,6 +1052,11 @@ func (m *ShardManager) verifyGroup(ctx context.Context, group ShardGroup) (bool,
 		status, exists := statuses[member.NodeID][member.EngineID]
 		if !exists || !strings.EqualFold(status.State, "ready") {
 			return false, nil
+		}
+		if member.Role == "head" {
+			if err := m.engines.VerifyModel(ctx, member.Address, member.EngineID, group.Model, false); err != nil {
+				return false, err
+			}
 		}
 	}
 	return true, nil

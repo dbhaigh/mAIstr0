@@ -20,7 +20,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Build and publish release
+      - name: Detect numeric iteration release
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "iteration=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "iteration=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and publish semantic release
+        if: steps.version.outputs.iteration != 'true'
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -28,3 +38,31 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish numeric iteration release
+        if: steps.version.outputs.iteration == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          source_version=$(sed -n 's/^[[:space:]]*var Value = "\([^"]*\)".*/\1/p' internal/version/version.go)
+          test "$version" = "$source_version"
+          bash build/build.sh
+          mkdir -p dist/packages
+          for target in windows-amd64 linux-amd64 linux-ubuntu-amd64; do
+            os="${target%-amd64}"
+            name="maistr0_${version}_${os}_amd64"
+            folder="dist/packages/$name"
+            mkdir -p "$folder/docs"
+            cp LICENSE README.md "$folder/"
+            cp docs/*.md "$folder/docs/"
+            cp dist/"$target"/maistr0* "$folder/"
+            if [[ "$target" == windows-* ]]; then
+              (cd "$folder" && zip -qr "../$name.zip" .)
+            else
+              tar -czf "dist/packages/$name.tar.gz" -C "$folder" .
+            fi
+          done
+          (cd dist/packages && sha256sum *.zip *.tar.gz > checksums.txt)
+          gh release create "$GITHUB_REF_NAME" dist/packages/*.zip dist/packages/*.tar.gz dist/packages/checksums.txt --verify-tag --generate-notes

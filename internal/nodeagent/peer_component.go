@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
@@ -200,7 +201,7 @@ func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	req, err := http.NewRequest(r.Method, addr+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, addr+path, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -216,8 +217,28 @@ func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path
 
 	client := c.peerHTTP()
 	taskSubmission := r.Method == http.MethodPost && path == "/api/tasks"
-	if taskSubmission || strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
+	membershipMutation := r.Method == http.MethodPost && strings.HasPrefix(path, "/api/shards/") && strings.HasSuffix(path, "/members")
+	workerInstallation := r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/engines/managed/install-worker") || strings.HasSuffix(r.URL.Path, "/engines/managed/download-model"))
+	shardMutation := r.Method != http.MethodGet && (r.URL.Path == "/api/shards" || strings.HasPrefix(r.URL.Path, "/api/shards/"))
+	if taskSubmission || workerInstallation || shardMutation || strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
 		client = c.dispatchClient
+	}
+	if shardMutation {
+		shardClient := *client
+		shardClient.Timeout = 15 * time.Minute
+		client = &shardClient
+	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/engines/managed/download-model") {
+		modelClient := *client
+		modelClient.Timeout = time.Hour
+		client = &modelClient
+	}
+	if taskSubmission || membershipMutation {
+		// Planning and membership drains follow the orchestrator's generation
+		// budget. The incoming caller can still cancel the request.
+		taskClient := *client
+		taskClient.Timeout = 0
+		client = &taskClient
 	}
 
 	resp, err := client.Do(req)

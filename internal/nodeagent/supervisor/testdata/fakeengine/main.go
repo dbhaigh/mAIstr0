@@ -17,6 +17,8 @@ func main() {
 	}
 	switch os.Getenv("MAISTR0_FAKE_ENGINE_MODE") {
 	case "http":
+		delay, _ := strconv.Atoi(os.Getenv("MAISTR0_FAKE_ENGINE_START_DELAY_MS"))
+		time.Sleep(time.Duration(delay) * time.Millisecond)
 		startHTTP()
 		waitForever()
 	case "crash":

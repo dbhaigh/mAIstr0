@@ -1610,6 +1610,12 @@ func TestTaskSubmissionProxyUsesLongTimeoutClient(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("proxied task submission returned %d: %s", response.Code, response.Body.String())
 	}
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/nodes/worker/engines/managed/install-worker", strings.NewReader(`{"source":"official"}`))
+	agent.handleAPINodeControl(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("proxied worker installation returned %d: %s", response.Code, response.Body.String())
+	}
 }
 
 func TestReadOnlyClusterViewsProxyToOrchestrator(t *testing.T) {
@@ -1692,5 +1698,15 @@ func TestNodeDashboardProxiesShardCreationAndProfileReadsToOrchestrator(t *testi
 	if profileResponse.Code != http.StatusOK || gotMethod != http.MethodGet ||
 		gotURI != "/api/nodes/worker/engines/managed/engine/profile?requested_context=4096" {
 		t.Fatalf("model profile proxy = %d %s %s", profileResponse.Code, gotMethod, gotURI)
+	}
+	installResponse := httptest.NewRecorder()
+	installRequest := httptest.NewRequest(
+		http.MethodPost, "/api/nodes/worker/engines/managed/install-worker",
+		strings.NewReader(`{"source":"official"}`),
+	)
+	agent.handleAPINodeControl(installResponse, installRequest)
+	if installResponse.Code != http.StatusOK || gotMethod != http.MethodPost ||
+		gotURI != "/api/nodes/worker/engines/managed/install-worker" || gotBody != `{"source":"official"}` {
+		t.Fatalf("worker install proxy = %d %s %s %q", installResponse.Code, gotMethod, gotURI, gotBody)
 	}
 }

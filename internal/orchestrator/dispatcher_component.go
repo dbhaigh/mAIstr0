@@ -26,6 +26,8 @@ type dispatchHTTPClient interface {
 }
 
 type dispatcherComponent struct {
+	shards          *ShardManager
+	shardModel      *nodeClient
 	registry        *cluster.Registry
 	tasks           *taskmgr.Manager
 	memory          memory.Store
@@ -107,6 +109,16 @@ func (d *dispatcherComponent) reservations() workpool.CapacityGate {
 
 func (d *dispatcherComponent) schedulerNodes() []cluster.NodeStatus {
 	nodes := d.registry.Active()
+	if d.shards != nil {
+		groups := d.shards.List()
+		selected := groups[:0]
+		for _, group := range groups {
+			if owner, ok := d.shards.GroupForModel(group.Model.Name); ok && owner.ID == group.ID {
+				selected = append(selected, group)
+			}
+		}
+		nodes = shardSchedulerNodes(nodes, selected)
+	}
 	byID := make(map[string]*cluster.NodeStatus, len(nodes))
 	for i := range nodes {
 		byID[nodes[i].ID] = &nodes[i]

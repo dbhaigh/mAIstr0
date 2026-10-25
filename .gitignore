@@ -1,6 +1,13 @@
 # Build outputs and local binaries
 /dist/
 /maistr0.exe
+/maistr0
+/maistr0.exe.previous
+/maistr0.previous
+*.peer-update.log
+.maistr0-apply-*.json
+.maistr0-update-*
+.maistr0-replace-*
 
 # Local runtime state
 *.db

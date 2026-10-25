@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -23,6 +25,7 @@ import (
 	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/nodeagent"
 	"github.com/maistr0/maistr0/internal/orchestrator"
+	"github.com/maistr0/maistr0/internal/selfupdate"
 	"github.com/maistr0/maistr0/internal/trayapp"
 	buildversion "github.com/maistr0/maistr0/internal/version"
 )
@@ -46,8 +49,23 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	printConfig := flag.Bool("print-config", false, "print normalized configuration and exit")
 	diagnostics := flag.Bool("diagnostics", false, "print a redacted local health summary and exit")
+	noPeerUpdates := flag.Bool("no-peer-updates", false, "disable automatic idle updates from paired peers")
+	applyPeerUpdate := flag.String("apply-peer-update", "", "internal staged executable replacement job")
+	cleanupPeerUpdate := flag.String("cleanup-peer-update", "", "internal exited replacement-helper cleanup")
 	flag.Parse()
 
+	if *applyPeerUpdate != "" {
+		if err := selfupdate.Apply(*applyPeerUpdate); err != nil {
+			fmt.Fprintf(os.Stderr, "peer update replacement failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *cleanupPeerUpdate != "" {
+		if err := selfupdate.Cleanup(*cleanupPeerUpdate); err != nil {
+			fmt.Fprintf(os.Stderr, "peer update cleanup failed: %v\n", err)
+		}
+	}
 	if *showVersion {
 		fmt.Printf("maistr0 %s\n", buildversion.String())
 		return
@@ -158,6 +176,9 @@ func main() {
 	var autoOpen bool
 	var closeOrchestrator func()
 	var closeNode func()
+	var updateNode *nodeagent.Agent
+	var updateOrchestrator *orchestrator.Server
+	var updateFailover *failoverCoordinator
 
 	switch *role {
 	case "node":
@@ -182,6 +203,7 @@ func main() {
 		if err != nil {
 			fatalf("failed to open node task history: %v", err)
 		}
+		updateNode = agent
 		var nodeDiscovery *discovery.Listener
 		if cfg.DiscoveryEnabled {
 			nodeDiscovery = discovery.Listen(agent.ID())
@@ -202,6 +224,7 @@ func main() {
 				exitConfigValidation(err)
 			}
 			failover := newFailoverCoordinator(agent, nodeDiscovery, orchCfg, cfg.ListenAddr)
+			updateFailover = failover
 			agent.SetElectionStarter(failover.StartElection)
 			closeOrchestrator = func() {
 				if err := failover.Close(); err != nil {
@@ -236,6 +259,7 @@ func main() {
 		if err != nil {
 			fatalf("failed to configure orchestrator agent: %v", err)
 		}
+		updateOrchestrator = srv
 		closeOrchestrator = func() {
 			if err := srv.Close(); err != nil {
 				logging.Errorf("main", "orchestrator shutdown: %v", err)
@@ -249,6 +273,7 @@ func main() {
 		if err != nil {
 			fatalf("failed to open node task history: %v", err)
 		}
+		updateNode = agent
 		closeNode = func() {
 			if err := agent.Close(); err != nil {
 				logging.Errorf("main", "node shutdown: %v", err)
@@ -311,21 +336,38 @@ func main() {
 		}()
 	}
 
-	trayapp.Run(trayapp.Options{
-		Title:        "mAIstr0 (" + *role + ")",
-		Mode:         effectiveTrayMode,
-		DashboardURL: dashboardURL,
-		LogFilePath:  logFilePath,
-		LogDirectory: filepath.Dir(logFilePath),
-		OnQuit: func() {
+	var shutdownOnce sync.Once
+	shutdown := func() {
+		shutdownOnce.Do(func() {
 			if closeNode != nil {
 				closeNode()
 			}
 			if closeOrchestrator != nil {
 				closeOrchestrator()
 			}
-			os.Exit(0)
-		},
+		})
+		os.Exit(0)
+	}
+	if !*noPeerUpdates {
+		go selfupdate.Run(context.Background(), func() selfupdate.Source {
+			source := updateNode.UpdateSource()
+			if updateOrchestrator != nil {
+				source.Peers = append(source.Peers, updateOrchestrator.UpdateSource().Peers...)
+			}
+			return source
+		}, func() bool {
+			return updateNode.UpdateIdle() &&
+				(updateOrchestrator == nil || updateOrchestrator.UpdateIdle()) &&
+				(updateFailover == nil || updateFailover.UpdateIdle())
+		}, shutdown)
+	}
+	trayapp.Run(trayapp.Options{
+		Title:        "mAIstr0 (" + *role + ")",
+		Mode:         effectiveTrayMode,
+		DashboardURL: dashboardURL,
+		LogFilePath:  logFilePath,
+		LogDirectory: filepath.Dir(logFilePath),
+		OnQuit:       shutdown,
 	})
 }
 

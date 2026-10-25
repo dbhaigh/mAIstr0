@@ -2,6 +2,111 @@
 
 ## Unreleased
 
+## 0.0.24.1
+
+### Versioning
+
+- Add a fourth numeric iteration component for rapid releases:
+  `0.0.24.1`, `0.0.24.2`, ..., `0.0.24.10`. Comparisons are numeric;
+  `0.0.25` remains newer than every `0.0.24.x` iteration. The prior local
+  0.0.25 development build was not a published release; install this build
+  manually on any node running that development version, since automatic
+  updates intentionally never downgrade.
+- Accept four-component versions in peer manifests and schemas; avoid numeric
+  overflow when comparing long iteration numbers. Build scripts generate
+  platform bundle metadata, and release automation packages four-component
+  tags without relying on SemVer-only release tooling.
+
+### Fixed
+
+- Persist a retryable failure on the actual shard group when a membership
+  replan cannot place every selected node, instead of leaving the group stuck
+  in planning because a node ID shadowed its group ID.
+- Advertise ready shard text-model capabilities to the scheduler even when the
+  worker reports explicit hardware-only capabilities, so writing, summaries,
+  and translation are not incorrectly rejected as having no compatible model.
+- Let initial workflow planning use automatic acquisition when the cluster has
+  no eligible planning model; keep ordinary writing roles out of hard capability
+  requirements in generated plans.
+- Keep registered workers online when a combined-role host alternates worker
+  and coordinator-candidate LAN announcements under the same ID. Probe the
+  trusted worker address instead of treating the role change as an expired
+  announcement; retain offline detection and foreign-coordinator exclusions.
+- Verify automatically managed shard heads against saved model metadata on
+  startup, recovery, health checks, and inference. Restore matching local GGUF
+  weights when starting a stopped group whose shared head was reconfigured for
+  another model; fail explicitly if the original weights are unavailable.
+- Honor `dispatch_timeout_seconds` for inference HTTP calls, including shard
+  planning and synthesis, instead of enforcing a separate fixed ten-minute
+  client limit. Include shard request-slot waits in the budget and preserve
+  caller cancellation. Remove the node-dashboard task-submission proxy's
+  competing fixed timeout.
+- Consume managed shard generation as SSE and flush node-proxy headers/chunks
+  immediately. Log safe progress counts (including reasoning-only output)
+  without prompt/answer text, reject truncated/error streams explicitly, and
+  explain generation timeout failures with configuration guidance.
+- Include ready shard models in automatic task planning, work execution, and
+  answer synthesis. Route all stages through the managed head, serialize group
+  requests, and avoid reserving already-held member slots a second time.
+- Explain unavailable planning models with actionable readiness guidance.
+- Allow ten minutes for managed model-head loading instead of terminating large
+  distributed GGUF loads after thirty seconds. Keep RPC worker startup short,
+  extend managed-start and dashboard shard-proxy deadlines, and retain
+  cancellation and failed-start cleanup across restarts.
+- Refresh per-device accelerator memory through the installed llama.cpp runtime,
+  including Vulkan devices previously reported without free memory. Publish
+  installation-time readings before planning and clear failed runtime readings.
+- Let the shard wizard select its model-head node and reuse local Ollama/LM
+  Studio GGUF weights without requiring an already loaded model. Persist a
+  matching automatic head and preserve the explicitly selected head in planning.
+- Inspect managed-worker availability before model selection and explain
+  unavailable engines and inventory failures in the shard wizard.
+
+### Added
+
+- Version 0.0.24.1: automatically stage newer executables directly from pinned
+  paired peers and apply only while the entire local process is idle. Preserve
+  startup arguments/configuration, retain the previous executable, and support
+  packaged Windows/Linux target bundles. Add `--no-peer-updates`; explicitly
+  document the accepted unsigned-peer executable trust risk and deferred
+  signing/publisher-authorization work. Existing versions require a one-time
+  manual upgrade to gain bootstrap support.
+- Add **Edit members** to shard-group cards: add/remove worker nodes, install
+  missing RPC runtimes, drain inference, release old placement, refresh device
+  telemetry, and reload the same saved model/group with comfortable-memory
+  proportional placement. Retain the model head; moving weights to another
+  head is not supported by membership editing. Add the protected
+  `POST /api/shards/{id}/members` route and matching contracts/fixtures.
+- Recover missing task models by loading compatible local GGUF weights on idle
+  managed nodes, then automatically downloading a recommended public Hugging
+  Face Qwen2.5 Instruct GGUF if necessary. Verify LFS SHA-256, exact size and
+  GGUF metadata, persist the cache, and start a managed single-node group before
+  retrying assignment. Preserve active groups and operator heads.
+- Add protected `download-model` managed-engine APIs and the additive
+  `huggingface` local-inventory source. Older nodes must be upgraded to download;
+  existing routes, configuration defaults, and persistence formats are unchanged.
+- Add dashboard and API start/stop/restart for saved shard groups. Stop drains
+  inference and retains configuration; start/restart replan current memory with
+  the saved model, pins, and head, retain the group ID, and protect engines owned
+  by other groups.
+- Extend the shard-group state enum with `stopped` (additive contract migration;
+  existing records require no rewriting). Clients must accept this unavailable
+  state. Stopped groups remain stopped across recovery and shutdown. Interrupted
+  `stopping` records now recover to retained `stopped` groups rather than being
+  deleted; reissue DELETE to remove an interrupted deletion.
+- Delete failed shard groups from dashboard cards, including node-dashboard
+  forwarding, duplicate-click protection, and explicit cleanup errors.
+- Document shard chat usage, explicit OpenAI requests, and failed-group recovery.
+- Automatically download, SHA-256 verify, install, and persist missing llama.cpp
+  RPC workers when selecting nodes in the shard wizard. Support official
+  Vulkan archives and custom llama-xdna.cpp release archives on Windows/Linux
+  amd64. Check installer-managed workers for updates while idle, defer active
+  updates, and preserve operator-configured workers and existing installations.
+- Add current-orchestrator-protected worker installation APIs, with matching
+  dashboard forwarding, schemas, and fixtures. Local-model discovery and
+  idle-only head configuration use the same authenticated control path.
+  System drivers and vLLM setup remain operator-managed.
+
 ## 0.0.24 - 2026-10-24
 
 ### Added

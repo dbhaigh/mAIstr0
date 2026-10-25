@@ -6,6 +6,21 @@ in another language.
 
 ## Contract sources
 
+Version 0.0.24.1 adds `POST /api/shards/{id}/members` with the
+`shard-membership.schema.json` request and existing shard-group response.
+It retains the model head, drains inference and reloads placement; it is not
+live layer migration. Worker dashboards forward the same route under existing
+authority checks. No persisted group fields or existing routes change.
+
+Both listeners also add paired-peer `GET /api/updates/manifest` and
+`GET /api/updates/binary`, optionally targeted with `os` and `arch`. The new
+`peer-update.schema.json` defines version/platform/size/SHA-256 metadata.
+These endpoints distribute executable code: pairing is the publisher trust
+boundary, not an independent release signature. Clients must pin the exact
+peer certificate, reject redirects, enforce target/size/hash/version checks,
+and install only while idle. Old clients cannot bootstrap automatically until
+manually upgraded to a release containing this updater.
+
 - [`openapi.yaml`](./openapi.yaml) lists every route registered by the
   orchestrator and node agent. `x-maistr0-registered-routes` preserves the
   exact Go mux patterns, including methodless and subtree registrations.
@@ -27,6 +42,46 @@ in another language.
 
 ## Managed shard groups
 
+`POST /api/nodes/{id}/engines/managed/install-worker` accepts only
+`{"source":"official"}` or `{"source":"xdna"}` and forwards to the node-local
+`POST /api/engines/managed/install-worker`. The latter requires a pinned mTLS
+identity for the current paired orchestrator. It returns `WorkerInstallResult`
+with `source`, `version`, `updated`, `engines`, and an optional explicit
+update-deferred `warning`. Operator-configured workers are unchanged.
+Missing/unsupported releases or failed SHA-256 verification return `502`;
+unsupported platforms return `501`, invalid sources `400`, and installation
+requiring stopped engines returns `409`. No client-supplied URL, executable,
+repository, or filesystem path is accepted. See the worker-install schemas
+and generated fixture for wire examples.
+
+Successful installation responses may additionally include `devices` using
+the hardware inventory device shape, with freshly measured free memory. Publish
+these readings before accepting immediate shard placement; do not assume host RAM
+is accelerator memory.
+
+`GET /api/nodes/{id}/engines/managed/head-models?requested_context=4096`
+returns `{"models":[{"id":"<opaque sha256>","name":"...","source":"ollama|lmstudio|huggingface","profile":{}}],"warnings":[]}`.
+Profiles use the existing model-profile schema. The node-local
+`GET /api/engines/managed/head-models` requires the pinned current orchestrator.
+`POST /api/nodes/{id}/engines/managed/configure-head` forwards to
+`POST /api/engines/managed/configure-head` under the same authentication.
+Supply `model_id` from discovery and `requested_context`, not a filesystem path.
+The stopped head configuration is persisted and returned as `ManagedEngineStatus`;
+active engines reject reconfiguration with `409`. Discovery IDs are local to
+the selected node and must be revalidated at configuration time.
+
+`POST /api/nodes/{id}/engines/managed/download-model` forwards to
+`POST /api/engines/managed/download-model` with the same current-orchestrator
+authentication. Its request is `DownloadHeadModel` (a curated `model` ID and
+`requested_context`); its `200` response is a single local-model object.
+Downloads accept only public single-file GGUF recommendations, require
+Hugging Face LFS SHA-256/size verification, and do not accept arbitrary URLs or
+paths. Invalid input returns `400`, failed authentication `403`, and failed
+acquisition `502`. The routes and the `huggingface` inventory source are
+additive; no stored bucket/key encodings change. Older peers require an upgrade
+before automatic acquisition is available. Keep model-transfer deadlines longer
+than ordinary dispatch requests and preserve caller cancellation.
+
 Managed groups are distinct from the protocol-v2 stage pipeline below.
 `POST /api/shards` accepts `CreateShardGroupRequest`: a model profile, mode
 (`llamacpp-rpc` or `vllm-mp`), and optional pinned node IDs. It returns `201`
@@ -35,6 +90,10 @@ or active operations `409`, missing capacity/members/persistence `503`, and
 upstream start failures `502`. `GET /api/shards` returns `{"groups":[]}`;
 `GET /api/shards/{id}` returns a group or `404`. Deletion stops the head before
 workers and returns `204`, or an error if teardown/persistence fails.
+Optional `head_node_id` and `head_engine_id` must be supplied together for
+llama.cpp RPC to select that exact head, including when the head receives no
+layers. With pinned nodes, the head must be pinned. Omitting both preserves
+legacy first-available-head selection.
 
 Dashboard shard setup reads configured engine model profiles through
 `GET /api/nodes/{id}/engines/managed/{engine_id}/profile`. The node-local
@@ -47,12 +106,26 @@ weight files are unavailable; reject the candidate and let the planner explain
 placement refusals.
 
 Preserve the lifecycle values `planning`, `starting_workers`, `starting_head`,
-`ready`, `degraded`, `failed`, and `stopping`. Do not infer readiness from node
+`ready`, `degraded`, `failed`, `stopping`, and `stopped`. `stopped` is an additive
+enum extension; existing stored records need no rewrite, but clients must treat
+it as unavailable for inference. Do not infer readiness from node
 heartbeats or a loaded persisted record. Member loss first degrades the group;
 the next health sweep tears down remaining members and fails it. Startup
 recovery verifies members and reserves capacity before restoring readiness.
-Rebuild creates a new group; there is no in-place rebuild route. Failed
-history may coexist with the new ready group for the same model.
+Failed history may coexist with a new ready group for the same model.
+
+`POST /api/shards/{id}/{action}`, where action is `start`, `stop`, or `restart`,
+requires an empty body and returns `200` with the updated group. Node dashboards
+forward the same routes. Stop drains inference, stops the head before workers,
+releases capacity, and retains the configuration as `stopped`. Start replans
+stopped/failed groups with the saved model, pins, and previous head selection;
+restart stops then starts under one operation claim. Workers start before the
+head. Group IDs and creation timestamps are retained. Start-ready/stop-stopped
+are idempotent. Concurrent actions and model/engine ownership conflicts return
+`409`. Stopped groups stay stopped on startup and shutdown. Recovery of an
+interrupted `stopping` state now completes teardown and retains a stopped record
+instead of deleting it; repeat DELETE if deletion was intended. This is the
+only recovery behavior migration; persisted key/bucket encodings are unchanged.
 
 The transparent router uses the group's model name and sends inference to the
 head through `/api/engines/managed/{id}/proxy/{path...}`. Non-ready groups

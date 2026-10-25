@@ -175,6 +175,20 @@ func (r *Registry) Upsert(status NodeStatus) {
 
 // MarkUnhealthy flags a node as unreachable without removing it, so it's
 // still visible in the GUI but excluded from scheduling.
+// UpdateDevices publishes an authenticated runtime probe without replacing heartbeat state.
+func (r *Registry) UpdateDevices(id, address string, devices []hardware.Device) bool {
+	snapshot := cloneNodeStatus(NodeStatus{Hardware: hardware.Info{Devices: devices}}).Hardware.Devices
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	node, ok := r.nodes[id]
+	if !ok || node.Address != address {
+		return false
+	}
+	node.Hardware.Devices = snapshot
+	r.invalidateSnapshotLocked()
+	return true
+}
+
 func (r *Registry) MarkUnhealthy(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

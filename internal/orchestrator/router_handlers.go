@@ -202,6 +202,24 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				if ctx.Err() != nil {
 					return
 				}
+				group, exists := s.shards.Get(shardGroupID)
+				var verifyErr error
+				if !exists {
+					verifyErr = errShardGroupNotFound
+				} else {
+					for _, member := range group.Members {
+						if member.Role == "head" {
+							verifyErr = s.nodeClient.VerifyModel(ctx, member.Address, member.EngineID, group.Model, false)
+							break
+						}
+					}
+				}
+				if verifyErr != nil {
+					releaseRequest()
+					s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+					writeRouterError(w, http.StatusServiceUnavailable, "shard head model does not match saved group; stop and start the group to restore its model: "+verifyErr.Error())
+					return
+				}
 				writeRouterError(w, http.StatusServiceUnavailable, apperr.UnavailableError(err).Error())
 				return
 			}

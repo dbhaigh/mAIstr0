@@ -37,6 +37,11 @@ func (m *Manager) ModelProfile(id string, requestedContext int) (shard.ModelProf
 	}
 	var profile shard.ModelProfile
 	switch {
+	case engine.modelName != "" && configured.Kind == config.ManagedEngineLlamaServer:
+		if _, err := approvedModelRoot(configured.ModelPath, engine.modelAllowlist); err != nil {
+			return profile, err
+		}
+		profile, err = readLocalGGUF(configured.ModelPath, requestedContext)
 	case configured.ModelPath != "":
 		info, statErr := os.Stat(configured.ModelPath)
 		if statErr != nil {
@@ -59,6 +64,9 @@ func (m *Manager) ModelProfile(id string, requestedContext int) (shard.ModelProf
 		return shard.ModelProfile{}, err
 	}
 	profile.Name = configuredModelName(configured)
+	if engine.modelName != "" {
+		profile.Name = engine.modelName
+	}
 	if _, err := profile.EffectiveWeightsSizeBytes(); err != nil {
 		return shard.ModelProfile{}, fmt.Errorf("model weights cannot be sized safely: %w", err)
 	}

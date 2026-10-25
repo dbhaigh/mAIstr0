@@ -19,10 +19,90 @@ The main options include:
 - `--harness pi|deepseek` to select the default interactive harness
 - `--print-config` to print normalized configuration and exit
 - `--diagnostics` to print a prompt-free local health summary
+- `--no-peer-updates` to disable automatic executable updates from paired peers
 
 Run `maistr0 --help` for the complete option list. Orchestrator election
 requires LAN discovery; disabling discovery is supported only for
 node-oriented startup.
+
+## Automatic peer executable updates
+
+Version 0.0.24.1 introduces automatic updates from **paired peers**, not GitHub.
+Install this version manually once on existing nodes: earlier executables do
+not contain the updater and cannot bootstrap themselves. Thereafter a node
+checks healthy registered peers and LAN-discovered paired identities every
+30 seconds, using pinned mutual TLS and the peer's executable manifest.
+Only strictly newer numeric `major.minor.patch` or
+`major.minor.patch.iteration` releases are accepted;
+rebuilding the same version does not trigger an update. Use a new version
+number for each rollout.
+
+Rapid iterations use `0.0.24.1`, `0.0.24.2`, and so on; the fourth component
+has no single-digit limit (`0.0.24.10` follows `0.0.24.9`). A three-component
+release behaves as iteration zero. `0.0.25` sorts after all `0.0.24.x`
+versions. Any node running the earlier local 0.0.25 development build must be
+manually replaced with 0.0.24.1; automatic downgrade remains prohibited.
+
+A compatible image is downloaded beside the installed executable, with
+bounded size, SHA-256, Go platform metadata, and reported-version checks.
+The executable directory must be writable by the application account.
+Downloads can be staged while busy, but installation waits until the entire
+process is idle: no active/pending tasks (including synthesis/approval), no
+in-flight work requests, no loaded pipeline stages, no managed worker/head
+processes, and no active shard groups or membership operations on a local
+coordinator. A combined-role process and a promoted coordinator use the same
+admission fence. **Stop running shard groups explicitly to allow updates.**
+The updater does not force-stop them, even if inference is currently idle.
+Failed managed engines must also be explicitly stopped, so a pending crash
+restart cannot race executable replacement.
+New work is briefly rejected with 503 once replacement commits.
+
+The helper waits for graceful parent exit, replaces the image, and restarts
+with the original arguments and working directory. Configuration, identity,
+model caches and databases are unchanged. The prior executable is retained
+as `<executable>.previous`; replacement/launch errors are written to
+`<executable>.peer-update.log`. Immediate launch failures attempt rollback;
+this is not a post-start health supervisor. For a later startup failure,
+close the process, restore the `.previous` executable, then restart manually
+with `--no-peer-updates` until the faulty release is withdrawn.
+
+**Accepted security risk / deferred security work:** pairing now grants a
+peer the ability to publish executable code that runs as the local application
+account. A compromised paired node can supply a malicious binary and matching
+checksum/version. Mutual TLS authenticates the publisher and SHA-256 detects
+transfer corruption; neither is an independent release signature. Signed
+releases, publisher authorization and revocation policy remain future work.
+Use `--no-peer-updates` on every receiving process to disable this behavior.
+Never pair an untrusted machine. Existing pairing and current-coordinator
+write checks are not bypassed by the updater.
+
+### Cross-platform bundles
+
+A node always serves its own native running image. Windows cannot manufacture
+a Linux executable (or vice versa) from its running image; publish both
+builds in sibling `windows-amd64` and `linux-amd64` directories with generated
+`.peer.json` metadata. A native seed on each platform also works.
+Ubuntu uses the Linux amd64 image.
+
+For locally built bundles, build every platform with the **same explicit**
+`-X github.com/maistr0/maistr0/internal/version.Value=0.0.24.1` linker setting,
+then run:
+
+```powershell
+go run .\cmd\updatebundle -root .\dist -version 0.0.24.1
+```
+
+The tool requires the existing `windows-amd64`, `linux-amd64`, and
+`linux-ubuntu-amd64` build outputs; it
+does not compile binaries or download anything. Native images are probed with
+`-version`; the publisher asserts the foreign image's version with `-version`
+because Go trimpath builds do not retain linker settings. Receiving nodes
+verify that image's reported version before installation. When a running Windows image
+is locked, build `dist\windows-amd64\maistr0-update.exe` and pass
+`-windows-binary maistr0-update.exe`. Preserve the sibling platform folders
+and metadata when copying a multi-platform publishing bundle; a standalone
+executable can only publish its native platform. Ordinary GitHub release
+archives are single-platform native seeds.
 
 ## Node configuration
 
@@ -97,7 +177,10 @@ orchestrator's `log_level`.
 - `max_concurrent_dispatches` defaults to `16` and limits cluster-wide
   subtask execution.
 - `dispatch_timeout_seconds` defaults to `600` seconds and bounds a subtask's
-  dispatch and retry attempts.
+  dispatch and retry attempts. The inference HTTP client also uses this setting
+  for planning and final synthesis rather than a separate fixed ten-minute
+  limit. Managed-shard generation includes waiting for the group's request slot
+  in this budget. Earlier caller deadlines and cancellation still win.
 - `max_concurrent_tasks` defaults to `2` on a node; both the orchestrator and
   node enforce node capacity.
 - `sync_max_bytes` defaults to 64 MiB and may be configured from 1 byte through
@@ -106,6 +189,31 @@ orchestrator's `log_level`.
   through 3600 seconds.
 - `log_level` accepts `debug`, `info`, `warn`, or `error` and defaults to
   `info`.
+
+For a slow distributed model, use a thirty-minute budget without changing the
+global default:
+
+```json
+{
+  "dispatch_timeout_seconds": 1800
+}
+```
+
+Save this as an orchestrator JSON configuration and launch with
+`-orchestrator-config <path>`, retaining your usual role/node options. This is
+not an automatically discovered configuration file; it must be supplied on the
+command line. A node-served dashboard no longer imposes an independent
+ten-minute timeout on task submission while the orchestrator is planning.
+Closing/canceling the incoming request still cancels planning.
+
+Shard task generation requests OpenAI SSE internally. The node proxy flushes
+headers and small chunks immediately; the orchestrator assembles assistant
+content and logs safe progress counts (`chunks`, `output_bytes`,
+`reasoning_bytes`, and `elapsed_ms`) without logging prompts or generated text.
+The dashboard receives the completed plan/output, not these internal token
+chunks. A total timeout still applies even if the head is producing tokens.
+Increasing it gives a working but slow head more time; it does not improve
+throughput or repair a stalled model.
 
 ### Router controls
 
@@ -298,6 +406,80 @@ firewalls or an isolated network. Hardware backends and model-format support
 are determined by the llama.cpp build, not by mAIstr0.
 
 ## Managed engine processes
+
+### Automatic RPC workers
+
+Selecting a worker in the shard-group wizard automatically installs a missing
+`ggml-rpc-server` on Windows amd64 or Linux amd64. The official source is
+[`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp/releases);
+the optional XDNA source is
+[`dbhaigh/llama-xdna.cpp`](https://github.com/dbhaigh/llama-xdna.cpp/releases).
+No administrator privilege, package manager, or manual configuration edit is
+required. The installer retains the archive's shared libraries alongside the
+worker, verifies its GitHub SHA-256 digest and size, rejects unsafe archives,
+and registers a loopback-only worker behind the existing authenticated relay.
+
+The release source picker defaults to official Vulkan builds. It expects
+`-bin-win-vulkan-x64.zip` or `-bin-ubuntu-vulkan-x64.tar.gz` assets; the XDNA
+source expects `-bin-win-xdna-x64.zip` or `-bin-ubuntu-xdna-x64.tar.gz`.
+Archives must include `ggml-rpc-server` and all runtime libraries. If the
+custom source has no supported release, installation reports unavailable;
+it never silently substitutes a CPU or unrelated build. XRT, device drivers,
+Vulkan drivers, and other system prerequisites remain operator-installed.
+Official numbered `b<build>` releases are eligible even though upstream marks
+them as prereleases; unrelated prereleases and drafts are excluded. Official
+build numbers are never automatically downgraded, and an archive whose digest
+changes without a version change is rejected.
+
+Installer-managed workers are stored under the user configuration directory
+at `maistr0/workers/<node-key>`, or beside an explicit `memory_path` in
+`<memory_path>.workers`. A durable manifest restores them after restart.
+Selecting them again checks for updates; activation requires every managed
+engine to be stopped, and active workers retain their installed version with
+an explicit update-deferred message. Operator-configured workers are never
+overwritten. Older installation directories are retained.
+
+The wizard can also configure a matching `llama-server` from this runtime.
+Choose the model-head node, then an existing local Ollama or LM Studio GGUF.
+It reuses weights in place (no model downloads or copies), persists the selected
+head and model alias, and restores them on restart and runtime updates. All
+managed engines must be idle when changing the head. Operator-configured heads
+are never replaced. An official Vulkan worker is not proof of XDNA support;
+vLLM installation remains manual.
+
+Discovery uses `OLLAMA_MODELS` or `~/.ollama/models`, and LM Studio's
+`~/.lmstudio/models` and `~/.cache/lm-studio/models`. Set `LMSTUDIO_MODELS` for
+a custom LM Studio model directory. Run the node as an account with permission
+to read these models. Ollama manifests identify the actual GGUF weight blobs;
+non-GGUF weights, split GGUF files, and inaccessible models produce explicit warnings.
+Automatic head setup currently supports single-file GGUF models. A model
+need not be loaded in Ollama or LM Studio. Stop competing model loads to free
+accelerator memory before creating a group.
+
+The node probes the installed `llama-server --list-devices` for measured total
+and free GPU/NPU memory after installation and during telemetry refresh.
+Invalid readings are rejected and failed probes clear their previous free-memory
+readings. Host RAM is never substituted for unknown device memory. Devices need
+free memory above the 2 GiB reserve plus their assigned weights and KV cache.
+
+`POST /api/nodes/{id}/engines/managed/install-worker` accepts
+`{"source":"official"}` or `{"source":"xdna"}`. It proxies to the node-local
+`POST /api/engines/managed/install-worker`, which requires the current paired
+orchestrator's pinned mTLS identity. Request bodies cannot supply executables,
+arbitrary repositories, download URLs, installation paths, or shell commands.
+
+### Operator-configured processes
+
+Model-loading engines (`llama-server` and vLLM) have a ten-minute readiness
+window for reading weights, transferring RPC shards, and warming up. RPC
+workers retain a thirty-second readiness window. These limits apply to initial
+starts and automatic/explicit restarts; caller cancellation still aborts startup
+and cleans up the process. Managed start requests allow eleven minutes, and
+node-served dashboard shard operations allow fifteen minutes so proxy deadlines
+do not cut off model loading. A running process is not reported ready until its
+readiness probe succeeds. If startup still times out, inspect the head node's
+`managed_engine` entries in its mAIstr0 application log for loading progress,
+device allocation errors, or RPC connectivity failures.
 
 Nodes can manage explicitly configured `llama-server`, `ggml-rpc-server`, and
 `vllm` processes. Managed engines are not started automatically; the paired

@@ -6,6 +6,7 @@
 package nodeagent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/config"
@@ -146,6 +147,17 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 	hw := hardware.Detect()
 	state := newAgentState(cfg)
 	telemetry := newTelemetryComponent(hw)
+	telemetry.hardwareUsageProbe = func() hardwareUsageSample {
+		usage := currentHardwareUsage()
+		devices, err := managedEngines.RuntimeDevices(context.Background())
+		if err != nil {
+			logging.Errorf("nodeagent", "installed runtime device probe failed: %v", err)
+			usage.runtimeProbe = true
+		} else if devices != nil {
+			usage.runtimeDevices, usage.runtimeProbe = devices, true
+		}
+		return usage
+	}
 	executor := newExecutorComponent(cfg.MaxConcurrentTasks, state)
 	engines := newEngineComponent(configuredEngines, detector, telemetry, state)
 	engines.operatorCapabilities = make(map[string]engine.Capabilities)

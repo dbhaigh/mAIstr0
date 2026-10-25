@@ -68,7 +68,7 @@ test("Dashboard bundle parses as a plain JavaScript browser script", () => {
 
 test("Shard dashboard renders group state, members, and escaped rationale", () => {
   const elements = {
-    "shard-group-list": { innerHTML: "" },
+    "shard-group-list": { innerHTML: "", addEventListener() {} },
     "shard-group-status": { textContent: "" },
     "refresh-shard-groups": { addEventListener() {} },
   };
@@ -100,6 +100,147 @@ test("Shard dashboard renders group state, members, and escaped rationale", () =
   assert.equal(elements["shard-group-status"].textContent, "1 shard group");
 });
 
+test("Failed shard groups can be deleted without deleting ready groups or hiding errors", async () => {
+  const handlers = {};
+  const elements = {
+    "shard-group-list": { innerHTML: "", addEventListener(event, handler) { handlers[event] = handler; } },
+    "shard-group-status": { textContent: "" },
+    "refresh-shard-groups": { addEventListener() {} },
+  };
+  const state = {
+    shardGroups: [
+      { id: "failed/<group>", model: { name: "large" }, state: "failed" },
+      { id: "ready", model: { name: "small" }, state: "ready" },
+    ],
+    shardGroupsError: "",
+  };
+  const requests = [];
+  let finish;
+  const context = vm.createContext({
+    document: { getElementById: (id) => elements[id] || null },
+    dashboardState: state,
+    escapeHtml: dashboardFormat.escapeHtml,
+    console: { error() {} },
+    fetchJSON: (url, options) => {
+      requests.push({ url, options });
+      return new Promise((resolve, reject) => { finish = { resolve, reject }; });
+    },
+  });
+  vm.runInContext(shardViewSource, context);
+  context.renderShardGroups();
+  assert.match(elements["shard-group-list"].innerHTML, /data-delete-shard-group="failed\/&lt;group&gt;"/);
+  assert.doesNotMatch(elements["shard-group-list"].innerHTML, /data-delete-shard-group="ready"/);
+  assert.equal(typeof handlers.click, "function");
+  const failed = context.deleteFailedShardGroup("failed/<group>");
+  assert.match(elements["shard-group-list"].innerHTML, /disabled>Deleting/);
+  await context.deleteFailedShardGroup("failed/<group>");
+  await context.deleteFailedShardGroup("ready");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/shards/failed%2F%3Cgroup%3E");
+  assert.equal(requests[0].options.method, "DELETE");
+  finish.reject(new Error("worker could not be stopped"));
+  await failed;
+  assert.equal(state.shardGroups.length, 2);
+  assert.match(elements["shard-group-status"].textContent, /worker could not be stopped/);
+  const success = context.deleteFailedShardGroup("failed/<group>");
+  finish.resolve(null);
+  await success;
+  assert.equal(state.shardGroups.length, 1);
+  assert.equal(state.shardGroups[0].id, "ready");
+  assert.equal(state.shardGroupsError, "");
+});
+
+test("Shard member editor retains the head and applies selected worker membership", async () => {
+  const head = { node_id: "head", role: "head" };
+  const state = { nodes: [{ id: "head", healthy: true }, { id: "new-worker", healthy: true }],
+    shardGroups: [{ id: "g/<id>", state: "ready", mode: "llamacpp-rpc", members: [head], pinned_nodes: ["head"] }], shardGroupsError: "" };
+  const editor = { dataset: { shardMembersEditor: "g/<id>" },
+    querySelectorAll: () => ["head", "new-worker"].map((id) => ({ dataset: { shardMember: id } })) };
+  const elements = {
+    "shard-group-list": { innerHTML: "", addEventListener() {}, querySelectorAll: () => [editor] },
+    "shard-group-status": { textContent: "" },
+  };
+  const requests = [];
+  const context = vm.createContext({ document: { getElementById: (id) => elements[id] || null },
+    dashboardState: state, escapeHtml: dashboardFormat.escapeHtml, console,
+    fetchJSON: async (url, options) => {
+      requests.push({ url, options });
+      if (url.endsWith("/engines/managed")) return url.includes("/head/") ? [{ kind: "GGML-RPC-SERVER" }] : [];
+      if (url.endsWith("/install-worker")) return { engines: [] };
+      return { ...state.shardGroups[0], pinned_nodes: ["head", "new-worker"] };
+    } });
+  vm.runInContext(shardViewSource, context);
+  const markup = context.shardMemberEditorMarkup(state.shardGroups[0], false);
+  assert.match(markup, /data-shard-member="head" checked disabled/);
+  assert.match(markup, /data-shard-member="new-worker"/);
+  assert.match(markup, /drains inference and reloads/);
+  await context.applyShardMembers("g/<id>");
+  const mutation = requests.find((entry) => entry.url.endsWith("/members"));
+  assert.equal(mutation.url, "/api/shards/g%2F%3Cid%3E/members");
+  assert.deepEqual(JSON.parse(mutation.options.body), { node_ids: ["head", "new-worker"] });
+  assert.equal(requests.filter((entry) => entry.url.endsWith("/install-worker")).length, 1);
+  assert.equal(state.shardGroupsError, "");
+});
+
+test("Shard lifecycle controls follow state, block duplicate actions, and preserve API errors", async () => {
+  const elements = {
+    "shard-group-list": { innerHTML: "", addEventListener() {} },
+    "shard-group-status": { textContent: "" },
+    "refresh-shard-groups": { addEventListener() {} },
+  };
+  const state = {
+    shardGroups: [{ id: "group/<id>", state: "ready", model: { name: "model" } }],
+    shardGroupsError: "",
+  };
+  const requests = [];
+  let finish;
+  let remoteState = "ready";
+  const context = vm.createContext({
+    document: { getElementById: (id) => elements[id] || null },
+    dashboardState: state,
+    escapeHtml: dashboardFormat.escapeHtml,
+    console: { error() {} },
+    fetchJSON: (url, options) => {
+      requests.push({ url, options });
+      if (!options) return Promise.resolve({ groups: [{ ...state.shardGroups[0], state: remoteState }] });
+      return new Promise((resolve, reject) => { finish = { resolve, reject }; });
+    },
+  });
+  vm.runInContext(shardViewSource, context);
+  context.renderShardGroups();
+  assert.match(elements["shard-group-list"].innerHTML, /data-shard-action="stop"/);
+  assert.match(elements["shard-group-list"].innerHTML, /data-shard-action="restart"/);
+  assert.doesNotMatch(elements["shard-group-list"].innerHTML, /data-shard-action="start"/);
+  const stop = context.runShardGroupAction("group/<id>", "stop");
+  assert.match(elements["shard-group-list"].innerHTML, /disabled>Stop/);
+  await context.runShardGroupAction("group/<id>", "restart");
+  await context.deleteFailedShardGroup("group/<id>");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/shards/group%2F%3Cid%3E/stop");
+  assert.equal(requests[0].options.method, "POST");
+  finish.resolve({ ...state.shardGroups[0], state: "stopped" });
+  await stop;
+  assert.match(elements["shard-group-list"].innerHTML, /data-shard-action="start"/);
+  assert.doesNotMatch(elements["shard-group-list"].innerHTML, /data-shard-action="stop"/);
+  const start = context.runShardGroupAction("group/<id>", "start");
+  remoteState = "failed";
+  finish.reject(new Error("head startup timed out"));
+  await start;
+  assert.equal(state.shardGroups[0].state, "failed");
+  assert.match(elements["shard-group-status"].textContent, /head startup timed out/);
+  assert.match(elements["shard-group-list"].innerHTML, /Delete failed group/);
+  const restart = context.runShardGroupAction("group/<id>", "restart");
+  finish.resolve({ ...state.shardGroups[0], state: "ready" });
+  await restart;
+  assert.equal(state.shardGroups[0].state, "ready");
+  assert.equal(state.shardGroupsError, "");
+  for (const transitional of ["planning", "starting_workers", "starting_head", "stopping"]) {
+    state.shardGroups[0].state = transitional;
+    context.renderShardGroups();
+    assert.doesNotMatch(elements["shard-group-list"].innerHTML, /data-shard-action=/);
+  }
+});
+
 test("Node Ctrl-click opens a shard setup wizard with verified model profiles", () => {
   assert.match(indexSource, /id="shard-group-setup-dialog"/);
   assert.match(indexSource, /id="shard-group-setup-create"/);
@@ -128,6 +269,105 @@ test("Node Ctrl-click opens a shard setup wizard with verified model profiles", 
   assert.equal(context.validShardModelProfile({ ...valid, layer_count: 0 }), false);
   assert.equal(context.sameShardModelProfile(valid, { ...valid }), true);
   assert.equal(context.sameShardModelProfile(valid, { ...valid, file_size_bytes: 2048 }), false);
+  const engineInventory = new Map([
+    ["rpc-ready", { engines: [{ kind: "ggml-rpc-server" }] }],
+    ["not-configured", { engines: [] }],
+    ["unreachable", { error: "request failed", engines: [] }],
+  ]);
+  assert.equal(context.shardSetupNodeEligibility("rpc-ready", engineInventory, "llamacpp-rpc").eligible, true);
+  assert.equal(context.shardSetupNodeEligibility("not-configured", engineInventory, "llamacpp-rpc").eligible, true);
+  assert.match(context.shardSetupNodeEligibility("not-configured", engineInventory, "llamacpp-rpc").reason, /install automatically/);
+  assert.equal(context.shardSetupNodeEligibility("not-configured", engineInventory, "vllm-mp").reason, "No configured vllm");
+  assert.equal(context.shardSetupNodeEligibility("unreachable", engineInventory, "llamacpp-rpc").reason, "Managed engine check failed: request failed");
+  assert.equal(context.shardSetupNodeEligibility("pending", engineInventory, "llamacpp-rpc", true).reason, "Checking managed engines…");
+});
+
+test("Shard wizard automatically installs selected missing workers before loading model profiles", async () => {
+  const elements = {};
+  let inputs = [];
+  for (const id of ["dialog", "nodes", "mode", "source", "head", "model", "context", "status", "create"]) {
+    const element = {
+      value: "",
+      disabled: false,
+      textContent: "",
+      addEventListener() {},
+      showModal() {},
+      querySelectorAll(selector) {
+        return selector.includes(":checked") ? inputs.filter((input) => input.checked) : inputs;
+      },
+    };
+    Object.defineProperty(element, "innerHTML", {
+      set(html) {
+        this.html = html;
+        if (id === "nodes") {
+          inputs = [...html.matchAll(/<input[^>]+data-node-id="([^"]+)"[^>]*>/g)].map(([tag, nodeID]) => ({
+            dataset: { nodeId: nodeID }, checked: tag.includes(" checked"), addEventListener() {},
+          }));
+        }
+        if (id === "model" || id === "head") this.value = html.match(/value="([^"]*)"/)?.[1] || "";
+      },
+      get() { return this.html || ""; },
+    });
+    elements[`shard-group-setup-${id}`] = element;
+  }
+  const requests = [];
+  let installFails = false;
+  let createBody;
+  const engines = [{ id: "maistr0-auto-rpc", kind: "ggml-rpc-server", state: "stopped" }, { id: "head", kind: "llama-server" }];
+  const profile = { name: "model", layer_count: 32, hidden_size: 4096, kv_heads: 8, head_dim: 128, file_size_bytes: 1024 };
+  const context = vm.createContext({
+    document: { getElementById: (id) => elements[id] },
+    dashboardState: { nodes: [{ id: "selected", healthy: true }, { id: "other", healthy: true }], shardGroups: [] },
+    escapeHtml: dashboardFormat.escapeHtml,
+    formatBytes: dashboardFormat.formatBytes,
+    renderShardGroups() {},
+    refreshShardGroups: async () => {},
+    fetchJSON: async (url, options) => {
+      requests.push(url);
+      if (url.endsWith("/install-worker")) {
+        if (installFails) throw new Error("SHA-256 verification failed");
+        assert.equal(JSON.parse(options.body).source, "official");
+        return { engines, source: "official", version: "test", updated: true };
+      }
+      if (url.includes("/profile?")) return profile;
+      if (url.includes("/head-models?")) return {
+        models: [{ id: "local-model", name: "model", source: "ollama", profile }], warnings: [],
+      };
+      if (url.endsWith("/configure-head")) {
+        assert.equal(JSON.parse(options.body).model_id, "local-model");
+        return { id: "maistr0-auto-head", kind: "llama-server", state: "stopped" };
+      }
+      if (url === "/api/shards") {
+        createBody = JSON.parse(options.body);
+        return { id: "group", state: "ready" };
+      }
+      return [];
+    },
+  });
+  vm.runInContext(shardSetupSource, context);
+  await context.openShardGroupWizard("selected");
+  assert.ok(requests.includes("/api/nodes/selected/engines/managed/install-worker"));
+  assert.ok(!requests.includes("/api/nodes/other/engines/managed/install-worker"));
+  assert.ok(requests.indexOf("/api/nodes/selected/engines/managed/install-worker")
+    < requests.indexOf("/api/nodes/selected/engines/managed/head/profile?requested_context=4096"));
+  assert.equal(elements["shard-group-setup-create"].disabled, false);
+  await context.createShardGroupFromWizard({ preventDefault() {} });
+  assert.deepEqual(createBody.pinned_nodes, ["selected"]);
+  assert.equal(createBody.model.name, "model");
+  assert.equal(createBody.head_node_id, "selected");
+  assert.equal(createBody.head_engine_id, "head");
+  engines.splice(1, 1, { id: "maistr0-auto-head", kind: "llama-server", state: "stopped" });
+  requests.length = 0;
+  await context.openShardGroupWizard("selected");
+  assert.equal(elements["shard-group-setup-create"].disabled, false);
+  await context.createShardGroupFromWizard({ preventDefault() {} });
+  assert.equal(createBody.head_engine_id, "maistr0-auto-head");
+  assert.equal(createBody.head_node_id, "selected");
+  assert.ok(requests.indexOf("/api/nodes/selected/engines/managed/configure-head") < requests.indexOf("/api/shards"));
+  installFails = true;
+  await context.openShardGroupWizard("selected");
+  assert.equal(elements["shard-group-setup-create"].disabled, true);
+  assert.match(elements["shard-group-setup-status"].textContent, /SHA-256 verification failed/);
 });
 
 test("Dashboard status view model renders node, model, load, memory, and version counts", () => {

@@ -31,6 +31,14 @@ requires the elected leader's one-time PIN, and the existing same-subnet
 auto-pairing and invitation flows remain unchanged. Discovery visibility alone
 does not grant membership.
 
+A combined-role host can advertise both its worker and a coordinator candidate
+under the same identity. For an already registered, trusted worker, coordinator
+announcements do not mean the worker disappeared: the orchestrator continues
+probing the worker's registered mutual-TLS address rather than the advertised
+coordinator port. Failed worker probes and expired announcements still make the
+worker unavailable. A worker explicitly announcing a different coordinator is
+still excluded from the old coordinator's scheduling.
+
 Failover remains partition-local. Simultaneous elections on disconnected
 network segments may promote different nodes, and recovery does not provide
 quorum-based conflict resolution or globally exclusive writes.

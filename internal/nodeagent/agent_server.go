@@ -12,6 +12,7 @@ import (
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/peeridentity"
+	"github.com/maistr0/maistr0/internal/selfupdate"
 	"github.com/maistr0/maistr0/internal/version"
 	"github.com/maistr0/maistr0/web"
 )
@@ -23,6 +24,12 @@ func (a *Agent) Run() error {
 		return fmt.Errorf("nodeagent: initialize cluster identity: %w", err)
 	}
 	mux := http.NewServeMux()
+	distribution, err := selfupdate.CurrentDistribution()
+	if err != nil {
+		return fmt.Errorf("nodeagent: configure peer update distribution: %w", err)
+	}
+	mux.Handle("GET /api/updates/manifest", distribution)
+	mux.Handle("GET /api/updates/binary", distribution)
 	mux.HandleFunc("/status", a.handleStatus)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version.String()})
@@ -99,6 +106,10 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines/managed", a.handleAPINodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/install-worker", a.handleAPINodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/head-models", a.handleAPINodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/configure-head", a.handleAPINodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/download-model", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/{engine_id}/profile", a.handleAPINodeControl)
 	registerManagedEngineRoutes(mux, a)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", a.handleAPINodeControl)
@@ -107,6 +118,11 @@ func (a *Agent) Run() error {
 	mux.HandleFunc("GET /api/cluster/health", a.handleAPIOrchestratorRead)
 	mux.HandleFunc("GET /api/shards", a.handleAPIOrchestratorRead)
 	mux.HandleFunc("POST /api/shards", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("DELETE /api/shards/{id}", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/shards/{id}/start", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/shards/{id}/stop", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/shards/{id}/restart", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/shards/{id}/members", a.handleAPIOrchestratorProxy)
 	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", a.handleAPIDiscoveryPairingInvite)
 	mux.HandleFunc("GET /api/events", a.orchestratorLink.events.ServeHTTP)
 	mux.HandleFunc("POST /api/tasks", a.handleAPITasksPost)
@@ -200,7 +216,7 @@ func (a *Agent) Run() error {
 		return fmt.Errorf("nodeagent: configure HTTP request limit: %w", err)
 	}
 	withMiddleware := func(next http.Handler) http.Handler {
-		return httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit)
+		return selfupdate.Admission.Wrap(httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit))
 	}
 	return peeridentity.ServeDual(
 		cfg.ListenAddr,
@@ -212,6 +228,10 @@ func (a *Agent) Run() error {
 
 func registerManagedEngineRoutes(mux *http.ServeMux, agent *Agent) {
 	mux.Handle("GET /api/engines/managed", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStatus)))
+	mux.Handle("POST /api/engines/managed/install-worker", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedWorkerInstall)))
+	mux.Handle("GET /api/engines/managed/head-models", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleLocalHeadModels)))
+	mux.Handle("POST /api/engines/managed/configure-head", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleConfigureLocalHead)))
+	mux.Handle("POST /api/engines/managed/download-model", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleDownloadHeadModel)))
 	mux.Handle("GET /api/engines/managed/{id}/profile", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineModelProfile)))
 	mux.Handle("POST /api/engines/managed/{id}/start", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStart)))
 	mux.Handle("POST /api/engines/managed/{id}/stop", agent.requireManagedEngineOrchestrator(http.HandlerFunc(agent.handleManagedEngineStop)))

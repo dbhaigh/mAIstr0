@@ -116,7 +116,7 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
 			return
 		}
-		reservation, err := reserveDispatchCapacity(dispatchCtx, d.capacityGate, d.registry, current)
+		reservation, err := d.reserveTaskCapacity(dispatchCtx, current)
 		if err != nil {
 			if dispatchCtx.Err() != nil {
 				d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", dispatchContextFailure(dispatchCtx))
@@ -239,6 +239,32 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 	requestID string,
 	attemptID string,
 ) dispatchOutcome {
+	if strings.HasPrefix(assignment.Engine, "shard-group:") {
+		if d.shards == nil || d.shardModel == nil {
+			return dispatchOutcome{err: errors.New("shard task execution is unavailable"), failureClass: "shard_group_unavailable"}
+		}
+		group, ok := d.shards.Get(strings.TrimPrefix(assignment.Engine, "shard-group:"))
+		if !ok || group.State != ShardGroupReady || !strings.EqualFold(group.Model.Name, assignment.Model) {
+			return dispatchOutcome{err: errors.New("assigned shard group is not ready"), failureClass: "shard_group_unavailable"}
+		}
+		if owner, found := d.shards.GroupForModel(assignment.Model); !found || owner.ID != group.ID {
+			return dispatchOutcome{err: errors.New("assigned shard group has been replaced"), failureClass: "shard_group_unavailable"}
+		}
+		d.metrics.recordDispatch()
+		output, err := d.shardModel.generateShardGroupWithIDs(ctx, group, assignment.Address, prompt, 0, 0, requestID, attemptID)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return dispatchOutcome{err: err, failureClass: "cancelled"}
+			}
+			var upstream *nodeResponseError
+			if errors.As(err, &upstream) {
+				failureClass, retryable := classifyDispatchStatus(upstream.statusCode, []byte(upstream.body))
+				return dispatchOutcome{err: err, failureClass: failureClass, retryable: retryable, httpStatus: upstream.statusCode}
+			}
+			return dispatchOutcome{err: err, failureClass: "shard_execution_failure", retryable: !errors.Is(err, errShardGroupUnavailable) && !errors.Is(err, errShardGroupNotFound)}
+		}
+		return dispatchOutcome{output: output, httpStatus: http.StatusOK}
+	}
 	body, err := json.Marshal(struct {
 		Engine    string `json:"engine"`
 		Model     string `json:"model"`

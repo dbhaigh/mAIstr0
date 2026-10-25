@@ -392,6 +392,134 @@ paths:
               schema: {$ref: "#/components/schemas/ShardModelProfile"}
         "404": {description: Node or managed engine does not exist}
         "422": {description: Model metadata is unavailable or cannot be measured safely}
+  /api/nodes/{id}/engines/managed/install-worker:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Install or update an idle node's automatically managed RPC worker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source]
+              properties:
+                source: {type: string, enum: [official, xdna]}
+      responses:
+        "200":
+          description: Installed worker, unchanged operator worker, or explicitly deferred update
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WorkerInstallResult"}
+        "400": {description: Invalid source}
+        "409": {description: Managed engines must be stopped before installation or changing source}
+        "501": {description: Unsupported platform}
+        "502": {description: No verified compatible release or download/extraction failure}
+  /api/nodes/{id}/engines/managed/head-models:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Discover readable local Ollama and LM Studio GGUF model heads
+      parameters:
+        - {name: requested_context, in: query, required: true, schema: {type: integer, minimum: 1, maximum: 1048576}}
+      responses:
+        "200":
+          description: Opaque model IDs, parsed profiles and explicit discovery warnings; no filesystem paths
+          content:
+            application/json:
+              schema: {$ref: "./schemas/local-head-models.schema.json"}
+        "400": {description: Invalid context}
+        "422": {description: Local inventory discovery failed}
+  /api/nodes/{id}/engines/managed/configure-head:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Configure an idle installed llama-server using a discovered local GGUF
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/configure-local-head.schema.json"}
+      responses:
+        "200":
+          description: Persisted managed head configuration; model starts with shard group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ManagedEngineStatus"}
+        "400": {description: Invalid model ID or context}
+        "404": {description: Local model no longer available}
+        "409": {description: Managed engines are active}
+        "500": {description: Runtime validation or persistence failed}
+  /api/nodes/{id}/engines/managed/download-model:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Download and verify a recommended public Hugging Face GGUF on a node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/download-head-model.schema.json"}
+      responses:
+        "200":
+          description: Verified local model ID and profile; configure-head selects it before starting
+          content:
+            application/json:
+              schema: {$ref: "./schemas/local-head-models.schema.json#/properties/models/items"}
+        "400": {description: Invalid request}
+        "502": {description: Download or verification failed; inspect node logs}
+  /api/engines/managed/download-model:
+    post:
+      summary: Download a recommended GGUF; requires the current paired orchestrator's pinned mTLS identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/download-head-model.schema.json"}
+      responses:
+        "200":
+          description: Verified local model ID and profile
+          content:
+            application/json:
+              schema: {$ref: "./schemas/local-head-models.schema.json#/properties/models/items"}
+        "400": {description: Invalid request}
+        "403": {description: Not the pinned current orchestrator}
+        "502": {description: Download or verification failed; inspect node logs}
+  /api/engines/managed/head-models:
+    get:
+      summary: Discover local GGUF models; requires the current paired orchestrator's pinned mTLS identity
+      parameters:
+        - {name: requested_context, in: query, required: true, schema: {type: integer, minimum: 1, maximum: 1048576}}
+      responses:
+        "200":
+          description: Local model inventory without filesystem paths
+          content:
+            application/json:
+              schema: {$ref: "./schemas/local-head-models.schema.json"}
+        "400": {description: Invalid context}
+        "403": {description: Not the pinned current orchestrator}
+        "422": {description: Local inventory discovery failed}
+  /api/engines/managed/configure-head:
+    post:
+      summary: Persist a local GGUF model head; requires the current paired orchestrator's pinned mTLS identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/configure-local-head.schema.json"}
+      responses:
+        "200":
+          description: Persisted stopped managed model head
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ManagedEngineStatus"}
+        "400": {description: Invalid model ID or context}
+        "403": {description: Not the pinned current orchestrator}
+        "404": {description: Local model no longer available}
+        "409": {description: Managed engines are active}
+        "500": {description: Runtime validation or persistence failed}
   /api/shards:
     get:
       summary: List shard groups
@@ -440,6 +568,112 @@ paths:
         "409": {description: A shard-group operation is already active}
         "502": {description: Member teardown or persisted group deletion failed}
         "503": {description: Shard-group persistence is unavailable}
+  /api/shards/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Start a saved stopped or failed shard group
+      description: >
+        Requires an empty body. Replans against current device memory with the
+        saved model, pins, and previous head selection. Workers start before
+        the head. Start on a ready group is idempotent. The group ID is retained.
+        Node dashboards forward this action.
+      responses:
+        "200":
+          description: Ready group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Nonempty body or invalid placement}
+        "404": {description: Group or action does not exist}
+        "409": {description: Concurrent operation, invalid state, model conflict, or engine already owned}
+        "502": {description: Member start, stop, or persistence failed}
+        "503": {description: Required members, capacity, or persistence are unavailable}
+  /api/shards/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Drain and stop a shard group while retaining its configuration
+      description: Requires an empty body. Stops head before workers and releases member capacity. Stop on a stopped group is idempotent.
+      responses:
+        "200":
+          description: Stopped group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Nonempty request body}
+        "404": {description: Group does not exist}
+        "409": {description: A group operation is already active}
+        "502": {description: Member teardown or persistence failed}
+        "503": {description: Persistence is unavailable}
+  /api/shards/{id}/restart:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Drain, stop, replan, and start a saved shard group
+      description: Requires an empty body. Retains the group ID and configuration. Workers start before the head; stops and starts share one operation claim.
+      responses:
+        "200":
+          description: Ready group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Nonempty request body or placement refusal}
+        "404": {description: Group does not exist}
+        "409": {description: Concurrent operation or model/engine ownership conflict}
+        "502": {description: Member start, stop, or persistence failed}
+        "503": {description: Required members, capacity, or persistence are unavailable}
+  /api/shards/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Drain a group and reload its saved model across selected member nodes
+      description: Retains the group ID and model head. All selected nodes must be healthy with managed workers. Installs missing RPC workers through the existing install-worker endpoint before applying. Placement is recomputed after unloading; failed reloads retain requested pins for Start retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "./schemas/shard-membership.schema.json"}
+      responses:
+        "200":
+          description: Reconfigured ready group
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ShardGroup"}
+        "400": {description: Invalid selection, missing worker, removed head, or placement refusal}
+        "404": {description: Group does not exist}
+        "409": {description: Concurrent operation or engine ownership conflict}
+        "502": {description: Stop, reload, or persistence failed}
+        "503": {description: Selected members, capacity, or persistence are unavailable}
+  /api/updates/manifest:
+    get:
+      summary: Offer a newer executable directly to paired peers
+      description: Peer requests require pinned mutual TLS; local loopback access is allowed. Defaults to publisher platform; os and arch query parameters request packaged cross-platform assets. SHA256 protects transfer integrity, not publisher authenticity; artifacts are not release-signed.
+      parameters:
+        - {name: os, in: query, schema: {type: string, enum: [windows, linux]}}
+        - {name: arch, in: query, schema: {type: string, enum: [amd64]}}
+      responses:
+        "200":
+          description: Executable metadata
+          content:
+            application/json:
+              schema: {$ref: "./schemas/peer-update.schema.json"}
+        "403": {description: Peer is not paired}
+        "404": {description: Requested target bundle is unavailable}
+  /api/updates/binary:
+    get:
+      summary: Download a paired peer executable for the requested target
+      parameters:
+        - {name: os, in: query, schema: {type: string, enum: [windows, linux]}}
+        - {name: arch, in: query, schema: {type: string, enum: [amd64]}}
+      responses:
+        "200":
+          description: Executable image matching the manifest size and SHA256
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        "403": {description: Peer is not paired}
+        "404": {description: Requested target bundle is unavailable}
   /api/engines/managed:
     get:
       summary: List managed engine process status
@@ -455,6 +689,33 @@ paths:
                 type: array
                 items: {$ref: "#/components/schemas/ManagedEngineStatus"}
         "403": {description: Request is not from the current paired orchestrator}
+  /api/engines/managed/install-worker:
+    post:
+      summary: Download, verify, persist, and register an RPC worker
+      description: Requires the current paired orchestrator. Downloads only approved GitHub release archives, verifies SHA-256, and defers updates while engines are active. Operator-configured workers are unchanged.
+      security:
+        - PairedOrchestrator: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source]
+              properties:
+                source: {type: string, enum: [official, xdna]}
+      responses:
+        "200":
+          description: Installation result and current managed engine inventory
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WorkerInstallResult"}
+        "400": {description: Invalid source}
+        "403": {description: Request is not from the current paired orchestrator}
+        "409": {description: Stop managed engines before installing or changing source}
+        "501": {description: Unsupported platform}
+        "502": {description: No verified supported release or download/extraction failure}
   /api/engines/managed/{id}/profile:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -1072,6 +1333,20 @@ components:
       additionalProperties: true
     ManagedEngineConfig:
       $ref: "./schemas/node-config.schema.json#/$defs/ManagedEngine"
+    WorkerInstallResult:
+      type: object
+      additionalProperties: false
+      required: [source, version, updated, engines]
+      properties:
+        source: {type: string, enum: [official, xdna, operator]}
+        version: {type: string}
+        updated: {type: boolean}
+        warning: {type: string}
+        devices:
+          $ref: "./schemas/node-status.schema.json#/properties/hardware/properties/devices"
+        engines:
+          type: array
+          items: {$ref: "#/components/schemas/ManagedEngineStatus"}
     ManagedEngineStatus:
       $ref: "./schemas/managed-engine-status.schema.json"
     ManagedEngineStartRequest:
@@ -1217,11 +1492,21 @@ x-maistr0-registered-routes:
   - "orchestrator|PATCH /api/nodes/{id}/properties"
   - "orchestrator|GET /api/nodes/{id}/engines"
   - "orchestrator|GET /api/nodes/{id}/engines/managed"
+  - "orchestrator|POST /api/nodes/{id}/engines/managed/install-worker"
+  - "orchestrator|GET /api/nodes/{id}/engines/managed/head-models"
+  - "orchestrator|POST /api/nodes/{id}/engines/managed/configure-head"
+  - "orchestrator|POST /api/nodes/{id}/engines/managed/download-model"
   - "orchestrator|GET /api/nodes/{id}/engines/managed/{engine_id}/profile"
   - "orchestrator|POST /api/shards"
   - "orchestrator|GET /api/shards"
   - "orchestrator|GET /api/shards/{id}"
   - "orchestrator|DELETE /api/shards/{id}"
+  - "orchestrator|POST /api/shards/{id}/start"
+  - "orchestrator|POST /api/shards/{id}/stop"
+  - "orchestrator|POST /api/shards/{id}/restart"
+  - "orchestrator|POST /api/shards/{id}/members"
+  - "orchestrator|GET /api/updates/manifest"
+  - "orchestrator|GET /api/updates/binary"
   - "node|POST /api/engines/managed/{id}/proxy/{path...}"
   - "orchestrator|POST /api/nodes/{id}/models/refresh"
   - "orchestrator|POST /api/nodes/{id}/models/pull"
@@ -1229,6 +1514,13 @@ x-maistr0-registered-routes:
   - "node|GET /api/cluster/health"
   - "node|GET /api/shards"
   - "node|POST /api/shards"
+  - "node|DELETE /api/shards/{id}"
+  - "node|POST /api/shards/{id}/start"
+  - "node|POST /api/shards/{id}/stop"
+  - "node|POST /api/shards/{id}/restart"
+  - "node|POST /api/shards/{id}/members"
+  - "node|GET /api/updates/manifest"
+  - "node|GET /api/updates/binary"
   - "orchestrator|POST /api/discovery/{id}/pairing/invite"
   - "orchestrator|GET /api/events"
   - "orchestrator|POST /api/pipelines/{model_id}/reshard"
@@ -1343,8 +1635,16 @@ x-maistr0-registered-routes:
   - "node|PATCH /api/nodes/{id}/properties"
   - "node|GET /api/nodes/{id}/engines"
   - "node|GET /api/nodes/{id}/engines/managed"
+  - "node|POST /api/nodes/{id}/engines/managed/install-worker"
+  - "node|GET /api/nodes/{id}/engines/managed/head-models"
+  - "node|POST /api/nodes/{id}/engines/managed/configure-head"
+  - "node|POST /api/nodes/{id}/engines/managed/download-model"
   - "node|GET /api/nodes/{id}/engines/managed/{engine_id}/profile"
   - "node|GET /api/engines/managed"
+  - "node|POST /api/engines/managed/install-worker"
+  - "node|GET /api/engines/managed/head-models"
+  - "node|POST /api/engines/managed/configure-head"
+  - "node|POST /api/engines/managed/download-model"
   - "node|GET /api/engines/managed/{id}/profile"
   - "node|POST /api/engines/managed/{id}/start"
   - "node|POST /api/engines/managed/{id}/stop"

@@ -8,7 +8,7 @@
     "id": {"type": "string", "minLength": 1},
     "model": {"$ref": "https://maistr0.dev/contracts/schemas/shard-model-profile.schema.json"},
     "mode": {"type": "string", "enum": ["llamacpp-rpc", "vllm-mp"]},
-    "state": {"type": "string", "enum": ["planning", "starting_workers", "starting_head", "ready", "degraded", "failed", "stopping"]},
+    "state": {"type": "string", "enum": ["planning", "starting_workers", "starting_head", "ready", "degraded", "failed", "stopping", "stopped"]},
     "plan": {"$ref": "https://maistr0.dev/contracts/schemas/shard-plan.schema.json"},
     "members": {
       "type": "array",

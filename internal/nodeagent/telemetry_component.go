@@ -20,6 +20,8 @@ type hardwareUsageSample struct {
 	cpuAvailable    bool
 	memoryUsage     int
 	memoryAvailable bool
+	runtimeDevices  []hardware.Device
+	runtimeProbe    bool
 }
 
 func currentHardwareUsage() hardwareUsageSample {
@@ -106,6 +108,31 @@ func (c *telemetryComponent) recordHardwareUsage(usage hardwareUsageSample) {
 	c.hw.GPUStatsAvailable = usage.gpuAvailable
 	c.hw.GPUUtilization = usage.gpuUtilization
 	c.hw.GPUMemoryFreeMB = usage.gpuFreeMemory
+	if usage.runtimeProbe {
+		c.hw.Devices = hardware.ApplyRuntimeDevices(c.hw.Devices, c.runtimeDevices)
+		c.hw.Devices = hardware.ApplyRuntimeDevices(c.hw.Devices, usage.runtimeDevices)
+		c.runtimeDevices = append(c.runtimeDevices[:0], usage.runtimeDevices...)
+		for i := range c.runtimeDevices {
+			c.runtimeDevices[i].FreeMemoryMB = 0
+		}
+		for _, device := range usage.runtimeDevices {
+			switch device.Kind {
+			case "gpu":
+				c.hw.HasGPU = true
+				if c.hw.GPUVendor == "" {
+					c.hw.GPUVendor = device.Vendor
+				}
+			case "npu":
+				c.hw.HasNPU = true
+				if c.hw.NPUVendor == "" {
+					c.hw.NPUVendor = device.Vendor
+				}
+			}
+			if device.Kind == "gpu" && device.FreeMemoryMB > c.hw.GPUMemoryFreeMB {
+				c.hw.GPUMemoryFreeMB = device.FreeMemoryMB
+			}
+		}
+	}
 	c.gpuHistory = appendGPUUsageSample(c.gpuHistory, sample)
 	c.hw.NPUStatsAvailable = usage.npuAvailable
 	c.hw.NPUUtilization = usage.npuUtilization

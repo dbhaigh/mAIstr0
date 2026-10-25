@@ -81,6 +81,27 @@ func TestManagedShardProcessLifecycle(t *testing.T) {
 			}
 			group := create()
 			assertShardChat(t, client, baseURL, http.StatusOK)
+			for _, action := range []string{"stop", "start", "restart"} {
+				var updated orchestrator.ShardGroup
+				shardJSON(t, client, http.MethodPost, baseURL+"/api/shards/"+group.ID+"/"+action, nil, http.StatusOK, &updated)
+				wantState := orchestrator.ShardGroupReady
+				wantChat := http.StatusOK
+				if action == "stop" {
+					wantState, wantChat = orchestrator.ShardGroupStopped, http.StatusServiceUnavailable
+					for _, node := range nodes {
+						for _, status := range node.manager.Statuses() {
+							if status.State != "stopped" || status.PID != 0 {
+								t.Fatalf("stop left a child running: %+v", status)
+							}
+						}
+					}
+				}
+				if updated.ID != group.ID || updated.State != wantState || !updated.CreatedAt.Equal(group.CreatedAt) {
+					t.Fatalf("%s did not retain group: %+v", action, updated)
+				}
+				assertShardChat(t, client, baseURL, wantChat)
+				group = updated
+			}
 			// Kill a real managed child without marking the node unhealthy. A long
 			// restart backoff keeps the loss observable over both health sweeps.
 			worker := group.Members[0]

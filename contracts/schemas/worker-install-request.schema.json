@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/worker-install-request.schema.json",
+  "title": "WorkerInstallRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source"],
+  "properties": {
+    "source": {"type": "string", "enum": ["official", "xdna"]}
+  }
+}

@@ -1,18 +1,59 @@
 package nodeagent
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
+
+func TestManagedEngineProxyFlushesHeadersAndSmallChunksBeforeCompletion(t *testing.T) {
+	body, writer := io.Pipe()
+	defer body.Close()
+	defer writer.Close()
+	finished := make(chan error, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finished <- copyManagedEngineResponse(w, &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+		})
+	}))
+	defer proxy.Close()
+	client := &http.Client{Timeout: time.Second}
+	response, err := client.Get(proxy.URL)
+	if err != nil {
+		t.Fatalf("headers buffered until body completed: %v", err)
+	}
+	defer response.Body.Close()
+	chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"spring\"}}]}\n\n"
+	go func() {
+		if _, err := io.WriteString(writer, chunk); err != nil {
+			_ = writer.CloseWithError(err)
+		}
+	}()
+	reader := bufio.NewReader(response.Body)
+	line, err := reader.ReadString('\n')
+	if err != nil || line != strings.TrimSuffix(chunk, "\n") {
+		t.Fatalf("small SSE chunk buffered: %q %v", line, err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestManagedEngineRoutesRequirePinnedCurrentOrchestrator(t *testing.T) {
 	cfg := config.DefaultNodeConfig()
@@ -79,6 +120,42 @@ func TestManagedEngineRoutesRequirePinnedCurrentOrchestrator(t *testing.T) {
 				t.Fatalf("managed engine status returned %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
 			}
 		})
+		t.Run("installer "+test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/engines/managed/install-worker", strings.NewReader(`{"source":"invalid"}`))
+			if test.certificate != nil {
+				request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{test.certificate}}
+			}
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			want := test.wantStatus
+			if want == http.StatusOK {
+				want = http.StatusBadRequest
+			}
+			if response.Code != want {
+				t.Fatalf("installer returned %d, want %d: %s", response.Code, want, response.Body.String())
+			}
+		})
+		for _, route := range []struct{ method, path, body string }{
+			{http.MethodGet, "/api/engines/managed/head-models?requested_context=invalid", ""},
+			{http.MethodPost, "/api/engines/managed/configure-head", `{"model_id":"unknown","requested_context":-1}`},
+			{http.MethodPost, "/api/engines/managed/download-model", `{"model":"unknown","requested_context":4096}`},
+		} {
+			t.Run(route.path+" "+test.name, func(t *testing.T) {
+				request := httptest.NewRequest(route.method, route.path, strings.NewReader(route.body))
+				if test.certificate != nil {
+					request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{test.certificate}}
+				}
+				response := httptest.NewRecorder()
+				mux.ServeHTTP(response, request)
+				want := test.wantStatus
+				if want == http.StatusOK {
+					want = http.StatusBadRequest
+				}
+				if response.Code != want {
+					t.Fatalf("head route=%d want=%d body=%s", response.Code, want, response.Body.String())
+				}
+			})
+		}
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/engines/managed/missing/start", strings.NewReader(`{}`))

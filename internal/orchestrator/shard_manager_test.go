@@ -78,6 +78,54 @@ func TestShardManagerPlansWithPerDeviceSafetyMargin(t *testing.T) {
 	}
 }
 
+func TestSelectedHeadCanCoordinateWithoutReceivingLayers(t *testing.T) {
+	manager, _, engines, capacity, _ := newTestShardManager(t, "")
+	request := testShardRequest()
+	request.HeadNodeID, request.HeadEngineID = "node-1", "llama-head"
+	manager.planner = func(model shard.ModelProfile, nodes []shard.CandidateNode, policy shard.Policy) (shard.ShardPlan, error) {
+		plan, err := testShardPlanner(model, nodes, policy)
+		plan.Nodes = plan.Nodes[1:]
+		plan.Nodes[0].StartLayer = 0
+		plan.RPC, plan.TensorSplit = "node-2:50052", "2"
+		return plan, err
+	}
+	group, err := manager.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(group.Members) != 2 || group.Members[1].NodeID != "node-1" || len(capacity.targets) != 2 ||
+		!reflect.DeepEqual(engines.events, []string{"start:rpc-2", "start:llama-head"}) {
+		t.Fatalf("head-only placement: members=%+v events=%v targets=%v", group.Members, engines.events, capacity.targets)
+	}
+}
+
+func TestShardManagerUsesExplicitHead(t *testing.T) {
+	for _, test := range []struct {
+		name, engine string
+		wantErr      bool
+	}{
+		{"selected model head", "second-head", false},
+		{"missing selected engine", "missing", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager, _, engines, _, _ := newTestShardManager(t, "")
+			engines.statuses["https://node-2:7451"]["second-head"] = supervisor.Status{ID: "second-head", Kind: "llama-server", State: "stopped", Endpoint: "http://127.0.0.1:8080"}
+			request := testShardRequest()
+			request.HeadNodeID, request.HeadEngineID = "node-2", test.engine
+			group, err := manager.Create(context.Background(), request)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("group=%+v err=%v", group, err)
+			}
+			if !test.wantErr {
+				head := group.Members[len(group.Members)-1]
+				if head.NodeID != "node-2" || head.EngineID != "second-head" {
+					t.Fatalf("wrong head=%+v", head)
+				}
+			}
+		})
+	}
+}
+
 func TestShardManagerCleansUpPartialStartFailure(t *testing.T) {
 	manager, _, engines, capacity, _ := newTestShardManager(t, "llama-head")
 
@@ -274,6 +322,9 @@ func TestGroupForModelPrefersActiveReplacementOverFailedGroup(t *testing.T) {
 	manager, _, _, _, _ := newTestShardManager(t, "")
 	previous, err := manager.Create(context.Background(), testShardRequest())
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Stop(context.Background(), previous.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.mutate(previous.ID, func(group *ShardGroup) {
@@ -496,10 +547,29 @@ func (registry *testShardRegistry) setHealthy(id string, healthy bool) {
 }
 
 type testManagedEngines struct {
-	mu          sync.Mutex
-	statuses    map[string]map[string]supervisor.Status
-	events      []string
-	failStartID string
+	mu           sync.Mutex
+	statuses     map[string]map[string]supervisor.Status
+	events       []string
+	failStartID  string
+	failStopID   string
+	modelError   error
+	nodeStatuses map[string]cluster.NodeStatus
+}
+
+func (engines *testManagedEngines) NodeStatus(_ context.Context, address string) (cluster.NodeStatus, error) {
+	if node, ok := engines.nodeStatuses[address]; ok {
+		return node, nil
+	}
+	for _, node := range newTestShardRegistry().All() {
+		if node.Address == address {
+			return node, nil
+		}
+	}
+	return cluster.NodeStatus{}, fmt.Errorf("unknown test node %s", address)
+}
+
+func (engines *testManagedEngines) VerifyModel(_ context.Context, _, _ string, _ shard.ModelProfile, _ bool) error {
+	return engines.modelError
 }
 
 func newTestManagedEngines() *testManagedEngines {
@@ -541,6 +611,9 @@ func (engines *testManagedEngines) Stop(_ context.Context, address, id string) (
 	engines.mu.Lock()
 	defer engines.mu.Unlock()
 	engines.events = append(engines.events, "stop:"+id)
+	if id == engines.failStopID {
+		return supervisor.Status{}, fmt.Errorf("simulated stop failure: %s", id)
+	}
 	status := engines.statuses[address][id]
 	status.State = "stopped"
 	engines.statuses[address][id] = status

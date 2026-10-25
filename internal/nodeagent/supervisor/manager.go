@@ -92,11 +92,12 @@ type RestartPolicy struct {
 }
 
 type Options struct {
-	ReadinessTimeout time.Duration
-	ProbeInterval    time.Duration
-	StopTimeout      time.Duration
-	Restart          RestartPolicy
-	NetworkAddresses NetworkAddressSource
+	ReadinessTimeout      time.Duration
+	ModelReadinessTimeout time.Duration
+	ProbeInterval         time.Duration
+	StopTimeout           time.Duration
+	Restart               RestartPolicy
+	NetworkAddresses      NetworkAddressSource
 }
 
 type RPCRelayController interface {
@@ -120,6 +121,12 @@ type Manager struct {
 	trustedNetworkInterfaces  []string
 	allowInsecureShardNetwork bool
 	networkAddresses          NetworkAddressSource
+	installMu                 sync.Mutex
+	workerRoot                string
+	workerConfig              config.NodeConfig
+	workerInstallation        *workerInstallation
+	installingWorker          bool
+	workerControls            int
 }
 
 type managedEngine struct {
@@ -137,6 +144,7 @@ type managedEngine struct {
 	ready             bool
 	userStopped       bool
 	shardPlan         *ShardPlan
+	modelName         string
 }
 
 type processTree interface {
@@ -145,6 +153,17 @@ type processTree interface {
 }
 
 func New(cfg config.NodeConfig, options Options) (*Manager, error) {
+	workerRoot, err := installedWorkerRoot(cfg)
+	if err != nil {
+		return nil, err
+	}
+	installation, err := loadWorkerInstallation(workerRoot)
+	if err != nil {
+		return nil, err
+	}
+	if installation != nil {
+		cfg = withInstalledWorker(cfg, workerRoot, *installation)
+	}
 	if err := config.ValidateManagedEngines(cfg.ManagedEngines, cfg.ManagedEngineBinaryAllowlist, cfg.ManagedEngineModelAllowlist); err != nil {
 		return nil, fmt.Errorf("managed engine configuration: %w", err)
 	}
@@ -159,6 +178,9 @@ func New(cfg config.NodeConfig, options Options) (*Manager, error) {
 		trustedNetworkInterfaces:  append([]string(nil), cfg.TrustedNetworkInterfaces...),
 		allowInsecureShardNetwork: cfg.AllowInsecureShardNetwork,
 		networkAddresses:          options.NetworkAddresses,
+		workerRoot:                workerRoot,
+		workerConfig:              cfg,
+		workerInstallation:        installation,
 	}
 	for _, configured := range cfg.ManagedEngines {
 		entry := cloneManagedEngineConfig(configured)
@@ -175,6 +197,9 @@ func New(cfg config.NodeConfig, options Options) (*Manager, error) {
 			binaryAllowlist: append([]string(nil), cfg.ManagedEngineBinaryAllowlist...),
 			modelAllowlist:  append([]string(nil), cfg.ManagedEngineModelAllowlist...),
 			status:          status,
+		}
+		if entry.ID == installedHeadID && installation != nil && installation.Head != nil {
+			manager.engines[entry.ID].modelName = installation.Head.Name
 		}
 	}
 	return manager, nil
@@ -247,6 +272,12 @@ func (m *Manager) markStartFailed(engine *managedEngine, err error) {
 }
 
 func normalizeOptions(options Options) Options {
+	if options.ModelReadinessTimeout <= 0 {
+		options.ModelReadinessTimeout = options.ReadinessTimeout
+		if options.ModelReadinessTimeout <= 0 {
+			options.ModelReadinessTimeout = 10 * time.Minute
+		}
+	}
 	if options.ReadinessTimeout <= 0 {
 		options.ReadinessTimeout = 30 * time.Second
 	}
@@ -274,11 +305,20 @@ func normalizeOptions(options Options) Options {
 	return options
 }
 
+func (m *Manager) readinessTimeout(engine *managedEngine) time.Duration {
+	if engine.config.Kind == config.ManagedEngineLlamaServer || engine.config.Kind == config.ManagedEngineVLLM {
+		return m.options.ModelReadinessTimeout
+	}
+	return m.options.ReadinessTimeout
+}
+
 func (m *Manager) Statuses() []Status {
+	m.mu.Lock()
 	engines := make([]*managedEngine, 0, len(m.engines))
 	for _, engine := range m.engines {
 		engines = append(engines, engine)
 	}
+	m.mu.Unlock()
 	sort.Slice(engines, func(i, j int) bool { return engines[i].config.ID < engines[j].config.ID })
 	statuses := make([]Status, 0, len(engines))
 	for _, engine := range engines {
@@ -296,23 +336,33 @@ func (m *Manager) Status(id string) (Status, error) {
 }
 
 func (m *Manager) Start(ctx context.Context, id string, plan *ShardPlan) error {
-	if m.isClosed() {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
 		return ErrClosed
 	}
-	engine, err := m.engine(id)
-	if err != nil {
-		return err
+	if m.installingWorker {
+		m.mu.Unlock()
+		return ErrWorkerBusy
 	}
-	if engine.config.Kind == config.ManagedEngineGGMLRPCServer && m.rpcRelayController() == nil {
+	engine, ok := m.engines[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+	if engine.config.Kind == config.ManagedEngineGGMLRPCServer && m.relayController == nil {
+		m.mu.Unlock()
 		return ErrRelayUnavailable
 	}
 	if err := validatePlatformAndPlan(engine.config, plan); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
 	engine.mu.Lock()
 	if engine.command != nil || engine.status.State == stateStarting || engine.status.State == stateReady || engine.status.State == stateRestarting {
 		engine.mu.Unlock()
+		m.mu.Unlock()
 		return ErrAlreadyRunning
 	}
 	engine.controlGeneration++
@@ -325,6 +375,9 @@ func (m *Manager) Start(ctx context.Context, id string, plan *ShardPlan) error {
 	engine.status.StartedAt = nil
 	engine.status.RestartCount = 0
 	engine.mu.Unlock()
+	m.workerControls++
+	m.mu.Unlock()
+	defer m.finishWorkerControl()
 
 	launchPlan, err := m.prepareLaunchPlan(ctx, engine, plan)
 	if err != nil {
@@ -341,7 +394,7 @@ func (m *Manager) Start(ctx context.Context, id string, plan *ShardPlan) error {
 		m.markStartFailed(engine, err)
 		return err
 	}
-	startupCtx, cancel := context.WithTimeout(ctx, m.options.ReadinessTimeout)
+	startupCtx, cancel := context.WithTimeout(ctx, m.readinessTimeout(engine))
 	defer cancel()
 	if err := m.waitForReadiness(startupCtx, engine, runGeneration, done, plan); err != nil {
 		if stopErr := m.abortStartup(engine, runGeneration, err); stopErr != nil {
@@ -380,6 +433,10 @@ func (m *Manager) Start(ctx context.Context, id string, plan *ShardPlan) error {
 }
 
 func (m *Manager) Stop(ctx context.Context, id string) error {
+	if err := m.beginWorkerControl(); err != nil {
+		return err
+	}
+	defer m.finishWorkerControl()
 	engine, err := m.engine(id)
 	if err != nil {
 		return err
@@ -388,9 +445,10 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 }
 
 func (m *Manager) Restart(ctx context.Context, id string, plan *ShardPlan) error {
-	if m.isClosed() {
-		return ErrClosed
+	if err := m.beginWorkerControl(); err != nil {
+		return err
 	}
+	defer m.finishWorkerControl()
 	engine, err := m.engine(id)
 	if err != nil {
 		return err
@@ -447,7 +505,7 @@ func (m *Manager) startAttempt(ctx context.Context, engine *managedEngine, state
 	if err != nil {
 		return err
 	}
-	startupCtx, cancel := context.WithTimeout(ctx, m.options.ReadinessTimeout)
+	startupCtx, cancel := context.WithTimeout(ctx, m.readinessTimeout(engine))
 	defer cancel()
 	engine.mu.Lock()
 	plan := cloneShardPlan(engine.launchPlan)
@@ -491,6 +549,9 @@ func (m *Manager) launch(engine *managedEngine, controlGeneration uint64, state 
 	args, err := buildArgs(engine.config, plan)
 	if err != nil {
 		return 0, nil, err
+	}
+	if engine.modelName != "" {
+		args = append(args, "--alias", engine.modelName)
 	}
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -657,7 +718,7 @@ func (m *Manager) restartAfterCrash(engine *managedEngine, controlGeneration uin
 		}
 		runGeneration, done, err := m.launch(engine, controlGeneration, stateRestarting)
 		if err == nil {
-			startupCtx, cancel := context.WithTimeout(m.ctx, m.options.ReadinessTimeout)
+			startupCtx, cancel := context.WithTimeout(m.ctx, m.readinessTimeout(engine))
 			err = m.waitForReadiness(startupCtx, engine, runGeneration, done, plan)
 			cancel()
 			if err == nil && m.markReady(engine, runGeneration) {
@@ -741,7 +802,7 @@ func (m *Manager) waitForReadiness(
 			return ErrProcessExited
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return ErrReadinessTimeout
+				return fmt.Errorf("%w: startup deadline exceeded; check the node's managed_engine log entries for model loading progress or runtime errors", ErrReadinessTimeout)
 			}
 			return ctx.Err()
 		case <-ticker.C:
@@ -963,6 +1024,8 @@ func (m *Manager) backoff(attempt int) time.Duration {
 }
 
 func (m *Manager) engine(id string) (*managedEngine, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	engine, ok := m.engines[id]
 	if !ok {
 		return nil, ErrNotFound
@@ -981,8 +1044,12 @@ func (m *Manager) Close() error {
 		m.mu.Lock()
 		m.closed = true
 		m.cancel()
-		m.mu.Unlock()
+		engines := make([]*managedEngine, 0, len(m.engines))
 		for _, engine := range m.engines {
+			engines = append(engines, engine)
+		}
+		m.mu.Unlock()
+		for _, engine := range engines {
 			ctx, cancel := context.WithTimeout(context.Background(), m.options.StopTimeout)
 			if err := m.stop(engine, ctx); err != nil {
 				m.closeErr = errors.Join(m.closeErr, err)

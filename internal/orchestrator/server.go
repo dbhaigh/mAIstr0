@@ -25,6 +25,7 @@ import (
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/piagent"
+	"github.com/maistr0/maistr0/internal/selfupdate"
 	"github.com/maistr0/maistr0/internal/shard"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/web"
@@ -142,7 +143,10 @@ func newWithMemoryHarnessAndConcurrency(
 		syncTimeout = time.Duration(config.DefaultSyncTimeoutSeconds) * time.Second
 	}
 	reg := cluster.NewRegistry()
-	disp := &http.Client{Timeout: 10 * time.Minute}
+	if dispatchTimeout <= 0 {
+		dispatchTimeout = time.Duration(config.DefaultDispatchTimeoutSeconds) * time.Second
+	}
+	disp := &http.Client{Timeout: dispatchTimeout}
 	selfID := "orchestrator-" + discovery.OutboundIP()
 	pipelineDataPath := memoryPath
 	if pipelineDataPath == "" {
@@ -182,7 +186,8 @@ func newWithMemoryHarnessAndConcurrency(
 	dispatcher.metrics = metrics
 	planner := newTaskPlanner(schedulerAdapter{}, tasks, dispatcher, nodeClient, dispatcher.schedulerNodes, dispatcher.experience())
 	planner.metrics = metrics
-	planner.provisioner = newAutoModelProvisioner(reg, nodeClient)
+	provisioner := newAutoModelProvisioner(reg, nodeClient)
+	planner.provisioner = provisioner
 	election := newElectionComponent(reg, nodeClient, selfID, cluster.SelfScore(hardware.Detect()), true)
 	syncer := newSyncerComponent(reg, tasks, nodeClient.sync, store, election.isElectedOrchestrator)
 	syncer.maxBytes = syncMaxBytes
@@ -243,6 +248,10 @@ func newWithMemoryHarnessAndConcurrency(
 			}
 			return nil, fmt.Errorf("orchestrator: initialize shard manager: %w", err)
 		}
+		nodeClient.shards = srv.shards
+		dispatcher.shards = srv.shards
+		dispatcher.shardModel = nodeClient
+		provisioner.shards = srv.shards
 	}
 	if srv.harness != nil {
 		if err := srv.harness.restoreAgentSessions(); err != nil {
@@ -297,6 +306,8 @@ func (s *Server) Memory() memory.Store { return s.mem }
 
 func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/updates/manifest", s.handlePeerUpdate)
+	mux.HandleFunc("GET /api/updates/binary", s.handlePeerUpdate)
 	mux.HandleFunc("POST /api/pairing/join", s.handlePairingJoin)
 	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
 	mux.HandleFunc("GET /api/status", s.handleSystemStatus)
@@ -319,6 +330,10 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", s.handleNodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines", s.handleNodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines/managed", s.handleNodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/install-worker", s.handleNodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/head-models", s.handleNodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/configure-head", s.handleNodeControl)
+	mux.HandleFunc("POST /api/nodes/{id}/engines/managed/download-model", s.handleNodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/engines/managed/{engine_id}/profile", s.handleNodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", s.handleNodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", s.handleNodeControl)
@@ -331,6 +346,10 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/shards", s.handleListShardGroups)
 	mux.HandleFunc("GET /api/shards/{id}", s.handleGetShardGroup)
 	mux.HandleFunc("DELETE /api/shards/{id}", s.handleDeleteShardGroup)
+	mux.HandleFunc("POST /api/shards/{id}/start", s.handleStartShardGroup)
+	mux.HandleFunc("POST /api/shards/{id}/stop", s.handleStopShardGroup)
+	mux.HandleFunc("POST /api/shards/{id}/restart", s.handleRestartShardGroup)
+	mux.HandleFunc("POST /api/shards/{id}/members", s.handleShardMembership)
 	mux.HandleFunc("POST /router/{path...}", s.handleRouterRequest)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
@@ -440,7 +459,7 @@ func (s *Server) Run(listenAddr string) error {
 		return fmt.Errorf("orchestrator: configure HTTP request limit: %w", err)
 	}
 	withMiddleware := func(next http.Handler) http.Handler {
-		return httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit)
+		return selfupdate.Admission.Wrap(httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit))
 	}
 	return peeridentity.ServeDual(
 		listenAddr,

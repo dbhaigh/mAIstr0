@@ -18,6 +18,7 @@ import (
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/nodeagent"
 	"github.com/maistr0/maistr0/internal/orchestrator"
+	"github.com/maistr0/maistr0/internal/selfupdate"
 )
 
 type failoverCoordinator struct {
@@ -52,16 +53,29 @@ func newFailoverCoordinator(
 	}
 }
 
+func (f *failoverCoordinator) UpdateIdle() bool {
+	f.mu.Lock()
+	running, promoted := f.running, f.promoted
+	f.mu.Unlock()
+	return !running && (promoted == nil || promoted.UpdateIdle())
+}
+
 // StartElection runs after the heartbeat monitor has detected an unavailable
 // coordinator. It advertises this node during one discovery lease, selects
 // only trusted cluster members, and promotes the winner with its existing
 // certificate and member roster.
 func (f *failoverCoordinator) StartElection(failedOrchestratorID string) {
+	release, ok := selfupdate.Admission.Enter()
+	if !ok {
+		return
+	}
+	defer release()
 	f.mu.Lock()
 	if f.running || f.promoted != nil {
 		f.mu.Unlock()
 		return
 	}
+
 	f.running = true
 	f.mu.Unlock()
 

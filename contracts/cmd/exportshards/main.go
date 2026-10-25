@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/orchestrator"
 	"github.com/maistr0/maistr0/internal/shard"
 )
@@ -76,6 +78,49 @@ func export() error {
 	})
 	request := orchestrator.CreateShardGroupRequest{Model: profile, Mode: group.Mode, PinnedNodes: group.PinnedNodes}
 	fixtures := map[string]fixture{
+		"members": {
+			Name:             "reconfigure-shard-members",
+			Request:          message{Method: "POST", Path: "/api/shards/{id}/members", Schema: "shard-membership.schema.json", Body: orchestrator.ShardMembershipRequest{NodeIDs: group.PinnedNodes}},
+			ExpectedResponse: message{Status: 200, Schema: "shard-group.schema.json", Body: group},
+		},
+		"peer-update": {
+			Name:             "offer-paired-peer-executable",
+			Request:          message{Method: "GET", Path: "/api/updates/manifest"},
+			ExpectedResponse: message{Status: 200, Schema: "peer-update.schema.json", Body: map[string]any{"version": "0.0.24.1", "os": "linux", "arch": "amd64", "sha256": strings.Repeat("a", 64), "size": 14000000}},
+		},
+		"download-head-model": {
+			Name:             "download-recommended-hugging-face-gguf",
+			Request:          message{Method: "POST", Path: "/api/nodes/{id}/engines/managed/download-model", Schema: "download-head-model.schema.json", Body: map[string]any{"model": "qwen2.5-3b-instruct-q4", "requested_context": 4096}},
+			ExpectedResponse: message{Status: 200, Body: supervisor.LocalHeadModel{ID: strings.Repeat("a", 64), Name: profile.Name, Source: "huggingface", Profile: profile}},
+		},
+		"local-head-models": {
+			Name:    "discover-local-model-heads",
+			Request: message{Method: "GET", Path: "/api/nodes/{id}/engines/managed/head-models"},
+			ExpectedResponse: message{Status: 200, Schema: "local-head-models.schema.json", Body: supervisor.LocalHeadModels{
+				Models:   []supervisor.LocalHeadModel{{ID: strings.Repeat("a", 64), Name: profile.Name, Source: "lmstudio", Profile: profile}},
+				Warnings: []string{},
+			}},
+		},
+		"configure-head": {
+			Name:             "configure-local-model-head",
+			Request:          message{Method: "POST", Path: "/api/nodes/{id}/engines/managed/configure-head", Schema: "configure-local-head.schema.json", Body: map[string]any{"model_id": strings.Repeat("a", 64), "requested_context": 4096}},
+			ExpectedResponse: message{Status: 200, Schema: "managed-engine-status.schema.json", Body: supervisor.Status{ID: "maistr0-auto-head", Kind: "llama-server", State: "stopped"}},
+		},
+		"create-selected-head": {
+			Name: "create-shard-group-selected-head",
+			Request: message{Method: "POST", Path: "/api/shards", Schema: "create-shard-group.schema.json", Body: orchestrator.CreateShardGroupRequest{
+				Model: profile, Mode: group.Mode, PinnedNodes: group.PinnedNodes, HeadNodeID: "worker-1", HeadEngineID: "head",
+			}},
+			ExpectedResponse: message{Status: 201, Schema: "shard-group.schema.json", Body: group},
+		},
+		"install-worker": {
+			Name:    "install-managed-worker",
+			Request: message{Method: "POST", Path: "/api/nodes/{id}/engines/managed/install-worker", Schema: "worker-install-request.schema.json", Body: map[string]string{"source": "official"}},
+			ExpectedResponse: message{Status: 200, Schema: "worker-install-result.schema.json", Body: supervisor.WorkerInstallResult{
+				Source: "official", Version: "test", Updated: true,
+				Engines: []supervisor.Status{{ID: "maistr0-auto-rpc", Kind: "ggml-rpc-server", State: "stopped"}},
+			}},
+		},
 		"create": {
 			Name:             "create-shard-group",
 			Request:          message{Method: "POST", Path: "/api/shards", Schema: "create-shard-group.schema.json", Body: request},
@@ -104,6 +149,23 @@ func export() error {
 			snapshot.Members = append([]orchestrator.ShardGroupMember(nil), group.Members...)
 			for i := range snapshot.Members {
 				snapshot.Members[i].Started = false
+			}
+		}
+		stopped := group
+		stopped.State = orchestrator.ShardGroupStopped
+		stopped.Members = append([]orchestrator.ShardGroupMember(nil), group.Members...)
+		for i := range stopped.Members {
+			stopped.Members[i].Started = false
+		}
+		for _, action := range []string{"start", "stop", "restart"} {
+			result := group
+			if action == "stop" {
+				result = stopped
+			}
+			fixtures[action] = fixture{
+				Name:             "shard-group-" + action,
+				Request:          message{Method: "POST", Path: "/api/shards/{id}/" + action},
+				ExpectedResponse: message{Status: 200, Schema: "shard-group.schema.json", Body: result},
 			}
 		}
 		fixtures[string(state)] = fixture{

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>mAIstr0 · Interactive Cluster Orchestrator</title>
-  <link rel="stylesheet" href="/style.426ffc8e3d92.css" />
+  <link rel="stylesheet" href="/style.d1839e27badd.css" />
 </head>
 <body>
   <header>
@@ -361,11 +361,20 @@
           <option value="vllm-mp">vLLM multi-node</option>
         </select>
       </label>
+      <label class="shard-setup-label">Automatic RPC worker release source
+        <select id="shard-group-setup-source">
+          <option value="official">Official llama.cpp (Vulkan)</option>
+          <option value="xdna">llama-xdna.cpp (XDNA, when a release is available)</option>
+        </select>
+      </label>
       <fieldset class="shard-setup-fieldset">
         <legend>Healthy worker nodes</legend>
-        <p class="panel-caption">Every selected node must have the managed worker engine required by the chosen mode.</p>
+        <p class="panel-caption">Selecting a node automatically downloads and installs missing llama.cpp RPC workers. Installer-managed workers check for updates while idle; operator-configured engines are not replaced. vLLM requires manual setup.</p>
         <div id="shard-group-setup-nodes" class="shard-node-options"></div>
       </fieldset>
+      <label class="shard-setup-label">Model head node
+        <select id="shard-group-setup-head" disabled><option value="">Select worker nodes first</option></select>
+      </label>
       <label class="shard-setup-label">Model
         <select id="shard-group-setup-model" disabled><option value="">Select worker nodes first</option></select>
       </label>
@@ -433,6 +442,6 @@
     </div>
   </div>
 
-  <script src="/app.a4bf2d79b545.js"></script>
+  <script src="/app.10396464156f.js"></script>
 </body>
 </html>

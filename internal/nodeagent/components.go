@@ -80,6 +80,7 @@ type telemetryComponent struct {
 	npuHistory         []hardware.NPUUsageSample
 	systemHistory      []hardware.SystemUsageSample
 	hardwareUsageProbe func() hardwareUsageSample
+	runtimeDevices     []hardware.Device
 }
 
 type identityComponent struct {

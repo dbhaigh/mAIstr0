@@ -259,6 +259,8 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 	}
 
 	values := map[string]any{
+		"shard-membership.schema.json": map[string]any{"node_ids": []string{"worker-1", "worker-2"}},
+		"peer-update.schema.json":      map[string]any{"version": "0.0.24.1", "os": "linux", "arch": "amd64", "sha256": strings.Repeat("a", 64), "size": 14000000},
 		"dashboard-pipeline.schema.json": map[string]any{
 			"model_inventory": []any{
 				map[string]any{"model_id": "whole-model", "kind": "whole", "nodes": []string{"worker-1"}},
@@ -328,6 +330,16 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 			"shard_plan": map[string]any{
 				"nnodes": 2, "node_rank": 1, "master_addr": "192.0.2.10",
 			},
+		},
+		"worker-install-request.schema.json": map[string]any{"source": "official"},
+		"local-head-models.schema.json":      map[string]any{"models": []any{}, "warnings": []string{}},
+		"configure-local-head.schema.json":   map[string]any{"model_id": strings.Repeat("a", 64), "requested_context": 4096},
+		"download-head-model.schema.json":    map[string]any{"model": "qwen2.5-3b-instruct-q4", "requested_context": 4096},
+		"worker-install-result.schema.json": map[string]any{
+			"source": "official", "version": "test", "updated": true,
+			"engines": []any{map[string]any{
+				"id": "maistr0-auto-rpc", "kind": "ggml-rpc-server", "state": "stopped", "restart_count": 0,
+			}},
 		},
 		"create-shard-group.schema.json": map[string]any{
 			"model": shardProfile, "mode": "llamacpp-rpc", "pinned_nodes": []string{"worker-1", "worker-2"},
@@ -572,12 +584,16 @@ func TestSchemaSetIsComplete(t *testing.T) {
 		"activation-tensor.schema.json", "dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
 		"fact.schema.json", "node-config.schema.json", "create-shard-group.schema.json",
 		"managed-engine-start.schema.json", "managed-engine-status.schema.json",
+		"worker-install-request.schema.json", "worker-install-result.schema.json",
+		"local-head-models.schema.json", "configure-local-head.schema.json",
+		"download-head-model.schema.json",
 		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json", "pipeline-plan.schema.json",
 		"pipeline-stage-capabilities.schema.json", "pipeline-stage-control.schema.json", "pipeline-stage-message.schema.json",
 		"pipeline-stage-output.schema.json", "pipeline-stage-request.schema.json",
 		"router-circuit-breaker.schema.json", "router-request-event.schema.json", "router-requests.schema.json",
 		"score-factors.schema.json", "snapshot.schema.json",
 		"shard-group-list.schema.json", "shard-group.schema.json", "shard-model-profile.schema.json", "shard-plan.schema.json",
+		"peer-update.schema.json", "shard-membership.schema.json",
 		"stage-assignment.schema.json", "stage-forward-frame.schema.json",
 		"sharded-model-config.schema.json", "stage-spec.schema.json", "subtask-result.schema.json", "subtask.schema.json", "task-dependencies.schema.json",
 		"task-graph.schema.json", "task.schema.json",

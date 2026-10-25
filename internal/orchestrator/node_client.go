@@ -19,6 +19,7 @@ import (
 )
 
 type nodeClient struct {
+	shards     *ShardManager
 	client     *http.Client
 	dispatcher *http.Client
 	status     *http.Client
@@ -182,6 +183,27 @@ func (c *nodeClient) discoveredNodeStatusContext(ctx context.Context, addr strin
 }
 
 func (c *nodeClient) streamNodeGenerate(w http.ResponseWriter, r *http.Request, address, model string, genReq generateAPIRequest, prompt string) {
+	if c.shards != nil {
+		if group, found := c.shards.GroupForModel(model); found {
+			output, err := c.generateShardGroup(r.Context(), group, address, prompt, genReq.Temperature, genReq.MaxTokens)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, generateAPIResponse{Error: err.Error()})
+				return
+			}
+			data, err := json.Marshal(map[string]string{"output": output})
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, generateAPIResponse{Error: err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			if err := httpx.NewStreamWriter(w).WriteSSEData(data); err != nil {
+				logging.Errorf("orchestrator", "orchestrator: shard generation stream failed: %v", err)
+			}
+			return
+		}
+	}
 	body, err := marshalGeneratePayload(model, prompt, genReq.Temperature, genReq.MaxTokens)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, generateAPIResponse{Error: err.Error()})
@@ -266,6 +288,14 @@ func (c *nodeClient) callNodeGenerateWithOptionsContextAndIdempotency(
 	maxTokens int,
 	idempotencyKey string,
 ) (string, error) {
+	if c.shards != nil {
+		if group, found := c.shards.GroupForModel(model); found {
+			if idempotencyKey != "" {
+				return "", errors.New("idempotency keys are not supported for managed shard generation")
+			}
+			return c.generateShardGroup(ctx, group, nodeAddr, prompt, temperature, maxTokens)
+		}
+	}
 	genPayload, err := marshalGeneratePayload(model, prompt, temperature, maxTokens)
 	if err != nil {
 		return "", err

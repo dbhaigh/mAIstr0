@@ -32,6 +32,30 @@ func TestAppendEffectiveCapabilitiesPreservesPrefixAndDeduplicates(t *testing.T)
 	}
 }
 
+func TestUpdateDevicesPreservesHeartbeatAndCopiesMemory(t *testing.T) {
+	registry := NewRegistry()
+	registry.Upsert(NodeStatus{ID: "node", Address: "https://node", Healthy: true, ActiveTasks: 2})
+	before, _ := registry.Get("node")
+	_ = registry.All()
+	devices := []hardware.Device{{Kind: "gpu", FreeMemoryMB: 4096, Backends: []string{"vulkan"}}}
+	if !registry.UpdateDevices("node", "https://node", devices) {
+		t.Fatal("device refresh rejected")
+	}
+	devices[0].FreeMemoryMB = 0
+	devices[0].Backends[0] = "changed"
+	got, _ := registry.Get("node")
+	if got.Hardware.Devices[0].FreeMemoryMB != 4096 || got.Hardware.Devices[0].Backends[0] != "vulkan" ||
+		got.ActiveTasks != 2 || !got.Healthy || !got.LastSeen.Equal(before.LastSeen) {
+		t.Fatalf("device refresh replaced unrelated state: %+v", got)
+	}
+	if registry.UpdateDevices("node", "https://old-address", nil) || registry.UpdateDevices("missing", "", nil) {
+		t.Fatal("accepted stale registration")
+	}
+	if len(registry.All()[0].Hardware.Devices) != 1 {
+		t.Fatal("cached snapshot was not invalidated")
+	}
+}
+
 func node(id string, score, fastScore float64) NodeStatus {
 	return NodeStatus{
 		ID:        id,

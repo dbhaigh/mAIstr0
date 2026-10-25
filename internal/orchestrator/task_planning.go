@@ -322,6 +322,7 @@ func (p *taskPlanner) planSubtasksUncached(ctx context.Context, description stri
 	failedModels := make(map[string]map[string]struct{})
 	var lastModelErr error
 	var lastPlanErr error
+	provisionAttempted := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, apperr.UpstreamError(err)
@@ -341,13 +342,21 @@ func (p *taskPlanner) planSubtasksUncached(ctx context.Context, description stri
 		}
 		assignments, err := p.assign([]scheduler.Subtask{planning}, candidates)
 		if err != nil {
+			if !provisionAttempted && lastModelErr == nil && lastPlanErr == nil && p.provisioner != nil {
+				provisionAttempted = true
+				if provisionErr := p.provisioner.provision(ctx, []scheduler.Subtask{planning}); provisionErr != nil {
+					return nil, nil, apperr.UnavailableError(fmt.Errorf("select planning model: %w; ensure a normal model is available or a shard group is ready (failed groups cannot run tasks); automatic model acquisition failed: %v", err, provisionErr))
+				}
+				nodes = p.nodes()
+				continue
+			}
 			if lastPlanErr != nil {
 				return nil, nil, lastPlanErr
 			}
 			if lastModelErr != nil {
 				return nil, nil, apperr.UpstreamError(fmt.Errorf("all planning model attempts failed: %w", lastModelErr))
 			}
-			wrapped := fmt.Errorf("select planning model: %w", err)
+			wrapped := fmt.Errorf("select planning model: %w; ensure a normal model is available or a shard group is ready (failed groups cannot run tasks)", err)
 			var unassignable *scheduler.UnassignableSubtasksError
 			if errors.Is(err, scheduler.ErrNoHealthyNodes) || errors.As(err, &unassignable) {
 				return nil, nil, apperr.UnavailableError(wrapped)
@@ -366,7 +375,8 @@ or this shape:
 
 Use only these roles: researcher, analyst, coder, writer, reviewer, summarizer, translator, general.
 Use task_type values supported by a local model registry when relevant: code, summarize, translate, math, vision, creative, general.
-Supported capability tags: researcher, coder, long-context, vision, math, fast, high-quality.
+Supported capability tags: researcher, coder, writer, summarizer, translator, long-context, vision, math, fast, high-quality.
+Use required_capabilities only for essential model or hardware requirements, not the task's role. Ordinary writing, poetry, and summaries can use a general text model with required_capabilities [].
 Make independent tasks parallel; add depends_on only when a task genuinely needs another task's result. Keep the plan focused, use 1-8 tasks, and set expected_output for each task. Use output_format json and required_fields only when the result must be machine-readable. JSON output gets one corrective retry by default; use max_retries 0 for plain-text output and at most 2 for any task.
 User request:
 %s`, strings.TrimSpace(description))

@@ -36,6 +36,8 @@ type modelPullAttempt struct {
 }
 
 type autoModelProvisioner struct {
+	shards   *ShardManager
+	ggufGate chan struct{}
 	registry *cluster.Registry
 	client   modelProvisionNodeClient
 
@@ -48,19 +50,30 @@ func newAutoModelProvisioner(registry *cluster.Registry, client modelProvisionNo
 		registry: registry,
 		client:   client,
 		inFlight: make(map[string]*modelPullAttempt),
+		ggufGate: make(chan struct{}, 1),
 	}
 }
 
 func (p *autoModelProvisioner) provision(ctx context.Context, subtasks []scheduler.Subtask) error {
 	for _, subtask := range subtasks {
-		nodes := p.registry.Active()
+		nodes := p.provisioningNodes()
 		if _, err := scheduler.Assign([]scheduler.Subtask{subtask}, nodes); err == nil {
 			continue
+		}
+		var ggufErr error
+		if p.shards != nil {
+			ggufErr = p.provisionGGUF(ctx, subtask)
+			if ggufErr == nil {
+				continue
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 		}
 
 		candidates := modelCandidates(subtask, nodes)
 		if len(candidates) == 0 {
-			return fmt.Errorf("no curated Ollama model fits subtask %s and the reported node capabilities", subtask.ID)
+			return fmt.Errorf("no compatible local or recommended model fits subtask %s (required capabilities: %v); GGUF recovery: %v; no curated Ollama model fits the reported node capabilities", subtask.ID, subtask.RequiredCapabilities, ggufErr)
 		}
 
 		triedNodes := make(map[string]bool)

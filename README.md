@@ -5,9 +5,27 @@ machines on a LAN. It combines task planning and scheduling, a transparent
 inference router, interactive Pi and DeepSeek harnesses, and synchronized
 cluster memory. It does not require cloud inference.
 
-Current version: **0.0.24**. See the [release notes](./changelog.md#0024---2026-10-24)
+Current version: **0.0.24.1**. See the [release notes](./changelog.md#00241)
 for the shard-group setup wizard, cluster reliability improvements, and
 dashboard updates.
+
+## Updating nodes and editing shard members
+
+Starting with 0.0.24.1, nodes download strictly newer versions directly from
+paired peers, then restart **only when idle**. Existing installations need one
+manual upgrade to this version. Stop active shard groups to allow replacement;
+the updater never force-stops a running group. See
+[peer updates and their accepted executable-trust risk](./docs/configuration.md#automatic-peer-executable-updates)
+before enabling this on machines you do not fully trust.
+
+On a shard-group card, select **Edit members**, check healthy nodes to add or
+uncheck workers to remove, then choose **Apply and reload**. Missing RPC
+runtimes install automatically. The current model head remains selected.
+mAIstr0 drains current inference, unloads the group, recomputes comfortable
+memory placement, then reloads workers and head using the **same group ID and
+model**. There is a brief inference outage, not live migration; insufficient
+remaining memory or runtime failures remain visible on the group. Correct the
+selection and retry, or use **Start** after fixing the reported cause.
 
 ## Quick start
 
@@ -108,9 +126,10 @@ before the head, and exposes a ready head through
 `POST /router/v1/chat/completions` using the group's model name.
 
 - `llamacpp-rpc`: compatible RPC-enabled llama.cpp worker and head builds;
-  heterogeneous supported GPUs are permitted. Configure a managed
-  `ggml-rpc-server` on each selected node and a managed `llama-server` on at
-  least one selected node. Pair the nodes and make their authenticated RPC
+  heterogeneous supported GPUs are permitted. The wizard automatically
+  installs missing `ggml-rpc-server` workers. Configure a managed `llama-server`
+  with a compatible build and model on at least one selected node.
+  Pair the nodes and make their authenticated RPC
   relays reachable before creating the group.
 - `vllm-mp`: Linux-only homogeneous GPU nodes, matching GPU counts and models,
   compatible vLLM builds, and a trusted private network. Configure a managed
@@ -123,26 +142,33 @@ before the head, and exposes a ready head through
 
 ### Create a shard group from the dashboard
 
-1. Start the orchestrator and worker nodes, pair them, and configure the
-   appropriate managed engines. For `llamacpp-rpc`, configure
-   `ggml-rpc-server` on each worker and `llama-server` on a head-capable node.
+1. Start the orchestrator and worker nodes and pair them. For `llamacpp-rpc`,
+   have a compatible GGUF model installed in Ollama or LM Studio on at least
+   one selected node; the wizard installs the runtime and configures its head.
+   Existing operator-configured `llama-server` heads are also supported.
    For `vllm-mp`, configure vLLM on every selected node. See
    [managed engine configuration](./docs/configuration.md#managed-engine-processes).
 2. Ctrl-click a healthy node in the cluster view to open **Create shard group**.
    Select the worker nodes and sharding mode. Every selected node must have the
-   mode's managed worker engine configured.
-3. Choose a model offered for that selected group and enter its requested
-   context length. The picker inspects managed engine model sources: local
-   allow-listed GGUF files, local Hugging Face model directories, or cached
-   Hugging Face `model_id` configs and weight files. Ordinary Ollama/LM Studio
-   inventory entries are not eligible unless configured as a managed shard
-   engine. A model is offered only when its architecture and weight size can
-   be read and measured safely.
+   mode's managed worker engine. For llama.cpp RPC, selecting a node
+   automatically downloads and verifies a missing worker; idle, automatically
+   installed workers check for newer releases. Choose official llama.cpp or
+   the custom XDNA release source. Unsupported platforms, missing releases,
+   and failed verification are shown as errors, not skipped.
+3. Choose the **Model head node**, a model, and its requested context length.
+   For llama.cpp RPC, the picker reads existing managed heads and local Ollama
+   or LM Studio GGUF files on that node. It configures the bundled matching
+   `llama-server` when creating the group, without downloading or copying weights.
+   For vLLM, it inspects configured local/cached Hugging Face metadata and weights.
+   Models are offered only when their architecture and weight size can be read.
 4. Choose **Create and start group**. The orchestrator calculates the placement
    from each device's current free memory, holds back a 2 GiB safety margin per
    device, and refuses the plan if the model weights and KV cache do not fit.
    For `llamacpp-rpc`, layer ranges are weighted by device capacity; vLLM
    requires homogeneous node resources and uses the configured parallel layout.
+   The installed runtime refreshes actual free accelerator memory, including
+   Vulkan devices. Unknown device memory is not replaced with host RAM and
+   cannot receive layers.
 5. The dialog reports the ready group and its assigned layers. The **Shard
    groups** panel under Job routing shows the group state and placement details.
 
@@ -189,6 +215,130 @@ state accepts inference. Rebuild by creating a new group with the same model
 name after fixing the cause; a failed group may remain for diagnosis.
 `DELETE /api/shards/{id}` stops the head before workers and removes the record.
 Restart recovery verifies every member before restoring readiness.
+Automatic llama.cpp heads are also checked against the saved model's name and
+weight metadata. Starting a saved group restores its original local GGUF model
+if another stopped group reconfigured the shared automatic head. If those
+weights are no longer available, startup fails explicitly rather than running a
+different model under the saved name. Runtime health checks and inference reject
+mismatched heads; stop and start the group to restore the intended model.
+
+### Use a shard group
+
+If task planning or assignment reports **no compatible model**, mAIstr0 first
+checks ready cluster models, then tries readable local GGUF weights on an idle
+node. If none fit, it automatically downloads a recommended public Hugging Face
+GGUF, verifies its size and SHA-256, installs a missing official llama.cpp
+runtime, and starts a managed single-node group before retrying assignment.
+This also works when no model is available for the initial planning step.
+Active groups and operator-configured heads are never replaced.
+
+The initial download recommendations are Qwen2.5 Instruct 3B and 7B Q4_K_M.
+Downloads require internet access and roughly 2.1 GB or 4.7 GB of disk space
+respectively; temporary download space is required until verification finishes.
+The source repositories' model licenses still apply.
+Only single-file public GGUF models are supported, not gated repositories,
+arbitrary URLs, model scripts, or other weight formats. Placement still requires
+known free GPU memory with the normal safety reserve and KV-cache allowance;
+host RAM is not substituted for GPU memory. If every node is busy or the task
+requires unsupported capabilities (for example vision), recovery returns an
+explicit error rather than replacing a model or weakening the requirements.
+See [model acquisition](./docs/api.md#compatible-model-acquisition) for manual
+download and local-model selection.
+
+1. Open **Shard groups** under **Job routing** and check that the group is
+   **ready**. A failed or degraded group cannot answer prompts.
+2. In dashboard **mAIstr0** chat, submit your request normally. Ready shard
+   models are eligible for automatic planning, subtask execution, and final
+   answer synthesis, alongside ordinary cluster models. Chat does not pin a
+   specific group; scheduler selection still applies.
+3. To explicitly select the group instead of using automatic task planning,
+   send an OpenAI-compatible request to the orchestrator's
+   `POST /v1/chat/completions` with the exact model name shown on its card.
+   For example, save this as `shard-chat.json`, replacing `model` with your
+   ready group's model:
+
+   ```json
+   {
+     "model": "Llama-3.2-3B-Instruct-Q4_K_M",
+     "messages": [
+       {"role": "user", "content": "Rank ten classical composers and explain each ranking with examples."}
+     ],
+     "stream": false
+   }
+   ```
+
+   ```powershell
+   curl.exe --fail-with-body `
+     -H "Content-Type: application/json" `
+     --data-binary "@shard-chat.json" `
+     "http://127.0.0.1:7450/v1/chat/completions"
+   ```
+
+The group is **one logical model**. Send prompts to the orchestrator, not to
+individual shard workers. All requests share the head and are serialized,
+including planning and synthesis; more shard members increase usable model
+memory, not the number of independently running copies.
+
+If chat reports `select planning model: scheduler: no compatible model for
+subtasks: plan`, the planner could not find an eligible model; this is not an
+error in the composer prompt. Update/restart the orchestrator to a build with
+shard-task routing, verify that a group is **ready**, and submit again. Older
+builds could route direct OpenAI requests to a shard head but could not use it
+for task planning. If no group is ready, resolve its startup error or make a
+normal cluster model available first.
+
+If a working head times out with `Client.Timeout exceeded while awaiting headers`,
+older task routing requested a non-streaming response: the head could be busy
+generating without returning the completed answer before the fixed ten-minute
+limit. Current builds consume streaming responses internally and flush proxy
+chunks promptly. For a slow distributed model, set `dispatch_timeout_seconds`
+to `1800` in the orchestrator configuration and restart with
+`-orchestrator-config <path>` to allow thirty minutes. This also applies to
+planning and synthesis. See [generation timeouts and progress](./docs/configuration.md#capacity-timeouts-and-synchronization).
+The application log reports elapsed time and output/reasoning byte counts,
+not private generated text. Low GPU utilization alone does not identify the
+bottleneck: inspect the head's prompt-evaluation and generation timings and
+worker/network behavior before assuming the model has hung.
+
+Failed cards offer **Delete failed group**. This stops any remaining group
+processes, releases its reservations, and removes the saved group. Errors are
+displayed and the card is retained if cleanup fails. Deletion does not remove
+downloaded runtimes or original model weights. Fix the reported cause and
+Ctrl-click eligible nodes to create a replacement group.
+
+### Stop, start, or restart a shard group
+
+Use the buttons on its card under **Job routing → Shard groups**:
+
+- **Stop** (ready/degraded): wait for active inference to finish, stop the head
+  followed by the workers, and release member capacity. The group becomes
+  **stopped**; its model, placement history, pinned nodes, and ID remain saved.
+- **Start** (stopped/failed): retry the saved group with the same model and ID.
+  Placement is recalculated using current device memory, preserving pinned
+  nodes and the previous head selection when available. Workers start before
+  the head. A ready group is eligible for inference and automatic tasks again.
+- **Restart**: drain and stop the group, then replan and start it. It does not
+  restart just the head or create a second group. A failed group can also be
+  retried this way.
+
+Controls are disabled while an operation is in progress. Startup may take up
+to ten minutes for a large head. A stopped group is unavailable for new prompts
+and remains stopped across application restarts. Stop/restart waits rather
+than aborting active inference; queued/new requests may receive an unavailable
+error once stopping begins. Cleanup/startup failures are shown on the card;
+resolve the cause and retry. Engines in another group cannot be taken over.
+
+The equivalent API calls use an empty request body:
+
+```powershell
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/stop"
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/start"
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/restart"
+```
+
+Each successful call returns `200` and the updated group. Start on a ready
+group and stop on a stopped group are idempotent. Concurrent lifecycle
+operations return `409`.
 
 The Go process integration tests prove control-plane lifecycle and routing with
 fake engines, not tensor correctness, hardware compatibility, or throughput.

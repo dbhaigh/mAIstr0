@@ -109,6 +109,31 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
 
 ## CI
 
+### Rapid iteration releases
+
+The source release number is now `0.0.24.1`. Increment the fourth numeric
+component for rapid iterations (`0.0.24.2`, ..., `0.0.24.10`); use the next
+third component for a new patch series. This is a numeric four-component
+release convention, not SemVer. Peer manifests accept both three and four
+components and compare components numerically, with an omitted fourth
+component treated as zero.
+
+The release workflow detects four-component tags and uses the repository
+build scripts plus GitHub CLI packaging; ordinary three-component tags
+continue through GoReleaser. The tag must match the source version.
+Do not publish a tag for a different source version.
+
+On Windows, build without interrupting a running installed executable:
+
+```powershell
+.\build\build.ps1 -WindowsBinary maistr0-update.exe
+```
+
+Otherwise run the build script with its default output name. Both build
+scripts now generate checked `.peer.json` metadata for Windows, Linux, and
+Ubuntu outputs, so cross-platform peer publishers do not depend on manually
+created manifests. Binaries and metadata remain ignored build products.
+
 GitHub Actions checks contract drift, tests on Ubuntu and Windows, runs race
 tests on Linux, runs `go vet` and `govulncheck`, builds the application, tests
 the dashboard, and publishes a golangci-lint result and Go coverage report.

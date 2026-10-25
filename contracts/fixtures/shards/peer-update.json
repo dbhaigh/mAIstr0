@@ -1,0 +1,21 @@
+{
+  "name": "offer-paired-peer-executable",
+  "request": {
+    "method": "GET",
+    "path": "/api/updates/manifest"
+  },
+  "expected_response": {
+    "status": 200,
+    "schema": "peer-update.schema.json",
+    "body": {
+      "arch": "amd64",
+      "os": "linux",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 14000000,
+      "version": "0.0.24.1"
+    }
+  },
+  "normalization_rules": [
+    "Fixed IDs, addresses, and RFC3339 timestamps; generated from Go wire types."
+  ]
+}

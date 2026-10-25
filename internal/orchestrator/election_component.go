@@ -15,8 +15,11 @@ type electionComponent struct {
 	statusProbe interface {
 		discoveredNodeStatus(string) (cluster.NodeStatus, error)
 	}
-	identity         interface{ IsTrustedID(string) bool }
-	discovery        *discovery.Listener
+	identity  interface{ IsTrustedID(string) bool }
+	discovery interface {
+		Snapshot() []discovery.Peer
+		WaitReady(time.Duration) error
+	}
 	selfID           string
 	selfScore        float64
 	discoveryEnabled bool
@@ -75,6 +78,10 @@ func (e *electionComponent) setDiscoveryEnabled(enabled bool) {
 }
 
 func (e *electionComponent) setDiscovery(listener *discovery.Listener) {
+	if listener == nil {
+		e.discovery = nil
+		return
+	}
 	e.discovery = listener
 }
 
@@ -179,10 +186,20 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 			delete(e.discoveredNodes, peer.ID)
 			continue
 		}
-		if peer.PeerAddr == "" || e.identity == nil || !e.identity.IsTrustedID(peer.ID) {
+		if e.identity == nil || !e.identity.IsTrustedID(peer.ID) {
 			continue
 		}
 		if !shouldProbeDiscoveredNode(peer, e.selfID) {
+			// A combined-role process advertises its worker and coordinator
+			// with the same ID. Probe the authenticated worker registration,
+			// not the coordinator's advertised endpoint.
+			registered, ok := e.registry.Get(peer.ID)
+			if peer.Role == "node" || !ok || registered.Address == "" {
+				continue
+			}
+			peer.PeerAddr = registered.Address
+		}
+		if peer.PeerAddr == "" {
 			continue
 		}
 		probes.Add(1)

@@ -1,0 +1,25 @@
+{
+  "name": "configure-local-model-head",
+  "request": {
+    "method": "POST",
+    "path": "/api/nodes/{id}/engines/managed/configure-head",
+    "schema": "configure-local-head.schema.json",
+    "body": {
+      "model_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "requested_context": 4096
+    }
+  },
+  "expected_response": {
+    "status": 200,
+    "schema": "managed-engine-status.schema.json",
+    "body": {
+      "id": "maistr0-auto-head",
+      "kind": "llama-server",
+      "state": "stopped",
+      "restart_count": 0
+    }
+  },
+  "normalization_rules": [
+    "Fixed IDs, addresses, and RFC3339 timestamps; generated from Go wire types."
+  ]
+}

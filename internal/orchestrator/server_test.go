@@ -78,6 +78,9 @@ func TestNewWithConfigNormalizesAndValidates(t *testing.T) {
 	if srv.dispatcher.dispatchTimeout != 90*time.Second {
 		t.Fatalf("dispatch timeout = %s, want 90s", srv.dispatcher.dispatchTimeout)
 	}
+	if srv.nodeClient.dispatcher.Timeout != 90*time.Second {
+		t.Fatalf("generation HTTP timeout = %s, want configured 90s", srv.nodeClient.dispatcher.Timeout)
+	}
 	if srv.maxSyncBytes() != 2<<20 || srv.syncTimeout != 37*time.Second ||
 		srv.nodeClient.sync.Timeout != 37*time.Second {
 		t.Fatalf("sync config = %d bytes/%s client timeout %s, want %d bytes/37s",
