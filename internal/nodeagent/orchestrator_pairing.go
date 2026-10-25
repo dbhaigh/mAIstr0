@@ -2,9 +2,11 @@ package nodeagent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"strings"
@@ -25,7 +27,11 @@ func (c *orchestratorLink) pairLocal(orchestratorID, certificatePEM, address str
 }
 
 func (c *orchestratorLink) pairOrchestrator(candidate orchestratorCandidate) error {
-	return c.pairWithAddress(candidate.address, candidate.id, c.configState.configSnapshot().PairingPIN)
+	return c.pairOrchestratorContext(context.Background(), candidate)
+}
+
+func (c *orchestratorLink) pairOrchestratorContext(ctx context.Context, candidate orchestratorCandidate) error {
+	return c.pairWithAddressContext(ctx, candidate.address, candidate.id, c.configState.configSnapshot().PairingPIN)
 }
 
 func (c *orchestratorLink) pairWithOrchestrator(address, pin string) error {
@@ -56,7 +62,11 @@ func (c *orchestratorLink) pairWithDiscoveredOrchestrator(id, address, pin strin
 	return errSelectedOrchestratorNotDiscovered
 }
 
-func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (resultErr error) {
+func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) error {
+	return c.pairWithAddressContext(context.Background(), address, expectedID, pin)
+}
+
+func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, expectedID, pin string) (resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			logging.Errorf("nodeagent", "nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
@@ -82,11 +92,17 @@ func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) (res
 	if expectedID != "" {
 		transport = c.trust.BootstrapTransportForID(expectedID)
 	}
-	client := &http.Client{
-		Timeout:   5 * time.Second,
+	defer transport.CloseIdleConnections()
+	client := httpx.NewClient(httpx.ClientOptions{
+		Timeout:   httpx.ProbeTimeout,
 		Transport: transport,
+	})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address+"/api/pairing/join", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("prepare pairing request: %w", err)
 	}
-	resp, err := client.Post(address+"/api/pairing/join", "application/json", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("pair with orchestrator at %s: %w", address, err)
 	}

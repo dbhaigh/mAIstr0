@@ -10,9 +10,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 type Provider interface {
@@ -70,7 +70,7 @@ func NewOpenAICompatibleProvider(cfg OpenAICompatibleConfig) *OpenAICompatiblePr
 		baseURL: baseURL,
 		apiKey:  cfg.APIKey,
 		model:   model,
-		client:  &http.Client{Timeout: 10 * time.Minute},
+		client:  httpx.NewClient(httpx.ClientOptions{Timeout: httpx.InferenceTimeout}),
 	}
 }
 

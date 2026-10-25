@@ -1,11 +1,13 @@
 package orchestrator
 
 import (
+	"context"
 	"github.com/maistr0/maistr0/internal/logging"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/discovery"
 )
@@ -13,7 +15,7 @@ import (
 type electionComponent struct {
 	registry    *cluster.Registry
 	statusProbe interface {
-		discoveredNodeStatus(string) (cluster.NodeStatus, error)
+		discoveredNodeStatusContext(context.Context, string) (cluster.NodeStatus, error)
 	}
 	identity  interface{ IsTrustedID(string) bool }
 	discovery interface {
@@ -29,7 +31,10 @@ type electionComponent struct {
 	discoveredNodes map[string]bool
 	// retired is set when a failover-promoted instance steps down; it stops
 	// announcing and never reports itself elected until reinstated.
-	retired atomic.Bool
+	retired        atomic.Bool
+	beaconDone     chan struct{}
+	ownedDiscovery *discovery.Listener
+	closeOnce      sync.Once
 }
 
 type electionAPI interface {
@@ -38,9 +43,9 @@ type electionAPI interface {
 	setDiscovery(*discovery.Listener)
 	discoverySnapshot() []discovery.Peer
 	hasDiscovery() bool
-	startBeacon(string) error
+	startBeacon(context.Context, string) error
 	isElectedOrchestrator() bool
-	discoverySyncLoop(func())
+	discoverySyncLoop(context.Context, func())
 	syncDiscoveredPeers(func())
 	recordLeader(string)
 	selfIDValue() string
@@ -52,7 +57,7 @@ type electionAPI interface {
 func newElectionComponent(
 	registry *cluster.Registry,
 	statusProbe interface {
-		discoveredNodeStatus(string) (cluster.NodeStatus, error)
+		discoveredNodeStatusContext(context.Context, string) (cluster.NodeStatus, error)
 	},
 	selfID string,
 	selfScore float64,
@@ -96,27 +101,43 @@ func (e *electionComponent) hasDiscovery() bool {
 	return e.discovery != nil
 }
 
-func (e *electionComponent) startBeacon(listenAddr string) error {
+func (e *electionComponent) startBeacon(ctx context.Context, listenAddr string) error {
 	if !e.discoveryEnabled {
 		return nil
 	}
 	if e.discovery == nil {
-		e.discovery = discovery.Listen(e.selfID)
+		e.ownedDiscovery = discovery.Listen(e.selfID)
+		e.discovery = e.ownedDiscovery
 	}
 	if err := e.discovery.WaitReady(2 * time.Second); err != nil {
 		return err
 	}
 	selfAddr := "http://" + discovery.OutboundIP() + portSuffix(listenAddr)
 	peerAddr := "https://" + discovery.OutboundIP() + portSuffix(listenAddr)
-	go discovery.Beacon(func() discovery.Announcement {
-		if e.retired.Load() {
-			return discovery.Announcement{}
-		}
-		ann := e.selfAnnouncement()
-		ann.HTTPAddr, ann.PeerAddr = selfAddr, peerAddr
-		return ann
-	}, 5*time.Second, nil)
+	e.beaconDone = make(chan struct{})
+	go func() {
+		defer close(e.beaconDone)
+		discovery.Beacon(func() discovery.Announcement {
+			if e.retired.Load() {
+				return discovery.Announcement{}
+			}
+			ann := e.selfAnnouncement()
+			ann.HTTPAddr, ann.PeerAddr = selfAddr, peerAddr
+			return ann
+		}, 5*time.Second, ctx.Done())
+	}()
 	return nil
+}
+
+func (e *electionComponent) close() {
+	e.closeOnce.Do(func() {
+		if e.beaconDone != nil {
+			<-e.beaconDone
+		}
+		if e.ownedDiscovery != nil {
+			e.ownedDiscovery.Close()
+		}
+	})
 }
 
 // selfAnnouncement describes this instance's current election standing
@@ -148,12 +169,10 @@ func (e *electionComponent) isElectedOrchestrator() bool {
 	return discovery.IsElectedOrchestrator(self, e.discovery.Snapshot())
 }
 
-func (e *electionComponent) discoverySyncLoop(publish func()) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		e.syncDiscoveredPeers(publish)
-	}
+func (e *electionComponent) discoverySyncLoop(ctx context.Context, publish func()) {
+	background.RunEvery(ctx, 2*time.Second, func(ctx context.Context) {
+		e.syncDiscoveredPeersContext(ctx, publish)
+	})
 }
 
 func shouldProbeDiscoveredNode(peer discovery.Peer, orchestratorID string) bool {
@@ -161,6 +180,10 @@ func shouldProbeDiscoveredNode(peer discovery.Peer, orchestratorID string) bool 
 }
 
 func (e *electionComponent) syncDiscoveredPeers(publish func()) {
+	e.syncDiscoveredPeersContext(context.Background(), publish)
+}
+
+func (e *electionComponent) syncDiscoveredPeersContext(ctx context.Context, publish func()) {
 	if !e.isElectedOrchestrator() {
 		return
 	}
@@ -205,7 +228,7 @@ func (e *electionComponent) syncDiscoveredPeers(publish func()) {
 		probes.Add(1)
 		go func(peer discovery.Peer) {
 			defer probes.Done()
-			status, err := e.statusProbe.discoveredNodeStatus(peer.PeerAddr)
+			status, err := e.statusProbe.discoveredNodeStatusContext(ctx, peer.PeerAddr)
 			if err != nil {
 				logging.Errorf("orchestrator", "orchestrator: secure status probe for paired node %s failed: %v", peer.ID, err)
 				return

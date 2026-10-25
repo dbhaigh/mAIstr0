@@ -4,25 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/maistr0/maistr0/internal/logging"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/version"
 )
 
-func (s *Server) healthSweepLoop() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
+func (s *Server) healthSweepLoop(ctx context.Context) {
+	background.RunEvery(ctx, 5*time.Second, func(ctx context.Context) {
 		if !s.isElectedOrchestrator() {
-			continue
+			return
 		}
 		for _, node := range s.registry.All() {
 			if node.Healthy && time.Since(node.LastSeen) > 30*time.Second {
@@ -31,12 +32,12 @@ func (s *Server) healthSweepLoop() {
 			}
 		}
 		if s.shards != nil {
-			if err := s.shards.CheckHealth(context.Background()); err != nil {
+			if err := s.shards.CheckHealth(ctx); err != nil {
 				logging.Errorf("orchestrator", "orchestrator: shard group health check failed: %v", err)
 			}
 		}
 		s.publishSnapshot()
-	}
+	})
 }
 
 // clusterSnapshot is the payload pushed over /api/events; the GUI applies
@@ -98,7 +99,6 @@ func (s *Server) snapshot() clusterSnapshot {
 			break
 		}
 	}
-	s.electionPort().recordLeader(leaderID)
 	dispatch := s.dispatcher.snapshot()
 	snapshot := clusterSnapshot{
 		Nodes:                 nodes,
@@ -254,20 +254,30 @@ func (s *Server) dashboardPipelinePlans(nodes []cluster.NodeStatus) []dashboardP
 }
 
 func (s *Server) publishSnapshot() {
-	data, err := json.Marshal(s.snapshot())
-	if err != nil {
+	if !s.events.HasSubscribers() {
 		return
 	}
-	s.events.Broadcast(data)
+	s.snapshotPublisher().Request()
 }
 
-// broadcastLoop pushes cluster state to every connected dashboard on a
-// short interval so nodes coming online, load changes, and task progress
-// all show up in real time without the browser needing to poll.
-func (s *Server) broadcastLoop() {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		s.publishSnapshot()
-	}
+func (s *Server) snapshotPublisher() *hub.Publisher {
+	s.publisherOnce.Do(func() {
+		s.publisher = hub.NewPublisher(s.events, func(context.Context) ([]byte, error) {
+			return json.Marshal(s.snapshot())
+		})
+		s.background.Go(s.publisher.Run)
+	})
+	return s.publisher
+}
+
+func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
+	s.snapshotPublisher()
+	s.events.ServeHTTP(w, r)
+}
+
+func (s *Server) leaderLogLoop(ctx context.Context) {
+	background.RunEvery(ctx, time.Second, func(context.Context) {
+		leader, _ := s.registry.Leader()
+		s.electionPort().recordLeader(leader.ID)
+	})
 }

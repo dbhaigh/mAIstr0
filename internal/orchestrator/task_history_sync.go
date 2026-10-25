@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -18,9 +19,10 @@ import (
 
 const maxReplicatedTaskHistoryBytes int64 = config.DefaultSyncMaxBytes
 
-func (s *syncerComponent) taskHistorySyncLoop() {
+func (s *syncerComponent) taskHistorySyncLoop(ctx context.Context) {
 	var backoff syncinterval.Backoff
-	if syncinterval.WaitDebounced(
+	if syncinterval.WaitDebouncedContext(
+		ctx,
 		syncinterval.Jitter(3*time.Second),
 		syncinterval.DebounceInterval,
 		s.tasks.Changes(),
@@ -28,11 +30,12 @@ func (s *syncerComponent) taskHistorySyncLoop() {
 	) {
 		backoff.Reset()
 	}
-	for {
+	for ctx.Err() == nil {
 		changes := s.tasks.Changes()
 		if !s.shouldSync() {
 			backoff.Reset()
-			syncinterval.WaitDebounced(
+			syncinterval.WaitDebouncedContext(
+				ctx,
 				syncinterval.Jitter(5*time.Second),
 				syncinterval.DebounceInterval,
 				changes,
@@ -41,9 +44,10 @@ func (s *syncerComponent) taskHistorySyncLoop() {
 			continue
 		}
 		before := s.tasks.Watermarks()
-		s.syncTaskHistory()
+		s.syncTaskHistoryWithContext(ctx)
 		backoff.Observe(syncinterval.WatermarksAdvanced(before, s.tasks.Watermarks()))
-		if syncinterval.WaitDebounced(
+		if syncinterval.WaitDebouncedContext(
+			ctx,
 			syncinterval.Jitter(backoff.Current()),
 			syncinterval.DebounceInterval,
 			changes,
@@ -55,21 +59,25 @@ func (s *syncerComponent) taskHistorySyncLoop() {
 }
 
 func (s *syncerComponent) syncTaskHistory() {
-	if !s.shouldSync() {
+	s.syncTaskHistoryWithContext(context.Background())
+}
+
+func (s *syncerComponent) syncTaskHistoryWithContext(ctx context.Context) {
+	if ctx.Err() != nil || !s.shouldSync() {
 		return
 	}
 	if !s.syncing.CompareAndSwap(false, true) {
 		return
 	}
 	defer s.syncing.Store(false)
-	if !s.shouldSync() {
+	if ctx.Err() != nil || !s.shouldSync() {
 		return
 	}
 
 	nodes := s.registry.Active()
 	remoteSnapshots := make(map[string]taskSyncSnapshot)
 	for _, node := range nodes {
-		if !s.shouldSync() {
+		if ctx.Err() != nil || !s.shouldSync() {
 			return
 		}
 		if !node.Healthy || node.Address == "" {
@@ -81,7 +89,8 @@ func (s *syncerComponent) syncTaskHistory() {
 		}
 		requestID := syncLogRequestID(nil)
 		started := time.Now()
-		tasks, version, watermarks, err := fetchReplicatedTaskHistory(
+		tasks, version, watermarks, err := fetchReplicatedTaskHistoryWithContext(
+			ctx,
 			s.client,
 			strings.TrimRight(node.Address, "/")+"/tasks",
 			watermarks,
@@ -109,7 +118,7 @@ func (s *syncerComponent) syncTaskHistory() {
 	}
 
 	for _, node := range nodes {
-		if !s.shouldSync() {
+		if ctx.Err() != nil || !s.shouldSync() {
 			return
 		}
 		if !node.Healthy || node.Address == "" {
@@ -125,7 +134,8 @@ func (s *syncerComponent) syncTaskHistory() {
 		tasks := s.tasks.SnapshotForPeer(version, watermarks)
 		requestID := syncLogRequestID(nil)
 		started := time.Now()
-		err := postTaskHistoryPages(
+		err := postTaskHistoryPagesWithContext(
+			ctx,
 			s.client,
 			strings.TrimRight(node.Address, "/")+"/tasks/replica",
 			tasks,
@@ -150,11 +160,11 @@ func (s *syncerComponent) syncTaskHistory() {
 }
 
 func (s *syncerComponent) recoverTaskHistory() {
-	if !s.shouldSync() || len(s.registry.Active()) == 0 {
+	if s.runRecovery == nil || !s.shouldSync() || len(s.registry.Active()) == 0 {
 		return
 	}
 	s.recoveryOnce.Do(func() {
-		go s.syncTaskHistory()
+		s.runRecovery(s.syncTaskHistoryWithContext)
 	})
 }
 
@@ -166,11 +176,17 @@ type taskSyncSnapshot struct {
 func fetchReplicatedTaskHistory(client interface {
 	Do(*http.Request) (*http.Response, error)
 }, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
+	return fetchReplicatedTaskHistoryWithContext(context.Background(), client, endpoint, requestWatermarks, maxBytes)
+}
+
+func fetchReplicatedTaskHistoryWithContext(ctx context.Context, client interface {
+	Do(*http.Request) (*http.Response, error)
+}, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
 	tasks := make([]*taskmgr.Task, 0)
 	var cursor, upper map[string]uint64
 	var responseWatermarks map[string]uint64
 	for {
-		request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, 0, nil, err
 		}
@@ -244,6 +260,12 @@ func decodeReplicatedTaskHistory(resp *http.Response, maxBytes int64) ([]*taskmg
 func postTaskHistoryPages(client interface {
 	Do(*http.Request) (*http.Response, error)
 }, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64, peerVersion int) error {
+	return postTaskHistoryPagesWithContext(context.Background(), client, endpoint, tasks, watermarks, maxBytes, peerVersion)
+}
+
+func postTaskHistoryPagesWithContext(ctx context.Context, client interface {
+	Do(*http.Request) (*http.Response, error)
+}, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64, peerVersion int) error {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -263,7 +285,7 @@ func postTaskHistoryPages(client interface {
 		if err != nil {
 			return err
 		}
-		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return err
 		}

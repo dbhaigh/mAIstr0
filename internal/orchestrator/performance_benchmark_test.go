@@ -136,6 +136,7 @@ func newPerformanceOrchestrator(b *testing.B, worker *httptest.Server, capacity 
 		metrics: metrics, mem: memoryStore, mode: config.OrchestratorModeMinimal,
 	}
 	b.Cleanup(func() {
+		server.background.Stop()
 		server.dispatcher.close()
 		if err := server.tasks.Close(); err != nil {
 			b.Errorf("close benchmark task manager: %v", err)
@@ -268,7 +269,8 @@ func BenchmarkCompatAPIStreamingSimulated(b *testing.B) {
 	}
 }
 
-func BenchmarkSSEClusterSnapshot100Nodes(b *testing.B) {
+func newSnapshotBenchmarkServer(b *testing.B) *Server {
+	b.Helper()
 	silenceBenchmarkLogs(b)
 	server := newPerformanceOrchestrator(b, nil, 16)
 	for nodeIndex := range 100 {
@@ -297,13 +299,87 @@ func BenchmarkSSEClusterSnapshot100Nodes(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-	server.publishSnapshot()
+	return server
+}
 
+func BenchmarkBuildSnapshot(b *testing.B) {
+	server := newSnapshotBenchmarkServer(b)
 	b.ReportAllocs()
 	b.ReportMetric(100, "nodes/op")
 	b.ReportMetric(50, "tasks/op")
 	b.ResetTimer()
 	for range b.N {
-		server.publishSnapshot()
+		if _, err := json.Marshal(server.snapshot()); err != nil {
+			b.Fatal(err)
+		}
 	}
+}
+
+func BenchmarkPublishSnapshotRequests(b *testing.B) {
+	server := newSnapshotBenchmarkServer(b)
+	b.Run("NoSubscribers", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			server.publishSnapshot()
+		}
+	})
+	b.Run("SubscribedHandler", func(b *testing.B) {
+		stream := httptest.NewServer(server.events)
+		defer stream.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, stream.URL, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		response, err := stream.Client().Do(request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer response.Body.Close()
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			_, _ = io.Copy(io.Discard, response.Body)
+		}()
+		defer func() {
+			cancel()
+			_ = response.Body.Close()
+			<-drained
+		}()
+		deadline := time.Now().Add(time.Second)
+		for !server.events.HasSubscribers() {
+			if time.Now().After(deadline) {
+				b.Fatal("snapshot subscriber was not registered")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		handlerRequest := httptest.NewRequest(http.MethodPost, "/benchmark/snapshot", nil)
+		for _, fixture := range []struct {
+			name    string
+			publish func()
+		}{
+			{name: "SynchronousBuildBaseline", publish: func() {
+				data, err := json.Marshal(server.snapshot())
+				if err != nil {
+					b.Fatal(err)
+				}
+				server.events.Broadcast(data)
+			}},
+			{name: "QueuedPublisherRequest", publish: server.publishSnapshot},
+		} {
+			b.Run(fixture.name, func(b *testing.B) {
+				handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					fixture.publish()
+					w.WriteHeader(http.StatusNoContent)
+				})
+				response := httptest.NewRecorder()
+				b.ReportAllocs()
+				b.ResetTimer()
+				for range b.N {
+					handler.ServeHTTP(response, handlerRequest)
+				}
+			})
+		}
+	})
 }

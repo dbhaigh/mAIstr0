@@ -2,6 +2,7 @@ package peeridentity
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -13,29 +14,57 @@ import (
 // ServeDual dispatches TLS connections to secureHandler and plaintext
 // connections to localHandler on the same port.
 func ServeDual(addr string, localHandler, secureHandler http.Handler, tlsConfig *tls.Config) error {
-	raw, err := net.Listen("tcp", addr)
+	return ServeDualContext(context.Background(), addr, localHandler, secureHandler, tlsConfig)
+}
+
+// ServeDualContext closes both listeners and cancels requests when ctx ends.
+func ServeDualContext(ctx context.Context, addr string, localHandler, secureHandler http.Handler, tlsConfig *tls.Config) error {
+	raw, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
-	return ServeDualListener(raw, localHandler, secureHandler, tlsConfig)
+	return ServeDualListenerContext(ctx, raw, localHandler, secureHandler, tlsConfig)
 }
 
 // ServeDualListener serves plaintext loopback and mutual-TLS requests on an
 // already-bound listener.
 func ServeDualListener(raw net.Listener, localHandler, secureHandler http.Handler, tlsConfig *tls.Config) error {
+	return ServeDualListenerContext(context.Background(), raw, localHandler, secureHandler, tlsConfig)
+}
+
+func ServeDualListenerContext(ctx context.Context, raw net.Listener, localHandler, secureHandler http.Handler, tlsConfig *tls.Config) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	split := newSplitListener(raw)
-	go split.run()
+	splitDone := make(chan struct{})
+	go func() {
+		defer close(splitDone)
+		split.run()
+	}()
 
 	plainServer := newHTTPServer(localHandler, nil)
 	secureServer := newHTTPServer(secureHandler, tlsConfig)
+	plainServer.BaseContext = func(net.Listener) context.Context { return ctx }
+	secureServer.BaseContext = plainServer.BaseContext
 	results := make(chan error, 2)
 	go func() { results <- plainServer.Serve(split.listener(false)) }()
 	go func() { results <- secureServer.Serve(tls.NewListener(split.listener(true), tlsConfig)) }()
 
-	err := <-results
+	var err error
+	remaining := 2
+	select {
+	case <-ctx.Done():
+	case err = <-results:
+		remaining--
+	}
+	cancel()
 	_ = split.Close()
 	_ = plainServer.Close()
 	_ = secureServer.Close()
+	for range remaining {
+		<-results
+	}
+	<-splitDone
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		return nil
 	}

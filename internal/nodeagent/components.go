@@ -6,11 +6,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/peeridentity"
@@ -88,6 +90,9 @@ type identityComponent struct {
 }
 
 type orchestratorLink struct {
+	background        background.Group
+	publisherOnce     sync.Once
+	publisher         *hub.Publisher
 	discoveryListener *discovery.Listener
 	peerClient        *http.Client
 	memorySyncClient  *http.Client
@@ -123,7 +128,7 @@ type orchestratorLink struct {
 	events         *hub.Hub
 	syncer         *syncerComponent
 	statusSnapshot func() statusResponse
-	currentTasks   func() []*taskmgr.Task
+	currentTasks   func(context.Context) ([]*taskmgr.Task, error)
 	heartbeat      *HeartbeatMonitor
 	// orchMu protects the current and co-located orchestrator identities and address; it is not nested with joinedMu or pairingInviteMu.
 	orchMu                sync.RWMutex
@@ -276,11 +281,11 @@ func newOrchestratorLink(
 ) *orchestratorLink {
 	cfg := state.configSnapshot()
 	link := &orchestratorLink{
-		peerClient: &http.Client{Timeout: 5 * time.Second},
-		memorySyncClient: &http.Client{
+		peerClient: httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ProbeTimeout}),
+		memorySyncClient: httpx.NewClient(httpx.ClientOptions{
 			Timeout: time.Duration(cfg.SyncTimeoutSeconds) * time.Second,
-		},
-		streamClient:     &http.Client{},
+		}),
+		streamClient:     httpx.NewClient(httpx.ClientOptions{}),
 		orchestratorAddr: cfg.OrchestratorAddr,
 		configState:      state,
 		trust:            trust,
@@ -322,7 +327,7 @@ func newPeerComponent(
 	workers int,
 ) *peerComponent {
 	component := &peerComponent{
-		dispatchClient: &http.Client{Timeout: 10 * time.Minute},
+		dispatchClient: httpx.NewClient(httpx.ClientOptions{Timeout: httpx.InferenceTimeout}),
 		peerHTTP:       peerHTTP,
 		state:          state,
 		telemetry:      telemetry,

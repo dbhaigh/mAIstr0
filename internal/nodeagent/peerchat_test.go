@@ -32,11 +32,6 @@ func newTestAgent(t *testing.T, id string) *Agent {
 	})
 	a.engines = []engine.Engine{engine.NewSimulated()}
 	a.detectedEngines = nil
-	t.Cleanup(func() {
-		if a.mem != nil {
-			_ = a.mem.Close()
-		}
-	})
 	return a
 }
 

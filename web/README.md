@@ -24,6 +24,9 @@ the browser does not load modules or require Node. The build emits stable
 content-hashed JS/CSS assets referenced by `static/index.html`. It also writes
 precompressed gzip and Brotli sidecars. The embedded handler negotiates those
 encodings, uses ETags, and applies immutable caching to hashed assets.
+The stable aliases remain supported compatibility URLs; dashboard tests execute
+the hashed script actually referenced by the page and verify that the JavaScript
+alias and its compressed sidecars match it.
 
 SSE snapshots are coalesced into animation frames and identical snapshots are
 skipped. Keyed list updates preserve stable DOM nodes; long task, memory, and
@@ -39,3 +42,9 @@ npm --prefix web run build
 node --test web/app_test.js
 go test ./web/...
 ```
+
+Commit regenerated assets whenever frontend source or styles change. Linux CI
+rebuilds with the locked dependency and rejects modified or untracked assets in
+`static/`, then both CI platforms run the dashboard tests.
+The build normalizes text assets to LF before hashing and compression so Windows
+checkout line endings do not change the embedded asset names or sidecars.

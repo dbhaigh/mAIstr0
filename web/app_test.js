@@ -6,7 +6,8 @@ const vm = require("node:vm");
 
 const indexSource = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
 const appScriptPaths = [...indexSource.matchAll(/<script\s+src="([^"]+)"\s*><\/script>/g)].map((match) => match[1]);
-const bundleSource = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8");
+const bundlePath = path.join(__dirname, "static", path.basename(appScriptPaths[0]));
+const bundleSource = fs.readFileSync(bundlePath, "utf8");
 const entrySource = fs.readFileSync(path.join(__dirname, "src", "entry.js"), "utf8");
 const moduleSources = [...entrySource.matchAll(/^import\s+"([^"]+)";$/gm)]
   .map((match) => fs.readFileSync(path.join(__dirname, "src", match[1]), "utf8"));
@@ -63,7 +64,34 @@ test("Dashboard loads its generated bundle through the Go embedded static path",
 });
 
 test("Dashboard bundle parses as a plain JavaScript browser script", () => {
-  assert.doesNotThrow(() => new vm.Script(bundleSource, { filename: "static/app.js" }));
+  assert.doesNotThrow(() => new vm.Script(bundleSource, { filename: bundlePath }));
+});
+
+test("Dashboard compatibility alias and compressed assets match the deployed bundle", () => {
+  const zlib = require("node:zlib");
+  assert.equal(fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8"), bundleSource);
+  for (const filename of [bundlePath, path.join(__dirname, "static", "app.js")]) {
+    assert.equal(zlib.gunzipSync(fs.readFileSync(`${filename}.gz`)).toString("utf8"), bundleSource);
+    assert.equal(zlib.brotliDecompressSync(fs.readFileSync(`${filename}.br`)).toString("utf8"), bundleSource);
+  }
+});
+
+test("Dashboard hashed assets and compressed page match their embedded contents", () => {
+  const crypto = require("node:crypto");
+  const zlib = require("node:zlib");
+  const stylePath = indexSource.match(/href="(\/style\.[a-f0-9]{12}\.css)"/)[1];
+  for (const assetPath of [appScriptPaths[0], stylePath, "/index.html"]) {
+    const filename = path.join(__dirname, "static", path.basename(assetPath));
+    const contents = fs.readFileSync(filename);
+    const hash = crypto.createHash("sha256").update(contents).digest("hex").slice(0, 12);
+    if (assetPath !== "/index.html") assert.ok(assetPath.includes(`.${hash}.`), assetPath);
+    assert.deepEqual(zlib.gunzipSync(fs.readFileSync(`${filename}.gz`)), contents);
+    assert.deepEqual(zlib.brotliDecompressSync(fs.readFileSync(`${filename}.br`)), contents);
+  }
+  assert.deepEqual(
+    fs.readFileSync(path.join(__dirname, "static", path.basename(stylePath))),
+    fs.readFileSync(path.join(__dirname, "static", "style.css")),
+  );
 });
 
 test("Shard dashboard renders group state, members, and escaped rationale", () => {

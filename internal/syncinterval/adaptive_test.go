@@ -1,6 +1,7 @@
 package syncinterval
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -88,11 +89,85 @@ func TestWaitDebouncedRefreshesSignalChannel(t *testing.T) {
 		if !changed {
 			t.Fatal("debounced wait returned for the heartbeat")
 		}
+
 		if elapsed := time.Since(started); elapsed < 50*time.Millisecond {
 			t.Fatalf("debounced wait returned too soon after a second signal: %s", elapsed)
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("debounced wait did not finish after changes settled")
+	}
+}
+
+func TestWaitDebouncedContextCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		preCancel bool
+		change    bool
+	}{
+		{name: "already cancelled", preCancel: true},
+		{name: "heartbeat"},
+		{name: "debounce", change: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var signal Signal
+			changes := signal.Changes()
+			refreshed := make(chan struct{})
+			if test.change {
+				signal.Notify()
+			}
+			if test.preCancel {
+				cancel()
+			}
+			done := make(chan bool, 1)
+			go func() {
+				done <- WaitDebouncedContext(ctx, time.Hour, time.Hour, changes, func() <-chan struct{} {
+					close(refreshed)
+					return signal.Changes()
+				})
+			}()
+			if test.change {
+				select {
+				case <-refreshed:
+				case <-time.After(time.Second):
+					t.Fatal("wait did not start debouncing the change")
+				}
+			}
+			cancel()
+			select {
+			case changed := <-done:
+				if changed {
+					t.Fatal("cancelled wait reported a change")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancelled wait did not stop promptly")
+			}
+		})
+	}
+}
+
+func TestWaitDebouncedContextHeartbeatAndChange(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change bool
+	}{
+		{name: "heartbeat"},
+		{name: "change", change: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changes := make(chan struct{}, 1)
+			if test.change {
+				changes <- struct{}{}
+			}
+			interval := time.Duration(0)
+			if test.change {
+				interval = time.Hour
+			}
+			if got := WaitDebouncedContext(context.Background(), interval, 0, changes, nil); got != test.change {
+				t.Fatalf("WaitDebouncedContext() = %v, want %v", got, test.change)
+			}
+		})
 	}
 }
 

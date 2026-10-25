@@ -12,10 +12,12 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/agent/deepseekadapter"
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
@@ -32,6 +34,9 @@ import (
 )
 
 type Server struct {
+	background         background.Group
+	publisherOnce      sync.Once
+	publisher          *hub.Publisher
 	registry           *cluster.Registry
 	tasks              *taskmgr.Manager
 	nodeClient         *nodeClient
@@ -146,7 +151,7 @@ func newWithMemoryHarnessAndConcurrency(
 	if dispatchTimeout <= 0 {
 		dispatchTimeout = time.Duration(config.DefaultDispatchTimeoutSeconds) * time.Second
 	}
-	disp := &http.Client{Timeout: dispatchTimeout}
+	disp := httpx.NewClient(httpx.ClientOptions{Timeout: dispatchTimeout})
 	selfID := "orchestrator-" + discovery.OutboundIP()
 	pipelineDataPath := memoryPath
 	if pipelineDataPath == "" {
@@ -179,8 +184,8 @@ func newWithMemoryHarnessAndConcurrency(
 		return nil, fmt.Errorf("orchestrator: open task history: %w", err)
 	}
 	nodeClient := newNodeClientWithSyncTimeout(
-		&http.Client{Timeout: 10 * time.Second}, disp,
-		&http.Client{Timeout: discoveryRequestTimeout}, syncTimeout,
+		httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ControlTimeout}), disp,
+		httpx.NewClient(httpx.ClientOptions{Timeout: discoveryRequestTimeout}), syncTimeout,
 	)
 	dispatcher := newDispatcherComponent(reg, tasks, store, nodeClient.dispatcher, nodeClient, dispatchLimit, dispatchTimeout)
 	dispatcher.metrics = metrics
@@ -218,6 +223,7 @@ func newWithMemoryHarnessAndConcurrency(
 		routerIdleTimeout: time.Duration(config.DefaultRouterIdleStreamTimeoutSeconds) * time.Second,
 	}
 	srv.routerClients = newRouterClientLimiter(0, 0)
+	syncer.runRecovery = srv.background.Go
 	for _, model := range shardedModels {
 		model.Normalize()
 		srv.shardedModels[model.LogicalID] = model
@@ -268,6 +274,10 @@ func newWithMemoryHarnessAndConcurrency(
 }
 
 func (s *Server) Close() error {
+	s.background.Stop()
+	if s.election != nil {
+		s.election.close()
+	}
 	for _, task := range s.tasks.All() {
 		if task.Status == taskmgr.StatusPending || task.Status == taskmgr.StatusRunning || task.Status == taskmgr.StatusSynthesis {
 			if _, err := s.tasks.CancelChecked(task.ID); err != nil {
@@ -339,7 +349,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", s.handleNodeControl)
 	mux.HandleFunc("GET /api/discovery", s.handleDiscovery)
 	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", s.handlePairingInvite)
-	mux.HandleFunc("GET /api/events", s.events.ServeHTTP)
+	mux.HandleFunc("GET /api/events", s.serveEvents)
 	mux.HandleFunc("GET /api/router/requests", s.handleRouterEvents)
 	mux.HandleFunc("POST /api/pipelines/{model_id}/reshard", s.handlePipelineReshard)
 	mux.HandleFunc("POST /api/shards", s.handleCreateShardGroup)
@@ -422,6 +432,18 @@ func (s *Server) Mux() *http.ServeMux {
 
 // Run starts the health-sweep loop and the HTTP server. It blocks.
 func (s *Server) Run(listenAddr string) error {
+	defer func() {
+		s.background.Stop()
+		if s.election != nil {
+			s.election.close()
+		}
+	}()
+	return s.background.Run(func(ctx context.Context) error {
+		return s.run(ctx, listenAddr)
+	})
+}
+
+func (s *Server) run(ctx context.Context, listenAddr string) error {
 	if s.advertiseAddr == "" {
 		if err := s.SetAdvertiseAddress("https://" + discovery.OutboundIP() + portSuffix(listenAddr)); err != nil {
 			return fmt.Errorf("orchestrator: configure pairing address: %w", err)
@@ -431,17 +453,19 @@ func (s *Server) Run(listenAddr string) error {
 		return fmt.Errorf("orchestrator: initialize cluster identity: %w", err)
 	}
 	if s.shards != nil {
-		if err := s.shards.Recover(context.Background()); err != nil {
+		if err := s.shards.Recover(ctx); err != nil {
 			logging.Warnf("orchestrator", "some persisted shard groups could not be restored: %v", err)
 		}
 	}
-	go s.healthSweepLoop()
-	go s.broadcastLoop()
-	go s.syncer.taskHistorySyncLoop()
-	if err := s.electionPort().startBeacon(listenAddr); err != nil {
+	s.background.Go(s.healthSweepLoop)
+	s.background.Go(s.leaderLogLoop)
+	s.background.Go(s.syncer.taskHistorySyncLoop)
+	if err := s.electionPort().startBeacon(ctx, listenAddr); err != nil {
 		return fmt.Errorf("orchestrator: start cluster discovery: %w", err)
 	}
-	go s.electionPort().discoverySyncLoop(s.publishSnapshot)
+	s.background.Go(func(ctx context.Context) {
+		s.electionPort().discoverySyncLoop(ctx, s.publishSnapshot)
+	})
 	logging.Infof("orchestrator", "orchestrator listening on %s", listenAddr)
 	mux := s.fenceStateChangingRequests(s.Mux())
 	secure := requireElectedOrchestrator(s.isElectedOrchestrator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -461,7 +485,7 @@ func (s *Server) Run(listenAddr string) error {
 	withMiddleware := func(next http.Handler) http.Handler {
 		return selfupdate.Admission.Wrap(httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit))
 	}
-	return peeridentity.ServeDual(
+	return peeridentity.ServeDualContext(ctx,
 		listenAddr,
 		withMiddleware(loopback),
 		withMiddleware(secure),

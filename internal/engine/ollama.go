@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 // Ollama is an Engine implementation backed by a local Ollama server
@@ -23,9 +25,9 @@ type Ollama struct {
 func NewOllama(baseURL string) *Ollama {
 	return &Ollama{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		client:     &http.Client{Timeout: 3 * time.Second},
-		genClient:  &http.Client{Timeout: 10 * time.Minute},
-		pullClient: &http.Client{Timeout: time.Hour},
+		client:     httpx.NewClient(httpx.ClientOptions{Timeout: 3 * time.Second}),
+		genClient:  httpx.NewClient(httpx.ClientOptions{Timeout: httpx.InferenceTimeout}),
+		pullClient: httpx.NewClient(httpx.ClientOptions{Timeout: httpx.DownloadTimeout}),
 	}
 }
 

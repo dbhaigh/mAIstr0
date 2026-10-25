@@ -191,7 +191,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		managedEngines:      managedEngines,
 	}
 	link.statusSnapshot = a.status
-	link.currentTasks = peers.currentTasks
+	link.currentTasks = peers.currentTasksContext
 	if store, err := memory.Open(cfg.MemoryPath, cfg.NodeID); err != nil {
 		logging.Errorf("nodeagent", "nodeagent: memory unavailable, running stateless: %v", err)
 	} else {
@@ -217,6 +217,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 
 // Close flushes and releases the persistent task and memory stores.
 func (a *Agent) Close() error {
+	a.orchestratorLink.background.Stop()
 	var closeErr error
 	if a.orchestratorLink.tasks != nil {
 		for _, task := range a.orchestratorLink.tasks.All() {
@@ -259,13 +260,13 @@ func (a *Agent) InitializeIdentity() error {
 		if err != nil {
 			return err
 		}
-		a.peerClient = &http.Client{Timeout: 5 * time.Second, Transport: transport}
-		a.memorySyncClient = &http.Client{
+		a.peerClient = httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ProbeTimeout, Transport: transport})
+		a.memorySyncClient = httpx.NewClient(httpx.ClientOptions{
 			Timeout:   time.Duration(a.cfg.SyncTimeoutSeconds) * time.Second,
 			Transport: transport,
-		}
-		a.dispatchClient = &http.Client{Timeout: 10 * time.Minute, Transport: transport}
-		a.streamClient = &http.Client{Transport: transport}
+		})
+		a.dispatchClient = httpx.NewClient(httpx.ClientOptions{Timeout: httpx.InferenceTimeout, Transport: transport})
+		a.streamClient = httpx.NewClient(httpx.ClientOptions{Transport: transport})
 	}
 	a.rpcRelayMu.Lock()
 	defer a.rpcRelayMu.Unlock()

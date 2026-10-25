@@ -46,15 +46,15 @@ type nodeClientAPI interface {
 func newNodeClient(client, dispatcher, status *http.Client) *nodeClient {
 	return &nodeClient{
 		client: clientWithRequestID(client), dispatcher: clientWithRequestID(dispatcher),
-		status: clientWithRequestID(status), managed: clientWithRequestID(&http.Client{Timeout: 2 * time.Minute}),
-		modelPull: clientWithRequestID(&http.Client{Timeout: time.Hour}),
-		sync:      clientWithRequestID(&http.Client{Timeout: 10 * time.Minute}),
+		status: clientWithRequestID(status), managed: clientWithRequestID(httpx.NewClient(httpx.ClientOptions{Timeout: 2 * time.Minute})),
+		modelPull: clientWithRequestID(httpx.NewClient(httpx.ClientOptions{Timeout: httpx.DownloadTimeout})),
+		sync:      clientWithRequestID(httpx.NewClient(httpx.ClientOptions{Timeout: httpx.InferenceTimeout})),
 	}
 }
 
 func newNodeClientWithSyncTimeout(client, dispatcher, status *http.Client, timeout time.Duration) *nodeClient {
 	node := newNodeClient(client, dispatcher, status)
-	node.sync = clientWithRequestID(&http.Client{Timeout: timeout})
+	node.sync = clientWithRequestID(httpx.NewClient(httpx.ClientOptions{Timeout: timeout}))
 	return node
 }
 
@@ -77,7 +77,7 @@ func (t *requestIDTransport) RoundTrip(request *http.Request) (*http.Response, e
 
 func clientWithRequestID(client *http.Client) *http.Client {
 	if client == nil {
-		client = &http.Client{}
+		client = httpx.NewClient(httpx.ClientOptions{})
 	}
 	clone := *client
 	if _, alreadyWrapped := clone.Transport.(*requestIDTransport); !alreadyWrapped {

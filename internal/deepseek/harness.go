@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
@@ -45,7 +46,7 @@ func New(registry *cluster.Registry, dispatcher *http.Client) *Harness {
 
 func newWithStyle(registry *cluster.Registry, dispatcher *http.Client, style string) *Harness {
 	if dispatcher == nil {
-		dispatcher = &http.Client{Timeout: 10 * time.Minute}
+		dispatcher = httpx.NewClient(httpx.ClientOptions{Timeout: httpx.InferenceTimeout})
 	}
 	h := &Harness{
 		registry:   registry,

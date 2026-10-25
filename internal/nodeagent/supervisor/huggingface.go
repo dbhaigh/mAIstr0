@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 // RecommendedGGUF lists public, single-file text models supported by llama.cpp.
@@ -56,7 +58,7 @@ func (m *Manager) DownloadHeadModel(ctx context.Context, id string, requestedCon
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()
-	client := &http.Client{Timeout: time.Hour, CheckRedirect: approvedHFRedirect}
+	client := httpx.NewClient(httpx.ClientOptions{Timeout: httpx.DownloadTimeout, CheckRedirect: approvedHFRedirect})
 	return downloadRecommendedGGUF(ctx, client, "https://huggingface.co", filepath.Join(root, "models"), *selected, requestedContext)
 }
 

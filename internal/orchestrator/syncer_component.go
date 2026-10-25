@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,7 @@ import (
 )
 
 type syncerAPI interface {
-	taskHistorySyncLoop()
+	taskHistorySyncLoop(context.Context)
 	syncTaskHistory()
 	recoverTaskHistory()
 	mergeMemorySnapshot(memory.Snapshot, string) error
@@ -28,6 +29,8 @@ type syncerComponent struct {
 	client   taskHistoryClient
 	memory   memory.Store
 	isLeader func() bool
+	// runRecovery is bound to the root lifecycle before the component is published.
+	runRecovery func(func(context.Context))
 
 	// syncing prevents overlapping history passes without holding a lock during peer I/O.
 	syncing atomic.Bool
@@ -36,11 +39,15 @@ type syncerComponent struct {
 	maxBytes     int64
 }
 
-func newSyncerComponent(registry *cluster.Registry, tasks *taskmgr.Manager, client taskHistoryClient, store memory.Store, isLeader func() bool) *syncerComponent {
-	return &syncerComponent{
+func newSyncerComponent(registry *cluster.Registry, tasks *taskmgr.Manager, client taskHistoryClient, store memory.Store, isLeader func() bool, recoveryRunner ...func(func(context.Context))) *syncerComponent {
+	syncer := &syncerComponent{
 		registry: registry, tasks: tasks, client: client, memory: store,
 		isLeader: isLeader, maxBytes: maxReplicatedTaskHistoryBytes,
 	}
+	if len(recoveryRunner) != 0 {
+		syncer.runRecovery = recoveryRunner[0]
+	}
+	return syncer
 }
 
 func (s *syncerComponent) shouldSync() bool {

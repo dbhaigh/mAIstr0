@@ -52,6 +52,59 @@ for the supported Linux gate. Ubuntu 24.04 WSL has also had an intermittent
 node-agent test failure without a race report; use the Linux CI result to
 separate an environment flake from a race finding.
 
+For a user-local WSL installation, run the Linux toolchain rather than the
+Windows executable inherited through `PATH`. The local validation environment
+uses checksum-verified Go 1.27.3 at `~/.local/go1.27.3/bin/go`, without changing
+system packages or shell profiles. From the repository root in PowerShell:
+
+```powershell
+wsl.exe -d Ubuntu --cd "$((Get-Location).Path)" -- bash -lc '~/.local/go1.27.3/bin/go test -race ./...'
+```
+
+Substitute your installation path or set the Linux `PATH` to your installation.
+Native Windows currently also fails before race tests start when its cgo tool
+cannot build; this is not a passing race check.
+
+## Background work and performance feedback
+
+The orchestrator and node own background work through `internal/background.Group`.
+Start workers with `Go`, pass their context through waits and network requests,
+and call `Stop` before closing stores or engines. `Stop` cancels and joins the
+workers; it must not be called from one of those workers. Periodic callbacks run
+serially through `RunEvery`; adaptive sync keeps its watermark-aware debounce
+using `syncinterval.WaitDebouncedContext`. Legacy hardware/engine probe interfaces
+still finish under their own bounds while shutdown waits for their worker.
+
+`hub.Publisher.Request` is nonblocking and coalesces snapshot requests. Builders
+run serially, only with subscribers; byte-identical payloads are suppressed.
+Subscriber generations ensure a new client receives the current state even when
+it has not changed. Full queues prevent deduplication from permanently suppressing
+the final state of a slow client.
+
+Profile uncached package timings before optimizing test waits:
+
+```sh
+go test -json -count=1 ./internal/nodeagent ./internal/orchestrator > test-timings.json
+```
+
+Fixture isolation removed default-database contention, optional host inventory
+probes, and non-loopback placeholder network waits without dropping assertions.
+Measured on the same Windows host, node-agent time fell from 77.391s to 4.379s
+(94.3%) and orchestrator time from 64.247s to 17.328s (73.0%). These are measured
+samples, not portable timing thresholds; real process integration coverage remains.
+
+Benchmark actual snapshot construction separately from the idle/queued fast path:
+
+```sh
+go test -run '^$' -bench 'BenchmarkBuildSnapshot|BenchmarkPublishSnapshotRequests|BenchmarkPublisherRequest' -benchmem ./internal/orchestrator ./internal/hub
+```
+
+The [scheduled benchmark workflow](../.github/workflows/benchmarks.yml) runs weekly
+and manually. It records five samples with fixed `GOMAXPROCS`, environment metadata,
+JSON events, and benchstat-compatible text as 90-day artifacts. Compare like-for-like
+runner/toolchain samples before claiming a regression or speedup; the workflow does
+not automatically fail on timing variance.
+
 ## Contracts and fixtures
 
 Check generated contract fixtures with:
@@ -111,8 +164,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
 
 ### Rapid iteration releases
 
-The source release number is now `0.0.24.1`. Increment the fourth numeric
-component for rapid iterations (`0.0.24.2`, ..., `0.0.24.10`); use the next
+The source release number is now `0.0.24.2`. Increment the fourth numeric
+component for rapid iterations (`0.0.24.3`, ..., `0.0.24.10`); use the next
 third component for a new patch series. This is a numeric four-component
 release convention, not SemVer. Peer manifests accept both three and four
 components and compare components numerically, with an omitted fourth

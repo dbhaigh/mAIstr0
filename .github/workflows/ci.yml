@@ -23,6 +23,14 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - name: Check dashboard bundle drift
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+          git diff --exit-code -- web/static
+          test -z "$(git ls-files --others --exclude-standard -- web/static)"
       - name: Check contract drift
         shell: bash
         run: |

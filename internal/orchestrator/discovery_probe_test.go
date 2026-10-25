@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +30,7 @@ type roleSwitchStatusProbe struct {
 	err       error
 }
 
-func (p *roleSwitchStatusProbe) discoveredNodeStatus(address string) (cluster.NodeStatus, error) {
+func (p *roleSwitchStatusProbe) discoveredNodeStatusContext(_ context.Context, address string) (cluster.NodeStatus, error) {
 	p.addresses = append(p.addresses, address)
 	return p.status, p.err
 }

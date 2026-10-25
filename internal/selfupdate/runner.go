@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
@@ -53,7 +54,7 @@ func Run(ctx context.Context, source func() Source, idle func() bool, shutdown f
 					continue
 				}
 				transport := &http.Transport{TLSClientConfig: current.Identity.PinnedClientTLSConfig(peer.ID)}
-				client := &http.Client{Transport: transport}
+				client := httpx.NewClient(httpx.ClientOptions{Transport: transport})
 				offeredCertificate := current.Identity.TrustedPeers()[peer.ID]
 				path, offered, downloadErr := Download(ctx, client, peer.Address, distribution.Executable)
 				transport.CloseIdleConnections()

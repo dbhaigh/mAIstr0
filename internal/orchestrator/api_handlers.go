@@ -284,10 +284,10 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 		outbound.Header.Set(httpx.RequestIDHeader, requestID)
 		outbound.Header.Set(inferroute.HeaderRequestID, requestID)
 	}
-	client := &http.Client{
+	client := httpx.NewClient(httpx.ClientOptions{
 		Timeout:   discoveryRequestTimeout,
 		Transport: s.identity.BootstrapTransportForID(nodeID),
-	}
+	})
 	response, err := client.Do(outbound)
 	if err != nil {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("could not reach discovered node: %w", err)))

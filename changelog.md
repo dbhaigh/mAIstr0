@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+## 0.0.24.2
+
+Released: 2026-10-25.
+
+### Performance
+
+- Nodes and orchestrators skip building dashboard snapshots when nobody is
+  subscribed to `/api/events`. Shared publishers coalesce bursts away from
+  request handlers and suppress byte-identical frames; newly connected
+  subscribers still receive current state. SSE payloads and framing are unchanged.
+- Reuse named HTTP timeout profiles and connection pools while retaining
+  certificate pinning, redirect policies, custom timeouts, and streaming
+  cancellation.
+
+### Reliability
+
+- Cancel and join background publishing, health, registration, discovery,
+  telemetry, inventory, and adaptive synchronization work before closing shared
+  stores. Owned HTTP listeners and active upstream SSE requests stop with their
+  service.
+- Bound peer task-list reads by the existing configured sync limit, check HTTP
+  errors, and cancel in-flight reads when snapshot publishing stops.
+- Split supervisor and shard planning/lifecycle responsibilities into focused
+  files without changing configuration, API, or storage formats.
+- Publish a shard health teardown's failed state and release its operation
+  claim together after the persistence attempt, so an immediate replacement
+  cannot observe `failed` and then receive a transient model-exists conflict.
+
+### Development
+
+- Isolate agent and orchestrator test fixtures from host engine/hardware
+  probing and join background work during cleanup. Preserve existing tests
+  while reducing local package runtimes.
+- Add weekly/manual snapshot, scheduler, and sync-paging benchmarks with
+  repeatable samples and environment metadata.
+- Check generated dashboard assets for drift in Linux CI. Normalize generated
+  asset line endings so Windows and Linux builds produce identical content
+  hashes and gzip/Brotli sidecars.
+- Refresh the engineering assessment and document local Ubuntu WSL race
+  validation with Go 1.27.3.
+
 ## 0.0.24.1
 
 ### Versioning

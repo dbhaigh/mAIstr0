@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -114,8 +115,8 @@ func decodeTaskSync(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]*
 	return tasks, nil
 }
 
-func (a *Agent) taskHistorySyncLoop() {
-	a.orchestratorLink.syncer.taskHistorySyncLoop()
+func (a *Agent) taskHistorySyncLoop(ctx context.Context) {
+	a.orchestratorLink.syncer.taskHistorySyncLoop(ctx)
 }
 
 func (a *Agent) syncPeerTaskHistory() {
@@ -130,10 +131,16 @@ type taskSyncSnapshot struct {
 func fetchTaskSnapshot(client interface {
 	Do(*http.Request) (*http.Response, error)
 }, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
+	return fetchTaskSnapshotWithContext(context.Background(), client, endpoint, requestWatermarks, maxBytes)
+}
+
+func fetchTaskSnapshotWithContext(ctx context.Context, client interface {
+	Do(*http.Request) (*http.Response, error)
+}, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
 	tasks := make([]*taskmgr.Task, 0)
 	var cursor, upper map[string]uint64
 	for {
-		request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, 0, nil, err
 		}
@@ -206,6 +213,12 @@ func decodeTaskSnapshot(resp *http.Response, maxBytes int64) ([]*taskmgr.Task, i
 func postTaskSnapshotPages(client interface {
 	Do(*http.Request) (*http.Response, error)
 }, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64, peerVersion int) error {
+	return postTaskSnapshotPagesWithContext(context.Background(), client, endpoint, tasks, watermarks, maxBytes, peerVersion)
+}
+
+func postTaskSnapshotPagesWithContext(ctx context.Context, client interface {
+	Do(*http.Request) (*http.Response, error)
+}, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64, peerVersion int) error {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -225,7 +238,7 @@ func postTaskSnapshotPages(client interface {
 		if err != nil {
 			return err
 		}
-		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return err
 		}

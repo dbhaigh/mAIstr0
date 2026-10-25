@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -196,6 +197,10 @@ type memorySyncHTTPClient interface {
 }
 
 func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, watermarks map[string]uint64, maxBytes int64) (memory.Snapshot, int64, int, error) {
+	return fetchMemorySyncSnapshotWithContext(context.Background(), client, endpoint, watermarks, maxBytes)
+}
+
+func fetchMemorySyncSnapshotWithContext(ctx context.Context, client memorySyncHTTPClient, endpoint string, watermarks map[string]uint64, maxBytes int64) (memory.Snapshot, int64, int, error) {
 	result := memory.Snapshot{
 		Experiences:  make([]memory.Experience, 0),
 		Facts:        make([]memory.Fact, 0),
@@ -206,7 +211,7 @@ func fetchMemorySyncSnapshot(client memorySyncHTTPClient, endpoint string, water
 	var totalBytes int64
 	var lastStatus int
 	for {
-		request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
@@ -308,13 +313,17 @@ func marshalMemorySnapshotPages(snapshot memory.Snapshot, maxBytes int64, wrap f
 }
 
 func postMemorySnapshotPages(client memorySyncHTTPClient, endpoint string, bodies [][]byte, watermarks map[string]uint64, peerVersion int) (int64, error) {
+	return postMemorySnapshotPagesWithContext(context.Background(), client, endpoint, bodies, watermarks, peerVersion)
+}
+
+func postMemorySnapshotPagesWithContext(ctx context.Context, client memorySyncHTTPClient, endpoint string, bodies [][]byte, watermarks map[string]uint64, peerVersion int) (int64, error) {
 	var totalBytes int64
 	for _, body := range bodies {
 		body, compressed, err := memory.EncodeSyncBody(body, peerVersion, true)
 		if err != nil {
 			return totalBytes, err
 		}
-		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return totalBytes, err
 		}
@@ -393,8 +402,8 @@ func memorySyncWatermarks(store memory.Store) map[string]uint64 {
 	return store.Watermarks()
 }
 
-func (a *Agent) syncPeerMemoryLoop() {
-	a.orchestratorLink.syncer.syncPeerMemoryLoop()
+func (a *Agent) syncPeerMemoryLoop(ctx context.Context) {
+	a.orchestratorLink.syncer.syncPeerMemoryLoop(ctx)
 }
 
 // syncPeerMemory makes the elected node a relay for memory in standalone

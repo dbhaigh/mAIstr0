@@ -18,7 +18,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 const (
@@ -62,15 +63,15 @@ func workerRepository(source string) (string, error) {
 }
 
 func workerHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Minute,
+	return httpx.NewClient(httpx.ClientOptions{
+		Timeout: httpx.InferenceTimeout,
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many worker download redirects")
 			}
 			return validateWorkerURL(r.URL)
 		},
-	}
+	})
 }
 
 func validateWorkerURL(u *url.URL) error {

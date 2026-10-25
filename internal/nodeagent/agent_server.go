@@ -20,6 +20,11 @@ import (
 // Run starts the node's HTTP server and its background registration loop
 // with the orchestrator. It blocks until the server stops.
 func (a *Agent) Run() error {
+	defer a.orchestratorLink.background.Stop()
+	return a.orchestratorLink.background.Run(a.run)
+}
+
+func (a *Agent) run(ctx context.Context) error {
 	if err := a.InitializeIdentity(); err != nil {
 		return fmt.Errorf("nodeagent: initialize cluster identity: %w", err)
 	}
@@ -162,44 +167,45 @@ func (a *Agent) Run() error {
 	if cfg.DiscoveryEnabled {
 		if a.discoveryListener == nil {
 			a.discoveryListener = discovery.Listen(cfg.NodeID)
+			defer a.discoveryListener.Close()
 		}
 		// Announce continuously: before joining this is how the cluster finds
 		// us, and after joining it keeps us visible in every LAN panel.
-		go discovery.Beacon(func() discovery.Announcement {
-			if a.orchestratorLink.localOrchestratorIDValue() == cfg.NodeID {
-				return discovery.Announcement{}
-			}
-			orchestratorID := ""
-			if a.isJoined() {
-				orchestratorID = a.getOrchestratorID()
-			}
-			role := "node"
-			peerAddr := a.configSnapshot().AdvertiseAddr
-			if candidateAddr := a.orchestratorLink.electionCandidateAddrValue(); candidateAddr != "" {
-				role = "candidate"
-				peerAddr = candidateAddr
-			}
-			return discovery.Announcement{
-				Role: role, ID: cfg.NodeID,
-				HTTPAddr:       "http://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr),
-				PeerAddr:       peerAddr,
-				Score:          cluster.SelfScore(a.hardwareSnapshot()),
-				OrchestratorID: orchestratorID,
-			}
-		}, 5*time.Second, nil)
+		a.orchestratorLink.background.Go(func(ctx context.Context) {
+			discovery.Beacon(func() discovery.Announcement {
+				if a.orchestratorLink.localOrchestratorIDValue() == cfg.NodeID {
+					return discovery.Announcement{}
+				}
+				orchestratorID := ""
+				if a.isJoined() {
+					orchestratorID = a.getOrchestratorID()
+				}
+				role := "node"
+				peerAddr := a.configSnapshot().AdvertiseAddr
+				if candidateAddr := a.orchestratorLink.electionCandidateAddrValue(); candidateAddr != "" {
+					role = "candidate"
+					peerAddr = candidateAddr
+				}
+				return discovery.Announcement{
+					Role: role, ID: cfg.NodeID,
+					HTTPAddr:       "http://" + discovery.OutboundIP() + portSuffix(cfg.ListenAddr),
+					PeerAddr:       peerAddr,
+					Score:          cluster.SelfScore(a.hardwareSnapshot()),
+					OrchestratorID: orchestratorID,
+				}
+			}, 5*time.Second, ctx.Done())
+		})
 	}
-	go a.telemetryComponent.hardwareUsageLoop()
-	go a.orchestratorLink.resolveOrchestratorAndRegister()
-	go a.engineComponent.modelRefreshLoop()
-	go a.orchestratorLink.peerPollLoop()
-	go a.orchestratorLink.sseSubscribeLoop()
-	go a.taskHistorySyncLoop()
-	go a.syncPeerMemoryLoop()
-	go a.orchestratorLink.broadcastLoop()
-	go a.syncMemoryToOrchestrator()
-	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
-	defer stopHeartbeat()
-	go a.orchestratorLink.heartbeat.Run(heartbeatCtx)
+	a.orchestratorLink.background.Go(a.telemetryComponent.hardwareUsageLoopContext)
+	a.orchestratorLink.background.Go(a.orchestratorLink.resolveOrchestratorAndRegister)
+	a.orchestratorLink.background.Go(a.engineComponent.modelRefreshLoopContext)
+	a.orchestratorLink.background.Go(a.orchestratorLink.peerPollLoop)
+	a.orchestratorLink.background.Go(a.orchestratorLink.sseSubscribeLoop)
+	a.orchestratorLink.background.Go(a.orchestratorLink.syncer.taskHistorySyncLoop)
+	a.orchestratorLink.background.Go(a.orchestratorLink.syncer.syncPeerMemoryLoop)
+	a.orchestratorLink.background.Go(a.orchestratorLink.broadcastLoop)
+	a.orchestratorLink.background.Go(a.syncMemoryToOrchestratorContext)
+	a.orchestratorLink.background.Go(a.orchestratorLink.heartbeat.Run)
 
 	cfg = a.configSnapshot()
 	logging.Infof("nodeagent", "node agent %q listening on %s (advertised as %s)", cfg.NodeID, cfg.ListenAddr, cfg.AdvertiseAddr)
@@ -218,7 +224,7 @@ func (a *Agent) Run() error {
 	withMiddleware := func(next http.Handler) http.Handler {
 		return selfupdate.Admission.Wrap(httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit))
 	}
-	return peeridentity.ServeDual(
+	return peeridentity.ServeDualContext(ctx,
 		cfg.ListenAddr,
 		withMiddleware(peeridentity.LoopbackOnly(mux)),
 		withMiddleware(secureHandler),

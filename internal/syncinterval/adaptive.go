@@ -1,6 +1,7 @@
 package syncinterval
 
 import (
+	"context"
 	"math/rand"
 	"sync"
 	"time"
@@ -64,10 +65,24 @@ func Wait(interval time.Duration, changes <-chan struct{}) bool {
 // WaitDebounced waits for a change signal to remain quiet for debounce, or
 // returns false when the heartbeat interval expires without a change.
 func WaitDebounced(interval, debounce time.Duration, changes <-chan struct{}, refresh func() <-chan struct{}) bool {
+	return WaitDebouncedContext(context.Background(), interval, debounce, changes, refresh)
+}
+
+// WaitDebouncedContext is WaitDebounced with cancellation. Cancellation returns
+// false; callers can inspect ctx.Err() to distinguish it from a heartbeat.
+func WaitDebouncedContext(ctx context.Context, interval, debounce time.Duration, changes <-chan struct{}, refresh func() <-chan struct{}) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	heartbeat := time.NewTimer(interval)
 	defer heartbeat.Stop()
 	var heartbeatC <-chan time.Time = heartbeat.C
 	var debounceTimer *time.Timer
+	defer func() {
+		if debounceTimer != nil {
+			debounceTimer.Stop()
+		}
+	}()
 	currentChanges := changes
 
 	for {
@@ -76,6 +91,8 @@ func WaitDebounced(interval, debounce time.Duration, changes <-chan struct{}, re
 			debounceC = debounceTimer.C
 		}
 		select {
+		case <-ctx.Done():
+			return false
 		case <-currentChanges:
 			if refresh != nil {
 				currentChanges = refresh()
