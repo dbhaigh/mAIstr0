@@ -62,7 +62,11 @@ func loadWorkerInstallation(root string) (*workerInstallation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve installed worker: %w", err)
 	}
-	relative, err := filepath.Rel(root, resolved)
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve installed worker directory: %w", err)
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolved)
 	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return nil, errors.New("installed worker is outside the approved directory")
 	}

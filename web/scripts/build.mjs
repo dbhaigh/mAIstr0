@@ -57,7 +57,9 @@ for (const name of await readdir(staticDir)) {
     asset = Buffer.from(asset.toString("utf8").replace(/\r\n/g, "\n"));
     await writeFile(path.join(staticDir, name), asset);
   }
-  await writeFile(path.join(staticDir, `${name}.gz`), gzipSync(asset, { level: 9 }));
+  const gzip = gzipSync(asset, { level: 9 });
+  gzip[9] = 255;
+  await writeFile(path.join(staticDir, `${name}.gz`), gzip);
   await writeFile(
     path.join(staticDir, `${name}.br`),
     brotliCompressSync(asset, {

@@ -136,9 +136,13 @@ func TestConfigureLocalHeadPersistsAndRespectsActiveEngines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resolvedModelPath, err := filepath.EvalSymlinks(modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var id string
 	for _, entry := range models.Models {
-		if entry.path == modelPath {
+		if entry.path == resolvedModelPath {
 			id = entry.ID
 		}
 	}
