@@ -25,6 +25,7 @@
   deprecated `Director` hook. It keeps the same forwarding headers.
 - `.goreleaser.yaml` uses `archives.ids` instead of the deprecated
   `archives.builds`.
+- CI runs govulncheck v1.9.0. v1.1.4 panics on Go 1.27 syntax.
 
 ## 0.0.24.3
 
