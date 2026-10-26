@@ -204,6 +204,14 @@ statistically significant time/op change (start 1.580→1.727 µs/op, p=0.315;
 restart 1.679→1.807 µs/op, p=0.105). These control operations are not a hot
 path, and the extraction adds no measured allocations.
 
+### Duplication scan follow-up
+
+The pinned `dupl` scan at threshold 80 found 27 clone groups before these
+follow-ups and 25 after. The removed groups were the compatibility streaming
+writer parser and managed start/restart handler sequence. The counting wrappers
+were not counted at this threshold; their extraction was justified by the
+identical implementations and characterization tests.
+
 ## Retained indirect uses and compatibility paths
 
 - `OpenAICompatibleProvider.Model` in
@@ -271,9 +279,20 @@ These are not claimed to be semantically impossible to consolidate:
 
 - Small session/shard bucket-enumeration and in-memory copy loops have different
   typed owners, buckets, and results. Generic storage plumbing is not warranted.
-- Similar local/remote model handlers, prefill/decode dispatch, and repeated
-  narrow dependency-interface shapes remain separate where their control flow
-  or ownership differs.
+- Local and remote model handlers remain separate because their control flow
+  differs. Node-local handlers in
+  [api_handlers_models.go](../internal/nodeagent/api_handlers_models.go) refresh
+  or rescan local engine inventory and apply enabled/default-model selection.
+  Orchestrator handlers in
+  [api_model_handlers.go](../internal/orchestrator/api_model_handlers.go)
+  aggregate cluster models and ready shard models; handlers in
+  [api_node_handlers.go](../internal/orchestrator/api_node_handlers.go) proxy a
+  selected node's model state and preserve its response status/body. OpenAI and
+  Ollama model endpoints also project that inventory into different wire
+  shapes. These data sources, side effects, response contracts, and error paths
+  are not identical, so a shared handler would not preserve equivalent flow.
+- Prefill/decode dispatch and repeated narrow dependency-interface shapes
+  remain separate where their ownership or lifecycle differs.
 - Memory cache loading and uncached experience queries resemble one another,
   but have different ownership and query-limit behavior.
 
