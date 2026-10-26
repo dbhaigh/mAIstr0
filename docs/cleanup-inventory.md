@@ -177,6 +177,18 @@ OpenAI 87→86, Ollama 51→50, and Anthropic 113→112; bytes/op fell by 1.15%,
 2.03%, and 0.70%, respectively. It found no statistically significant
 time/op change for any writer.
 
+### Memory-sync accounting wrappers
+
+The node-agent and orchestrator now use `syncio.CountingReadCloser` and
+`syncio.CountingResponseWriter` from one internal package. Characterization
+tests first verified that both copies counted observed bytes, propagated each
+write result, and retained the first write error.
+
+`BenchmarkMemorySyncCountingIO` ran with `-benchmem -count=10 -benchtime=200ms`
+on Windows/amd64, Go 1.27.3. Both reader and response-writer cases remained at
+0 B/op and 0 allocs/op. Benchstat found no significant time/op change
+(reader 2.881→2.894 ns/op, p=0.403; writer 2.120→2.127 ns/op, p=0.796).
+
 ## Retained indirect uses and compatibility paths
 
 - `OpenAICompatibleProvider.Model` in
@@ -242,9 +254,6 @@ time/op change for any writer.
 
 These are not claimed to be semantically impossible to consolidate:
 
-- Node/orchestrator counting reader/writer wrappers are identical small
-  instrumentation primitives. Moving them introduces another shared surface
-  without simplifying their caller-specific logging and error handling.
 - Small session/shard bucket-enumeration and in-memory copy loops have different
   typed owners, buckets, and results. Generic storage plumbing is not warranted.
 - Similar local/remote model handlers, managed-operation auth/decode sequences,

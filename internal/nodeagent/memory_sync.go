@@ -14,37 +14,12 @@ import (
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/syncio"
 )
 
 const (
 	maxMemorySyncBodyBytes int64 = config.DefaultSyncMaxBytes
 )
-
-type memorySyncCountingReader struct {
-	io.ReadCloser
-	bytesRead int64
-}
-
-func (r *memorySyncCountingReader) Read(p []byte) (int, error) {
-	n, err := r.ReadCloser.Read(p)
-	r.bytesRead += int64(n)
-	return n, err
-}
-
-type memorySyncCountingResponseWriter struct {
-	http.ResponseWriter
-	bytesWritten int64
-	writeErr     error
-}
-
-func (w *memorySyncCountingResponseWriter) Write(p []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(p)
-	w.bytesWritten += int64(n)
-	if err != nil && w.writeErr == nil {
-		w.writeErr = err
-	}
-	return n, err
-}
 
 func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 	peerID := taskSyncPeerID(r)
@@ -74,7 +49,7 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 	requestID := syncLogRequestID(r)
 	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_start %s peer_id=%s body_bytes=unknown",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "none"), peerID)
-	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
+	response := &syncio.CountingResponseWriter{ResponseWriter: w}
 	snapshot, err := memory.LoadSnapshotForPeer(a.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
 	if err != nil {
 		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s status=%d stage=snapshot error=%v",
@@ -117,13 +92,13 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	_, writeErr := memory.WriteSyncJSON(response, http.StatusOK, snapshot, peerVersion, memory.AcceptsSyncCompression(r))
-	response.writeErr = writeErr
+	response.WriteErr = writeErr
 	failureClass := "none"
-	if response.writeErr != nil {
+	if response.WriteErr != nil {
 		failureClass = "response_write"
 	}
 	logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_complete %s peer_id=%s status=%d body_bytes=%d elapsed=%s error=%v",
-		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), failureClass), peerID, http.StatusOK, response.bytesWritten, time.Since(started), response.writeErr)
+		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), failureClass), peerID, http.StatusOK, response.BytesWritten, time.Since(started), response.WriteErr)
 }
 
 func (a *Agent) handlePeerMemorySyncPost(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +142,7 @@ func decodeMemorySyncRequest(w http.ResponseWriter, r *http.Request, maxBytes in
 	if err != nil {
 		return memory.Snapshot{}, 0, err
 	}
-	reader := &memorySyncCountingReader{ReadCloser: r.Body}
+	reader := &syncio.CountingReadCloser{ReadCloser: r.Body}
 	body, err := memory.DecodeSyncBody(
 		http.MaxBytesReader(w, reader, maxBytes),
 		r.Header.Get("Content-Encoding"),
@@ -175,13 +150,13 @@ func decodeMemorySyncRequest(w http.ResponseWriter, r *http.Request, maxBytes in
 		maxBytes,
 	)
 	if err != nil {
-		return memory.Snapshot{}, reader.bytesRead, err
+		return memory.Snapshot{}, reader.BytesRead, err
 	}
 	var snapshot memory.Snapshot
 	if err := json.Unmarshal(body, &snapshot); err != nil {
-		return memory.Snapshot{}, reader.bytesRead, err
+		return memory.Snapshot{}, reader.BytesRead, err
 	}
-	return snapshot, reader.bytesRead, nil
+	return snapshot, reader.BytesRead, nil
 }
 
 func marshalMemorySnapshotWithLimit(snapshot memory.Snapshot, maxBytes int64) ([]byte, error) {

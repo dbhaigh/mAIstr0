@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,33 +15,8 @@ import (
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/syncio"
 )
-
-type memorySyncCountingReader struct {
-	io.ReadCloser
-	bytesRead int64
-}
-
-func (r *memorySyncCountingReader) Read(p []byte) (int, error) {
-	n, err := r.ReadCloser.Read(p)
-	r.bytesRead += int64(n)
-	return n, err
-}
-
-type memorySyncCountingResponseWriter struct {
-	http.ResponseWriter
-	bytesWritten int64
-	writeErr     error
-}
-
-func (w *memorySyncCountingResponseWriter) Write(p []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(p)
-	w.bytesWritten += int64(n)
-	if err != nil && w.writeErr == nil {
-		w.writeErr = err
-	}
-	return n, err
-}
 
 func (s *Server) handleMemoryExperiences(w http.ResponseWriter, r *http.Request) {
 	pageRequest, err := parseHistoryPageRequest(r, "experiences", "q", "task_type", "node_id", "model", "tool", "success_only")
@@ -273,13 +247,13 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	requestID := syncLogRequestID(r)
 	nodeID := syncLogNodeID(r)
-	reader := &memorySyncCountingReader{ReadCloser: r.Body}
+	reader := &syncio.CountingReadCloser{ReadCloser: r.Body}
 	logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_start %s remote=%s body_bytes_declared=%d",
 		syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, r.ContentLength)
 	if s.mem == nil {
 		w.WriteHeader(http.StatusNoContent)
 		logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_complete %s remote=%s status=%d body_bytes=%d elapsed=%s",
-			syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, http.StatusNoContent, reader.bytesRead, time.Since(started))
+			syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, http.StatusNoContent, reader.BytesRead, time.Since(started))
 		return
 	}
 	peerVersion, _, err := memory.ReadSyncRequestHeaders(r)
@@ -308,7 +282,7 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 			nodeID = req.NodeID
 		}
 		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed %s remote=%s status=%d body_bytes=%d elapsed=%s stage=decode error=%v",
-			syncLogFields(requestID, nodeID, time.Since(started), "decode"), r.RemoteAddr, status, reader.bytesRead, time.Since(started), err)
+			syncLogFields(requestID, nodeID, time.Since(started), "decode"), r.RemoteAddr, status, reader.BytesRead, time.Since(started), err)
 		if status == http.StatusBadRequest {
 			writeError(w, apperr.Invalid(err))
 		} else {
@@ -327,23 +301,23 @@ func (s *Server) handleMemorySync(w http.ResponseWriter, r *http.Request) {
 	mergeStarted := time.Now()
 	if err := s.mergeMemorySnapshot(snapshot, req.NodeID); err != nil {
 		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed %s remote=%s status=%d body_bytes=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s stage=merge error=%v",
-			syncLogFields(requestID, nodeID, time.Since(started), "merge"), r.RemoteAddr, apperr.StatusCode(apperr.InternalError(err)), reader.bytesRead, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
+			syncLogFields(requestID, nodeID, time.Since(started), "merge"), r.RemoteAddr, apperr.StatusCode(apperr.InternalError(err)), reader.BytesRead, decodeElapsed, time.Since(mergeStarted), time.Since(started), err)
 		writeError(w, apperr.InternalError(err))
 		return
 	}
 	mergeElapsed := time.Since(mergeStarted)
-	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
+	response := &syncio.CountingResponseWriter{ResponseWriter: w}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"merged":  len(snapshot.Experiences) + len(snapshot.Facts) + len(snapshot.Dialogues) + len(snapshot.Performances),
 		"node_id": req.NodeID,
 	})
 	logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_complete %s remote=%s status=%d body_bytes=%d records=%d decode_elapsed=%s merge_elapsed=%s elapsed=%s response_body_bytes=%d",
-		syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, http.StatusOK, reader.bytesRead,
+		syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, http.StatusOK, reader.BytesRead,
 		len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Dialogues)+len(snapshot.Performances),
-		decodeElapsed, mergeElapsed, time.Since(started), response.bytesWritten)
-	if response.writeErr != nil {
+		decodeElapsed, mergeElapsed, time.Since(started), response.BytesWritten)
+	if response.WriteErr != nil {
 		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=node->orchestrator event=receive_failed %s remote=%s stage=response error=%v",
-			syncLogFields(requestID, nodeID, time.Since(started), "response"), r.RemoteAddr, response.writeErr)
+			syncLogFields(requestID, nodeID, time.Since(started), "response"), r.RemoteAddr, response.WriteErr)
 	}
 }
 
@@ -429,17 +403,17 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 			syncLogFields(requestID, nodeID, time.Since(started), "none"), r.RemoteAddr, http.StatusNoContent, time.Since(started))
 		return
 	}
-	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
+	response := &syncio.CountingResponseWriter{ResponseWriter: w}
 	_, writeErr := memory.WriteSyncJSON(response, http.StatusOK, snapshot, peerVersion, memory.AcceptsSyncCompression(r))
-	response.writeErr = writeErr
+	response.WriteErr = writeErr
 	failureClass := "none"
-	if response.writeErr != nil {
+	if response.WriteErr != nil {
 		failureClass = "response_write"
 	}
 	logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_complete %s remote=%s status=%d body_bytes=%d records=%d elapsed=%s error=%v",
-		syncLogFields(requestID, nodeID, time.Since(started), failureClass), r.RemoteAddr, http.StatusOK, response.bytesWritten,
+		syncLogFields(requestID, nodeID, time.Since(started), failureClass), r.RemoteAddr, http.StatusOK, response.BytesWritten,
 		len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Performances)+len(snapshot.Dialogues),
-		time.Since(started), response.writeErr)
+		time.Since(started), response.WriteErr)
 }
 
 func (s *Server) handleMemoryPrune(w http.ResponseWriter, r *http.Request) {
