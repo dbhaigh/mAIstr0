@@ -5,11 +5,13 @@ machines on a LAN. It combines task planning and scheduling, a transparent
 inference router, interactive Pi and DeepSeek harnesses, and synchronized
 cluster memory. It does not require cloud inference.
 
-Current version: **0.0.24.3**. See the [release notes](./changelog.md#00243)
-for the race-test scripts and the native Windows cgo toolchain fix, and
-[0.0.24.2](./changelog.md#00242) for coalesced dashboard updates, cancellable
-background services, shared HTTP clients, and faster isolated tests. API,
-configuration, and storage formats remain unchanged.
+Current version: **0.0.24.4**. See the [release notes](./changelog.md#00244)
+for the lint-clean codebase, CI tooling updates for Go 1.27, and the consensus
+test fix; [0.0.24.3](./changelog.md#00243) for the race-test scripts and the
+native Windows cgo toolchain fix; and [0.0.24.2](./changelog.md#00242) for
+coalesced dashboard updates, cancellable background services, shared HTTP
+clients, and faster isolated tests. API, configuration, and storage formats
+remain unchanged.
 
 ## Updating nodes and editing shard members
 

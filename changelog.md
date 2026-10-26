@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.24.4
+
+Released: 2026-10-25.
+
 ### Fixes
 
 - Fixed the flaky `TestDynamicVoterMembershipAndLastVoterProtection`
@@ -26,6 +30,11 @@
 - `.goreleaser.yaml` uses `archives.ids` instead of the deprecated
   `archives.builds`.
 - CI runs govulncheck v1.9.0. v1.1.4 panics on Go 1.27 syntax.
+
+### Compatibility
+
+- API routes, JSON wire formats, configuration keys, and storage formats are
+  unchanged.
 
 ## 0.0.24.3
 
