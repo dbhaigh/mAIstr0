@@ -149,16 +149,7 @@ func (a *Agent) handleManagedEngineModelProfile(w http.ResponseWriter, r *http.R
 }
 
 func (a *Agent) handleManagedEngineStart(w http.ResponseWriter, r *http.Request) {
-	request, err := decodeManagedEngineStartRequest(r)
-	if err != nil {
-		http.Error(w, "invalid managed engine request body", http.StatusBadRequest)
-		return
-	}
-	if err := a.managedEngines.Start(r.Context(), r.PathValue("id"), request.ShardPlan); err != nil {
-		writeManagedEngineError(w, err)
-		return
-	}
-	a.writeManagedEngineStatus(w, r.PathValue("id"))
+	handleManagedEngineOperation(a, w, r, decodeManagedEngineStartRequest, startManagedEngine)
 }
 
 func (a *Agent) handleManagedEngineStop(w http.ResponseWriter, r *http.Request) {
@@ -245,16 +236,35 @@ func copyManagedProxyHeaders(destination, source http.Header) {
 }
 
 func (a *Agent) handleManagedEngineRestart(w http.ResponseWriter, r *http.Request) {
-	request, err := decodeManagedEngineStartRequest(r)
+	handleManagedEngineOperation(a, w, r, decodeManagedEngineStartRequest, restartManagedEngine)
+}
+
+func handleManagedEngineOperation[Request any](
+	a *Agent,
+	w http.ResponseWriter,
+	r *http.Request,
+	decode func(*http.Request) (Request, error),
+	operate func(context.Context, *Agent, string, Request) error,
+) {
+	request, err := decode(r)
 	if err != nil {
 		http.Error(w, "invalid managed engine request body", http.StatusBadRequest)
 		return
 	}
-	if err := a.managedEngines.Restart(r.Context(), r.PathValue("id"), request.ShardPlan); err != nil {
+	id := r.PathValue("id")
+	if err := operate(r.Context(), a, id, request); err != nil {
 		writeManagedEngineError(w, err)
 		return
 	}
-	a.writeManagedEngineStatus(w, r.PathValue("id"))
+	a.writeManagedEngineStatus(w, id)
+}
+
+func startManagedEngine(ctx context.Context, a *Agent, id string, plan *supervisor.ShardPlan) error {
+	return a.managedEngines.Start(ctx, id, plan)
+}
+
+func restartManagedEngine(ctx context.Context, a *Agent, id string, plan *supervisor.ShardPlan) error {
+	return a.managedEngines.Restart(ctx, id, plan)
 }
 
 func (a *Agent) writeManagedEngineStatus(w http.ResponseWriter, id string) {
@@ -266,37 +276,37 @@ func (a *Agent) writeManagedEngineStatus(w http.ResponseWriter, id string) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-func decodeManagedEngineStartRequest(r *http.Request) (managedEngineStartRequest, error) {
+func decodeManagedEngineStartRequest(r *http.Request) (*supervisor.ShardPlan, error) {
 	var request managedEngineStartRequest
 	if r.Body == nil {
-		return request, nil
+		return request.ShardPlan, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
 	if err != nil {
-		return managedEngineStartRequest{}, err
+		return nil, err
 	}
 	if len(body) > 64<<10 {
-		return managedEngineStartRequest{}, errors.New("managed engine request body is too large")
+		return nil, errors.New("managed engine request body is too large")
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return request, nil
+		return request.ShardPlan, nil
 	}
 	if trimmed := bytes.TrimSpace(body); trimmed[0] != '{' {
-		return managedEngineStartRequest{}, errors.New("managed engine request must be a JSON object")
+		return nil, errors.New("managed engine request must be a JSON object")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
-		return managedEngineStartRequest{}, err
+		return nil, err
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return managedEngineStartRequest{}, errors.New("multiple JSON values")
+			return nil, errors.New("multiple JSON values")
 		}
-		return managedEngineStartRequest{}, err
+		return nil, err
 	}
-	return request, nil
+	return request.ShardPlan, nil
 }
 
 func requireEmptyManagedEngineBody(r *http.Request) error {

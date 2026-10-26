@@ -15,7 +15,9 @@ import (
 
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
+	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/peeridentity"
+	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
 func TestManagedEngineProxyFlushesHeadersAndSmallChunksBeforeCompletion(t *testing.T) {
@@ -136,6 +138,30 @@ func TestManagedEngineRoutesRequirePinnedCurrentOrchestrator(t *testing.T) {
 				t.Fatalf("installer returned %d, want %d: %s", response.Code, want, response.Body.String())
 			}
 		})
+		for _, action := range []string{"start", "restart"} {
+			t.Run(action+" "+test.name, func(t *testing.T) {
+				request := httptest.NewRequest(
+					http.MethodPost,
+					"/api/engines/managed/missing/"+action,
+					strings.NewReader(`{"unknown":true}`),
+				)
+				if test.certificate != nil {
+					request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{test.certificate}}
+				}
+				response := httptest.NewRecorder()
+				mux.ServeHTTP(response, request)
+				want := test.wantStatus
+				if want == http.StatusOK {
+					want = http.StatusBadRequest
+				}
+				if response.Code != want {
+					t.Fatalf("%s returned %d, want %d: %s", action, response.Code, want, response.Body.String())
+				}
+				if want == http.StatusBadRequest && !strings.Contains(response.Body.String(), "invalid managed engine request body") {
+					t.Fatalf("%s validation response = %q", action, response.Body.String())
+				}
+			})
+		}
 		for _, route := range []struct{ method, path, body string }{
 			{http.MethodGet, "/api/engines/managed/head-models?requested_context=invalid", ""},
 			{http.MethodPost, "/api/engines/managed/configure-head", `{"model_id":"unknown","requested_context":-1}`},
@@ -159,12 +185,18 @@ func TestManagedEngineRoutesRequirePinnedCurrentOrchestrator(t *testing.T) {
 		}
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/engines/managed/missing/start", strings.NewReader(`{}`))
-	request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificateFromPEM(t, currentOrchestrator.CertificatePEM())}}
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("unknown managed engine start returned %d, want 404: %s", response.Code, response.Body.String())
+	for _, action := range []string{"start", "restart"} {
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/api/engines/managed/missing/"+action,
+			strings.NewReader(`{}`),
+		)
+		request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificateFromPEM(t, currentOrchestrator.CertificatePEM())}}
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "managed engine not found") {
+			t.Fatalf("unknown managed engine %s returned %d, want 404: %s", action, response.Code, response.Body.String())
+		}
 	}
 
 	profileRequest := httptest.NewRequest(
@@ -226,4 +258,44 @@ func certificateFromPEM(t *testing.T, certificatePEM string) *x509.Certificate {
 		t.Fatal(err)
 	}
 	return certificate
+}
+
+func BenchmarkManagedEngineStartRestartHandlers(b *testing.B) {
+	b.Setenv("PATH", "")
+	cfg := config.DefaultNodeConfig()
+	cfg.NodeID = "managed-handler-benchmark"
+	cfg.MemoryPath = filepath.Join(b.TempDir(), "node.db")
+	agent, err := newAgentWithEngineDetector(cfg, taskmgr.NewManager(), func() []engine.Engine { return nil })
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if err := agent.Close(); err != nil {
+			b.Errorf("close node agent: %v", err)
+		}
+	})
+
+	for _, action := range []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{name: "start", handler: agent.handleManagedEngineStart},
+		{name: "restart", handler: agent.handleManagedEngineRestart},
+	} {
+		b.Run(action.name, func(b *testing.B) {
+			body := strings.NewReader(`{}`)
+			request := httptest.NewRequest(http.MethodPost, "/api/engines/managed/missing/"+action.name, body)
+			request.SetPathValue("id", "missing")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				body.Reset(`{}`)
+				response := httptest.NewRecorder()
+				action.handler(response, request)
+				if response.Code != http.StatusNotFound {
+					b.Fatalf("status = %d, want 404", response.Code)
+				}
+			}
+		})
+	}
 }

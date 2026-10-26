@@ -189,6 +189,21 @@ on Windows/amd64, Go 1.27.3. Both reader and response-writer cases remained at
 0 B/op and 0 allocs/op. Benchstat found no significant time/op change
 (reader 2.881→2.894 ns/op, p=0.403; writer 2.120→2.127 ns/op, p=0.796).
 
+### Managed engine start/restart handlers
+
+Start and restart now use the same generic request helper for strict body
+decoding, operation-error mapping, and status encoding. Their route-level
+paired-orchestrator authentication remains in the existing middleware.
+Characterization tests cover auth-before-decode, invalid-body responses, and
+the not-found operation response for both routes.
+
+`BenchmarkManagedEngineStartRestartHandlers` ran with
+`-benchmem -count=10 -benchtime=200ms` on Windows/amd64, Go 1.27.3. Both
+handlers remained at 2,551 B/op and 24 allocs/op. Benchstat found no
+statistically significant time/op change (start 1.580→1.727 µs/op, p=0.315;
+restart 1.679→1.807 µs/op, p=0.105). These control operations are not a hot
+path, and the extraction adds no measured allocations.
+
 ## Retained indirect uses and compatibility paths
 
 - `OpenAICompatibleProvider.Model` in
@@ -256,9 +271,9 @@ These are not claimed to be semantically impossible to consolidate:
 
 - Small session/shard bucket-enumeration and in-memory copy loops have different
   typed owners, buckets, and results. Generic storage plumbing is not warranted.
-- Similar local/remote model handlers, managed-operation auth/decode sequences,
-  prefill/decode dispatch, and repeated narrow dependency-interface shapes were
-  retained rather than introducing operation flags or generic handler layers.
+- Similar local/remote model handlers, prefill/decode dispatch, and repeated
+  narrow dependency-interface shapes remain separate where their control flow
+  or ownership differs.
 - Memory cache loading and uncached experience queries resemble one another,
   but have different ownership and query-limit behavior.
 
