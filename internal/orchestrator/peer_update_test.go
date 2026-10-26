@@ -4,13 +4,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
 func TestPeerUpdateWaitsForShardGroupsAndOperations(t *testing.T) {
 	manager, _, _, _, _ := newTestShardManager(t, "")
 	tasks := taskmgr.NewManager()
-	defer tasks.Close()
+	defer closeutil.Discard(tasks)
 	server := &Server{shards: manager, tasks: tasks}
 	if !server.UpdateIdle() {
 		t.Fatal("empty coordinator is busy")

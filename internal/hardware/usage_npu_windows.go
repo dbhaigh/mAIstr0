@@ -4,6 +4,7 @@ package hardware
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -102,7 +103,7 @@ func readWindowsNPUUsage(adapterLUIDs []string) (int, bool, error) {
 	}
 	utilization, available := parseNPUUsage(string(output))
 	if !available {
-		return 0, false, fmt.Errorf("Windows returned no usable NPU engine utilization")
+		return 0, false, errors.New("no usable NPU engine utilization was returned by Windows")
 	}
 	return utilization, true, nil
 }
@@ -118,14 +119,15 @@ func windowsNPUAdapterLUIDs() ([]string, error) {
 		return nil, fmt.Errorf("COM initialization failed: HRESULT 0x%08x", uint32(hr))
 	}
 	if initialized {
-		defer ole32.NewProc("CoUninitialize").Call()
+		uninitialize := ole32.NewProc("CoUninitialize")
+		defer func() { _, _, _ = uninitialize.Call() }()
 	}
 
 	dxcore, err := syscall.LoadDLL("dxcore.dll")
 	if err != nil {
 		return nil, err
 	}
-	defer dxcore.Release()
+	defer func() { _ = dxcore.Release() }()
 	createFactory, err := dxcore.FindProc("DXCoreCreateAdapterFactory")
 	if err != nil {
 		return nil, err

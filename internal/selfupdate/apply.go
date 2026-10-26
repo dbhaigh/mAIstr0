@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func RestartArgs(args []string) []string {
@@ -80,20 +82,20 @@ func LaunchHelper(target, staged string, manifest Manifest, args []string) error
 	}
 	path := file.Name()
 	if err := errors.Join(json.NewEncoder(file).Encode(job), file.Close()); err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return err
 	}
 	log, err := os.OpenFile(target+".peer-update.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return err
 	}
-	defer log.Close()
+	defer closeutil.Discard(log)
 	helper := exec.Command(staged, "-apply-peer-update", path)
 	detach(helper)
 	helper.Stdout, helper.Stderr = log, log
 	if err := helper.Start(); err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return fmt.Errorf("launch update replacement helper: %w", err)
 	}
 	return helper.Process.Release()
@@ -108,7 +110,7 @@ func Apply(path string) (result error) {
 	if err := json.Unmarshal(data, &job); err != nil {
 		return err
 	}
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 	if !filepath.IsAbs(job.Target) || filepath.Dir(job.Target) != filepath.Dir(job.Staged) || job.Target == job.Staged || job.Parent <= 0 {
 		return errors.New("invalid local update replacement job")
 	}
@@ -170,10 +172,10 @@ func Apply(path string) (result error) {
 		return err
 	}
 	replacementPath := replacement.Name()
-	defer os.Remove(replacementPath)
+	defer func() { _ = os.Remove(replacementPath) }()
 	input, err := os.Open(job.Staged)
 	if err != nil {
-		replacement.Close()
+		_ = replacement.Close()
 		return err
 	}
 	_, copyErr := replacement.ReadFrom(input)
@@ -196,6 +198,8 @@ func Apply(path string) (result error) {
 		restoreErr := os.Rename(backup, job.Target)
 		return errors.Join(fmt.Errorf("launch updated executable: %w", err), removeErr, restoreErr)
 	}
-	fmt.Fprintf(os.Stdout, "peer update installed version %s; previous executable retained at %s\n", job.Manifest.Version, backup)
+	// The replacement is already installed and running, so a failed status
+	// line on the detached helper's stdout must not trigger recovery.
+	_, _ = fmt.Fprintf(os.Stdout, "peer update installed version %s; previous executable retained at %s\n", job.Manifest.Version, backup)
 	return nil
 }

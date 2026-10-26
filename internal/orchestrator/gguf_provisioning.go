@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -56,7 +57,7 @@ func (p *autoModelProvisioner) provisionGGUF(ctx context.Context, subtask schedu
 		if err != nil {
 			return err
 		}
-		defer response.Body.Close()
+		defer closeutil.Discard(response.Body)
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			return managedEngineResponseError(response)
 		}

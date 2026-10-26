@@ -195,12 +195,13 @@ func (a *Agent) handleStageClose(w http.ResponseWriter, r *http.Request) {
 	if err := a.stageComponent.closePipelineRequest(
 		r.Context(), request.Assignment, request.RequestID,
 	); err != nil {
-		status := http.StatusNotFound
-		if errors.Is(err, errStageAssignmentConflict) {
+		var status int
+		switch {
+		case errors.Is(err, errStageAssignmentConflict):
 			status = http.StatusConflict
-		} else if r.Context().Err() != nil {
+		case r.Context().Err() != nil:
 			status = http.StatusRequestTimeout
-		} else {
+		default:
 			status = http.StatusBadGateway
 		}
 		writeStageError(w, status, err)

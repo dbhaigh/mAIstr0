@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
@@ -38,7 +39,7 @@ func TestDistributionRequiresPairedIdentity(t *testing.T) {
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: time.Second}
 	if response, err := client.Get(server.URL + "/api/updates/manifest"); err == nil {
-		response.Body.Close()
+		_ = response.Body.Close()
 		if response.StatusCode != http.StatusForbidden {
 			t.Fatalf("unpaired receiver got %s", response.Status)
 		}
@@ -51,7 +52,7 @@ func TestDistributionRequiresPairedIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	var manifest Manifest
 	if err := json.NewDecoder(response.Body).Decode(&manifest); err != nil {
 		t.Fatal(err)
@@ -153,14 +154,15 @@ func TestDownloadVerifiesBytesVersionPlatformAndCleansPartialFiles(t *testing.T)
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if tc == "redirect" {
-					http.Redirect(w, r, "https://example.invalid", 302)
+					http.Redirect(w, r, "https://example.invalid", http.StatusFound)
 					return
 				}
 				if strings.HasSuffix(r.URL.Path, "manifest") {
-					json.NewEncoder(w).Encode(manifest)
+					_ = json.NewEncoder(w).Encode(manifest)
 					return
 				}
-				w.Write(bytes)
+				// Mismatch cases may stop reading early, so write errors are expected.
+				_, _ = w.Write(bytes)
 			}))
 			defer server.Close()
 			root := t.TempDir()

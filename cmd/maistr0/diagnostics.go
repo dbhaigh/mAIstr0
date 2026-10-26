@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -21,6 +22,7 @@ import (
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	buildversion "github.com/maistr0/maistr0/internal/version"
 	bolt "go.etcd.io/bbolt"
+	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 const (
@@ -329,7 +331,7 @@ func checkBoltDatabase(path string) string {
 }
 
 func safeHealthError(err error) string {
-	if errors.Is(err, bolt.ErrTimeout) {
+	if errors.Is(err, bolterrors.ErrTimeout) {
 		return "busy"
 	}
 	if errors.Is(err, os.ErrPermission) {
@@ -416,7 +418,7 @@ func readDiagnosticLogTail(path string, maxBytes int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer closeutil.Discard(file)
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err

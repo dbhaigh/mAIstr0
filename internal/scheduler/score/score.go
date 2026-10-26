@@ -199,11 +199,12 @@ func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 
 		qualityTags := 0
 		for _, tag := range model.Tags {
-			if tag == subtask.TaskType {
+			switch tag {
+			case subtask.TaskType:
 				modelScore += 2
-			} else if tag == "general" {
+			case "general":
 				modelScore += 0.5
-			} else if tag == "fast" {
+			case "fast":
 				modelScore += 0.25
 			}
 			if tag == "high-quality" || tag == "reasoning" {

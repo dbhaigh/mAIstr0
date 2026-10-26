@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Fixes
+
+- Fixed the flaky `TestDynamicVoterMembershipAndLastVoterProtection`
+  consensus test: it now removes a follower and tolerates a leader change
+  while committing the removal.
+- The dual HTTP/HTTPS peer server now reports a real serve failure from either
+  listener instead of discarding the second server's result; normal shutdown
+  still returns no error.
+- The router stream buffer pool stores `*[]byte`, so returning a buffer no
+  longer allocates.
+
+### Development
+
+- CI runs golangci-lint v2.15 (v2.13 cannot read Go 1.27 export data) with a
+  new `.golangci.yml`. The codebase now reports zero errcheck, staticcheck,
+  unused, and ineffassign issues on Linux and Windows.
+- Added `internal/closeutil.Discard` for deferred best-effort closes of
+  read-only resources. Other unchecked errors are now handled explicitly.
+- Removed 43 unused functions.
+- The node reverse proxy uses `httputil.ReverseProxy.Rewrite` instead of the
+  deprecated `Director` hook. It keeps the same forwarding headers.
+- `.goreleaser.yaml` uses `archives.ids` instead of the deprecated
+  `archives.builds`.
+
 ## 0.0.24.3
 
 Released: 2026-10-25.

@@ -60,11 +60,3 @@ func requireElectedOrchestrator(isElected func() bool, next, yielded http.Handle
 		next.ServeHTTP(w, r)
 	})
 }
-
-func (s *Server) discoverySyncLoop() {
-	s.electionPort().discoverySyncLoop(s.background.Context(), s.publishSnapshot)
-}
-
-func (s *Server) syncDiscoveredPeers() {
-	s.electionPort().syncDiscoveredPeers(s.publishSnapshot)
-}

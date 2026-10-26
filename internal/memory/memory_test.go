@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func newTestStore(t *testing.T) Store {
@@ -202,7 +204,7 @@ func TestWatermarksPersistAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	if got := reopened.Watermarks(); !reflect.DeepEqual(got, wantWatermarks) {
 		t.Fatalf("watermarks after restart = %v, want %v", got, wantWatermarks)
 	}
@@ -229,7 +231,7 @@ func TestSnapshotWatermarksNeverOutrunIncludedRecords(t *testing.T) {
 
 	for _, test := range stores {
 		t.Run(test.name, func(t *testing.T) {
-			defer test.store.Close()
+			defer closeutil.Discard(test.store)
 			done := make(chan struct{})
 			errs := make(chan error, 1)
 			go func() {
@@ -274,7 +276,7 @@ func TestSnapshotWatermarksNeverOutrunIncludedRecords(t *testing.T) {
 
 func BenchmarkSnapshotPayloadSizes10KExperiences(b *testing.B) {
 	store := NewInMemoryStore()
-	defer store.Close()
+	defer closeutil.Discard(store)
 	for i := range 10_000 {
 		if _, err := store.Record(Experience{Description: strings.Repeat("x", 80) + string(rune(i))}); err != nil {
 			b.Fatal(err)
@@ -340,7 +342,7 @@ func TestConcurrentRecordPersistsPerformanceAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	performances := reopened.Performances()
 	if len(performances) != 1 || performances[0].Attempts != writers*recordsPerWriter {
 		t.Fatalf("persisted performances = %+v, want %d attempts", performances, writers*recordsPerWriter)
@@ -543,7 +545,7 @@ func TestAppendDialogueTurnsPersistsTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeutil.Discard(store)
 	turns := []Turn{
 		{Speaker: "user", Content: "question", At: time.Unix(1, 0).UTC()},
 		{Speaker: "node", Content: "answer", At: time.Unix(2, 0).UTC()},
@@ -563,7 +565,7 @@ func TestAppendDialogueTurnsPersistsTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	dialogue, err := reopened.Dialogue("dialogue")
 	if err != nil {
 		t.Fatal(err)
@@ -593,7 +595,7 @@ func TestAgentSessionPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
-	defer store.Close()
+	defer closeutil.Discard(store)
 	sessions, err := store.AgentSessions()
 	if err != nil {
 		t.Fatalf("load sessions: %v", err)

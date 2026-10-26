@@ -41,13 +41,6 @@ func (s *Server) listAgentSessions() []*agent.Session {
 	return s.harnessPort().listAgentSessions()
 }
 
-func (s *Server) restoreAgentSessions() error {
-	if s.harness == nil {
-		return nil
-	}
-	return s.harnessPort().restoreAgentSessions()
-}
-
 func (s *Server) persistAgentSession(session *agent.Session) error {
 	if s.harness == nil {
 		return errors.New("agent harness is disabled")

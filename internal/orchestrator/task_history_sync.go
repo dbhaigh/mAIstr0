@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/syncinterval"
@@ -173,12 +174,6 @@ type taskSyncSnapshot struct {
 	watermarks map[string]uint64
 }
 
-func fetchReplicatedTaskHistory(client interface {
-	Do(*http.Request) (*http.Response, error)
-}, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
-	return fetchReplicatedTaskHistoryWithContext(context.Background(), client, endpoint, requestWatermarks, maxBytes)
-}
-
 func fetchReplicatedTaskHistoryWithContext(ctx context.Context, client interface {
 	Do(*http.Request) (*http.Response, error)
 }, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
@@ -227,7 +222,7 @@ func fetchReplicatedTaskHistoryWithContext(ctx context.Context, client interface
 }
 
 func decodeReplicatedTaskHistory(resp *http.Response, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, map[string]uint64, bool, error) {
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		response, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, 0, nil, nil, false, fmt.Errorf("node returned %s: %s", resp.Status, strings.TrimSpace(string(response)))
@@ -255,12 +250,6 @@ func decodeReplicatedTaskHistory(resp *http.Response, maxBytes int64) ([]*taskmg
 		return nil, 0, nil, nil, false, err
 	}
 	return tasks, version, watermarks, cursor, more, nil
-}
-
-func postTaskHistoryPages(client interface {
-	Do(*http.Request) (*http.Response, error)
-}, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64, peerVersion int) error {
-	return postTaskHistoryPagesWithContext(context.Background(), client, endpoint, tasks, watermarks, maxBytes, peerVersion)
 }
 
 func postTaskHistoryPagesWithContext(ctx context.Context, client interface {
@@ -302,7 +291,7 @@ func postTaskHistoryPagesWithContext(ctx context.Context, client interface {
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			response.Body.Close()
+			_ = response.Body.Close()
 			return fmt.Errorf("node returned %s: %s", response.Status, strings.TrimSpace(string(message)))
 		}
 		_, copyErr := io.Copy(io.Discard, response.Body)

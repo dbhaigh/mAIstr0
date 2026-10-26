@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/scheduler"
@@ -243,7 +244,7 @@ func (p *autoModelProvisioner) pullAndRefresh(ctx context.Context, node cluster.
 	if response == nil {
 		return errors.New("model pull returned no response")
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		detail, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
 		if readErr != nil {

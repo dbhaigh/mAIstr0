@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/raft"
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func TestBoltStorePersistsLogsAndAppliedIndex(t *testing.T) {
@@ -36,7 +37,7 @@ func TestBoltStorePersistsLogsAndAppliedIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	var restored raft.Log
 	if err := reopened.GetLog(entry.Index, &restored); err != nil {
 		t.Fatal(err)
@@ -68,7 +69,7 @@ func TestBoltStoreRejectsMissingLogAndInvalidRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeutil.Discard(store)
 	var entry raft.Log
 	if err := store.GetLog(1, &entry); !errors.Is(err, raft.ErrLogNotFound) {
 		t.Fatalf("missing log error = %v, want %v", err, raft.ErrLogNotFound)

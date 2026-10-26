@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 type EvalExpressionTool struct{}
@@ -155,7 +157,7 @@ func (t *FetchWebTool) Execute(ctx context.Context, h *Harness, s *Session, args
 	if err != nil {
 		return nil, "", "", "", err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
 	if err != nil {

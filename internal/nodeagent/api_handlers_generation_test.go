@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/engine"
 )
@@ -124,7 +125,7 @@ func TestGenerateIdempotencyKeyReplaysCompletedWorkerResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry after dropped response failed: %v", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	var result generateResponse
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatal(err)
@@ -137,7 +138,7 @@ func TestGenerateIdempotencyKeyReplaysCompletedWorkerResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conflict.Body.Close()
+	defer closeutil.Discard(conflict.Body)
 	if conflict.StatusCode != http.StatusConflict || eng.calls.Load() != 1 {
 		t.Fatalf("different request with reused key = status %d, engine calls %d", conflict.StatusCode, eng.calls.Load())
 	}
@@ -148,7 +149,7 @@ func TestGenerateIdempotencyKeyReplaysCompletedWorkerResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer streamResponse.Body.Close()
+	defer closeutil.Discard(streamResponse.Body)
 	if streamResponse.StatusCode != http.StatusBadRequest || eng.calls.Load() != 1 {
 		t.Fatalf("streaming request with key = status %d, engine calls %d", streamResponse.StatusCode, eng.calls.Load())
 	}

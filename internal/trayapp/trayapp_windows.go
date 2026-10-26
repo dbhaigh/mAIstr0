@@ -36,7 +36,8 @@ func setConsoleVisible(visible bool) {
 	if visible {
 		cmd = swShow
 	}
-	procShowWindow.Call(hwnd, cmd)
+	// ShowWindow returns the previous visibility state, not an error.
+	_, _, _ = procShowWindow.Call(hwnd, cmd)
 }
 
 func openBrowser(url string) {

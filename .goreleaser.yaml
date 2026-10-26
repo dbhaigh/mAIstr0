@@ -20,7 +20,7 @@ builds:
 
 archives:
   - id: binaries
-    builds:
+    ids:
       - maistr0
     formats:
       - tar.gz

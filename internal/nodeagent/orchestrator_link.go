@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 type orchestratorCandidate struct {
@@ -226,7 +228,7 @@ func (c *orchestratorLink) registrationLoop(ctx context.Context) {
 			request.Header.Set("Content-Type", "application/json")
 			resp, postErr := c.peerClient.Do(request)
 			if postErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				if candidate.role == "orchestrator" {
 					certificate, ok := c.trust.TrustedPeers()[candidate.id]
 					if !ok {
@@ -249,7 +251,7 @@ func (c *orchestratorLink) registrationLoop(ctx context.Context) {
 			}
 			if resp != nil {
 				logging.Errorf("nodeagent", "nodeagent: registration candidate %s rejected or unreachable: %v (status %s)", candidate.address, postErr, resp.Status)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			} else if postErr != nil {
 				logging.Errorf("nodeagent", "nodeagent: registration candidate %s unreachable: %v", candidate.address, postErr)
 			}
@@ -335,7 +337,7 @@ func (c *orchestratorLink) peerPollLoop(ctx context.Context) {
 			logging.Errorf("nodeagent", "nodeagent: peer poll failed: %v", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer closeutil.Discard(resp.Body)
 		var nodes []cluster.NodeStatus
 		if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
 			return
@@ -404,10 +406,6 @@ func (c *orchestratorLink) sseSubscribeLoop(ctx context.Context) {
 	}
 }
 
-func (c *orchestratorLink) subscribeOnce(addr string) error {
-	return c.subscribeOnceContext(context.Background(), addr)
-}
-
 func (c *orchestratorLink) subscribeOnceContext(ctx context.Context, addr string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr+"/api/events", nil)
 	if err != nil {
@@ -417,7 +415,7 @@ func (c *orchestratorLink) subscribeOnceContext(ctx context.Context, addr string
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -465,10 +463,6 @@ func (c *orchestratorLink) snapshotPublisher() *hub.Publisher {
 		c.publisher = hub.NewPublisher(c.events, c.buildSnapshot)
 	})
 	return c.publisher
-}
-
-func (c *orchestratorLink) serveEvents(w http.ResponseWriter, r *http.Request) {
-	c.events.ServeHTTP(w, r)
 }
 
 func (c *orchestratorLink) buildSnapshot(ctx context.Context) ([]byte, error) {
@@ -519,34 +513,6 @@ func (a *Agent) isJoined() bool {
 	return a.orchestratorLink.isJoined()
 }
 
-func (a *Agent) resolveOrchestratorAndRegister() {
-	a.orchestratorLink.resolveOrchestratorAndRegister(a.orchestratorLink.background.Context())
-}
-
-func (a *Agent) registrationLoop() {
-	a.orchestratorLink.registrationLoop(a.orchestratorLink.background.Context())
-}
-
 func (a *Agent) orchestratorCandidates() []orchestratorCandidate {
 	return a.orchestratorLink.orchestratorCandidates()
-}
-
-func (a *Agent) peerPollLoop() {
-	a.orchestratorLink.peerPollLoop(a.orchestratorLink.background.Context())
-}
-
-func (a *Agent) sseSubscribeLoop() {
-	a.orchestratorLink.sseSubscribeLoop(a.orchestratorLink.background.Context())
-}
-
-func (a *Agent) subscribeOnce(addr string) error {
-	return a.orchestratorLink.subscribeOnce(addr)
-}
-
-func (a *Agent) broadcastLoop() {
-	a.orchestratorLink.broadcastLoop(a.orchestratorLink.background.Context())
-}
-
-func (a *Agent) publishSnapshot() {
-	a.orchestratorLink.publishSnapshot()
 }

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -209,7 +210,7 @@ func (a *Agent) handleManagedEngineProxy(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "managed engine request failed", http.StatusBadGateway)
 		return
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if err := copyManagedEngineResponse(w, response); err != nil {
 		logging.Errorf("nodeagent", "managed engine proxy response failed: %v", err)
 	}

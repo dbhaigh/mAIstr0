@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 // linuxCPUUsageState serializes updates to the previous /proc/stat sample;
@@ -30,7 +32,7 @@ func linuxCPUPercent() (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	defer file.Close()
+	defer closeutil.Discard(file)
 
 	scanner := bufio.NewScanner(file)
 	if !scanner.Scan() {
@@ -78,7 +80,7 @@ func linuxMemoryPercent() (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	defer file.Close()
+	defer closeutil.Discard(file)
 
 	var total, available uint64
 	scanner := bufio.NewScanner(file)

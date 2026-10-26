@@ -4,6 +4,7 @@
 package discovery
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 // Port is the UDP port every instance broadcasts announcements on and
@@ -214,7 +217,7 @@ func listenUDP(network, address string, broadcast bool) (net.PacketConn, error) 
 	config.Control = func(_, _ string, raw syscall.RawConn) error {
 		return configureSocket(raw, broadcast)
 	}
-	return config.ListenPacket(nil, network, address)
+	return config.ListenPacket(context.Background(), network, address)
 }
 
 // WaitReady waits until the UDP listener has bound successfully or failed.
@@ -390,7 +393,7 @@ func outranks(candidate, incumbent Announcement) bool {
 func OutboundIP() string {
 	conn, err := net.Dial("udp4", "8.8.8.8:80")
 	if err == nil {
-		defer conn.Close()
+		defer closeutil.Discard(conn)
 		ip := conn.LocalAddr().(*net.UDPAddr).IP
 		if !ip.IsLoopback() {
 			return ip.String()

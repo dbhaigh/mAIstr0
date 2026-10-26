@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/httpx"
@@ -293,7 +294,7 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("could not reach discovered node: %w", err)))
 		return
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode != http.StatusAccepted {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node rejected pairing invitation: %s", strings.TrimSpace(string(message)))))

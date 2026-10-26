@@ -78,9 +78,10 @@ func (m *ShardManager) candidates(
 		}
 		capabilities := managedShardCapabilities(node, request.Mode)
 		rpcAddress := ""
-		if request.Mode == shard.ModeLlamaCPPRPC {
+		switch request.Mode {
+		case shard.ModeLlamaCPPRPC:
 			rpcAddress = modeEngine.RelayEndpoint
-		} else if request.Mode == shard.ModeVLLMMP {
+		case shard.ModeVLLMMP:
 			rpcAddress = advertisedEndpointAddress(modeEngine.Endpoint, node.Address)
 		}
 		rpcProtected := request.Mode != shard.ModeLlamaCPPRPC ||

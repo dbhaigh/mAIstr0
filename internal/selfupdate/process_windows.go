@@ -23,7 +23,7 @@ func waitForParent(pid int, timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("open update parent: %w", err)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	status, err := windows.WaitForSingleObject(handle, uint32(timeout.Milliseconds()))
 	if err != nil {
 		return err

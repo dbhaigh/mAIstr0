@@ -297,18 +297,6 @@ func (n *Node) Apply(ctx context.Context, mutation Mutation) (MutationResult, er
 	return response.Result, nil
 }
 
-func ctxTimeout(ctx context.Context) time.Duration {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return 0
-	}
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return time.Nanosecond
-	}
-	return remaining
-}
-
 // Read performs a quorum-verified read and returns a copy of the value.
 func (n *Node) Read(ctx context.Context, key string) ([]byte, bool, error) {
 	if err := validateIdentifier("mutation key", key); err != nil {

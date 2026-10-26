@@ -47,7 +47,7 @@ type unavailableProvider struct{}
 func (unavailableProvider) Name() string { return "unconfigured" }
 
 func (unavailableProvider) Complete(context.Context, CompletionRequest, func(string)) (*Completion, error) {
-	return nil, errors.New("Pi requires an explicitly configured local cluster provider")
+	return nil, errors.New("the Pi harness requires an explicitly configured local cluster provider")
 }
 
 func (b *Backend) Name() string { return "pi" }
@@ -232,17 +232,6 @@ func (b *Backend) providerMessages(session *agent.Session) []ChatMessage {
 		}
 	}
 	return messages
-}
-
-func parseToolArguments(raw string) (map[string]any, error) {
-	args := make(map[string]any)
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return nil, err
-	}
-	if args == nil {
-		return nil, errors.New("tool arguments must be a JSON object")
-	}
-	return args, nil
 }
 
 func (b *Backend) Close() error {

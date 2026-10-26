@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/memory"
 )
 
@@ -177,7 +178,7 @@ func TestTaskWatermarksPersistAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	if marks := reopened.Watermarks(); marks["task:node-a"] != task.Sequence {
 		t.Fatalf("task watermarks after restart = %v, want task:node-a=%d", marks, task.Sequence)
 	}

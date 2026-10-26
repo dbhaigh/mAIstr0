@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
@@ -196,7 +197,7 @@ func shardJSON(t *testing.T, client *http.Client, method, endpoint string, body 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)

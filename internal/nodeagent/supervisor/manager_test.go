@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/engine"
 )
@@ -84,7 +85,7 @@ func TestManagerTCPReadinessAndRPCLoopbackDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.SetRPCRelayController(testRPCRelayController{})
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := manager.Start(ctx, "rpc-engine", nil); err != nil {
@@ -113,7 +114,7 @@ func TestManagerReadinessTimeoutStopsProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	err = manager.Start(context.Background(), "test-engine", nil)
 	if !errors.Is(err, ErrReadinessTimeout) {
 		t.Fatalf("start error = %v, want readiness timeout", err)
@@ -139,7 +140,7 @@ func TestManagerAutomaticallyRestartsCrashLoopWithBackoffLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := manager.Start(ctx, "test-engine", nil); err != nil {
@@ -275,7 +276,7 @@ func TestVLLMHeadlessWorkersUseProcessReadinessAndHeadRequiresHTTP(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 
 	workerPlan := &ShardPlan{NNodes: 2, NodeRank: 1, MasterAddr: "127.0.0.1"}
 	if err := manager.Start(context.Background(), "vllm-worker", workerPlan); err != nil {
@@ -329,7 +330,7 @@ func TestVLLMStartRefusesUntrustedInterfaceBeforeLaunching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 
 	err = manager.Start(context.Background(), "vllm-worker", &ShardPlan{
 		NNodes: 2, NodeRank: 1, MasterAddr: "10.20.0.2",
@@ -365,7 +366,7 @@ func TestLlamaServerRPCRelayPlanBecomesLoopbackArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	manager.SetRPCRelayController(testRPCRelayController{})
 	engine, err := manager.engine("test-engine")
 	if err != nil {

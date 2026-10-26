@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -673,7 +674,7 @@ func TestFormerOrchestratorWorkerJoinsNewLeader(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	defer agent.Memory().Close()
+	defer closeutil.Discard(agent.Memory())
 	if err := agent.PairLocalOrchestrator(oldLeader.ID(), oldLeader.CertificatePEM(), "https://127.0.0.1:7450"); err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +749,7 @@ func TestFormerOrchestratorWorkerJoinsNewLeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer registration.Body.Close()
+	defer closeutil.Discard(registration.Body)
 	if registration.StatusCode != http.StatusNoContent || !registered {
 		t.Fatalf("former orchestrator worker could not register: %s", registration.Status)
 	}
@@ -798,7 +799,7 @@ func TestPersistentTaskHistorySurvivesAgentRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	defer closeutil.Discard(restarted)
 	restored, ok := restarted.orchestratorLink.tasks.Get(created.ID)
 	if !ok || restored.Description != "Persist this task" {
 		t.Fatalf("task history was not restored: %#v", restored)
@@ -811,7 +812,7 @@ func TestTaskReplicaRequiresCurrentOrchestrator(t *testing.T) {
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if agent.mem != nil {
-		defer agent.mem.Close()
+		defer closeutil.Discard(agent.mem)
 	}
 	agent.setOrchestratorID("current-orchestrator")
 	source := taskmgr.NewManager()
@@ -852,7 +853,7 @@ func TestNodeControlInspectsLocalEngineWithoutSelfTLSRequest(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	defer agent.Memory().Close()
+	defer closeutil.Discard(agent.Memory())
 	agent.engines = []engine.Engine{engine.NewSimulated()}
 	agent.detectedEngines = nil
 
@@ -903,7 +904,7 @@ func TestNodeControlRoutesRemoteInspectionThroughOrchestrator(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	defer agent.Memory().Close()
+	defer closeutil.Discard(agent.Memory())
 	if err := agent.identity.TrustPeerDetails(orchestrator.ID(), orchestrator.CertificatePEM(), "orchestrator", server.URL); err != nil {
 		t.Fatal(err)
 	}
@@ -1000,7 +1001,7 @@ func TestNodeModelsLocalRequestsWithoutSelfTLS(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	defer agent.Memory().Close()
+	defer closeutil.Discard(agent.Memory())
 	agent.engines = []engine.Engine{engine.NewSimulated()}
 	agent.detectedEngines = nil
 
@@ -1086,7 +1087,7 @@ func TestNodeModelsRemoteRequestsRequirePinnedPeer(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	defer agent.Memory().Close()
+	defer closeutil.Discard(agent.Memory())
 	if err := remote.TrustPeer(agent.cfg.NodeID, agent.identity.CertificatePEM()); err != nil {
 		t.Fatal(err)
 	}
@@ -1226,7 +1227,7 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	defer agent.Memory().Close()
+	defer closeutil.Discard(agent.Memory())
 	wrongServerReceivedRequest := false
 	wrongServer := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		wrongServerReceivedRequest = true
@@ -1304,7 +1305,7 @@ func TestStaleOrchestratorCannotMutateAfterYieldButCanServeItsPartition(t *testi
 		NodeID: "stale-orchestrator-fence-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if agent.mem != nil {
-		defer agent.mem.Close()
+		defer closeutil.Discard(agent.mem)
 	}
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
@@ -1372,8 +1373,9 @@ func TestDefaultNodeIDStable(t *testing.T) {
 	if got := DefaultNodeID(); got != hostname {
 		t.Fatalf("expected stable hostname ID %q, got %q", hostname, got)
 	}
-	if DefaultNodeID() != DefaultNodeID() {
-		t.Fatal("expected default node ID to remain stable")
+	first, second := DefaultNodeID(), DefaultNodeID()
+	if first != second {
+		t.Fatalf("expected default node ID to remain stable, got %q then %q", first, second)
 	}
 }
 

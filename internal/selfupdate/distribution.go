@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/version"
 )
 
@@ -60,7 +61,7 @@ func Inspect(path, release string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	defer file.Close()
+	defer closeutil.Discard(file)
 	hash := sha256.New()
 	manifest.Size, err = io.Copy(hash, io.LimitReader(file, MaxBinaryBytes+1))
 	if err != nil {
@@ -147,7 +148,7 @@ func (d Distribution) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "peer executable unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	defer file.Close()
+	defer closeutil.Discard(file)
 	stat, err := file.Stat()
 	if err != nil {
 		http.Error(w, "peer executable unavailable", http.StatusServiceUnavailable)

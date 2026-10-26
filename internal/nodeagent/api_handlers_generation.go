@@ -204,7 +204,7 @@ func (a *Agent) handleChat(w http.ResponseWriter, r *http.Request) {
 		// Fallback to Generate if Chat returned an error
 		var sb strings.Builder
 		for _, m := range req.Messages {
-			sb.WriteString(fmt.Sprintf("<|im_start|>%s\n%s<|im_end|>\n", m.Role, m.Content))
+			fmt.Fprintf(&sb, "<|im_start|>%s\n%s<|im_end|>\n", m.Role, m.Content)
 		}
 		sb.WriteString("<|im_start|>assistant\n")
 		var genErr error

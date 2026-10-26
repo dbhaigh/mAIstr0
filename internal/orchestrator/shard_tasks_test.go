@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -262,8 +263,8 @@ func TestShardGenerationStreamValidation(t *testing.T) {
 
 func TestShardGenerationReadsProgressBeforeCompletion(t *testing.T) {
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer closeutil.Discard(reader)
+	defer closeutil.Discard(writer)
 	progress := make(chan int, 2)
 	done := make(chan error, 1)
 	go func() {

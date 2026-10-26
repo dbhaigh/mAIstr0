@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 )
 
@@ -197,7 +198,7 @@ func (engine *HTTPPipelineStageEngine) ProbePipelineStageCapabilities(
 	if err != nil {
 		return nil, fmt.Errorf("probe stage capabilities: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed {
 		return nil, nil
 	}
@@ -253,7 +254,7 @@ func (engine *HTTPPipelineStageEngine) postJSON(ctx context.Context, path string
 	if err != nil {
 		return fmt.Errorf("send stage request: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, stageErrorBodyLimit))
 		if readErr != nil {
@@ -289,7 +290,7 @@ func (engine *HTTPPipelineStageEngine) ForwardStageRequest(
 ) ([]byte, error) {
 	assignment = engine.assignmentForServer(assignment)
 	reader, writer := io.Pipe()
-	defer reader.Close()
+	defer closeutil.Discard(reader)
 	writerDone := make(chan error, 1)
 	go func() {
 		writerDone <- writeStageForwardRequest(
@@ -310,7 +311,7 @@ func (engine *HTTPPipelineStageEngine) ForwardStageRequest(
 		_ = reader.CloseWithError(err)
 		return nil, fmt.Errorf("send stage forward request: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, stageErrorBodyLimit))
 		if readErr != nil {

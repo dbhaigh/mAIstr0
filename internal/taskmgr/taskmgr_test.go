@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	bolt "go.etcd.io/bbolt"
 )
@@ -114,7 +115,7 @@ func TestTaskHistorySyncMergesMissingAndReplacesReplicaState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer leader.Close()
+	defer closeutil.Discard(leader)
 	followerPath := filepath.Join(t.TempDir(), "follower.db")
 	follower, err := OpenManager(followerPath, nil)
 	if err != nil {
@@ -154,7 +155,7 @@ func TestTaskHistorySyncMergesMissingAndReplacesReplicaState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	defer closeutil.Discard(restarted)
 	stored, _ := restarted.Get(created.ID)
 	if stored.Description != "authoritative state" {
 		t.Fatalf("authoritative task replica was not durable: %q", stored.Description)
@@ -491,7 +492,7 @@ func TestApprovalGateSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	if err := reopened.ApproveChecked(task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +533,7 @@ func TestPersistentManagerRestoresHistoryAndMarksInterruptedTasksFailed(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	gotCompleted, ok := reopened.Get(completed.ID)
 	if !ok || gotCompleted.Status != StatusCompleted || !strings.Contains(gotCompleted.Result, "saved result") {
 		t.Fatalf("completed task was not restored: %+v", gotCompleted)

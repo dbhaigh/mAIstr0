@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -22,7 +23,7 @@ func TestWriteLegacyTaskFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer closeutil.Discard(db)
 
 	statuses := []Status{
 		StatusPending, StatusRunning, StatusSynthesis, StatusAwaitingApproval,
@@ -98,7 +99,7 @@ func TestLegacyTaskFixtureLoadsWithRestartRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 
 	recovered := map[Status]bool{
 		StatusPending: true, StatusRunning: true, StatusSynthesis: true,
@@ -166,7 +167,7 @@ func TestMemoryStoreSupportsManagerPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	task, err := manager.CreateChecked("in-memory persistence", nil)
 	if err != nil {
 		t.Fatal(err)

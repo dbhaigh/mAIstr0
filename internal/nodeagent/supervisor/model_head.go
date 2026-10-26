@@ -115,7 +115,7 @@ func (m *Manager) ConfigureLocalHead(ctx context.Context, modelID string, reques
 	if err != nil {
 		return Status{}, err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	_, writeErr := tmp.Write(data)
 	if err := errors.Join(writeErr, tmp.Close()); err != nil {
 		return Status{}, err

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
@@ -101,7 +102,7 @@ func main() {
 	if err != nil {
 		fatalf("failed to initialize application log: %v", err)
 	}
-	defer logFile.Close()
+	defer closeutil.Discard(logFile)
 	if *pairTo != "" {
 		fatal("--pair-to is no longer supported; orchestrators cannot be paired")
 	}

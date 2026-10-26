@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func TestInMemoryExperiencePagesCoverResultsAndEmptyPages(t *testing.T) {
@@ -133,7 +135,7 @@ func TestBoltFactsPageUsesExactScopePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeutil.Discard(store)
 	for _, fact := range []Fact{
 		{Scope: "team", Key: "one", Value: "included"},
 		{Scope: "team-archive", Key: "one", Value: "excluded"},
@@ -157,7 +159,7 @@ func TestBoltHistoryPagesUsePersistedCursorPositions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeutil.Discard(store)
 	for i := 0; i < 3; i++ {
 		if _, err := store.Record(Experience{Description: "websocket persistence", Success: i%2 == 0}); err != nil {
 			t.Fatal(err)

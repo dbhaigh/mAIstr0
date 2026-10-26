@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 )
 
@@ -100,7 +101,7 @@ func workerRequest(ctx context.Context, client *http.Client, endpoint string) (*
 		return nil, fmt.Errorf("request worker release: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		response.Body.Close()
+		_ = response.Body.Close()
 		return nil, fmt.Errorf("worker release returned HTTP %d", response.StatusCode)
 	}
 	return response, nil
@@ -118,13 +119,13 @@ func findWorkerRelease(ctx context.Context, client *http.Client, source, goos, a
 	if err != nil {
 		return workerRelease{}, releaseAsset{}, err
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	var releases []workerRelease
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&releases); err != nil {
 		return workerRelease{}, releaseAsset{}, fmt.Errorf("decode worker releases: %w", err)
 	}
 	for _, release := range releases {
-		if release.Draft || (release.Prerelease && !(source == "official" && officialWorkerBuildTag.MatchString(release.Tag))) {
+		if release.Draft || (release.Prerelease && (source != "official" || !officialWorkerBuildTag.MatchString(release.Tag))) {
 			continue
 		}
 		asset, ok := selectWorkerAsset(release, source, goos)
@@ -170,7 +171,7 @@ func downloadWorkerArchive(ctx context.Context, client *http.Client, asset relea
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("create worker archive: %w", err)
@@ -241,7 +242,7 @@ func extractWorkerArchive(archive, destination string, zipped bool) (string, err
 		if err != nil {
 			return "", err
 		}
-		defer archiveReader.Close()
+		defer closeutil.Discard(archiveReader)
 		for _, entry := range archiveReader.File {
 			if entry.Mode().IsDir() {
 				continue
@@ -264,12 +265,12 @@ func extractWorkerArchive(archive, destination string, zipped bool) (string, err
 		if err != nil {
 			return "", err
 		}
-		defer file.Close()
+		defer closeutil.Discard(file)
 		gz, err := gzip.NewReader(file)
 		if err != nil {
 			return "", err
 		}
-		defer gz.Close()
+		defer closeutil.Discard(gz)
 		tr := tar.NewReader(gz)
 		for {
 			entry, err := tr.Next()
@@ -324,7 +325,7 @@ func extractWorkerArchive(archive, destination string, zipped bool) (string, err
 			}
 			info, err := reader.Stat()
 			if err != nil || !info.Mode().IsRegular() {
-				reader.Close()
+				_ = reader.Close()
 				return "", errors.New("worker library link target is not a regular file")
 			}
 			err = write(name, info.Size(), reader)

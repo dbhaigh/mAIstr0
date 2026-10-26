@@ -39,7 +39,7 @@ func Download(ctx context.Context, client *http.Client, address, target string) 
 			return nil, err
 		}
 		if response.StatusCode != http.StatusOK {
-			response.Body.Close()
+			_ = response.Body.Close()
 			if response.StatusCode == http.StatusNotFound {
 				return nil, ErrNoUpdate
 			}
@@ -53,7 +53,7 @@ func Download(ctx context.Context, client *http.Client, address, target string) 
 	}
 	var manifest Manifest
 	err = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&manifest)
-	response.Body.Close()
+	_ = response.Body.Close()
 	if err != nil {
 		return "", manifest, fmt.Errorf("decode peer update manifest: %w", err)
 	}
@@ -75,8 +75,8 @@ func Download(ctx context.Context, client *http.Client, address, target string) 
 	ok := false
 	defer func() {
 		if !ok {
-			file.Close()
-			os.Remove(path)
+			_ = file.Close()
+			_ = os.Remove(path)
 		}
 	}()
 	response, err = get("/api/updates/binary")
@@ -85,7 +85,7 @@ func Download(ctx context.Context, client *http.Client, address, target string) 
 	}
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, manifest.Size+1))
-	response.Body.Close()
+	_ = response.Body.Close()
 	if err := errors.Join(copyErr, file.Sync(), file.Close()); err != nil {
 		return "", manifest, fmt.Errorf("save peer executable: %w", err)
 	}

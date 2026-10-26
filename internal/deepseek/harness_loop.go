@@ -181,11 +181,6 @@ func pickBestCoordinatorModel(models []engine.Model, defaultModel string) string
 	return bestName
 }
 
-// buildPrompt constructs the selected harness prompt incorporating tools and history.
-func (h *Harness) buildPrompt(s *Session) string {
-	return h.buildPromptWithTools(s, h.ListTools())
-}
-
 func (h *Harness) buildPromptWithTools(s *Session, tools []ToolDef) string {
 	var sb strings.Builder
 
@@ -247,7 +242,7 @@ func (h *Harness) buildPromptWithTools(s *Session, tools []ToolDef) string {
 	for _, msg := range s.Messages {
 		switch msg.Role {
 		case RoleUser:
-			sb.WriteString(fmt.Sprintf("<|im_start|>user\n%s<|im_end|>\n", msg.Content))
+			fmt.Fprintf(&sb, "<|im_start|>user\n%s<|im_end|>\n", msg.Content)
 		case RoleAssistant:
 			sb.WriteString("<|im_start|>assistant\n")
 			if msg.Thought != "" {
@@ -259,7 +254,7 @@ func (h *Harness) buildPromptWithTools(s *Session, tools []ToolDef) string {
 						"name":      tc.Name,
 						"arguments": tc.Arguments,
 					})
-					sb.WriteString(fmt.Sprintf("<tool_call>\n%s\n</tool_call>\n", string(callJSON)))
+					fmt.Fprintf(&sb, "<tool_call>\n%s\n</tool_call>\n", string(callJSON))
 				}
 			} else if msg.Content != "" {
 				sb.WriteString(msg.Content + "\n")
@@ -273,7 +268,7 @@ func (h *Harness) buildPromptWithTools(s *Session, tools []ToolDef) string {
 					"error":  msg.ToolResponse.Error,
 					"node":   msg.ToolResponse.NodeID,
 				})
-				sb.WriteString(fmt.Sprintf("<tool_response>\n%s\n</tool_response>\n", string(respJSON)))
+				fmt.Fprintf(&sb, "<tool_response>\n%s\n</tool_response>\n", string(respJSON))
 			}
 		}
 	}

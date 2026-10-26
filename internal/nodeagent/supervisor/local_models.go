@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/shard"
 )
 
@@ -198,7 +199,7 @@ func readLocalGGUF(path string, requestedContext int) (shard.ModelProfile, error
 	if err != nil {
 		return shard.ModelProfile{}, err
 	}
-	defer file.Close()
+	defer closeutil.Discard(file)
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return shard.ModelProfile{}, errors.New("model is not a regular file")

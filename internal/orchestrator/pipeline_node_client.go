@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/engine"
 )
 
@@ -103,7 +103,7 @@ func (c *nodeClient) pipelineStageRequestControl(
 	if err != nil {
 		return fmt.Errorf("send pipeline stage request control to node %s: %w", nodeID, err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		errorBody, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<10))
 		if readErr != nil {
@@ -143,7 +143,7 @@ func (c *nodeClient) pipelineStageStep(
 		return engine.PipelineStageOutput{}, 0, err
 	}
 	reader, writer := io.Pipe()
-	defer reader.Close()
+	defer closeutil.Discard(reader)
 	writerDone := make(chan pipelineStageWriteResult, 1)
 	go func() {
 		started := time.Now()
@@ -171,7 +171,7 @@ func (c *nodeClient) pipelineStageStep(
 		_ = reader.CloseWithError(err)
 		return engine.PipelineStageOutput{}, 0, fmt.Errorf("send pipeline stage request to node %s: %w", nodeID, err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_ = reader.CloseWithError(errors.New("stage endpoint rejected request"))
 		errorBody, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<10))
@@ -241,7 +241,7 @@ func (c *nodeClient) pipelineStageControl(
 	if err != nil {
 		return fmt.Errorf("send stage control request to node: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<10))
 		if readErr != nil {
@@ -253,136 +253,4 @@ func (c *nodeClient) pipelineStageControl(
 		}
 	}
 	return nil
-}
-
-func (c *nodeClient) forwardPipelineStage(
-	ctx context.Context,
-	nodeID, address string,
-	assignment engine.StageAssignment,
-	prompt string,
-	activations []byte,
-	kvCache []byte,
-	options engine.GenerationOptions,
-	onToken func(string) error,
-) ([]byte, []byte, time.Duration, error) {
-	if err := assignment.Validate(); err != nil {
-		return nil, nil, 0, err
-	}
-	if len(prompt)+len(activations)+len(kvCache) > maxPipelineStageBytes {
-		return nil, nil, 0, fmt.Errorf("pipeline stage request exceeds %d bytes", maxPipelineStageBytes)
-	}
-	reader, writer := io.Pipe()
-	defer reader.Close()
-	writerDone := make(chan pipelineStageWriteResult, 1)
-	go func() {
-		started := time.Now()
-		err := writePipelineStageRequest(
-			writer, assignment, prompt, activations, kvCache, options,
-		)
-		writerDone <- pipelineStageWriteResult{duration: time.Since(started), err: err}
-	}()
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, strings.TrimRight(address, "/")+engine.StageForwardPath, reader,
-	)
-	if err != nil {
-		_ = reader.CloseWithError(err)
-		return nil, nil, 0, fmt.Errorf("create stage forward request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-ndjson")
-	request.Header.Set("Accept", "application/x-ndjson")
-	response, err := c.DoDispatch(request)
-	if err != nil {
-		_ = reader.CloseWithError(err)
-		return nil, nil, 0, fmt.Errorf("send stage forward request to node %s: %w", nodeID, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_ = reader.CloseWithError(errors.New("stage endpoint rejected request"))
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<10))
-		if readErr != nil {
-			return nil, nil, 0, fmt.Errorf("stage forward returned %s and reading its error failed: %w", response.Status, readErr)
-		}
-		return nil, nil, 0, &pipelineStageHTTPError{
-			nodeID: nodeID, status: response.Status, body: strings.TrimSpace(string(body)),
-		}
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maxPipelineStageBytes))
-	var output bytes.Buffer
-	var updatedCache []byte
-	for {
-		var frame engine.StageForwardFrame
-		if err := decoder.Decode(&frame); err != nil {
-			if err == io.EOF {
-				return nil, nil, 0, errors.New("stage response ended without a complete frame")
-			}
-			return nil, nil, 0, fmt.Errorf("decode stage response from node %s: %w", nodeID, err)
-		}
-		switch frame.Type {
-		case engine.StageFrameActivation:
-			if assignment.IsFinal {
-				return nil, nil, 0, errors.New("final pipeline stage returned activation data instead of tokens")
-			}
-			if output.Len()+len(frame.Data) > maxPipelineStageBytes {
-				return nil, nil, 0, fmt.Errorf("pipeline activation output exceeds %d bytes", maxPipelineStageBytes)
-			}
-			if _, err := output.Write(frame.Data); err != nil {
-				return nil, nil, 0, err
-			}
-		case engine.StageFrameToken:
-			if !assignment.IsFinal {
-				return nil, nil, 0, errors.New("non-final pipeline stage returned token data")
-			}
-			if !utf8.Valid(frame.Data) {
-				return nil, nil, 0, errors.New("final pipeline stage returned non-UTF-8 token data")
-			}
-			if onToken != nil {
-				if err := onToken(string(frame.Data)); err != nil {
-					return nil, nil, 0, err
-				}
-			}
-		case engine.StageFrameComplete:
-			updatedCache = append([]byte(nil), frame.KVCache...)
-			writeResult := <-writerDone
-			if writeResult.err != nil {
-				return nil, nil, 0, fmt.Errorf("write stage forward request: %w", writeResult.err)
-			}
-			return output.Bytes(), updatedCache, writeResult.duration, nil
-		case engine.StageFrameError:
-			return nil, nil, 0, fmt.Errorf("stage on node %s failed: %s", nodeID, frame.Error)
-		default:
-			return nil, nil, 0, fmt.Errorf("stage on node %s returned unexpected frame type %q", nodeID, frame.Type)
-		}
-	}
-}
-
-func writePipelineStageRequest(
-	writer *io.PipeWriter,
-	assignment engine.StageAssignment,
-	prompt string,
-	activations []byte,
-	kvCache []byte,
-	options engine.GenerationOptions,
-) error {
-	encoder := json.NewEncoder(writer)
-	if err := encoder.Encode(engine.StageForwardFrame{
-		Type: engine.StageFrameStart, Assignment: &assignment, Prompt: prompt,
-		Temperature: options.Temperature, MaxTokens: options.MaxTokens, KVCache: kvCache,
-	}); err != nil {
-		_ = writer.CloseWithError(err)
-		return err
-	}
-	for offset := 0; offset < len(activations); offset += 32 << 10 {
-		end := min(offset+(32<<10), len(activations))
-		if err := encoder.Encode(engine.StageForwardFrame{
-			Type: engine.StageFrameActivation, Data: activations[offset:end],
-		}); err != nil {
-			_ = writer.CloseWithError(err)
-			return err
-		}
-	}
-	if err := encoder.Encode(engine.StageForwardFrame{Type: engine.StageFrameEnd}); err != nil {
-		_ = writer.CloseWithError(err)
-		return err
-	}
-	return writer.Close()
 }

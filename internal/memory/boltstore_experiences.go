@@ -175,7 +175,7 @@ func (s *boltStore) Recall(f SearchFilter) []Experience {
 func tokenize(s string) []string {
 	s = strings.ToLower(s)
 	fields := strings.FieldsFunc(s, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	})
 	var out []string
 	for _, f := range fields {

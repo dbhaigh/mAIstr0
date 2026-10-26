@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 // LlamaCPP is an OpenAI-compatible llama.cpp server. It shares the vLLM wire
@@ -148,13 +150,13 @@ func (l *LlamaCPP) fetchProperties(ctx context.Context) (llamaCPPProperties, boo
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed ||
 		resp.StatusCode == http.StatusNoContent {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return llamaCPPProperties{}, false, nil
 	}
 	if resp.StatusCode >= 300 {
 		return llamaCPPProperties{}, false, l.VLLM.responseError("get properties", resp)
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	var properties llamaCPPProperties
 	if err := json.NewDecoder(resp.Body).Decode(&properties); err != nil {
 		return llamaCPPProperties{}, false, fmt.Errorf("%s decode properties: %w", l.Name(), err)

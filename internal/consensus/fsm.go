@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/hashicorp/raft"
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 const (
@@ -156,7 +157,7 @@ func (f *stateMachine) Snapshot() (raft.FSMSnapshot, error) {
 }
 
 func (f *stateMachine) Restore(reader io.ReadCloser) error {
-	defer reader.Close()
+	defer closeutil.Discard(reader)
 	raw, err := io.ReadAll(io.LimitReader(reader, maxSnapshot+1))
 	if err != nil {
 		return fmt.Errorf("consensus: read state snapshot: %w", err)

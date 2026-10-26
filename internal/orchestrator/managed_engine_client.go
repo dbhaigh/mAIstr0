@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/shard"
@@ -32,7 +33,7 @@ func (c *nodeClient) VerifyModel(ctx context.Context, address, id string, expect
 		if err != nil {
 			return shard.ModelProfile{}, err
 		}
-		defer response.Body.Close()
+		defer closeutil.Discard(response.Body)
 		if response.StatusCode != http.StatusOK {
 			return shard.ModelProfile{}, managedEngineResponseError(response)
 		}
@@ -58,7 +59,7 @@ func (c *nodeClient) VerifyModel(ctx context.Context, address, id string, expect
 	}
 	var inventory supervisor.LocalHeadModels
 	decodeErr := func() error {
-		defer response.Body.Close()
+		defer closeutil.Discard(response.Body)
 		if response.StatusCode != http.StatusOK {
 			return managedEngineResponseError(response)
 		}
@@ -121,7 +122,7 @@ func (c *nodeClient) List(ctx context.Context, address string) ([]supervisor.Sta
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, managedEngineResponseError(response)
 	}
@@ -189,7 +190,7 @@ func managedEngineURL(address, id, operation string) string {
 }
 
 func decodeManagedEngineStatus(response *http.Response) (supervisor.Status, error) {
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return supervisor.Status{}, managedEngineResponseError(response)
 	}

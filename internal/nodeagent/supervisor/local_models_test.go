@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 )
 
@@ -164,7 +165,7 @@ func TestConfigureLocalHeadPersistsAndRespectsActiveEngines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	defer closeutil.Discard(restarted)
 	if restarted.engines[installedHeadID].config.Options.LlamaServer.ContextSize != 8192 || restarted.engines[installedHeadID].modelName != "model" {
 		t.Fatal("head configuration not restored")
 	}

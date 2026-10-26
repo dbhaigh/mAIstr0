@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/hub"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
@@ -45,7 +46,7 @@ func TestPublishSnapshotSkipsTaskFetchWithoutSubscribers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	deadline := time.Now().Add(2 * time.Second)
 	for !events.HasSubscribers() {
 		if time.Now().After(deadline) {

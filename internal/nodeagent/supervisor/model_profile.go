@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/shard"
 )
@@ -107,7 +108,7 @@ func readConfiguredModelPath(path string, modelAllowlist []string, requestedCont
 	if err != nil {
 		return shard.ModelProfile{}, fmt.Errorf("open configured GGUF model: %w", err)
 	}
-	defer file.Close()
+	defer closeutil.Discard(file)
 	profile, err := shard.ParseGGUFWithFileSize(file, uint64(info.Size()))
 	if err != nil {
 		return shard.ModelProfile{}, fmt.Errorf("parse configured GGUF model: %w", err)

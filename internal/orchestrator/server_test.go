@@ -32,6 +32,8 @@ import (
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"sync"
 	"sync/atomic"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 // newTestServer builds an orchestrator with its memory database isolated to
@@ -373,7 +375,7 @@ func TestHarnessSelection(t *testing.T) {
 	if defaultAgent.HarnessName() != "pi" {
 		t.Fatalf("default backend = %q, want pi", defaultAgent.HarnessName())
 	}
-	defer defaultAgent.Close()
+	defer closeutil.Discard(defaultAgent)
 
 	deepseek, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "deepseek.db"), "deepseek")
 	if err != nil {
@@ -382,7 +384,7 @@ func TestHarnessSelection(t *testing.T) {
 	if deepseek.HarnessName() != "deepseek" {
 		t.Fatalf("expected deepseek harness, got %q", deepseek.HarnessName())
 	}
-	defer deepseek.Close()
+	defer closeutil.Discard(deepseek)
 
 	pi, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "pi.db"), "pi")
 	if err != nil {
@@ -391,7 +393,7 @@ func TestHarnessSelection(t *testing.T) {
 	if pi.HarnessName() != "pi" {
 		t.Fatalf("expected pi backend, got %q", pi.HarnessName())
 	}
-	defer pi.Close()
+	defer closeutil.Discard(pi)
 
 	if _, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "unknown.db"), "unknown"); err == nil {
 		t.Fatal("expected unknown backend to return an error")
@@ -587,7 +589,7 @@ func TestAgentSessionHistoryRestoredAfterRestart(t *testing.T) {
 			if err != nil {
 				t.Fatalf("restart orchestrator: %v", err)
 			}
-			defer restarted.Close()
+			defer closeutil.Discard(restarted)
 			request = httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID, nil)
 			response = httptest.NewRecorder()
 			restarted.Mux().ServeHTTP(response, request)

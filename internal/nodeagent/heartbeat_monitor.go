@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 const (
@@ -126,7 +128,7 @@ func statusProbe(client *http.Client) func(context.Context, string) error {
 		if err != nil {
 			return fmt.Errorf("request orchestrator status: %w", err)
 		}
-		defer response.Body.Close()
+		defer closeutil.Discard(response.Body)
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			return fmt.Errorf("orchestrator status endpoint returned %s", response.Status)
 		}

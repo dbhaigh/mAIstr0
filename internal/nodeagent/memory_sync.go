@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/memory"
 )
@@ -177,10 +178,6 @@ func decodeMemorySyncRequest(w http.ResponseWriter, r *http.Request, maxBytes in
 	return snapshot, reader.bytesRead, nil
 }
 
-func marshalMemorySnapshot(snapshot memory.Snapshot) ([]byte, error) {
-	return marshalMemorySnapshotWithLimit(snapshot, maxMemorySyncBodyBytes)
-}
-
 func marshalMemorySnapshotWithLimit(snapshot memory.Snapshot, maxBytes int64) ([]byte, error) {
 	body, err := json.Marshal(snapshot)
 	if err != nil {
@@ -231,12 +228,12 @@ func fetchMemorySyncSnapshotWithContext(ctx context.Context, client memorySyncHT
 		lastStatus = response.StatusCode
 		version, responseWatermarks, err := memory.ReadSyncResponseHeaders(response)
 		if err != nil {
-			response.Body.Close()
+			_ = response.Body.Close()
 			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
 		nextCursor, more, err := memory.ReadSyncPageResponseHeader(response)
 		if err != nil {
-			response.Body.Close()
+			_ = response.Body.Close()
 			return memory.Snapshot{}, totalBytes, lastStatus, err
 		}
 		page, bodyBytes, err := decodeMemorySyncResponse(response, maxBytes, version)
@@ -340,7 +337,7 @@ func postMemorySnapshotPagesWithContext(ctx context.Context, client memorySyncHT
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			response.Body.Close()
+			_ = response.Body.Close()
 			return totalBytes, fmt.Errorf("peer returned %s: %s", response.Status, strings.TrimSpace(string(message)))
 		}
 		_, copyErr := io.Copy(io.Discard, response.Body)
@@ -357,7 +354,7 @@ func postMemorySnapshotPagesWithContext(ctx context.Context, client memorySyncHT
 }
 
 func decodeMemorySyncResponse(resp *http.Response, maxBytes int64, version int) (memory.Snapshot, int64, error) {
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return memory.Snapshot{}, int64(len(body)), fmt.Errorf("peer returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -400,10 +397,6 @@ func memorySyncWatermarks(store memory.Store) map[string]uint64 {
 		return nil
 	}
 	return store.Watermarks()
-}
-
-func (a *Agent) syncPeerMemoryLoop(ctx context.Context) {
-	a.orchestratorLink.syncer.syncPeerMemoryLoop(ctx)
 }
 
 // syncPeerMemory makes the elected node a relay for memory in standalone

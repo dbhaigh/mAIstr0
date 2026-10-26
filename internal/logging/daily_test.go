@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func TestDailyFileRotatesAndRetainsSevenDays(t *testing.T) {
@@ -14,7 +16,7 @@ func TestDailyFileRotatesAndRetainsSevenDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	defer closeutil.Discard(log)
 	if _, err := log.Write([]byte("before rollover\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +56,7 @@ func TestDailyFilePrunesArchivesOlderThanSevenCalendarDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	defer closeutil.Discard(log)
 	today := time.Now()
 	for daysAgo := 0; daysAgo < 10; daysAgo++ {
 		day := today.AddDate(0, 0, -daysAgo).Format(dateFormat)

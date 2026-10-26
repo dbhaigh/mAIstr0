@@ -13,14 +13,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
 func TestManagedEngineProxyFlushesHeadersAndSmallChunksBeforeCompletion(t *testing.T) {
 	body, writer := io.Pipe()
-	defer body.Close()
-	defer writer.Close()
+	defer closeutil.Discard(body)
+	defer closeutil.Discard(writer)
 	finished := make(chan error, 1)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		finished <- copyManagedEngineResponse(w, &http.Response{
@@ -35,7 +36,7 @@ func TestManagedEngineProxyFlushesHeadersAndSmallChunksBeforeCompletion(t *testi
 	if err != nil {
 		t.Fatalf("headers buffered until body completed: %v", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"spring\"}}]}\n\n"
 	go func() {
 		if _, err := io.WriteString(writer, chunk); err != nil {

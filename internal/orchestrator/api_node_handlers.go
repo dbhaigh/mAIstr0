@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/httpx"
@@ -85,7 +86,7 @@ func (s *Server) handleRefreshAllNodeModels(w http.ResponseWriter, r *http.Reque
 			results[node.ID] = "unreachable: " + err.Error()
 			continue
 		}
-		response.Body.Close()
+		_ = response.Body.Close()
 		if response.StatusCode >= 300 {
 			results[node.ID] = response.Status
 			continue
@@ -114,7 +115,7 @@ func (s *Server) handleNodeModelsGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	copyNodeResponse(w, resp.Body)
@@ -153,7 +154,7 @@ func (s *Server) handleNodeModelsPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	copyNodeResponse(w, resp.Body)
@@ -228,7 +229,7 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node communication error: %w", err)))
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if path == "/api/engines/managed/install-worker" && resp.StatusCode == http.StatusOK {
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, httpx.ControlJSONBodyBytes+1))
 		var result supervisor.WorkerInstallResult
@@ -275,7 +276,7 @@ func (s *Server) handleNodeChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node execution failed: %w", err)))
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	copyNodeResponse(w, resp.Body)
@@ -320,7 +321,7 @@ func (s *Server) handleNodeDialoguesProxy(w http.ResponseWriter, r *http.Request
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node communication error: %w", err)))
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	for k, v := range resp.Header {
 		for _, val := range v {
 			w.Header().Add(k, val)

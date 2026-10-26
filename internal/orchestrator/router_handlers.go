@@ -35,8 +35,12 @@ const (
 	maxRouterRequestBytes = 20 << 20
 )
 
+// routerStreamBufferPool holds *[]byte so Put does not allocate a slice header.
 var routerStreamBufferPool = sync.Pool{
-	New: func() any { return make([]byte, 32*1024) },
+	New: func() any {
+		buffer := make([]byte, 32*1024)
+		return &buffer
+	},
 }
 
 func (s *Server) handleRouterEvents(w http.ResponseWriter, _ *http.Request) {
@@ -70,10 +74,11 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusTooManyRequests
 		failureClass := "client_rate_limit"
 		message := "per-client request rate limit exceeded"
-		if limit.Reason == "concurrency" {
+		switch limit.Reason {
+		case "concurrency":
 			failureClass = "client_concurrency_limit"
 			message = "per-client concurrency limit exceeded"
-		} else if limit.Reason == "capacity" {
+		case "capacity":
 			status = http.StatusServiceUnavailable
 			failureClass = "client_limit_capacity"
 			message = "client limit capacity is temporarily unavailable"
@@ -341,7 +346,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			ttfbTimer.Stop()
 			responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, routerMaxErrorBytes+1))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			attemptCancel()
 			s.releaseRouterReservation(reservedNodeID, reservation)
 			if ctx.Err() != nil {
@@ -402,7 +407,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		firstByteMs := time.Since(attemptStarted).Milliseconds()
 		ttfbTimer.Stop()
 		if ttfbExpired.Load() || (n == 0 && readErr != nil && !errors.Is(readErr, io.EOF)) {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			attemptCancel()
 			finishStream()
 			s.releaseRouterReservation(reservedNodeID, reservation)
@@ -451,7 +456,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		if n > 0 {
 			if _, err := w.Write(firstByte[:n]); err != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				attemptCancel()
 				finishStream()
 				s.releaseRouterReservation(reservedNodeID, reservation)
@@ -480,7 +485,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			streamErr = streamRouterResponse(w, idleReader)
 			_ = idleReader.Close()
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		attemptCancel()
 		finishStream()
 		s.releaseRouterReservation(reservedNodeID, reservation)
@@ -745,7 +750,7 @@ func copyRouterHeaders(dst, src http.Header) {
 }
 
 func streamRouterResponse(w http.ResponseWriter, body io.Reader) error {
-	buf := routerStreamBufferPool.Get().([]byte)
+	buf := routerStreamBufferPool.Get().(*[]byte)
 	defer routerStreamBufferPool.Put(buf)
-	return httpx.NewStreamWriter(w).Copy(body, buf)
+	return httpx.NewStreamWriter(w).Copy(body, *buf)
 }

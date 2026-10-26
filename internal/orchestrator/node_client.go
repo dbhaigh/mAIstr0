@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
@@ -165,7 +166,7 @@ func (c *nodeClient) discoveredNodeStatusContext(ctx context.Context, addr strin
 	if err != nil {
 		return cluster.NodeStatus{}, err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusForbidden {
 			return cluster.NodeStatus{}, fmt.Errorf(
@@ -220,7 +221,7 @@ func (c *nodeClient) streamNodeGenerate(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadGateway, generateAPIResponse{Error: err.Error()})
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
 		writeJSON(w, resp.StatusCode, generateAPIResponse{Error: strings.TrimSpace(string(errBody))})
@@ -320,7 +321,7 @@ func (c *nodeClient) callNodeGenerateWithOptionsContextAndIdempotency(
 		if resp == nil {
 			return "", errors.New("node generate request returned no response")
 		}
-		defer resp.Body.Close()
+		defer closeutil.Discard(resp.Body)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
 			if readErr != nil {
@@ -343,7 +344,7 @@ func (c *nodeClient) callNodeGenerateWithOptionsContextAndIdempotency(
 		return result.Output, nil
 	}
 	if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		defer resp.Body.Close()
+		defer closeutil.Discard(resp.Body)
 		var res struct {
 			Output string `json:"output"`
 			Error  string `json:"error,omitempty"`
@@ -356,7 +357,7 @@ func (c *nodeClient) callNodeGenerateWithOptionsContextAndIdempotency(
 		}
 	}
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	execPayload, _ := json.Marshal(map[string]string{
@@ -373,7 +374,7 @@ func (c *nodeClient) callNodeGenerateWithOptionsContextAndIdempotency(
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return "", fmt.Errorf("node returned %s: %s", resp.Status, string(errBody))

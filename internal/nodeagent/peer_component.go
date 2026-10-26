@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/httpx"
@@ -21,14 +22,6 @@ import (
 
 func (c *peerComponent) peerSnapshot() []cluster.NodeStatus {
 	return c.state.peersSnapshot()
-}
-
-func (c *peerComponent) currentTasks() []*taskmgr.Task {
-	tasks, err := c.currentTasksContext(context.Background())
-	if err != nil {
-		logging.Errorf("nodeagent", "nodeagent: fetch peer tasks: %v", err)
-	}
-	return tasks
 }
 
 func (c *peerComponent) currentTasksContext(ctx context.Context) ([]*taskmgr.Task, error) {
@@ -47,7 +40,7 @@ func (c *peerComponent) currentTasksContext(ctx context.Context) ([]*taskmgr.Tas
 	if err != nil {
 		return nil, fmt.Errorf("fetch tasks from %s: %w", leader.ID, err)
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch tasks from %s: HTTP %s", leader.ID, resp.Status)
 	}
@@ -111,7 +104,7 @@ func (c *peerComponent) dispatchToPeer(ctx context.Context, taskID string, asg s
 		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
 		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", errors.New("node returned "+resp.Status+": "+string(errBody)))
@@ -194,10 +187,6 @@ func (c *peerComponent) isMostCapable() bool {
 	return c.mostCapableNode().ID == c.state.configSnapshot().NodeID
 }
 
-func (c *peerComponent) isFastest() bool {
-	return c.fastestNode().ID == c.state.configSnapshot().NodeID
-}
-
 func (c *peerComponent) peerAddress(id string) (string, bool) {
 	cfg := c.state.configSnapshot()
 	if id == cfg.NodeID {
@@ -276,7 +265,7 @@ func (c *peerComponent) proxy(w http.ResponseWriter, r *http.Request, addr, path
 		http.Error(w, "peer unreachable: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 
 	for key, values := range resp.Header {
 		for _, value := range values {
@@ -304,28 +293,15 @@ func (s *agentState) replacePeers(peers []cluster.NodeStatus) {
 	s.mu.Unlock()
 }
 
-func (a *Agent) currentTasks() []*taskmgr.Task {
-	return a.peerComponent.currentTasks()
-}
-
 func (a *Agent) Peers() []cluster.NodeStatus {
 	return a.peerComponent.peerSnapshot()
-}
-
-func (a *Agent) dispatchToPeer(ctx context.Context, taskID string, assignment scheduler.Assignment) {
-	a.peerComponent.dispatchToPeer(ctx, taskID, assignment)
 }
 
 func (a *Agent) mostCapableNode() cluster.NodeStatus {
 	return a.peerComponent.mostCapableNode()
 }
 
-func (a *Agent) fastestNode() cluster.NodeStatus {
-	return a.peerComponent.fastestNode()
-}
-
 func (a *Agent) isMostCapable() bool { return a.peerComponent.isMostCapable() }
-func (a *Agent) isFastest() bool     { return a.peerComponent.isFastest() }
 func (a *Agent) peerAddress(id string) (string, bool) {
 	return a.peerComponent.peerAddress(id)
 }

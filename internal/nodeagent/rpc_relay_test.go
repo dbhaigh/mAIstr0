@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
@@ -19,7 +20,7 @@ func TestRPCRelayRejectsClientWithoutPinnedCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backendListener.Close()
+	defer closeutil.Discard(backendListener)
 	backendAccepted := make(chan struct{}, 1)
 	go func() {
 		connection, err := backendListener.Accept()
@@ -33,7 +34,7 @@ func TestRPCRelayRejectsClientWithoutPinnedCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer relay.Close()
+	defer closeutil.Discard(relay)
 	endpoint, err := relay.StartWorker(context.Background(), "rpc-worker", backendListener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +46,7 @@ func TestRPCRelayRejectsClientWithoutPinnedCertificate(t *testing.T) {
 		&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13},
 	)
 	if err == nil {
-		defer connection.Close()
+		defer closeutil.Discard(connection)
 		_ = connection.SetDeadline(time.Now().Add(time.Second))
 		_, _ = connection.Write([]byte("must-not-forward"))
 		response := make([]byte, len("must-not-forward"))
@@ -75,7 +76,7 @@ func TestRPCRelaySurvivesWorkerBackendRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer workerRelay.Close()
+	defer closeutil.Discard(workerRelay)
 	relayAddress, err := workerRelay.StartWorker(context.Background(), "rpc-worker-engine", backendAddress)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +85,7 @@ func TestRPCRelaySurvivesWorkerBackendRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer headRelay.Close()
+	defer closeutil.Discard(headRelay)
 	localEndpoints, err := headRelay.StartHead(context.Background(), "llama-head", []supervisor.RPCRelayTarget{
 		{PeerID: workerIdentity.ID(), Address: relayAddress},
 	})
@@ -123,7 +124,7 @@ func BenchmarkRPCRelayOverhead(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer workerRelay.Close()
+	defer closeutil.Discard(workerRelay)
 	relayAddress, err := workerRelay.StartWorker(context.Background(), "rpc-worker", backend)
 	if err != nil {
 		b.Fatal(err)
@@ -132,7 +133,7 @@ func BenchmarkRPCRelayOverhead(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer headRelay.Close()
+	defer closeutil.Discard(headRelay)
 	localEndpoints, err := headRelay.StartHead(context.Background(), "llama-head", []supervisor.RPCRelayTarget{
 		{PeerID: workerIdentity.ID(), Address: relayAddress},
 	})
@@ -157,7 +158,7 @@ func benchmarkRelayRoundTrip(b *testing.B, address string, payload []byte) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer connection.Close()
+	defer closeutil.Discard(connection)
 	buffer := make([]byte, len(payload))
 	b.SetBytes(int64(len(payload) * 2))
 	b.ReportAllocs()
@@ -178,7 +179,7 @@ func exchangeRelayPayload(t testing.TB, ctx context.Context, endpoint string, pa
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close()
+	defer closeutil.Discard(connection)
 	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
 	if err := writeRelayPayload(connection, payload); err != nil {
 		t.Fatal(err)
@@ -230,7 +231,7 @@ func startRelayEchoBackendAt(tb testing.TB, address string) (string, func(), err
 			connections.Add(1)
 			go func() {
 				defer connections.Done()
-				defer connection.Close()
+				defer closeutil.Discard(connection)
 				_, _ = io.Copy(connection, connection)
 			}()
 		}
@@ -263,7 +264,7 @@ func TestRPCRelayRejectsUntrustedPinnedPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer workerRelay.Close()
+	defer closeutil.Discard(workerRelay)
 	relayAddress, err := workerRelay.StartWorker(context.Background(), "rpc-worker", backend)
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +291,7 @@ func TestRPCRelayClosesActiveSessionWhenClientPinIsRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer workerRelay.Close()
+	defer closeutil.Discard(workerRelay)
 	endpoint, err := workerRelay.StartWorker(context.Background(), "rpc-worker-engine", backend)
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +301,7 @@ func TestRPCRelayClosesActiveSessionWhenClientPinIsRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close()
+	defer closeutil.Discard(connection)
 	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
 	payload := []byte("pinned-session")
 	if err := writeRelayPayload(connection, payload); err != nil {

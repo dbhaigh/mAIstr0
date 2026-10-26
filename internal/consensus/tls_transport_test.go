@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
@@ -63,10 +64,10 @@ func TestTLSStreamLayerAuthenticatesClusterAndPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer clientConn.Close()
+	defer closeutil.Discard(clientConn)
 	select {
 	case serverConn := <-accepted:
-		defer serverConn.Close()
+		defer closeutil.Discard(serverConn)
 	case err := <-acceptErrors:
 		t.Fatal(err)
 	case <-time.After(2 * time.Second):
@@ -97,7 +98,7 @@ func TestTLSStreamLayerRejectsDifferentCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer serverLayer.Close()
+	defer closeutil.Discard(serverLayer)
 	clientListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +107,7 @@ func TestTLSStreamLayerRejectsDifferentCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer clientLayer.Close()
+	defer closeutil.Discard(clientLayer)
 
 	accepted := make(chan error, 1)
 	go func() {
@@ -120,7 +121,10 @@ func TestTLSStreamLayerRejectsDifferentCluster(t *testing.T) {
 	}
 	_ = serverLayer.Close()
 	select {
-	case <-accepted:
+	case err := <-accepted:
+		if err == nil {
+			t.Fatal("server accept returned a connection after listener close")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("server accept did not stop after listener close")
 	}
@@ -179,7 +183,7 @@ func TestTLSStreamLayerRaisesMinimumVersionToTLS13(t *testing.T) {
 			serverHandshake <- err
 			return
 		}
-		defer conn.Close()
+		defer closeutil.Discard(conn)
 		serverHandshake <- conn.(*tls.Conn).Handshake()
 	}()
 	if conn, err := layer.Dial(raft.ServerAddress(tls12Listener.Addr().String()), time.Second); err == nil {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/logging"
 )
 
@@ -21,7 +22,7 @@ var (
 )
 
 func (m *Manager) logProcessOutput(reader *os.File, id string) {
-	defer reader.Close()
+	defer closeutil.Discard(reader)
 	buffered := bufio.NewReaderSize(reader, 4096)
 	line := make([]byte, 0, 4096)
 	truncated := false

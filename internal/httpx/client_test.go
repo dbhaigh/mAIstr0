@@ -76,7 +76,7 @@ func TestNewClientRetainsCustomTransportAndRedirectPolicy(t *testing.T) {
 	defer server.Close()
 	response, err := client.Get(server.URL)
 	if response != nil {
-		response.Body.Close()
+		_ = response.Body.Close()
 	}
 	if !errors.Is(err, redirectErr) || calls != 1 {
 		t.Fatalf("redirect error = %v, calls = %d", err, calls)
@@ -110,7 +110,7 @@ func TestNewClientsShareConnectionsNotClientState(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = io.Copy(io.Discard, response.Body)
-		response.Body.Close()
+		_ = response.Body.Close()
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -9,6 +9,8 @@ import (
 	"github.com/maistr0/maistr0/internal/httpx"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 type ClusterStatusTool struct{}
@@ -364,7 +366,7 @@ func (t *GetNodeDialogueTool) Execute(ctx context.Context, h *Harness, s *Sessio
 	if err != nil {
 		return nil, node.ID, node.Address, "", err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 
 	var dlg map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&dlg); err != nil {

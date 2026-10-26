@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func waitForSubscribers(t *testing.T, h *Hub, want bool) {
@@ -40,7 +42,7 @@ func TestHubTracksSubscribersAndDeliversEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if got := response.Header.Get("Content-Type"); got != "text/event-stream" {
 		t.Fatalf("Content-Type = %q", got)
 	}

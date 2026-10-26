@@ -148,10 +148,6 @@ func (c *telemetryComponent) recordHardwareUsage(usage hardwareUsageSample) {
 	c.hwMu.Unlock()
 }
 
-func (c *telemetryComponent) hardwareUsageLoop() {
-	c.hardwareUsageLoopContext(context.Background())
-}
-
 func (c *telemetryComponent) hardwareUsageLoopContext(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
@@ -216,9 +212,6 @@ func (a *Agent) telemetryTimestamp() time.Time {
 }
 func (a *Agent) hardwareSnapshot() hardware.Info {
 	return a.telemetryComponent.hardwareSnapshot()
-}
-func (a *Agent) hardwareUsageLoop() {
-	a.telemetryComponent.hardwareUsageLoop()
 }
 func (a *Agent) gpuHistorySnapshot() []hardware.GPUUsageSample {
 	return a.telemetryComponent.gpuHistorySnapshot()

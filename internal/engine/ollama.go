@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 )
 
@@ -43,7 +44,7 @@ func (o *Ollama) Available() bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -68,7 +69,7 @@ func (o *Ollama) PullContext(ctx context.Context, model string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("ollama pull %q failed: %s: %s", model, resp.Status, strings.TrimSpace(string(data)))
@@ -88,7 +89,7 @@ func (o *Ollama) ListModels() ([]Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return nil, fmt.Errorf("ollama list models failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -154,7 +155,7 @@ func (o *Ollama) GenerateWithOptions(ctx context.Context, model, prompt string, 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", fmt.Errorf("ollama generate failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -191,7 +192,7 @@ func (o *Ollama) GenerateStream(ctx context.Context, model, prompt string, optio
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("ollama generate failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
@@ -254,7 +255,7 @@ func (o *Ollama) ChatWithContext(ctx context.Context, model string, messages []C
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", fmt.Errorf("ollama chat failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func TestServeDualContextCancelsRequestsAndJoinsListeners(t *testing.T) {
@@ -13,7 +15,7 @@ func TestServeDualContextCancelsRequestsAndJoinsListeners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer closeutil.Discard(listener)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	handlerDone := make(chan struct{})
@@ -32,7 +34,7 @@ func TestServeDualContextCancelsRequestsAndJoinsListeners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	cancel()
 	select {
 	case <-handlerDone:

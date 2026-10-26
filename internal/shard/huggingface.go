@@ -23,7 +23,7 @@ func ParseHuggingFaceConfig(reader io.Reader) (ModelProfile, error) {
 // the context from the file with requestedContext.
 func ParseHuggingFaceConfigWithContext(reader io.Reader, requestedContext int) (ModelProfile, error) {
 	if reader == nil {
-		return ModelProfile{}, errors.New("Hugging Face config reader must not be nil")
+		return ModelProfile{}, errors.New("model config reader for Hugging Face must not be nil")
 	}
 	if requestedContext < 0 {
 		return ModelProfile{}, errors.New("requested context must not be negative")
@@ -33,7 +33,7 @@ func ParseHuggingFaceConfigWithContext(reader io.Reader, requestedContext int) (
 		return ModelProfile{}, fmt.Errorf("read Hugging Face config: %w", err)
 	}
 	if len(rawConfig) > maxHuggingFaceConfigBytes {
-		return ModelProfile{}, fmt.Errorf("Hugging Face config exceeds %d bytes", maxHuggingFaceConfigBytes)
+		return ModelProfile{}, fmt.Errorf("model config from Hugging Face exceeds %d bytes", maxHuggingFaceConfigBytes)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
@@ -42,11 +42,11 @@ func ParseHuggingFaceConfigWithContext(reader io.Reader, requestedContext int) (
 		return ModelProfile{}, fmt.Errorf("decode Hugging Face config: %w", err)
 	}
 	if config == nil {
-		return ModelProfile{}, errors.New("Hugging Face config must be a JSON object")
+		return ModelProfile{}, errors.New("model config from Hugging Face must be a JSON object")
 	}
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return ModelProfile{}, errors.New("Hugging Face config contains more than one JSON value")
+			return ModelProfile{}, errors.New("model config from Hugging Face contains more than one JSON value")
 		}
 		return ModelProfile{}, fmt.Errorf("decode trailing Hugging Face config data: %w", err)
 	}
@@ -87,7 +87,7 @@ func ParseHuggingFaceConfigWithContext(reader io.Reader, requestedContext int) (
 		RequestedContext: contextLength,
 	}
 	if profile.LayerCount <= 0 || profile.HiddenSize <= 0 || profile.KVHeads <= 0 || profile.HeadDim <= 0 {
-		return profile, errors.New("Hugging Face config is missing valid layer, hidden-size, or attention-head metadata")
+		return profile, errors.New("model config from Hugging Face is missing valid layer, hidden-size, or attention-head metadata")
 	}
 	return profile, nil
 }

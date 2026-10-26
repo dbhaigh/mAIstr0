@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 // totalMemoryMB returns total physical RAM in MB on Linux by parsing /proc/meminfo.
@@ -15,7 +17,7 @@ func totalMemoryMB() uint64 {
 	if err != nil {
 		return 0
 	}
-	defer f.Close()
+	defer closeutil.Discard(f)
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

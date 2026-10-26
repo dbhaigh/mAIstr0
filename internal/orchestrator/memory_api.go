@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
 )
@@ -467,7 +468,7 @@ func (s *Server) handleNodePeerConverse(w http.ResponseWriter, r *http.Request) 
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node unreachable: %w", err)))
 		return
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	if err := httpx.NewStreamWriter(w).Copy(resp.Body, nil); err != nil {

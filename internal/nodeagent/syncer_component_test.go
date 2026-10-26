@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/memory"
 )
@@ -17,7 +18,7 @@ func TestFlushToClusterBatchesAndDeduplicatesPendingMemory(t *testing.T) {
 	requests := 0
 	var received memory.Snapshot
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
+		defer closeutil.Discard(r.Body)
 		var snapshot memory.Snapshot
 		if err := json.NewDecoder(r.Body).Decode(&snapshot); err != nil {
 			t.Errorf("decode memory batch: %v", err)
@@ -110,7 +111,7 @@ func TestFlushToClusterDeduplicatesUpdatesQueuedDuringSend(t *testing.T) {
 	releaseFirst := make(chan struct{})
 	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
+		defer closeutil.Discard(r.Body)
 		var snapshot memory.Snapshot
 		if err := json.NewDecoder(r.Body).Decode(&snapshot); err != nil {
 			t.Errorf("decode memory batch: %v", err)

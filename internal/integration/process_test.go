@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/orchestrator"
@@ -193,7 +194,7 @@ func TestOrchestratorProcessAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	var restored struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`

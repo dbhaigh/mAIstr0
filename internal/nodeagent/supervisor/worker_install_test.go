@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 )
 
@@ -82,7 +83,7 @@ func TestEnsureWorkerInstallation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer manager.Close()
+			defer closeutil.Discard(manager)
 			archive, name := workerTestArchive(t)
 			digest := sha256.Sum256(archive)
 			release := workerRelease{Tag: "b123", Prerelease: true, Assets: []releaseAsset{{
@@ -130,7 +131,7 @@ func TestEnsureWorkerInstallation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer reloaded.Close()
+			defer closeutil.Discard(reloaded)
 			status, err := reloaded.Status(installedWorkerID)
 			if err != nil || status.Kind != "ggml-rpc-server" {
 				t.Fatalf("reloaded=%+v err=%v", status, err)
@@ -174,7 +175,7 @@ func TestWorkerUpdatesPreserveActiveAndPreviousInstallations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	archive, name := workerTestArchive(t)
 	digest := sha256.Sum256(archive)
 	release := workerRelease{Tag: "b123", Prerelease: true, Assets: []releaseAsset{{
@@ -265,7 +266,7 @@ func TestOfficialWorkerReleaseInstallSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	result, err := manager.EnsureWorker(ctx, "official")

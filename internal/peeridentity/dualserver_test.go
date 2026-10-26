@@ -54,7 +54,7 @@ func TestServeDualSeparatesLoopbackAndPairedTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	localResponse.Body.Close()
+	_ = localResponse.Body.Close()
 	if localResponse.StatusCode != http.StatusNoContent {
 		t.Fatalf("loopback request status = %d, want 204", localResponse.StatusCode)
 	}
@@ -64,7 +64,7 @@ func TestServeDualSeparatesLoopbackAndPairedTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pairedResponse.Body.Close()
+	_ = pairedResponse.Body.Close()
 	if pairedResponse.StatusCode != http.StatusNoContent {
 		t.Fatalf("paired request status = %d, want 204", pairedResponse.StatusCode)
 	}
@@ -72,7 +72,7 @@ func TestServeDualSeparatesLoopbackAndPairedTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pairedMutation.Body.Close()
+	_ = pairedMutation.Body.Close()
 	if pairedMutation.StatusCode != http.StatusNoContent || mutations != 1 {
 		t.Fatalf("paired mutation status = %d and count = %d, want 204 and 1", pairedMutation.StatusCode, mutations)
 	}
@@ -88,7 +88,7 @@ func TestServeDualSeparatesLoopbackAndPairedTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unpairedResponse.Body.Close()
+	_ = unpairedResponse.Body.Close()
 	if unpairedResponse.StatusCode != http.StatusForbidden {
 		t.Fatalf("unpaired request status = %d, want 403", unpairedResponse.StatusCode)
 	}
@@ -96,7 +96,7 @@ func TestServeDualSeparatesLoopbackAndPairedTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unpairedMutation.Body.Close()
+	_ = unpairedMutation.Body.Close()
 	if unpairedMutation.StatusCode != http.StatusForbidden || mutations != 1 {
 		t.Fatalf("unpaired mutation status = %d and count = %d, want 403 and 1", unpairedMutation.StatusCode, mutations)
 	}

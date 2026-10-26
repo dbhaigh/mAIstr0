@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 )
 
@@ -68,7 +69,7 @@ func approvedHFRedirect(r *http.Request, via []*http.Request) error {
 	}
 	host := r.URL.Hostname()
 	if host != "huggingface.co" && !strings.HasSuffix(host, ".huggingface.co") && !strings.HasSuffix(host, ".hf.co") {
-		return errors.New("Hugging Face download redirected to an unapproved host")
+		return errors.New("download from Hugging Face redirected to an unapproved host")
 	}
 	return nil
 }
@@ -99,9 +100,9 @@ func downloadRecommendedGGUF(ctx context.Context, client *http.Client, base, roo
 		} `json:"lfs"`
 	}
 	err = func() error {
-		defer response.Body.Close()
+		defer closeutil.Discard(response.Body)
 		if response.StatusCode != http.StatusOK {
-			return fmt.Errorf("Hugging Face metadata returned %s (only public ungated models are supported)", response.Status)
+			return fmt.Errorf("metadata request to Hugging Face returned %s (only public ungated models are supported)", response.Status)
 		}
 		return json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&files)
 	}()
@@ -119,7 +120,7 @@ func downloadRecommendedGGUF(ctx context.Context, client *http.Client, base, roo
 	}
 	hashBytes, err := hex.DecodeString(digest)
 	if err != nil || len(hashBytes) != sha256.Size || size <= 0 || size > model.MaxBytes {
-		return LocalHeadModel{}, errors.New("Hugging Face GGUF is missing verified LFS SHA256/size metadata or exceeds its download limit")
+		return LocalHeadModel{}, errors.New("GGUF from Hugging Face is missing verified LFS SHA256/size metadata or exceeds its download limit")
 	}
 	directory := filepath.Join(root, model.ID, digest)
 	if err := os.MkdirAll(directory, 0700); err != nil {
@@ -149,22 +150,22 @@ func downloadRecommendedGGUF(ctx context.Context, client *http.Client, base, roo
 	if err != nil {
 		return LocalHeadModel{}, fmt.Errorf("create model download: %w", err)
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	request, err = http.NewRequestWithContext(ctx, http.MethodGet, base+"/"+model.Repository+"/resolve/main/"+model.Filename, nil)
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return LocalHeadModel{}, err
 	}
 	response, err = client.Do(request)
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return LocalHeadModel{}, modelTransferError("download GGUF", err)
 	}
 	hasher := sha256.New()
 	n, copyErr := func() (int64, error) {
-		defer response.Body.Close()
+		defer closeutil.Discard(response.Body)
 		if response.StatusCode != http.StatusOK {
-			return 0, fmt.Errorf("Hugging Face download returned %s", response.Status)
+			return 0, fmt.Errorf("download from Hugging Face returned %s", response.Status)
 		}
 		return io.Copy(io.MultiWriter(file, hasher), io.LimitReader(response.Body, size+1))
 	}()

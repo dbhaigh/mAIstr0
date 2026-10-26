@@ -121,9 +121,10 @@ func (m *Manager) CancelAndSnapshotChecked(id string) (*Task, bool, error) {
 	t.Error = "task cancelled"
 	hasCompleted := false
 	for i := range t.Subtasks {
-		if t.Subtasks[i].Status == StatusCompleted {
+		switch t.Subtasks[i].Status {
+		case StatusCompleted:
 			hasCompleted = true
-		} else if t.Subtasks[i].Status == StatusPending || t.Subtasks[i].Status == StatusRunning {
+		case StatusPending, StatusRunning:
 			t.Subtasks[i].Status = StatusCancelled
 			t.Subtasks[i].Error = "task cancelled"
 		}

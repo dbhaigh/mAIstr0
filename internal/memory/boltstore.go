@@ -85,7 +85,7 @@ func Open(path, owner string) (Store, error) {
 		return nil
 	})
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("memory: init buckets: %w", err)
 	}
 

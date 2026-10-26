@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/taskmgr"
@@ -115,14 +116,6 @@ func decodeTaskSync(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]*
 	return tasks, nil
 }
 
-func (a *Agent) taskHistorySyncLoop(ctx context.Context) {
-	a.orchestratorLink.syncer.taskHistorySyncLoop(ctx)
-}
-
-func (a *Agent) syncPeerTaskHistory() {
-	a.orchestratorLink.syncer.syncPeerTaskHistory()
-}
-
 type taskSyncSnapshot struct {
 	version    int
 	watermarks map[string]uint64
@@ -180,7 +173,7 @@ func fetchTaskSnapshotWithContext(ctx context.Context, client interface {
 }
 
 func decodeTaskSnapshot(resp *http.Response, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, map[string]uint64, bool, error) {
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		response, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, 0, nil, nil, false, fmt.Errorf("peer returned %s: %s", resp.Status, strings.TrimSpace(string(response)))
@@ -255,7 +248,7 @@ func postTaskSnapshotPagesWithContext(ctx context.Context, client interface {
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			response.Body.Close()
+			_ = response.Body.Close()
 			return fmt.Errorf("peer returned %s: %s", response.Status, strings.TrimSpace(string(message)))
 		}
 		_, copyErr := io.Copy(io.Discard, response.Body)

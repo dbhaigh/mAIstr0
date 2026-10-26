@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
@@ -401,7 +402,7 @@ func probeStatus(ctx context.Context, client *http.Client, address string) error
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("orchestrator returned %s", response.Status)
 	}

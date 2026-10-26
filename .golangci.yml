@@ -1,0 +1,18 @@
+version: "2"
+
+linters:
+  settings:
+    staticcheck:
+      # golangci-lint's default staticcheck set, plus -QF1008. The node agent and
+      # orchestrator deliberately name the owning component when calling through
+      # embedded fields (for example a.identityComponent.IsTrustedID), so
+      # removing those selectors would hide state ownership.
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -QF1008

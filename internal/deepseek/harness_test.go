@@ -392,7 +392,7 @@ func TestDirectNodeTools(t *testing.T) {
 
 	// 2. Test NodeLLMQueryTool
 	queryTool := &NodeLLMQueryTool{}
-	out, nodeID, _, model, err := queryTool.Execute(context.Background(), h, s, map[string]any{
+	_, nodeID, _, model, err := queryTool.Execute(context.Background(), h, s, map[string]any{
 		"node_id": "worker-target",
 		"model":   "codellama-7b",
 		"prompt":  "generate code",
@@ -420,13 +420,16 @@ func TestDirectNodeTools(t *testing.T) {
 
 	// 4. Test NodeConverseTool (multi-turn conversation with node)
 	converseTool := &NodeConverseTool{}
-	out, nodeID, _, model, err = converseTool.Execute(context.Background(), h, s, map[string]any{
+	out, nodeID, _, _, err = converseTool.Execute(context.Background(), h, s, map[string]any{
 		"node_id":     "worker-target",
 		"message":     "Design a cache algorithm",
 		"dialogue_id": "dlg-test-1",
 	})
 	if err != nil {
 		t.Fatalf("node_converse failed: %v", err)
+	}
+	if nodeID != "worker-target" {
+		t.Errorf("node_converse nodeID = %q, want worker-target", nodeID)
 	}
 	cm := out.(map[string]any)
 	if cm["dialogue_id"] != "dlg-test-1" || cm["node_id"] != "worker-target" {
@@ -435,13 +438,16 @@ func TestDirectNodeTools(t *testing.T) {
 
 	// 5. Test NodeCollaborateTool (multi-round collaboration)
 	collabTool := &NodeCollaborateTool{}
-	out, nodeID, _, model, err = collabTool.Execute(context.Background(), h, s, map[string]any{
+	out, nodeID, _, _, err = collabTool.Execute(context.Background(), h, s, map[string]any{
 		"node_id": "worker-target",
 		"task":    "Write Go worker pool",
 		"rounds":  2.0,
 	})
 	if err != nil {
 		t.Fatalf("node_collaborate failed: %v", err)
+	}
+	if nodeID != "worker-target" {
+		t.Errorf("node_collaborate nodeID = %q, want worker-target", nodeID)
 	}
 	clm := out.(map[string]any)
 	if clm["total_rounds"] != 2 {

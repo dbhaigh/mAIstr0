@@ -20,10 +20,11 @@ func BenchmarkAssignWithConfigNodes80(b *testing.B) {
 		engineName := "vllm"
 		tags := []string{"general"}
 		size := 4.0
-		if i%4 == 0 {
+		switch i % 4 {
+		case 0:
 			tags = []string{"code"}
 			size = 8.0
-		} else if i%4 == 1 {
+		case 1:
 			engineName = "unavailable"
 		}
 		nodes[i] = cluster.NodeStatus{

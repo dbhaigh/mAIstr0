@@ -4,6 +4,7 @@
 - `cmd/maistr0`: CLI composition root; loads configuration and starts node and/or orchestrator roles.
 - `internal/agent`: cluster-aware interactive agent orchestration.
 - `internal/apperr`: typed domain error categories shared by services and HTTP adapters.
+- `internal/closeutil`: best-effort deferred close helper for read-only resources.
 - `internal/cluster`: in-memory registry of registered nodes.
 - `internal/config`: JSON configuration loading, normalization, validation, and sharded-model settings.
 - `internal/consensus`: Raft consensus and persistent consensus state.

@@ -311,10 +311,6 @@ type nodePairingResponse struct {
 	Peers          map[string]string `json:"peers"`
 }
 
-func (a *Agent) pairOrchestrator(candidate orchestratorCandidate) error {
-	return a.orchestratorLink.pairOrchestrator(candidate)
-}
-
 // PairWithOrchestrator enrolls this node at a user-selected orchestrator
 // using its one-use out-of-band PIN or automatically if on the same subnet.
 func (a *Agent) PairWithOrchestrator(address, pin string) error {

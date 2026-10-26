@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -13,21 +14,21 @@ func TestSubAgentFactory_CreationAndDispatch(t *testing.T) {
 
 	nodes := []cluster.NodeStatus{
 		{
-			ID:      "fast-coder-node",
-			Address: "http://coder:8080",
-			Healthy: true,
+			ID:           "fast-coder-node",
+			Address:      "http://coder:8080",
+			Healthy:      true,
 			Capabilities: []string{"coder", "fast"},
-			Hardware: hardware.Info{Score: 90.0},
+			Hardware:     hardware.Info{Score: 90.0},
 			Models: []engine.Model{
 				{Name: "qwen2.5-coder:7b", Tags: []string{"code", "general"}, SizeGB: 4.5},
 			},
 		},
 		{
-			ID:      "research-node",
-			Address: "http://research:8080",
-			Healthy: true,
+			ID:           "research-node",
+			Address:      "http://research:8080",
+			Healthy:      true,
 			Capabilities: []string{"researcher"},
-			Hardware: hardware.Info{Score: 70.0},
+			Hardware:     hardware.Info{Score: 70.0},
 			Models: []engine.Model{
 				{Name: "deepseek-r1:7b", Tags: []string{"reasoning", "general"}, SizeGB: 7.0},
 			},
@@ -80,12 +81,17 @@ func TestSubAgentFactory_CreationAndDispatch(t *testing.T) {
 		t.Errorf("Assignment mismatch: %+v", assign)
 	}
 
-	// Verify formatted prompt contains 4-tuple parts
+	// Verify the formatted prompt contains every 4-tuple part.
 	prompt := handle.FormatPrompt("Find race conditions", "Prereq output here")
-	if !containsString([]string{prompt}, "You are a specialized security auditor") {
-		// Just check string contents
-	}
-	if len(prompt) == 0 {
-		t.Fatal("Formatted prompt should not be empty")
+	for _, want := range []string{
+		"You are a specialized security auditor",
+		"Available tools: file_search, eval_expression",
+		"Context:\nThe codebase is written in Go",
+		"Prereq output here",
+		"Task: Find race conditions",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("formatted prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }

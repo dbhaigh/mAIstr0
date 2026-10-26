@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/hub"
 )
 
@@ -59,7 +60,7 @@ func TestSnapshotEventsMatchExistingPayloadContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("SSE response = %d, headers = %v", response.StatusCode, response.Header)
 	}

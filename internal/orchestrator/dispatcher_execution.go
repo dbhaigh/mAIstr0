@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/memory"
@@ -305,7 +306,7 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 		}
 		return dispatchOutcome{err: errors.New("node request failed"), retryable: true, failureClass: "transport"}
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
 		failureClass, retryable := classifyDispatchStatus(resp.StatusCode, errBody)

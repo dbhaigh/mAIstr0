@@ -186,7 +186,7 @@ func TestRuntimeCertificateRotationRequiresPeerRepair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 
 	serverIdentity.mu.Lock()
 	expiredLeaf := *serverIdentity.certificate.Leaf
@@ -201,7 +201,7 @@ func TestRuntimeCertificateRotationRequiresPeerRepair(t *testing.T) {
 	}
 	clientTransport.CloseIdleConnections()
 	if response, err := client.Get(server.URL); err == nil {
-		response.Body.Close()
+		_ = response.Body.Close()
 		t.Fatal("peer accepted the rotated certificate without updating its pin")
 	}
 
@@ -212,7 +212,7 @@ func TestRuntimeCertificateRotationRequiresPeerRepair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed after the peer pin was repaired: %v", err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 }
 
 func TestIdentityTLSRequiresTLS13(t *testing.T) {
@@ -261,7 +261,7 @@ func TestClientTransportPinChangeClosesPooledConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("initial pinned request returned %d", response.StatusCode)
 	}
@@ -286,7 +286,7 @@ func TestClientTransportPinChangeClosesPooledConnections(t *testing.T) {
 		t.Fatalf("pin change left %d tracked connections open", pooledConnections)
 	}
 	if response, err := client.Get(server.URL); err == nil {
-		response.Body.Close()
+		_ = response.Body.Close()
 		t.Fatal("request succeeded against server certificate rejected by the replacement pin")
 	}
 }
@@ -414,7 +414,7 @@ func TestBootstrapTransportForIDChecksDiscoveredPeerIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request to the expected discovered peer failed: %v", err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("expected peer returned %d", response.StatusCode)
 	}

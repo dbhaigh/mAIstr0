@@ -290,7 +290,7 @@ func (s *boltStore) experiencesByIDPage(filter SearchFilter, options PageOptions
 		if options.Cursor.ID == 0 {
 			key, value = cursor.Last()
 		} else {
-			key, value = cursor.Seek(itob(options.Cursor.ID))
+			key, _ = cursor.Seek(itob(options.Cursor.ID))
 			if key == nil {
 				key, value = cursor.Last()
 			} else {

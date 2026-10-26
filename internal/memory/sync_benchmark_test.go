@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func benchmarkHistorySnapshot(count int) Snapshot {
@@ -36,7 +38,7 @@ func BenchmarkMemoryHistorySnapshotGeneration(b *testing.B) {
 			if err := store.MergeSnapshotFrom(snapshot, "benchmark"); err != nil {
 				b.Fatal(err)
 			}
-			defer store.Close()
+			defer closeutil.Discard(store)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {

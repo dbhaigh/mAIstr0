@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 )
 
@@ -49,7 +50,7 @@ func TestModelStartupAndRestartOutliveWorkerReadinessWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	if err := manager.Start(context.Background(), "test-engine", nil); err != nil {
 		t.Fatalf("slow initial model load: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestLongModelStartupStillHonorsCallerDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 	err = manager.Start(ctx, "test-engine", nil)

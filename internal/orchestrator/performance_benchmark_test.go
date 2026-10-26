@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -336,7 +337,7 @@ func BenchmarkPublishSnapshotRequests(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		defer response.Body.Close()
+		defer closeutil.Discard(response.Body)
 		drained := make(chan struct{})
 		go func() {
 			defer close(drained)

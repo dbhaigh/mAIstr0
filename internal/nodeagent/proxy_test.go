@@ -4,7 +4,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -72,5 +74,61 @@ func TestTransparentProxyPreservesProviderRequestAndStripsInternalHeaders(t *tes
 	}
 	if gotBody != providerBody {
 		t.Fatalf("provider body changed: %s", gotBody)
+	}
+}
+
+func TestPreserveForwardingHeadersMatchesDirectorBehavior(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		in         http.Header
+		want       http.Header
+	}{
+		{
+			name:       "appends client IP",
+			remoteAddr: "192.0.2.7:4100",
+			in:         http.Header{},
+			want:       http.Header{"X-Forwarded-For": {"192.0.2.7"}},
+		},
+		{
+			name:       "keeps client forwarding headers",
+			remoteAddr: "192.0.2.7:4100",
+			in: http.Header{
+				"Forwarded":         {"for=198.51.100.1"},
+				"X-Forwarded-For":   {"198.51.100.1", "203.0.113.5"},
+				"X-Forwarded-Host":  {"api.example"},
+				"X-Forwarded-Proto": {"https"},
+			},
+			want: http.Header{
+				"Forwarded":         {"for=198.51.100.1"},
+				"X-Forwarded-For":   {"198.51.100.1, 203.0.113.5, 192.0.2.7"},
+				"X-Forwarded-Host":  {"api.example"},
+				"X-Forwarded-Proto": {"https"},
+			},
+		},
+		{
+			name:       "unparseable remote address passes headers through",
+			remoteAddr: "pipe",
+			in:         http.Header{"X-Forwarded-For": {"198.51.100.1"}},
+			want:       http.Header{"X-Forwarded-For": {"198.51.100.1"}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			in := httptest.NewRequest(http.MethodPost, "/proxy/v1/chat/completions", nil)
+			in.RemoteAddr = test.remoteAddr
+			in.Header = test.in.Clone()
+			pr := &httputil.ProxyRequest{In: in, Out: in.Clone(in.Context())}
+			pr.Out.Header = http.Header{}
+
+			preserveForwardingHeaders(pr)
+
+			if !reflect.DeepEqual(pr.Out.Header, test.want) {
+				t.Fatalf("outbound headers = %v, want %v", pr.Out.Header, test.want)
+			}
+			if !reflect.DeepEqual(in.Header, test.in) {
+				t.Fatalf("inbound headers changed to %v", in.Header)
+			}
+		})
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/httpx"
@@ -174,7 +175,7 @@ func (c *nodeClient) generateShardGroupWithIDs(ctx context.Context, group ShardG
 	if err != nil {
 		return "", fmt.Errorf("shard generation request: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, err := io.ReadAll(io.LimitReader(response.Body, 4<<10))
 		if err != nil {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func TestWriteLegacyMemoryFixture(t *testing.T) {
@@ -19,7 +21,7 @@ func TestWriteLegacyMemoryFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeutil.Discard(store)
 
 	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	if _, err := store.Record(Experience{
@@ -69,7 +71,7 @@ func TestLegacyMemoryFixtureLoadsAllRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeutil.Discard(store)
 
 	experiences := store.Experiences(10)
 	if len(experiences) != 1 || experiences[0].Description != "fixture experience" {

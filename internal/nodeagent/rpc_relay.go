@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
@@ -357,7 +358,7 @@ func (instance *rpcRelayInstance) relay(
 	}
 	instance.track(outbound, true)
 	defer instance.track(outbound, false)
-	defer outbound.Close()
+	defer closeutil.Discard(outbound)
 
 	copyDone := make(chan struct{}, 2)
 	go func() {

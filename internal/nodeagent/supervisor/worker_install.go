@@ -175,7 +175,7 @@ func (m *Manager) ensureWorker(ctx context.Context, source string, client *http.
 	if err != nil {
 		return WorkerInstallResult{}, err
 	}
-	defer os.RemoveAll(stage)
+	defer func() { _ = os.RemoveAll(stage) }()
 	archive := filepath.Join(stage, "archive")
 	if err := downloadWorkerArchive(ctx, client, asset, archive); err != nil {
 		return WorkerInstallResult{}, err

@@ -12,6 +12,8 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 const (
@@ -306,7 +308,7 @@ func (engine *HTTPPipelineStageEngine) pipelineStageControlV2(
 	if err != nil {
 		return fmt.Errorf("send stage request control: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, stageErrorBodyLimit))
 		if readErr != nil {
@@ -345,7 +347,7 @@ func (engine *HTTPPipelineStageEngine) pipelineStageStepV2(
 		return PipelineStageOutput{}, err
 	}
 	reader, writer := io.Pipe()
-	defer reader.Close()
+	defer closeutil.Discard(reader)
 	writerDone := make(chan error, 1)
 	go func() {
 		err := WriteStageMessage(writer, StageMessageHeader{Request: stageRequest}, stageRequest.Activation)
@@ -368,7 +370,7 @@ func (engine *HTTPPipelineStageEngine) pipelineStageStepV2(
 		_ = reader.CloseWithError(err)
 		return PipelineStageOutput{}, fmt.Errorf("send stage step request: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeutil.Discard(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_ = reader.CloseWithError(errors.New("stage endpoint rejected request"))
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, stageErrorBodyLimit))

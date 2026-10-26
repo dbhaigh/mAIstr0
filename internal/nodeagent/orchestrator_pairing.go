@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func (c *orchestratorLink) pairLocal(orchestratorID, certificatePEM, address string) error {
@@ -24,10 +26,6 @@ func (c *orchestratorLink) pairLocal(orchestratorID, certificatePEM, address str
 	c.setOrchestratorAddr(address)
 	c.setOrchestratorID(orchestratorID)
 	return nil
-}
-
-func (c *orchestratorLink) pairOrchestrator(candidate orchestratorCandidate) error {
-	return c.pairOrchestratorContext(context.Background(), candidate)
 }
 
 func (c *orchestratorLink) pairOrchestratorContext(ctx context.Context, candidate orchestratorCandidate) error {
@@ -106,7 +104,7 @@ func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, 
 	if err != nil {
 		return fmt.Errorf("pair with orchestrator at %s: %w", address, err)
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("pairing rejected by orchestrator at %s with HTTP status %d", address, resp.StatusCode)
 	}

@@ -4,10 +4,7 @@
 package engine
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/httpx"
@@ -226,22 +223,3 @@ func NewConfiguredWithAPIKey(name, baseURL, apiKey string) Engine {
 
 // httpClient is shared with a short timeout since these are local calls.
 var httpClient = httpx.NewClient(httpx.ClientOptions{Timeout: httpx.ProbeTimeout})
-
-func postJSON(url string, body any, out any) error {
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	resp, err := httpClient.Post(url, "application/json", bytes.NewReader(buf))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("request to %s failed: %s", url, resp.Status)
-	}
-	if out == nil {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
-}

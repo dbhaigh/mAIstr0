@@ -233,7 +233,3 @@ func (a *Agent) dialogueTurn(id, model, system, role, content, kind string) (dia
 func (a *Agent) dialogueTurnContext(ctx context.Context, id, model, system, role, content, kind string) (dialogueMessageResponse, error) {
 	return a.dialogueComponent.turnContext(ctx, id, model, system, role, content, kind)
 }
-
-func (a *Agent) memoryBrief(query string) string {
-	return a.dialogueComponent.memoryBrief(query)
-}

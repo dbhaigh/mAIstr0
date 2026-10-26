@@ -76,7 +76,7 @@ func WaitDebouncedContext(ctx context.Context, interval, debounce time.Duration,
 	}
 	heartbeat := time.NewTimer(interval)
 	defer heartbeat.Stop()
-	var heartbeatC <-chan time.Time = heartbeat.C
+	var heartbeatC = heartbeat.C
 	var debounceTimer *time.Timer
 	defer func() {
 		if debounceTimer != nil {

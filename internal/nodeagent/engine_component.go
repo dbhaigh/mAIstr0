@@ -494,10 +494,6 @@ func (c *engineComponent) refreshReportedModelsWithForce(force bool) {
 	}
 }
 
-func (c *engineComponent) modelRefreshLoop() {
-	c.modelRefreshLoopContext(context.Background())
-}
-
 func (c *engineComponent) modelRefreshLoopContext(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
@@ -595,14 +591,10 @@ func (a *Agent) allModelsWithState() []ModelState {
 func (a *Agent) reportedModelList() []engine.Model {
 	return a.engineComponent.reportedModelList()
 }
-func (a *Agent) reportedAllModelList() []ModelState {
-	return a.engineComponent.reportedAllModelList()
-}
 func (a *Agent) reportedEngineList() []engine.Status {
 	return a.engineComponent.reportedEngineList()
 }
 func (a *Agent) refreshReportedModels() { a.engineComponent.refreshReportedModels() }
-func (a *Agent) modelRefreshLoop()      { a.engineComponent.modelRefreshLoop() }
 func (a *Agent) defaultModelName() string {
 	return a.engineComponent.defaultModelName()
 }

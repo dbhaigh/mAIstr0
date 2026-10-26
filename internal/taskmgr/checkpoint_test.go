@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
@@ -56,7 +57,7 @@ func TestCreateFailsWhenInitialTaskStateCannotBePersisted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 
 	task, err := manager.CreateChecked("durable task", nil)
 	if !errors.Is(err, persistErr) {
@@ -77,7 +78,7 @@ func TestCheckpointSaveAndRetrieve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenManager failed: %v", err)
 	}
-	defer mgr.Close()
+	defer closeutil.Discard(mgr)
 
 	graph := scheduler.NewTaskGraph()
 	_ = graph.AddNode(scheduler.Subtask{ID: "node-1", Description: "Step 1"})
@@ -228,13 +229,13 @@ func TestResumableTasksOnInterruption(t *testing.T) {
 	}
 
 	// Close to simulate crash/restart while sub-2 was pending
-	mgr.Close()
+	_ = mgr.Close()
 
 	mgr2, err := OpenManager(dbPath, nil)
 	if err != nil {
 		t.Fatalf("OpenManager restart failed: %v", err)
 	}
-	defer mgr2.Close()
+	defer closeutil.Discard(mgr2)
 
 	resumable := mgr2.ResumableTasks()
 	found := false

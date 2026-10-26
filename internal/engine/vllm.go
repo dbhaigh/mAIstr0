@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 )
 
@@ -86,7 +87,7 @@ func (v *VLLM) ProbeCapabilities(ctx context.Context) (Capabilities, error) {
 	if resp.StatusCode >= 300 {
 		return capabilities, v.responseError("get version", resp)
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
 		return capabilities, fmt.Errorf("%s read version: %w", v.Name(), err)
@@ -162,7 +163,7 @@ func (v *VLLM) doRequest(req *http.Request, operation string) (*http.Response, e
 }
 
 func (v *VLLM) responseError(operation string, resp *http.Response) error {
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	body := strings.TrimSpace(string(data))
 	if v.apiKey != "" {
@@ -188,7 +189,7 @@ func (v *VLLM) Available() bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	return resp.StatusCode < 300
 }
 
@@ -201,7 +202,7 @@ func (v *VLLM) ListModels() ([]Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	var result struct {
 		Data []struct {
 			ID             string  `json:"id"`
@@ -260,7 +261,7 @@ func (v *VLLM) chat(ctx context.Context, model string, messages []ChatMessage, o
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	var result struct {
 		Choices []struct {
 			Message ChatMessage `json:"message"`
@@ -309,7 +310,7 @@ func (v *VLLM) GenerateStream(ctx context.Context, model, prompt string, options
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 	for scanner.Scan() {

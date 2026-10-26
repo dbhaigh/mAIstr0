@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
 func (h *Harness) pickBestNodeForQuery(taskType, modelPref string, nodes []cluster.NodeStatus) (*cluster.NodeStatus, string, float64) {
@@ -79,11 +81,12 @@ func matchModel(st scheduler.Subtask, modelPref string, models []engine.Model, d
 			score += 1.0
 		}
 		for _, tag := range m.Tags {
-			if tag == st.TaskType {
+			switch tag {
+			case st.TaskType:
 				score += 3.0
-			} else if tag == "general" {
+			case "general":
 				score += 0.5
-			} else if tag == "fast" {
+			case "fast":
 				score += 0.25
 			}
 		}
@@ -119,7 +122,7 @@ func (h *Harness) dispatchToNode(ctx context.Context, address, model, prompt str
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
@@ -157,7 +160,7 @@ func (h *Harness) DispatchChatToNode(ctx context.Context, address, model string,
 
 	resp, err := h.dispatcher.Do(req)
 	if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		defer resp.Body.Close()
+		defer closeutil.Discard(resp.Body)
 		var out struct {
 			Message engine.ChatMessage `json:"message"`
 			Error   string             `json:"error,omitempty"`
@@ -170,13 +173,13 @@ func (h *Harness) DispatchChatToNode(ctx context.Context, address, model string,
 		}
 	}
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	// Fallback to formatted prompt on /execute
 	var sb strings.Builder
 	for _, m := range messages {
-		sb.WriteString(fmt.Sprintf("<|im_start|>%s\n%s<|im_end|>\n", m.Role, m.Content))
+		fmt.Fprintf(&sb, "<|im_start|>%s\n%s<|im_end|>\n", m.Role, m.Content)
 	}
 	sb.WriteString("<|im_start|>assistant\n")
 	return h.dispatchToNode(ctx, address, model, sb.String())
@@ -225,7 +228,7 @@ func (h *Harness) SendNodeDialogueMessage(ctx context.Context, node cluster.Node
 	if err != nil {
 		return NodeDialogueResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var rawMap map[string]any

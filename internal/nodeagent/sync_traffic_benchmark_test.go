@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/taskmgr"
@@ -132,7 +133,7 @@ func BenchmarkIdleSyncTraffic5Node(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer tasks.Close()
+	defer closeutil.Discard(tasks)
 
 	transport := &syncTrafficRoundTripper{}
 	client := &http.Client{Transport: transport}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/memory"
@@ -22,7 +23,7 @@ import (
 func flattenChatML(msgs []engine.ChatMessage) string {
 	var sb strings.Builder
 	for _, m := range msgs {
-		sb.WriteString(fmt.Sprintf("<|im_start|>%s\n%s<|im_end|>\n", m.Role, m.Content))
+		fmt.Fprintf(&sb, "<|im_start|>%s\n%s<|im_end|>\n", m.Role, m.Content)
 	}
 	sb.WriteString("<|im_start|>assistant\n")
 	return sb.String()
@@ -315,7 +316,7 @@ func (a *Agent) sendPeerMessage(peerAddr string, msg peerMessageRequest) (reply 
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 
 	var out peerMessageResponse
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
@@ -398,13 +399,6 @@ func queryInt(r *http.Request, key string, def int) int {
 		return def
 	}
 	return n
-}
-
-// syncMemoryToOrchestrator periodically pushes this node's learned
-// performance aggregates upstream so the orchestrator's routing decisions
-// benefit from every node's local experience.
-func (a *Agent) syncMemoryToOrchestrator() {
-	a.syncMemoryToOrchestratorContext(context.Background())
 }
 
 func (a *Agent) syncMemoryToOrchestratorContext(ctx context.Context) {

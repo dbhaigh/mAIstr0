@@ -5,12 +5,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
 func TestPageRecentReturnsStablePagesAndFilters(t *testing.T) {
 	manager := NewManager()
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	for _, description := range []string{"alpha task", "beta task", "alpha follow-up"} {
 		task, err := manager.CreateChecked(description, []scheduler.Assignment{{
 			Subtask: scheduler.Subtask{ID: "work", Description: description},
@@ -50,7 +51,7 @@ func TestPageRecentReturnsStablePagesAndFilters(t *testing.T) {
 
 func TestPageRecentRejectsOversizedSingleTask(t *testing.T) {
 	manager := NewManager()
-	defer manager.Close()
+	defer closeutil.Discard(manager)
 	task, err := manager.CreateChecked("large", []scheduler.Assignment{{
 		Subtask: scheduler.Subtask{ID: "work"},
 		NodeID:  "node-a", Model: "model-a",

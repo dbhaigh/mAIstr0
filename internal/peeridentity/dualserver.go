@@ -61,10 +61,18 @@ func ServeDualListenerContext(ctx context.Context, raw net.Listener, localHandle
 	_ = split.Close()
 	_ = plainServer.Close()
 	_ = secureServer.Close()
+	err = ignoreServerShutdown(err)
+	// Closed servers report shutdown errors; keep the first real failure.
 	for range remaining {
-		<-results
+		if serveErr := ignoreServerShutdown(<-results); err == nil {
+			err = serveErr
+		}
 	}
 	<-splitDone
+	return err
+}
+
+func ignoreServerShutdown(err error) error {
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		return nil
 	}

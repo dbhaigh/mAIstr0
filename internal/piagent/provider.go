@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 )
 
@@ -124,7 +125,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, request Complet
 	if err != nil {
 		return nil, fmt.Errorf("call %s model provider: %w", p.Name(), err)
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		message, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		if readErr != nil {

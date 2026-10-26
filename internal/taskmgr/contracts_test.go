@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/testutil"
 )
@@ -55,7 +56,7 @@ func TestRestartRecoveryContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	type recovery struct {
 		InitialStatus Status   `json:"initial_status"`
 		Status        Status   `json:"status"`

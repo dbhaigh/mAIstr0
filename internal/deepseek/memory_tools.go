@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/memory"
 )
 
@@ -222,7 +223,7 @@ func (t *NodeToNodeConversationTool) Execute(ctx context.Context, h *Harness, s 
 	if err != nil {
 		return nil, nodeA, a.Address, "", fmt.Errorf("node %s could not reach node %s: %w", nodeA, nodeB, err)
 	}
-	defer resp.Body.Close()
+	defer closeutil.Discard(resp.Body)
 
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

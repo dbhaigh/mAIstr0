@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
@@ -42,7 +43,7 @@ func TestDispatchAttemptsPersistAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	persisted, ok := reopened.Get(task.ID)
 	if !ok || len(persisted.Subtasks[0].Attempts) != 1 {
 		t.Fatalf("persisted task attempts = %#v", persisted)
@@ -90,7 +91,7 @@ func TestSuccessfulAttemptAndSubtaskOutputPersistTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	restored, ok := reopened.Get(task.ID)
 	if !ok || restored.Status != StatusCompleted || restored.Subtasks[0].Output != "worker output" ||
 		len(restored.Subtasks[0].Attempts) != 1 ||
@@ -200,7 +201,7 @@ func TestRestartClosesRunningAttemptAsIndeterminate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeutil.Discard(reopened)
 	restored, ok := reopened.Get(task.ID)
 	if !ok || restored.Status != StatusFailed || len(restored.Subtasks[0].Attempts) != 1 {
 		t.Fatalf("interrupted dispatch was not restored: %+v", restored)

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"github.com/maistr0/maistr0/internal/logging"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/engine"
@@ -51,24 +53,44 @@ func (a *Agent) handleTransparentProxy(w http.ResponseWriter, r *http.Request) {
 	target.RawPath = ""
 	upstreamTarget := *target
 
-	proxy := httputil.NewSingleHostReverseProxy(&upstreamTarget)
-	proxy.FlushInterval = -1
-	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
-		logging.Errorf("nodeagent", "nodeagent: transparent inference proxy failed engine=%s: %v", eng.Name(), proxyErr)
-		http.Error(w, "inference engine is unavailable", http.StatusBadGateway)
-	}
-	proxy.Director = func(out *http.Request) {
-		out.Method = r.Method
-		targetURL := upstreamTarget
-		out.URL = &targetURL
-		out.URL.RawQuery = r.URL.RawQuery
-		out.Host = upstreamTarget.Host
-		out.Header = r.Header.Clone()
-		out.Header.Del(inferroute.HeaderEngine)
-		out.Header.Del(inferroute.HeaderRequestID)
-		out.Header.Del(inferroute.HeaderAttemptID)
-		out.Body = io.NopCloser(bytes.NewReader(body))
-		out.ContentLength = int64(len(body))
+	proxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
+			logging.Errorf("nodeagent", "nodeagent: transparent inference proxy failed engine=%s: %v", eng.Name(), proxyErr)
+			http.Error(w, "inference engine is unavailable", http.StatusBadGateway)
+		},
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			targetURL := upstreamTarget
+			targetURL.RawQuery = pr.In.URL.RawQuery
+			pr.Out.URL = &targetURL
+			pr.Out.Host = upstreamTarget.Host
+			pr.Out.Header.Del(inferroute.HeaderEngine)
+			pr.Out.Header.Del(inferroute.HeaderRequestID)
+			pr.Out.Header.Del(inferroute.HeaderAttemptID)
+			preserveForwardingHeaders(pr)
+			pr.Out.Body = io.NopCloser(bytes.NewReader(body))
+			pr.Out.ContentLength = int64(len(body))
+		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+var forwardingHeaders = [...]string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
+
+// preserveForwardingHeaders keeps the headers ReverseProxy forwarded before
+// the move from Director to Rewrite: Rewrite strips the client's forwarding
+// headers, whereas Director passed them through and appended the client IP to
+// X-Forwarded-For.
+func preserveForwardingHeaders(pr *httputil.ProxyRequest) {
+	for _, name := range forwardingHeaders {
+		if values, ok := pr.In.Header[name]; ok {
+			pr.Out.Header[name] = slices.Clone(values)
+		}
+	}
+	if clientIP, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+		if prior := pr.Out.Header["X-Forwarded-For"]; len(prior) > 0 {
+			clientIP = strings.Join(prior, ", ") + ", " + clientIP
+		}
+		pr.Out.Header.Set("X-Forwarded-For", clientIP)
+	}
 }
