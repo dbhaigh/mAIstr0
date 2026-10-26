@@ -1,0 +1,108 @@
+name: Qualification
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * 3"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Full tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.mod
+            go.sum
+      - name: Full Go tests including fake-process integration
+        run: go test -count=1 -timeout=180s -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Full Linux race tests
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 -timeout=180s ./...
+      - name: Summarize coverage
+        run: go tool cover -func=coverage.out > coverage.txt
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-${{ matrix.os }}
+          path: |
+            coverage.out
+            coverage.txt
+          if-no-files-found: error
+
+  package:
+    name: Native package acceptance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.mod
+            go.sum
+      - name: Verify independent native packaging, installation and replacement
+        shell: pwsh
+        run: ./build/verify-release.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP "release-acceptance")
+      - name: Upload native acceptance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-acceptance-${{ matrix.os }}
+          path: ${{ runner.temp }}/release-acceptance/acceptance.json
+          if-no-files-found: error
+      - name: Validate semantic release configuration
+        if: runner.os == 'Linux'
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
+        with:
+          distribution: goreleaser
+          version: v2.15.0
+          args: check
+      - name: Validate Ubuntu-tagged release variant
+        if: runner.os == 'Linux'
+        shell: bash
+        run: CGO_ENABLED=0 go build -tags=ubuntu ./...
+
+  qualified:
+    name: Qualified
+    permissions: {}
+    if: always()
+    needs: [tests, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require tests and independent packaging
+        shell: bash
+        env:
+          TEST_RESULT: ${{ needs.tests.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          test "$TEST_RESULT" = success
+          test "$PACKAGE_RESULT" = success

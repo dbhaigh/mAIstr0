@@ -27,7 +27,7 @@ function shardGroupCard(group) {
     <div class="pipeline-stage">
       <div class="pipeline-stage-heading">
         <strong>${escapeHtml(member.role)} · ${escapeHtml(member.node_id)}</strong>
-        <span class="badge ${member.started ? "healthy" : "unknown"}">${escapeHtml(member.engine_kind)}</span>
+        <span class="badge ${member.started && group.state === "ready" ? "healthy" : "unknown"}">${escapeHtml(member.engine_kind)}${member.started && group.state !== "ready" ? " · started, group not ready" : ""}</span>
       </div>
       <div class="row"><span>Engine</span><span>${escapeHtml(member.engine_id)}</span></div>
       ${Number.isInteger(member.rank) ? `<div class="row"><span>Rank</span><span>${member.rank}</span></div>` : ""}

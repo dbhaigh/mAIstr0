@@ -208,10 +208,6 @@ func (l *TLSStreamLayer) Dial(address raft.ServerAddress, timeout time.Duration)
 	return conn, nil
 }
 
-func NewNetworkTransport(layer *TLSStreamLayer, maxPool int, timeout time.Duration) *raft.NetworkTransport {
-	return raft.NewNetworkTransport(layer, maxPool, timeout, io.Discard)
-}
-
 func writeHandshake(writer io.Writer, clusterID, peerID string) error {
 	if len(clusterID) > maxHandshakeID || len(peerID) > maxHandshakeID {
 		return errors.New("consensus: cluster or node ID exceeds transport handshake limit")

@@ -75,7 +75,13 @@ func (a *Agent) handlePeerMemorySyncGet(w http.ResponseWriter, r *http.Request) 
 	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_start %s peer_id=%s body_bytes=unknown",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "none"), peerID)
 	response := &memorySyncCountingResponseWriter{ResponseWriter: w}
-	snapshot := memory.SnapshotForPeer(a.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
+	snapshot, err := memory.LoadSnapshotForPeer(a.mem, peerVersion, memory.FilterMemoryWatermarks(watermarks))
+	if err != nil {
+		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s status=%d stage=snapshot error=%v",
+			syncLogFields(requestID, a.cfg.NodeID, time.Since(started), "snapshot"), peerID, http.StatusInternalServerError, err)
+		http.Error(w, "could not read memory snapshot: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	responseWatermarks := snapshot.Watermarks
 	if memory.SupportsSyncPages(peerVersion) {
 		if cursor == nil {

@@ -66,6 +66,7 @@ func (g *dispatchCapacityGate) ReserveShardNodes(
 			return nil, err
 		}
 		if !healthy {
+			g.logCapacityTargets("shard_reservation", "member_unavailable", targets)
 			return nil, errors.New("a shard member is no longer available")
 		}
 		for _, target := range targets {
@@ -107,8 +108,10 @@ func (g *dispatchCapacityGate) ReserveShardNodes(
 				}
 				return nil, err
 			}
+			g.logCapacityTargets("shard_reservation", "reserved", targets)
 			return &persistentNodeCapacityReservation{targets: targets, gates: gates}, nil
 		}
+		g.logCapacityTargets("shard_reservation", "node_capacity_wait", targets)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

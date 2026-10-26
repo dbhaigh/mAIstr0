@@ -32,7 +32,12 @@ archives:
     files:
       - LICENSE
       - README.md
+      - changelog.md
+      - SECURITY.md
       - docs/*.md
+      - docs/*.json
+      - docs/*.jsonl
+      - examples/benchmark.json
 
 checksum:
   name_template: checksums.txt

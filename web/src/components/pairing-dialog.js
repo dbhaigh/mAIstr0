@@ -4,6 +4,8 @@ function openPairingDialog(node = null) {
     node = null;
   }
   dashboardState.pairing.targetNode = node;
+  if (pairingFingerprint) pairingFingerprint.value = node && !node.joinOrchestrator && !node.discovered
+    ? dashboardState.pairing.status?.fingerprint || "" : "";
   if (pairingStatus) pairingStatus.textContent = "";
   const title = document.getElementById("pairing-title-node");
   const description = document.getElementById("pairing-dialog-description");
@@ -15,7 +17,7 @@ function openPairingDialog(node = null) {
       : pairingStatus?.joined
         ? `Switch to ${node.id}'s cluster`
         : `Join ${node.id}'s cluster`;
-    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. A PIN is only needed when joining across subnets.`;
+    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. Verify its certificate fingerprint out of band and enter its one-use PIN, including on the same subnet.`;
     if (pairingAddressField) pairingAddressField.hidden = false;
     if (pairingAddress) {
       pairingAddress.required = true;
@@ -48,7 +50,7 @@ function openPairingDialog(node = null) {
       ? dashboardState.pairing.status.joined ? "Re-pair node" : "Join cluster"
       : "Connect to orchestrator";
     if (description) description.textContent = joiningNode
-      ? "Enter the orchestrator HTTPS address. Nodes on the same subnet connect automatically; otherwise enter the one-use PIN shown on its Setup page."
+      ? "Enter the orchestrator HTTPS address, its out-of-band verified certificate fingerprint, and the one-use PIN shown on its local Setup page."
       : "Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.";
     if (joiningNode) {
       pairingAddress.value = dashboardState.pairing.status.orchestrator_addr || pairingAddress.value;
@@ -86,11 +88,12 @@ async function loadPairingStatus() {
       return;
     }
     dashboardState.pairing.status = status;
+    if (pairingFingerprintDisplay) pairingFingerprintDisplay.textContent = status.fingerprint || "Unavailable";
     if (status.role === "orchestrator") {
       const pinViewModel = dashboardViewModel.pairingPINViewModel(status);
       if (pairingPinView) pairingPinView.hidden = !pinViewModel.visible;
       if (pairingNodeConnect) pairingNodeConnect.hidden = true;
-      if (pairingInstructions) pairingInstructions.textContent = "Nodes on the same subnet join this cluster automatically. Nodes on different subnets can join using a one-use PIN generated here.";
+      if (pairingInstructions) pairingInstructions.textContent = "Verify this certificate fingerprint out of band. New nodes require it and the one-use PIN, including on the same subnet.";
       if (pairingPinRegenerateBtn) {
         pairingPinRegenerateBtn.textContent = pinViewModel.regenerateText;
       }
@@ -106,7 +109,7 @@ async function loadPairingStatus() {
       if (pairingConnectOpenBtn) pairingConnectOpenBtn.textContent = status.joined
         ? "Re-pair / change orchestrator"
         : "Enter address and pairing PIN";
-      if (pairingInstructions) pairingInstructions.textContent = "Nodes on the same subnet join an orchestrator automatically. You can also connect to an orchestrator using the one-use PIN shown on its Setup page.";
+      if (pairingInstructions) pairingInstructions.textContent = "New pairing requires the orchestrator's verified certificate fingerprint and one-use PIN. Discovery alone does not establish trust.";
       if (status.orchestrator_addr && pairingAddress && !pairingAddress.value) {
         pairingAddress.value = status.orchestrator_addr;
       }
@@ -141,6 +144,13 @@ async function loadPairingStatus() {
       }
     }
 
+  } catch (err) {
+    if (pairingState) pairingState.textContent = `Could not load pairing status: ${err.message}`;
+    if (pairingNodeConnect) pairingNodeConnect.hidden = false;
+    if (pairingConnectOpenBtn) pairingConnectOpenBtn.hidden = false;
+  }
+}
+
     async function checkPairingInvitation() {
       const invitation = await fetchJSON("/api/pairing/invitation");
       if (!invitation.pending) {
@@ -149,9 +159,12 @@ async function loadPairingStatus() {
       }
       pairingConnectDialog?.close();
       if (pairingInvitationDetails) {
-        pairingInvitationDetails.textContent = `${invitation.orchestrator_id} at ${invitation.address} wants to add this node to its cluster. The invitation expires ${new Date(invitation.expires_at).toLocaleTimeString()}.`;
+        pairingInvitationDetails.textContent = `${invitation.orchestrator_id} at ${invitation.address} wants to add this node to its cluster. Verify SHA-256 ${invitation.fingerprint} out of band before accepting. The invitation expires ${new Date(invitation.expires_at).toLocaleTimeString()}.`;
       }
-      if (pairingInvitationDialog && !pairingInvitationDialog.open) pairingInvitationDialog.showModal();
+      if (pairingInvitationDialog && !pairingInvitationDialog.open) {
+        if (pairingInvitationFingerprint) pairingInvitationFingerprint.value = "";
+        pairingInvitationDialog.showModal();
+      }
       return true;
     }
 
@@ -161,7 +174,12 @@ async function loadPairingStatus() {
       pairingInvitationDeclineBtn.disabled = true;
       if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept ? "Connecting to the cluster securely…" : "Declining invitation…";
       try {
-        const result = await fetchJSON(`/api/pairing/invitation/${accept ? "accept" : "reject"}`, { method: "POST" });
+        const fingerprint = pairingInvitationFingerprint?.value.trim() || "";
+        if (accept && !/^[a-fA-F0-9]{64}$/.test(fingerprint)) throw new Error("Enter the orchestrator fingerprint verified out of band.");
+        const result = await fetchJSON(`/api/pairing/invitation/${accept ? "accept" : "reject"}`, {
+          method: "POST",
+          ...(accept ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fingerprint }) } : {}),
+        });
         dashboardState.pairing.promptShown = true;
         pairingInvitationDialog?.close();
         if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept
@@ -180,10 +198,3 @@ async function loadPairingStatus() {
     pairingInvitationAcceptBtn?.addEventListener("click", () => respondToPairingInvitation(true));
     pairingInvitationDeclineBtn?.addEventListener("click", () => respondToPairingInvitation(false));
     pairingInvitationDialog?.addEventListener("cancel", (event) => event.preventDefault());
-
-  } catch (err) {
-    if (pairingState) pairingState.textContent = `Could not load pairing status: ${err.message}`;
-    if (pairingNodeConnect) pairingNodeConnect.hidden = false;
-    if (pairingConnectOpenBtn) pairingConnectOpenBtn.hidden = false;
-  }
-}

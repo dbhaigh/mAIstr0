@@ -77,15 +77,40 @@ func (c *dialogueComponent) delete(id string) bool {
 	return true
 }
 
+// dialogueTurnHandle identifies one in-flight turn so overlapping turns on the
+// same dialogue cannot remove each other's cancellation handles.
+type dialogueTurnHandle struct{ cancel context.CancelFunc }
+
 func (c *dialogueComponent) interrupt(id string) bool {
 	c.dialogueCancelsMu.Lock()
-	cancel, ok := c.dialogueCancels[id]
-	c.dialogueCancelsMu.Unlock()
-	if ok && cancel != nil {
-		cancel()
-		return true
+	handles := make([]*dialogueTurnHandle, 0, len(c.dialogueCancels[id]))
+	for handle := range c.dialogueCancels[id] {
+		handles = append(handles, handle)
 	}
-	return false
+	c.dialogueCancelsMu.Unlock()
+	for _, handle := range handles {
+		handle.cancel()
+	}
+	return len(handles) > 0
+}
+
+func (c *dialogueComponent) registerTurn(id string, cancel context.CancelFunc) func() {
+	handle := &dialogueTurnHandle{cancel: cancel}
+	c.dialogueCancelsMu.Lock()
+	if c.dialogueCancels[id] == nil {
+		c.dialogueCancels[id] = make(map[*dialogueTurnHandle]struct{})
+	}
+	c.dialogueCancels[id][handle] = struct{}{}
+	c.dialogueCancelsMu.Unlock()
+	return func() {
+		c.dialogueCancelsMu.Lock()
+		delete(c.dialogueCancels[id], handle)
+		if len(c.dialogueCancels[id]) == 0 {
+			delete(c.dialogueCancels, id)
+		}
+		c.dialogueCancelsMu.Unlock()
+		cancel()
+	}
 }
 
 func (c *dialogueComponent) turn(id, model, system, role, content, kind string) (dialogueMessageResponse, error) {
@@ -101,15 +126,7 @@ func (c *dialogueComponent) turnContext(ctx context.Context, id, model, system, 
 	}
 
 	turnCtx, turnCancel := context.WithCancel(ctx)
-	c.dialogueCancelsMu.Lock()
-	c.dialogueCancels[id] = turnCancel
-	c.dialogueCancelsMu.Unlock()
-	defer func() {
-		c.dialogueCancelsMu.Lock()
-		delete(c.dialogueCancels, id)
-		c.dialogueCancelsMu.Unlock()
-		turnCancel()
-	}()
+	defer c.registerTurn(id, turnCancel)()
 
 	c.dialoguesMu.Lock()
 	dlg, ok := c.dialogues[id]

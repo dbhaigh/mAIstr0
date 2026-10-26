@@ -1,0 +1,3986 @@
+{
+  "schema_version": 1,
+  "generator_version": 1,
+  "go_version": "go1.27.3",
+  "os": "windows",
+  "arch": "amd64",
+  "logical_cpus": 24,
+  "gomaxprocs": 24,
+  "minimum_decision_iterations_per_sample": 100000,
+  "minimum_sample_ms": 100,
+  "repetitions": 5,
+  "real_inference_measured": false,
+  "scoring_config": {
+    "model_match_weight": 10,
+    "hardware_weight": 0.3,
+    "load_penalty_weight": 8,
+    "gpu_compatibility_bonus": 10,
+    "dependent_penalty_weight": 2,
+    "gpu_utilization_weight": 0.1,
+    "npu_utilization_weight": 0.1,
+    "cpu_utilization_weight": 0.05,
+    "memory_usage_weight": 0.05,
+    "required_cap_match_bonus": 15,
+    "preferred_cap_match_bonus": 5,
+    "model_quality_bonus": 3,
+    "critical_path_bonus": 2,
+    "learned_bias_weight": 1,
+    "latency_preference_weight": 30
+  },
+  "scenarios": [
+    {
+      "name": "homogeneous",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80
+      ],
+      "synthetic_prefill_us": [
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000
+      ],
+      "scenario_sha256": "87476d09a0e973ff39a1632a92f296defbfe3b07d2d60f5c110c7aaded44cbb2",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 81.05475,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 79.3571875,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 76.5990625,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 79.1806875,
+              "process_cpu_ns_per_decision": 87.890625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 76.9334375,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 256,
+            "eligible_candidates": 256,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.92574342685399,
+            "horizon_us": 21466167,
+            "queue_wait_all_requests": {
+              "mean_ms": 3.01539453125,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 88.535
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 28.015394531250003,
+              "p50_ms": 25,
+              "p95_ms": 25,
+              "p99_ms": 113.535
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 825.2810195312501,
+              "p50_ms": 854.068,
+              "p95_ms": 1275,
+              "p99_ms": 1312.5
+            },
+            "node_utilization": [
+              0.602110288250343,
+              0.593957924579642,
+              0.6684938209974794,
+              0.6559741196460458,
+              0.5974517947242282,
+              0.5881348076719984,
+              0.5983252622603746,
+              0.5986164181057568
+            ],
+            "utilization_stddev": 0.02891728723716751,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "started_per_node": [
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 681.435,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 685.895,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 683.294,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 681.491,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 689.2665,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.92574342685399,
+            "horizon_us": 21466167,
+            "queue_wait_all_requests": {
+              "mean_ms": 0,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 0
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 25,
+              "p50_ms": 25,
+              "p95_ms": 25,
+              "p99_ms": 25
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 822.265625,
+              "p50_ms": 850,
+              "p95_ms": 1275,
+              "p99_ms": 1312.5
+            },
+            "node_utilization": [
+              0.8219329515138869,
+              0.7805888214696177,
+              0.7229399640839466,
+              0.6722788469874478,
+              0.5476641451638757,
+              0.4818629241075037,
+              0.43964532652708793,
+              0.4361514563825018
+            ],
+            "utilization_stddev": 0.14583064496969048,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              1
+            ],
+            "started_per_node": [
+              45,
+              43,
+              39,
+              32,
+              27,
+              24,
+              24,
+              22
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 679.485,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 696.131,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 686.4215,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 696.528,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 675.763,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 80,
+            "failed": 176,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0.6875,
+            "successful_requests_per_second": 1.5899328630974396,
+            "horizon_us": 50316590,
+            "queue_wait_all_requests": {
+              "mean_ms": 24988.194378906246,
+              "p50_ms": 29818.979,
+              "p95_ms": 29889.766,
+              "p99_ms": 29911.347
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 14356.8863625,
+              "p50_ms": 14806.343,
+              "p95_ms": 26407.051,
+              "p99_ms": 28360.214
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 15218.1363625,
+              "p50_ms": 15451.661,
+              "p95_ms": 27419.551,
+              "p99_ms": 29647.714
+            },
+            "node_utilization": [
+              0.99840974915033,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "utilization_stddev": 0.33019298784926937,
+            "max_active_per_node": [
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "started_per_node": [
+              256,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1029.095,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1001.641,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1032.544,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1026.099,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1026.942,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0.00001,
+              "bytes_per_decision": 0.00016
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.92574342685399,
+            "horizon_us": 21466167,
+            "queue_wait_all_requests": {
+              "mean_ms": 0,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 0
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 25,
+              "p50_ms": 25,
+              "p95_ms": 25,
+              "p99_ms": 25
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 822.265625,
+              "p50_ms": 850,
+              "p95_ms": 1275,
+              "p99_ms": 1312.5
+            },
+            "node_utilization": [
+              0.8219329515138869,
+              0.7805888214696177,
+              0.7229399640839466,
+              0.6722788469874478,
+              0.5476641451638757,
+              0.4818629241075037,
+              0.43964532652708793,
+              0.4361514563825018
+            ],
+            "utilization_stddev": 0.14583064496969048,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              1
+            ],
+            "started_per_node": [
+              45,
+              43,
+              39,
+              32,
+              27,
+              24,
+              24,
+              22
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "heterogeneous",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        20,
+        40,
+        80,
+        160,
+        20,
+        40,
+        80,
+        160
+      ],
+      "synthetic_prefill_us": [
+        100000,
+        50000,
+        25000,
+        12500,
+        100000,
+        50000,
+        25000,
+        12500
+      ],
+      "scenario_sha256": "cf23c4b36308a5c1bd11188df474a0715fc63628e590e122a522590b5248442a",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 79.268375,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 81.36725,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 77.99875,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 78.2663125,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 75.33175,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 232,
+            "failed": 24,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 256,
+            "eligible_candidates": 256,
+            "failure_rate": 0.09375,
+            "successful_requests_per_second": 4.6310232245814715,
+            "horizon_us": 50096920,
+            "queue_wait_all_requests": {
+              "mean_ms": 5577.205031249999,
+              "p50_ms": 216.49,
+              "p95_ms": 29307.768,
+              "p99_ms": 29441.125
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 3191.049793103448,
+              "p50_ms": 50,
+              "p95_ms": 18221.631,
+              "p99_ms": 25153.349
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 4477.553025862069,
+              "p50_ms": 1398.716,
+              "p95_ms": 20964.117,
+              "p99_ms": 27205.252
+            },
+            "node_utilization": [
+              0.9939746395586795,
+              0.5090133285639117,
+              0.19096317032397733,
+              0.2810801542290424,
+              0.9822359937497156,
+              0.33601533454219007,
+              0.5127560736268817,
+              0.12825139749110326
+            ],
+            "utilization_stddev": 0.3132060796509477,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 684.8195,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 689.171,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 676.8135,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 689.767,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 677.2105,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.31645766583915,
+            "horizon_us": 22621920,
+            "queue_wait_all_requests": {
+              "mean_ms": 19.742804687499998,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 458.987
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 50.60217968749999,
+              "p50_ms": 25,
+              "p95_ms": 100,
+              "p99_ms": 508.987
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 1009.5865546874999,
+              "p50_ms": 637.5,
+              "p95_ms": 2575,
+              "p99_ms": 5000
+            },
+            "node_utilization": [
+              0.9592466068308968,
+              0.8631009215840212,
+              0.6413396092521472,
+              0.7929256225819913,
+              0.8730470269543876,
+              0.6671258083605046,
+              0.8481817635284715,
+              0.6017393749071697
+            ],
+            "utilization_stddev": 0.12054418177297302,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              8,
+              24,
+              50,
+              46,
+              13,
+              28,
+              23,
+              64
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 705.802,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 694.7455,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 689.7465,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 698.902,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 690.122,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 82,
+            "failed": 174,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0.6796875,
+            "successful_requests_per_second": 1.6296811846748755,
+            "horizon_us": 50316590,
+            "queue_wait_all_requests": {
+              "mean_ms": 25103.605417968723,
+              "p50_ms": 29901.54,
+              "p95_ms": 29954.56,
+              "p99_ms": 29958.539
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 14896.21435365854,
+              "p50_ms": 15056.541,
+              "p95_ms": 27752.951,
+              "p99_ms": 29669.198
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 15327.31191463414,
+              "p50_ms": 15506.541,
+              "p95_ms": 28340.451,
+              "p99_ms": 29994.198
+            },
+            "node_utilization": [
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "utilization_stddev": 0.33071891388307384,
+            "max_active_per_node": [
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "started_per_node": [
+              0,
+              0,
+              0,
+              256,
+              0,
+              0,
+              0,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1010.104,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1037.032,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1032.102,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1058.541,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1033.951,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.244756308780481,
+            "horizon_us": 22766167,
+            "queue_wait_all_requests": {
+              "mean_ms": 85.76203125000002,
+              "p50_ms": 0,
+              "p95_ms": 508.039,
+              "p99_ms": 582.9
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 110.17609375,
+              "p50_ms": 25,
+              "p95_ms": 520.539,
+              "p99_ms": 595.4
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 891.1087109375,
+              "p50_ms": 675.294,
+              "p95_ms": 2400,
+              "p99_ms": 4350
+            },
+            "node_utilization": [
+              0.8104131011601557,
+              0.6418515686017765,
+              0.5294772135628569,
+              0.9062241351387785,
+              0.40630467131335724,
+              0.3653081639375951,
+              0.8675153792906817,
+              0.8455529646250948
+            ],
+            "utilization_stddev": 0.20255869042266664,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              2,
+              1,
+              2
+            ],
+            "started_per_node": [
+              6,
+              16,
+              44,
+              47,
+              6,
+              15,
+              23,
+              99
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "uneven_models",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80
+      ],
+      "synthetic_prefill_us": [
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000
+      ],
+      "scenario_sha256": "2bd392722c734debe3c8665fce3d916b2c295a0aebcf348a182e6af977f467ec",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 149.72275,
+              "process_cpu_ns_per_decision": 156.25,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 148.8415,
+              "process_cpu_ns_per_decision": 136.71875,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 148.740375,
+              "process_cpu_ns_per_decision": 156.25,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 146.163875,
+              "process_cpu_ns_per_decision": 136.71875,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 154.229,
+              "process_cpu_ns_per_decision": 156.25,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 681,
+            "eligible_candidates": 256,
+            "failure_rate": 0,
+            "successful_requests_per_second": 6.864457426849553,
+            "horizon_us": 37293552,
+            "queue_wait_all_requests": {
+              "mean_ms": 7538.708570312499,
+              "p50_ms": 7329.241,
+              "p95_ms": 14025.85,
+              "p99_ms": 15490.383
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 7563.708570312499,
+              "p50_ms": 7354.241,
+              "p95_ms": 14050.85,
+              "p99_ms": 15515.383
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 8360.9741953125,
+              "p50_ms": 7957.588,
+              "p95_ms": 14789.31,
+              "p99_ms": 16154.009
+            },
+            "node_utilization": [
+              0.9153727164417055,
+              0,
+              0,
+              0.9822408442081355,
+              0,
+              0,
+              0.9245901275373287,
+              0
+            ],
+            "utilization_stddev": 0.4557914795679481,
+            "max_active_per_node": [
+              2,
+              0,
+              0,
+              2,
+              0,
+              0,
+              2,
+              0
+            ],
+            "started_per_node": [
+              86,
+              0,
+              0,
+              85,
+              0,
+              0,
+              85,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 520.421,
+              "process_cpu_ns_per_decision": 546.875,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 534.7555,
+              "process_cpu_ns_per_decision": 468.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 537.6045,
+              "process_cpu_ns_per_decision": 390.625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 508.033,
+              "process_cpu_ns_per_decision": 468.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 516.882,
+              "process_cpu_ns_per_decision": 468.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 768,
+            "failure_rate": 0,
+            "successful_requests_per_second": 7.0523415977961434,
+            "horizon_us": 36300000,
+            "queue_wait_all_requests": {
+              "mean_ms": 7538.017511718753,
+              "p50_ms": 7671.206,
+              "p95_ms": 13945.714,
+              "p99_ms": 14578.154
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 7563.017511718754,
+              "p50_ms": 7696.206,
+              "p95_ms": 13970.714,
+              "p99_ms": 14603.154
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 8360.283136718754,
+              "p50_ms": 8759.868,
+              "p95_ms": 14828.362,
+              "p99_ms": 15509.126
+            },
+            "node_utilization": [
+              0.9815771349862259,
+              0,
+              0,
+              0.9705578512396694,
+              0,
+              0,
+              0.9473140495867769,
+              0
+            ],
+            "utilization_stddev": 0.4679783026708945,
+            "max_active_per_node": [
+              2,
+              0,
+              0,
+              2,
+              0,
+              0,
+              2,
+              0
+            ],
+            "started_per_node": [
+              86,
+              0,
+              0,
+              83,
+              0,
+              0,
+              87,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 507.6425,
+              "process_cpu_ns_per_decision": 468.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 517.2185,
+              "process_cpu_ns_per_decision": 546.875,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 509.6,
+              "process_cpu_ns_per_decision": 546.875,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 514.429,
+              "process_cpu_ns_per_decision": 468.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 514.8625,
+              "process_cpu_ns_per_decision": 468.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 80,
+            "failed": 176,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 768,
+            "failure_rate": 0.6875,
+            "successful_requests_per_second": 1.5899328630974396,
+            "horizon_us": 50316590,
+            "queue_wait_all_requests": {
+              "mean_ms": 24988.194378906246,
+              "p50_ms": 29818.979,
+              "p95_ms": 29889.766,
+              "p99_ms": 29911.347
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 14356.8863625,
+              "p50_ms": 14806.343,
+              "p95_ms": 26407.051,
+              "p99_ms": 28360.214
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 15218.1363625,
+              "p50_ms": 15451.661,
+              "p95_ms": 27419.551,
+              "p99_ms": 29647.714
+            },
+            "node_utilization": [
+              0.99840974915033,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "utilization_stddev": 0.33019298784926937,
+            "max_active_per_node": [
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "started_per_node": [
+              256,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 644.1675,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 675.662,
+              "process_cpu_ns_per_decision": 546.875,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 664.23,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 663.354,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 644.4375,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 768,
+            "failure_rate": 0,
+            "successful_requests_per_second": 7.0523415977961434,
+            "horizon_us": 36300000,
+            "queue_wait_all_requests": {
+              "mean_ms": 7538.017511718753,
+              "p50_ms": 7671.206,
+              "p95_ms": 13945.714,
+              "p99_ms": 14578.154
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 7563.017511718754,
+              "p50_ms": 7696.206,
+              "p95_ms": 13970.714,
+              "p99_ms": 14603.154
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 8360.283136718754,
+              "p50_ms": 8759.868,
+              "p95_ms": 14828.362,
+              "p99_ms": 15509.126
+            },
+            "node_utilization": [
+              0.9815771349862259,
+              0,
+              0,
+              0.9705578512396694,
+              0,
+              0,
+              0.9473140495867769,
+              0
+            ],
+            "utilization_stddev": 0.4679783026708945,
+            "max_active_per_node": [
+              2,
+              0,
+              0,
+              2,
+              0,
+              0,
+              2,
+              0
+            ],
+            "started_per_node": [
+              86,
+              0,
+              0,
+              83,
+              0,
+              0,
+              87,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "stale_telemetry",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80
+      ],
+      "synthetic_prefill_us": [
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000
+      ],
+      "scenario_sha256": "4a312a2905aba70f228ae61b28b5d6189e6f4d21eb68d2d04cbbd454d1691280",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 76.09325,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 79.2383125,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 79.29,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 79.377375,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 77.581875,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 256,
+            "eligible_candidates": 256,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.92574342685399,
+            "horizon_us": 21466167,
+            "queue_wait_all_requests": {
+              "mean_ms": 3.01539453125,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 88.535
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 28.015394531250003,
+              "p50_ms": 25,
+              "p95_ms": 25,
+              "p99_ms": 113.535
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 825.2810195312501,
+              "p50_ms": 854.068,
+              "p95_ms": 1275,
+              "p99_ms": 1312.5
+            },
+            "node_utilization": [
+              0.602110288250343,
+              0.593957924579642,
+              0.6684938209974794,
+              0.6559741196460458,
+              0.5974517947242282,
+              0.5881348076719984,
+              0.5983252622603746,
+              0.5986164181057568
+            ],
+            "utilization_stddev": 0.02891728723716751,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "started_per_node": [
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 680.922,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 671.027,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 711.1115,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 676.0045,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 651.0755,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.92574342685399,
+            "horizon_us": 21466167,
+            "queue_wait_all_requests": {
+              "mean_ms": 0,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 0
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 25,
+              "p50_ms": 25,
+              "p95_ms": 25,
+              "p99_ms": 25
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 822.265625,
+              "p50_ms": 850,
+              "p95_ms": 1275,
+              "p99_ms": 1312.5
+            },
+            "node_utilization": [
+              0.8219329515138869,
+              0.7805888214696177,
+              0.7229399640839466,
+              0.6722788469874478,
+              0.5476641451638757,
+              0.4818629241075037,
+              0.43964532652708793,
+              0.4361514563825018
+            ],
+            "utilization_stddev": 0.14583064496969048,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              1
+            ],
+            "started_per_node": [
+              45,
+              43,
+              39,
+              32,
+              27,
+              24,
+              24,
+              22
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 687.3615,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 672.8385,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 676.7915,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 678.387,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 672.4375,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 80,
+            "failed": 176,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0.6875,
+            "successful_requests_per_second": 1.5899328630974396,
+            "horizon_us": 50316590,
+            "queue_wait_all_requests": {
+              "mean_ms": 24988.194378906246,
+              "p50_ms": 29818.979,
+              "p95_ms": 29889.766,
+              "p99_ms": 29911.347
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 14356.8863625,
+              "p50_ms": 14806.343,
+              "p95_ms": 26407.051,
+              "p99_ms": 28360.214
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 15218.1363625,
+              "p50_ms": 15451.661,
+              "p95_ms": 27419.551,
+              "p99_ms": 29647.714
+            },
+            "node_utilization": [
+              0.99840974915033,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "utilization_stddev": 0.33019298784926937,
+            "max_active_per_node": [
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "started_per_node": [
+              256,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1055.238,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1028.632,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0.00001,
+              "bytes_per_decision": 0.00016
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1050.704,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1047.789,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1025.191,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.92574342685399,
+            "horizon_us": 21466167,
+            "queue_wait_all_requests": {
+              "mean_ms": 0,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 0
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 25,
+              "p50_ms": 25,
+              "p95_ms": 25,
+              "p99_ms": 25
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 822.265625,
+              "p50_ms": 850,
+              "p95_ms": 1275,
+              "p99_ms": 1312.5
+            },
+            "node_utilization": [
+              0.8219329515138869,
+              0.7805888214696177,
+              0.7229399640839466,
+              0.43964532652708793,
+              0.6722788469874478,
+              0.5476641451638757,
+              0.4818629241075037,
+              0.4361514563825018
+            ],
+            "utilization_stddev": 0.14583064496969048,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              1
+            ],
+            "started_per_node": [
+              45,
+              43,
+              39,
+              24,
+              32,
+              27,
+              24,
+              22
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "long_running",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        20,
+        40,
+        80,
+        160,
+        20,
+        40,
+        80,
+        160
+      ],
+      "synthetic_prefill_us": [
+        100000,
+        50000,
+        25000,
+        12500,
+        100000,
+        50000,
+        25000,
+        12500
+      ],
+      "scenario_sha256": "b393fca06101b15f508960920666e0d1bfe27992d46a4a663f5d3494da996527",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 76.073875,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 80.5208125,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 77.4676875,
+              "process_cpu_ns_per_decision": 68.359375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 78.992125,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 76.8184375,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 178,
+            "failed": 78,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 256,
+            "eligible_candidates": 256,
+            "failure_rate": 0.3046875,
+            "successful_requests_per_second": 3.5531126464461287,
+            "horizon_us": 50096920,
+            "queue_wait_all_requests": {
+              "mean_ms": 10850.953535156246,
+              "p50_ms": 2418.005,
+              "p95_ms": 29400.884,
+              "p99_ms": 29495.273
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 3658.3872696629214,
+              "p50_ms": 50,
+              "p95_ms": 23414.37,
+              "p99_ms": 29366.676
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 5055.82406741573,
+              "p50_ms": 1284.158,
+              "p95_ms": 24526.87,
+              "p99_ms": 29801.898
+            },
+            "node_utilization": [
+              0.9939746395586795,
+              0.5090133285639117,
+              0.9044004834362406,
+              0.2810801542290424,
+              0.9822359937497156,
+              0.33601533454219007,
+              0.9886681456664401,
+              0.12825139749110326
+            ],
+            "utilization_stddev": 0.3417186762114201,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 694.7605,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 688.461,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 682.656,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 685.815,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 686.195,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 225,
+            "failed": 31,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0.12109375,
+            "successful_requests_per_second": 4.471686177461549,
+            "horizon_us": 50316590,
+            "queue_wait_all_requests": {
+              "mean_ms": 10431.94816015625,
+              "p50_ms": 7046.909,
+              "p95_ms": 28386.847,
+              "p99_ms": 29120.015
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 8491.426004444442,
+              "p50_ms": 5314.823,
+              "p95_ms": 26362.202,
+              "p99_ms": 28345.714
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 10536.370448888887,
+              "p50_ms": 8147.251,
+              "p95_ms": 27744.33,
+              "p99_ms": 29734.372
+            },
+            "node_utilization": [
+              0.9925420224224257,
+              0.9606082904266764,
+              0.7517693203507365,
+              0.5769717303974693,
+              0.9777282800762135,
+              0.9559333081461469,
+              0.5301432390390525,
+              0.7116812764934984
+            ],
+            "utilization_stddev": 0.17714723594374085,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              10,
+              28,
+              45,
+              15,
+              30,
+              54,
+              20,
+              54
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 705.854,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 711.0035,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 689.3855,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 689.1725,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 697.158,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 20,
+            "failed": 236,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0.921875,
+            "successful_requests_per_second": 0.3974832157743599,
+            "horizon_us": 50316590,
+            "queue_wait_all_requests": {
+              "mean_ms": 28477.977753906227,
+              "p50_ms": 29914.892,
+              "p95_ms": 29955.407,
+              "p99_ms": 29959.241
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 12003.007249999999,
+              "p50_ms": 9665.063,
+              "p95_ms": 18456.197,
+              "p99_ms": 18960.496
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 13033.944749999999,
+              "p50_ms": 9883.813,
+              "p95_ms": 19056.197,
+              "p99_ms": 19429.246
+            },
+            "node_utilization": [
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "utilization_stddev": 0.33071891388307384,
+            "max_active_per_node": [
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "started_per_node": [
+              0,
+              0,
+              0,
+              256,
+              0,
+              0,
+              0,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1030.675,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1042.39,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1048.153,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1036.308,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1050.617,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 230,
+            "failed": 26,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0.1015625,
+            "successful_requests_per_second": 4.577104408328658,
+            "horizon_us": 50250110,
+            "queue_wait_all_requests": {
+              "mean_ms": 8646.06952734375,
+              "p50_ms": 3401.687,
+              "p95_ms": 28227.172,
+              "p99_ms": 29129.704
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 7018.372260869567,
+              "p50_ms": 2785.764,
+              "p95_ms": 25680.873,
+              "p99_ms": 28222.342
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 8961.279869565222,
+              "p50_ms": 4274.24,
+              "p95_ms": 26745.248,
+              "p99_ms": 29653.426
+            },
+            "node_utilization": [
+              0.9869913319592734,
+              0.9175882898564799,
+              0.8782594837437503,
+              0.9853942210275759,
+              0.9580563206727308,
+              0.680926383378398,
+              0.8380578669380028,
+              0.6261180323784366
+            ],
+            "utilization_stddev": 0.12862527976257493,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              17,
+              23,
+              54,
+              38,
+              20,
+              33,
+              26,
+              45
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "bursts",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        20,
+        40,
+        80,
+        160,
+        20,
+        40,
+        80,
+        160
+      ],
+      "synthetic_prefill_us": [
+        100000,
+        50000,
+        25000,
+        12500,
+        100000,
+        50000,
+        25000,
+        12500
+      ],
+      "scenario_sha256": "1c774c6bf8d3d32e767b6c3354c0698c200fb9064ded8acb760e358f30e59b96",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 79.02575,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 79.487875,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 77.705625,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 78.1458125,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 76.0213125,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 226,
+            "failed": 30,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 256,
+            "eligible_candidates": 256,
+            "failure_rate": 0.1171875,
+            "successful_requests_per_second": 5.136363636363637,
+            "horizon_us": 44000000,
+            "queue_wait_all_requests": {
+              "mean_ms": 7308.7158203125,
+              "p50_ms": 1650,
+              "p95_ms": 30000,
+              "p99_ms": 30000
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 4419.828539823009,
+              "p50_ms": 1075,
+              "p95_ms": 20200,
+              "p99_ms": 28100
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 5703.678097345133,
+              "p50_ms": 2525,
+              "p95_ms": 22800,
+              "p99_ms": 29550
+            },
+            "node_utilization": [
+              1,
+              0.6153409090909091,
+              0.20539772727272726,
+              0.2865056818181818,
+              1,
+              0.39299242424242425,
+              0.6335227272727273,
+              0.14069602272727272
+            ],
+            "utilization_stddev": 0.31516591051153975,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 674.8285,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 690.227,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 679.3275,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 679.5395,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 681.369,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 8.448844884488448,
+            "horizon_us": 30300000,
+            "queue_wait_all_requests": {
+              "mean_ms": 2080.859375,
+              "p50_ms": 1250,
+              "p95_ms": 8450,
+              "p99_ms": 11650
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 2114.501953125,
+              "p50_ms": 1275,
+              "p95_ms": 8550,
+              "p99_ms": 11750
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 3209.5703125,
+              "p50_ms": 2150,
+              "p95_ms": 11850,
+              "p99_ms": 15450
+            },
+            "node_utilization": [
+              0.8679867986798679,
+              0.6984323432343235,
+              0.5624312431243125,
+              0.3673679867986799,
+              0.9694719471947195,
+              0.6402640264026402,
+              0.5635313531353136,
+              0.3967615511551155
+            ],
+            "utilization_stddev": 0.19651351946218915,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              8,
+              26,
+              59,
+              32,
+              15,
+              38,
+              21,
+              57
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 722.5705,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 695.7,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 698.4715,
+              "process_cpu_ns_per_decision": 781.25,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 686.596,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 692.325,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 103,
+            "failed": 153,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0.59765625,
+            "successful_requests_per_second": 2.340909090909091,
+            "horizon_us": 44000000,
+            "queue_wait_all_requests": {
+              "mean_ms": 25547.607421875,
+              "p50_ms": 30000,
+              "p95_ms": 30000,
+              "p99_ms": 30000
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 18953.58009708738,
+              "p50_ms": 21037.5,
+              "p95_ms": 29375,
+              "p99_ms": 29587.5
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 19361.043689320395,
+              "p50_ms": 21343.75,
+              "p95_ms": 29687.5,
+              "p99_ms": 29956.25
+            },
+            "node_utilization": [
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "utilization_stddev": 0.33071891388307384,
+            "max_active_per_node": [
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "started_per_node": [
+              0,
+              0,
+              0,
+              256,
+              0,
+              0,
+              0,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1023.391,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1014.406,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1046.851,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1064.241,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1018.694,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 7.551622418879056,
+            "horizon_us": 33900000,
+            "queue_wait_all_requests": {
+              "mean_ms": 1791.6015625,
+              "p50_ms": 1037.5,
+              "p95_ms": 6850,
+              "p99_ms": 17800
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 1824.51171875,
+              "p50_ms": 1062.5,
+              "p95_ms": 6950,
+              "p99_ms": 17900
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 2882.470703125,
+              "p50_ms": 1787.5,
+              "p95_ms": 11500,
+              "p99_ms": 21750
+            },
+            "node_utilization": [
+              1,
+              0.6017699115044248,
+              0.4198623402163225,
+              0.48746312684365783,
+              0.7831858407079646,
+              0.48475909537856443,
+              0.5412979351032449,
+              0.3626474926253687
+            ],
+            "utilization_stddev": 0.19683951940707925,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              10,
+              21,
+              51,
+              40,
+              15,
+              35,
+              24,
+              60
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "concurrent_arrivals",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80
+      ],
+      "synthetic_prefill_us": [
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000
+      ],
+      "scenario_sha256": "dce115371fffe6856667d827d9176e6d3f0faf78be7d36678993f30101a6bc12",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 77.526,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 82.046,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 74.890875,
+              "process_cpu_ns_per_decision": 68.359375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 83.945,
+              "process_cpu_ns_per_decision": 87.890625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 77.19025,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 256,
+            "eligible_candidates": 256,
+            "failure_rate": 0,
+            "successful_requests_per_second": 12.953826691967109,
+            "horizon_us": 19762500,
+            "queue_wait_all_requests": {
+              "mean_ms": 5.419921875,
+              "p50_ms": 0,
+              "p95_ms": 62.5,
+              "p99_ms": 100
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 30.419921875,
+              "p50_ms": 25,
+              "p95_ms": 87.5,
+              "p99_ms": 125
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 826.025390625,
+              "p50_ms": 825,
+              "p95_ms": 1275,
+              "p99_ms": 1312.5
+            },
+            "node_utilization": [
+              0.6135357368753953,
+              0.6850094876660342,
+              0.6859582542694497,
+              0.6378874130297281,
+              0.704617330803289,
+              0.6562302340290955,
+              0.7052498418722327,
+              0.6265022137887413
+            ],
+            "utilization_stddev": 0.03348269125252228,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "started_per_node": [
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32,
+              32
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 671.3765,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 666.534,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 676.577,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 711.9065,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 679.622,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 12.953826691967109,
+            "horizon_us": 19762500,
+            "queue_wait_all_requests": {
+              "mean_ms": 2.294921875,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 0
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 27.294921875,
+              "p50_ms": 25,
+              "p95_ms": 25,
+              "p99_ms": 25
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 822.900390625,
+              "p50_ms": 825,
+              "p95_ms": 1262.5,
+              "p99_ms": 1300
+            },
+            "node_utilization": [
+              0.732764073371284,
+              0.7223276407337128,
+              0.7482605945604048,
+              0.6872232764073372,
+              0.6736242884250474,
+              0.6698292220113852,
+              0.6097406704617331,
+              0.4712207463630613
+            ],
+            "utilization_stddev": 0.08366838124340817,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "started_per_node": [
+              37,
+              37,
+              36,
+              34,
+              32,
+              30,
+              28,
+              22
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 683.537,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 679.4985,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 687.5415,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 670.842,
+              "process_cpu_ns_per_decision": 546.875,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 743.5845,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 98,
+            "failed": 158,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0.6171875,
+            "successful_requests_per_second": 2.016460905349794,
+            "horizon_us": 48600000,
+            "queue_wait_all_requests": {
+              "mean_ms": 25139.697265625,
+              "p50_ms": 29725,
+              "p95_ms": 30000,
+              "p99_ms": 30000
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 17520.025510204072,
+              "p50_ms": 18287.5,
+              "p95_ms": 29425,
+              "p99_ms": 29425
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 18295.535714285717,
+              "p50_ms": 18862.5,
+              "p95_ms": 29962.5,
+              "p99_ms": 29987.5
+            },
+            "node_utilization": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "utilization_stddev": 0.33071891388307384,
+            "max_active_per_node": [
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "started_per_node": [
+              256,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1018.385,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 1003.7665,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1034.53,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1103.004,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1072.221,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 2048,
+            "failure_rate": 0,
+            "successful_requests_per_second": 12.953826691967109,
+            "horizon_us": 19762500,
+            "queue_wait_all_requests": {
+              "mean_ms": 2.294921875,
+              "p50_ms": 0,
+              "p95_ms": 0,
+              "p99_ms": 0
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 27.294921875,
+              "p50_ms": 25,
+              "p95_ms": 25,
+              "p99_ms": 25
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 822.900390625,
+              "p50_ms": 825,
+              "p95_ms": 1262.5,
+              "p99_ms": 1300
+            },
+            "node_utilization": [
+              0.732764073371284,
+              0.7223276407337128,
+              0.7482605945604048,
+              0.6872232764073372,
+              0.6736242884250474,
+              0.6698292220113852,
+              0.6097406704617331,
+              0.4712207463630613
+            ],
+            "utilization_stddev": 0.08366838124340817,
+            "max_active_per_node": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "started_per_node": [
+              37,
+              37,
+              36,
+              34,
+              32,
+              30,
+              28,
+              22
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "node_failures",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        20,
+        40,
+        80,
+        160,
+        20,
+        40,
+        80,
+        160
+      ],
+      "synthetic_prefill_us": [
+        100000,
+        50000,
+        25000,
+        12500,
+        100000,
+        50000,
+        25000,
+        12500
+      ],
+      "outages": [
+        {
+          "node": 3,
+          "at_us": 2000000,
+          "end_us": 7000000
+        },
+        {
+          "node": 7,
+          "at_us": 4000000,
+          "end_us": 9000000
+        }
+      ],
+      "scenario_sha256": "c517d0ac04ab9f06eb64d3c3656fd9307dfb8fa6508cdfe04648e87a9e7e7d37",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 75.554875,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 78.7221875,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 75.9260625,
+              "process_cpu_ns_per_decision": 78.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 87.884375,
+              "process_cpu_ns_per_decision": 97.65625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 1600000,
+              "wall_ns_per_decision": 75.714375,
+              "process_cpu_ns_per_decision": 68.359375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 224,
+            "failed": 32,
+            "attempts": 258,
+            "decisions": 258,
+            "candidates_examined": 278,
+            "eligible_candidates": 258,
+            "failure_rate": 0.125,
+            "successful_requests_per_second": 4.457701684633128,
+            "horizon_us": 50250110,
+            "queue_wait_all_requests": {
+              "mean_ms": 7361.946804687502,
+              "p50_ms": 835.772,
+              "p95_ms": 29352.266,
+              "p99_ms": 29520.128
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 4303.157209821428,
+              "p50_ms": 343.758,
+              "p95_ms": 19002.886,
+              "p99_ms": 25164.383
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 5651.98533482143,
+              "p50_ms": 2050,
+              "p95_ms": 23202.886,
+              "p99_ms": 28264.383
+            },
+            "node_utilization": [
+              0.993855137829549,
+              0.587560902851755,
+              0.1778603071714669,
+              0.18196519370803368,
+              0.9818963878885041,
+              0.3651733299688299,
+              0.6495010657688113,
+              0.09821300888694572
+            ],
+            "utilization_stddev": 0.33363591964073824,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              35,
+              35,
+              35,
+              25,
+              35,
+              35,
+              34,
+              24
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 680.0275,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 833.5595,
+              "process_cpu_ns_per_decision": 859.375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 686.2505,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 691.76,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 691.447,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 259,
+            "decisions": 259,
+            "candidates_examined": 2072,
+            "eligible_candidates": 1940,
+            "failure_rate": 0,
+            "successful_requests_per_second": 10.09218302473527,
+            "horizon_us": 25366167,
+            "queue_wait_all_requests": {
+              "mean_ms": 540.5031289062503,
+              "p50_ms": 0,
+              "p95_ms": 2522.368,
+              "p99_ms": 5301.725
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 576.0944765625001,
+              "p50_ms": 50,
+              "p95_ms": 2572.368,
+              "p99_ms": 5401.725
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 1599.5075625000004,
+              "p50_ms": 1025,
+              "p95_ms": 4654.449,
+              "p99_ms": 7470.272
+            },
+            "node_utilization": [
+              0.8732103671792432,
+              0.8121053527716663,
+              0.7009007969815332,
+              0.5582612067483432,
+              0.8732103671792432,
+              0.6918664534535313,
+              0.7741611099540581,
+              0.46063695788173276
+            ],
+            "utilization_stddev": 0.13825608070998824,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              7,
+              22,
+              64,
+              35,
+              15,
+              33,
+              23,
+              60
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 691.531,
+              "process_cpu_ns_per_decision": 781.25,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 698.148,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 698.5935,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 698.2835,
+              "process_cpu_ns_per_decision": 703.125,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 689.679,
+              "process_cpu_ns_per_decision": 625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 185,
+            "failed": 71,
+            "attempts": 319,
+            "decisions": 319,
+            "candidates_examined": 2552,
+            "eligible_candidates": 2321,
+            "failure_rate": 0.27734375,
+            "successful_requests_per_second": 3.676719745912829,
+            "horizon_us": 50316590,
+            "queue_wait_all_requests": {
+              "mean_ms": 17188.472058593747,
+              "p50_ms": 16103.024,
+              "p95_ms": 29942.262,
+              "p99_ms": 29955.773
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 12358.433535135135,
+              "p50_ms": 11944.797,
+              "p95_ms": 26691.339,
+              "p99_ms": 29107.536
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 12934.41326486486,
+              "p50_ms": 12539.179,
+              "p95_ms": 26853.839,
+              "p99_ms": 29545.036
+            },
+            "node_utilization": [
+              0,
+              0,
+              0.4452640106705694,
+              0.8987555396738929,
+              0,
+              0,
+              0,
+              0.03858362619565436
+            ],
+            "utilization_stddev": 0.3099518737907154,
+            "max_active_per_node": [
+              0,
+              0,
+              3,
+              1,
+              0,
+              0,
+              0,
+              2
+            ],
+            "started_per_node": [
+              0,
+              0,
+              77,
+              171,
+              0,
+              0,
+              0,
+              11
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1046.472,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1028.91,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1042.934,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1037.898,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1022.063,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 261,
+            "decisions": 261,
+            "candidates_examined": 2088,
+            "eligible_candidates": 1953,
+            "failure_rate": 0,
+            "successful_requests_per_second": 11.978681129426795,
+            "horizon_us": 21371301,
+            "queue_wait_all_requests": {
+              "mean_ms": 539.47791015625,
+              "p50_ms": 176.145,
+              "p95_ms": 2596.95,
+              "p99_ms": 5717.283
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 572.4862031249999,
+              "p50_ms": 194.573,
+              "p95_ms": 2650.553,
+              "p99_ms": 5817.283
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 1487.3299531250009,
+              "p50_ms": 962.5,
+              "p95_ms": 4300,
+              "p99_ms": 7400.553
+            },
+            "node_utilization": [
+              0.9054198431812832,
+              0.7755728114072232,
+              0.7623151565113732,
+              0.75981911442827,
+              0.7100643989806704,
+              0.6929074338213351,
+              0.9504568767245382,
+              0.6889917464547433
+            ],
+            "utilization_stddev": 0.0910220197421281,
+            "max_active_per_node": [
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2
+            ],
+            "started_per_node": [
+              5,
+              20,
+              66,
+              37,
+              10,
+              25,
+              23,
+              73
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "resource_limits",
+      "seed": 17,
+      "requests": 256,
+      "nodes": 8,
+      "timeout_us": 30000000,
+      "synthetic_tokens_per_second": [
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80,
+        80
+      ],
+      "synthetic_prefill_us": [
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000,
+        25000
+      ],
+      "scenario_sha256": "eb02bfb264f4d3bb11d8a7ce689ee313e810688203071f9c1c375d75b4a5523d",
+      "results": [
+        {
+          "policy": "round_robin",
+          "decision_samples": [
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 230.383625,
+              "process_cpu_ns_per_decision": 234.375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 234.558875,
+              "process_cpu_ns_per_decision": 234.375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 232.3385,
+              "process_cpu_ns_per_decision": 234.375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 238.949625,
+              "process_cpu_ns_per_decision": 253.90625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 800000,
+              "wall_ns_per_decision": 228.196,
+              "process_cpu_ns_per_decision": 234.375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 512,
+            "eligible_candidates": 256,
+            "failure_rate": 0,
+            "successful_requests_per_second": 9.26388919346337,
+            "horizon_us": 27634182,
+            "queue_wait_all_requests": {
+              "mean_ms": 3175.335218750001,
+              "p50_ms": 3189.346,
+              "p95_ms": 5942.143,
+              "p99_ms": 6696.674
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 3200.335218750001,
+              "p50_ms": 3214.346,
+              "p95_ms": 5967.143,
+              "p99_ms": 6721.674
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 3997.600843750002,
+              "p50_ms": 4071.04,
+              "p95_ms": 6914.792,
+              "p99_ms": 7521.227
+            },
+            "node_utilization": [
+              0,
+              0.931816979420632,
+              0,
+              0.9182468292348946,
+              0,
+              0.9840620576357209,
+              0,
+              0.9745629525057047
+            ],
+            "utilization_stddev": 0.47649073828981686,
+            "max_active_per_node": [
+              0,
+              2,
+              0,
+              2,
+              0,
+              2,
+              0,
+              2
+            ],
+            "started_per_node": [
+              0,
+              64,
+              0,
+              64,
+              0,
+              64,
+              0,
+              64
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "least_loaded",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 976.684,
+              "process_cpu_ns_per_decision": 1015.625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 966.2105,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 967.7195,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 974.9145,
+              "process_cpu_ns_per_decision": 1015.625,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1007.065,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 1024,
+            "failure_rate": 0,
+            "successful_requests_per_second": 9.334529368526017,
+            "horizon_us": 27425057,
+            "queue_wait_all_requests": {
+              "mean_ms": 3169.3261093750007,
+              "p50_ms": 3414.885,
+              "p95_ms": 5434.132,
+              "p99_ms": 6646.831
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 3194.3261093750007,
+              "p50_ms": 3439.885,
+              "p95_ms": 5459.132,
+              "p99_ms": 6671.831
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 3991.591734375,
+              "p50_ms": 4164.885,
+              "p95_ms": 6342.213,
+              "p99_ms": 7108.467
+            },
+            "node_utilization": [
+              0,
+              0.9863242946040185,
+              0,
+              0.9539633773596168,
+              0,
+              0.974473817866632,
+              0,
+              0.9229698228156827
+            ],
+            "utilization_stddev": 0.48001712879562475,
+            "max_active_per_node": [
+              0,
+              2,
+              0,
+              2,
+              0,
+              2,
+              0,
+              2
+            ],
+            "started_per_node": [
+              0,
+              69,
+              0,
+              64,
+              0,
+              62,
+              0,
+              61
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "capability_aware",
+          "decision_samples": [
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 992.2145,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 977.082,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 971.262,
+              "process_cpu_ns_per_decision": 859.375,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1009.343,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 200000,
+              "wall_ns_per_decision": 982.0595,
+              "process_cpu_ns_per_decision": 937.5,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 80,
+            "failed": 176,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 1024,
+            "failure_rate": 0.6875,
+            "successful_requests_per_second": 1.5899328630974396,
+            "horizon_us": 50316590,
+            "queue_wait_all_requests": {
+              "mean_ms": 24988.194378906246,
+              "p50_ms": 29818.979,
+              "p95_ms": 29889.766,
+              "p99_ms": 29911.347
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 14356.8863625,
+              "p50_ms": 14806.343,
+              "p95_ms": 26407.051,
+              "p99_ms": 28360.214
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 15218.1363625,
+              "p50_ms": 15451.661,
+              "p95_ms": 27419.551,
+              "p99_ms": 29647.714
+            },
+            "node_utilization": [
+              0,
+              0.99840974915033,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "utilization_stddev": 0.33019298784926937,
+            "max_active_per_node": [
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "started_per_node": [
+              0,
+              256,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "invalid_starts": 0
+          }
+        },
+        {
+          "policy": "existing_scorer",
+          "decision_samples": [
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1158.048,
+              "process_cpu_ns_per_decision": 1250,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1163.349,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1138.464,
+              "process_cpu_ns_per_decision": 1250,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1161.422,
+              "process_cpu_ns_per_decision": 1093.75,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            },
+            {
+              "iterations": 100000,
+              "wall_ns_per_decision": 1148.317,
+              "process_cpu_ns_per_decision": 1250,
+              "allocations_per_decision": 0,
+              "bytes_per_decision": 0
+            }
+          ],
+          "simulation": {
+            "requests": 256,
+            "succeeded": 256,
+            "failed": 0,
+            "attempts": 256,
+            "decisions": 256,
+            "candidates_examined": 2048,
+            "eligible_candidates": 1024,
+            "failure_rate": 0,
+            "successful_requests_per_second": 9.334529368526017,
+            "horizon_us": 27425057,
+            "queue_wait_all_requests": {
+              "mean_ms": 3169.3261093750007,
+              "p50_ms": 3414.885,
+              "p95_ms": 5434.132,
+              "p99_ms": 6646.831
+            },
+            "simulated_ttft_successes": {
+              "mean_ms": 3194.3261093750007,
+              "p50_ms": 3439.885,
+              "p95_ms": 5459.132,
+              "p99_ms": 6671.831
+            },
+            "simulated_e2e_successes": {
+              "mean_ms": 3991.591734375,
+              "p50_ms": 4164.885,
+              "p95_ms": 6342.213,
+              "p99_ms": 7108.467
+            },
+            "node_utilization": [
+              0,
+              0.9863242946040185,
+              0,
+              0.9539633773596168,
+              0,
+              0.974473817866632,
+              0,
+              0.9229698228156827
+            ],
+            "utilization_stddev": 0.48001712879562475,
+            "max_active_per_node": [
+              0,
+              2,
+              0,
+              2,
+              0,
+              2,
+              0,
+              2
+            ],
+            "started_per_node": [
+              0,
+              69,
+              0,
+              64,
+              0,
+              62,
+              0,
+              61
+            ],
+            "invalid_starts": 0
+          }
+        }
+      ]
+    }
+  ]
+}

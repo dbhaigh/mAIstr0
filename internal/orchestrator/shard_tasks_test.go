@@ -184,7 +184,7 @@ func TestShardTaskUpstreamFailureClassification(t *testing.T) {
 			}
 			continue
 		}
-		_, retryable := classifyDispatchStatus(code, []byte("upstream failure"))
+		_, retryable := classifyUpstreamStatus(code, []byte("upstream failure"))
 		if out.httpStatus != code || out.retryable != retryable {
 			t.Fatalf("upstream %d classification = %+v", code, out)
 		}

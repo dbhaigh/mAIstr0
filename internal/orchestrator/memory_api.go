@@ -380,7 +380,13 @@ func (s *Server) handleMemorySyncGet(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "memory sync pagination requires protocol version 2", http.StatusBadRequest)
 			return
 		}
-		snapshot = s.memorySnapshotForPeer(peerVersion, memory.FilterMemoryWatermarks(watermarks))
+		snapshot, err = s.memorySnapshotForPeer(peerVersion, memory.FilterMemoryWatermarks(watermarks))
+		if err != nil {
+			logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: memory sync direction=orchestrator->node event=send_failed %s remote=%s status=%d stage=snapshot error=%v",
+				syncLogFields(requestID, nodeID, time.Since(started), "snapshot"), r.RemoteAddr, http.StatusInternalServerError, err)
+			http.Error(w, "could not read memory snapshot: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 		responseWatermarks = snapshot.Watermarks
 		if memory.SupportsSyncPages(peerVersion) {
 			if cursor == nil {

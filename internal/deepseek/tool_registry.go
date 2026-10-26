@@ -22,10 +22,6 @@ func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{tools: make(map[string]registeredTool)}
 }
 
-func (r *ToolRegistry) Register(tool Tool) {
-	r.register(tool, nil)
-}
-
 func registerTypedTool[Args any](registry *ToolRegistry, tool Tool) {
 	argumentType := reflect.TypeOf((*Args)(nil)).Elem()
 	registry.register(tool, argumentType)

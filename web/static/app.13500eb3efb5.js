@@ -44,6 +44,9 @@ const pairingConnectCancelBtn = document.getElementById("pairing-connect-cancel"
 const pairingAddress = document.getElementById("pairing-address");
 const pairingAddressField = document.getElementById("pairing-address-field");
 const pairingCode = document.getElementById("pairing-code");
+const pairingFingerprint = document.getElementById("pairing-fingerprint");
+const pairingFingerprintDisplay = document.getElementById("pairing-fingerprint-display");
+const pairingInvitationFingerprint = document.getElementById("pairing-invitation-fingerprint");
 const pairingConnectButton = document.getElementById("pairing-connect-button");
 const pairingStatus = document.getElementById("pairing-status");
 const pairingState = document.getElementById("pairing-state");
@@ -180,10 +183,10 @@ let terminalDialogueId = null;
     if (hardware.cpu_cores) parts.push(`${hardware.cpu_cores} CPU cores`);
     if (hardware.total_ram_mb) parts.push(`${(hardware.total_ram_mb / 1024).toFixed(1)} GB RAM`);
     if (hardware.has_gpu) {
-      parts.push(`${hardware.gpu_vendor || "GPU"}${hardware.gpu_stats_available ? ` · ${hardware.gpu_utilization_percent}% busy` : ""}`);
+      parts.push(`${hardware.gpu_vendor || "GPU"}${hardware.gpu_stats_available && Number.isFinite(hardware.gpu_utilization_percent) ? ` · ${hardware.gpu_utilization_percent}% busy` : ""}`);
     }
     if (hardware.has_npu) {
-      parts.push(`${hardware.npu_vendor || "NPU"}${hardware.npu_stats_available ? ` · ${hardware.npu_utilization_percent}% busy` : ""}`);
+      parts.push(`${hardware.npu_vendor || "NPU"}${hardware.npu_stats_available && Number.isFinite(hardware.npu_utilization_percent) ? ` · ${hardware.npu_utilization_percent}% busy` : ""}`);
     }
     return parts.length ? parts.join(" · ") : "Hardware details unavailable";
   }
@@ -693,6 +696,7 @@ function openPairingDialog(node = null) {
     node = null;
   }
   dashboardState.pairing.targetNode = node;
+  if (pairingFingerprint) pairingFingerprint.value = node && !node.joinOrchestrator && !node.discovered ? dashboardState.pairing.status?.fingerprint || "" : "";
   if (pairingStatus) pairingStatus.textContent = "";
   const title = document.getElementById("pairing-title-node");
   const description = document.getElementById("pairing-dialog-description");
@@ -700,7 +704,7 @@ function openPairingDialog(node = null) {
     const pairingStatus2 = dashboardState.pairing.status;
     const alreadyPairedWithTarget = pairingStatus2?.joined && pairingStatus2.orchestrator_id === node.id;
     if (title) title.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}'s cluster` : `Join ${node.id}'s cluster`;
-    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. A PIN is only needed when joining across subnets.`;
+    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. Verify its certificate fingerprint out of band and enter its one-use PIN, including on the same subnet.`;
     if (pairingAddressField) pairingAddressField.hidden = false;
     if (pairingAddress) {
       pairingAddress.required = true;
@@ -722,7 +726,7 @@ function openPairingDialog(node = null) {
     if (pairingAddress) pairingAddress.required = true;
     const joiningNode = dashboardState.pairing.status?.role === "node";
     if (title) title.textContent = joiningNode ? dashboardState.pairing.status.joined ? "Re-pair node" : "Join cluster" : "Connect to orchestrator";
-    if (description) description.textContent = joiningNode ? "Enter the orchestrator HTTPS address. Nodes on the same subnet connect automatically; otherwise enter the one-use PIN shown on its Setup page." : "Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.";
+    if (description) description.textContent = joiningNode ? "Enter the orchestrator HTTPS address, its out-of-band verified certificate fingerprint, and the one-use PIN shown on its local Setup page." : "Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.";
     if (joiningNode) {
       pairingAddress.value = dashboardState.pairing.status.orchestrator_addr || pairingAddress.value;
       pairingCode.value = "";
@@ -755,11 +759,12 @@ async function loadPairingStatus() {
       return;
     }
     dashboardState.pairing.status = status;
+    if (pairingFingerprintDisplay) pairingFingerprintDisplay.textContent = status.fingerprint || "Unavailable";
     if (status.role === "orchestrator") {
       const pinViewModel = dashboardViewModel.pairingPINViewModel(status);
       if (pairingPinView) pairingPinView.hidden = !pinViewModel.visible;
       if (pairingNodeConnect) pairingNodeConnect.hidden = true;
-      if (pairingInstructions) pairingInstructions.textContent = "Nodes on the same subnet join this cluster automatically. Nodes on different subnets can join using a one-use PIN generated here.";
+      if (pairingInstructions) pairingInstructions.textContent = "Verify this certificate fingerprint out of band. New nodes require it and the one-use PIN, including on the same subnet.";
       if (pairingPinRegenerateBtn) {
         pairingPinRegenerateBtn.textContent = pinViewModel.regenerateText;
       }
@@ -773,7 +778,7 @@ async function loadPairingStatus() {
       if (pairingPinView) pairingPinView.hidden = true;
       if (pairingNodeConnect) pairingNodeConnect.hidden = false;
       if (pairingConnectOpenBtn) pairingConnectOpenBtn.textContent = status.joined ? "Re-pair / change orchestrator" : "Enter address and pairing PIN";
-      if (pairingInstructions) pairingInstructions.textContent = "Nodes on the same subnet join an orchestrator automatically. You can also connect to an orchestrator using the one-use PIN shown on its Setup page.";
+      if (pairingInstructions) pairingInstructions.textContent = "New pairing requires the orchestrator's verified certificate fingerprint and one-use PIN. Discovery alone does not establish trust.";
       if (status.orchestrator_addr && pairingAddress && !pairingAddress.value) {
         pairingAddress.value = status.orchestrator_addr;
       }
@@ -801,47 +806,55 @@ async function loadPairingStatus() {
         dashboardState.pairing.dialogAutoOpened = false;
       }
     }
-    async function checkPairingInvitation() {
-      const invitation = await fetchJSON("/api/pairing/invitation");
-      if (!invitation.pending) {
-        if (pairingInvitationDialog?.open) pairingInvitationDialog.close();
-        return false;
-      }
-      pairingConnectDialog?.close();
-      if (pairingInvitationDetails) {
-        pairingInvitationDetails.textContent = `${invitation.orchestrator_id} at ${invitation.address} wants to add this node to its cluster. The invitation expires ${new Date(invitation.expires_at).toLocaleTimeString()}.`;
-      }
-      if (pairingInvitationDialog && !pairingInvitationDialog.open) pairingInvitationDialog.showModal();
-      return true;
-    }
-    async function respondToPairingInvitation(accept) {
-      if (!pairingInvitationAcceptBtn || !pairingInvitationDeclineBtn) return;
-      pairingInvitationAcceptBtn.disabled = true;
-      pairingInvitationDeclineBtn.disabled = true;
-      if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept ? "Connecting to the cluster securely…" : "Declining invitation…";
-      try {
-        const result = await fetchJSON(`/api/pairing/invitation/${accept ? "accept" : "reject"}`, { method: "POST" });
-        dashboardState.pairing.promptShown = true;
-        pairingInvitationDialog?.close();
-        if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept ? `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}.` : "Invitation declined.";
-        await loadPairingStatus();
-        await refresh();
-      } catch (err) {
-        if (pairingInvitationStatus) pairingInvitationStatus.textContent = `${accept ? "Could not join cluster" : "Could not decline invitation"}: ${err.message}`;
-      } finally {
-        pairingInvitationAcceptBtn.disabled = false;
-        pairingInvitationDeclineBtn.disabled = false;
-      }
-    }
-    pairingInvitationAcceptBtn?.addEventListener("click", () => respondToPairingInvitation(true));
-    pairingInvitationDeclineBtn?.addEventListener("click", () => respondToPairingInvitation(false));
-    pairingInvitationDialog?.addEventListener("cancel", (event) => event.preventDefault());
   } catch (err) {
     if (pairingState) pairingState.textContent = `Could not load pairing status: ${err.message}`;
     if (pairingNodeConnect) pairingNodeConnect.hidden = false;
     if (pairingConnectOpenBtn) pairingConnectOpenBtn.hidden = false;
   }
 }
+async function checkPairingInvitation() {
+  const invitation = await fetchJSON("/api/pairing/invitation");
+  if (!invitation.pending) {
+    if (pairingInvitationDialog?.open) pairingInvitationDialog.close();
+    return false;
+  }
+  pairingConnectDialog?.close();
+  if (pairingInvitationDetails) {
+    pairingInvitationDetails.textContent = `${invitation.orchestrator_id} at ${invitation.address} wants to add this node to its cluster. Verify SHA-256 ${invitation.fingerprint} out of band before accepting. The invitation expires ${new Date(invitation.expires_at).toLocaleTimeString()}.`;
+  }
+  if (pairingInvitationDialog && !pairingInvitationDialog.open) {
+    if (pairingInvitationFingerprint) pairingInvitationFingerprint.value = "";
+    pairingInvitationDialog.showModal();
+  }
+  return true;
+}
+async function respondToPairingInvitation(accept) {
+  if (!pairingInvitationAcceptBtn || !pairingInvitationDeclineBtn) return;
+  pairingInvitationAcceptBtn.disabled = true;
+  pairingInvitationDeclineBtn.disabled = true;
+  if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept ? "Connecting to the cluster securely…" : "Declining invitation…";
+  try {
+    const fingerprint = pairingInvitationFingerprint?.value.trim() || "";
+    if (accept && !/^[a-fA-F0-9]{64}$/.test(fingerprint)) throw new Error("Enter the orchestrator fingerprint verified out of band.");
+    const result = await fetchJSON(`/api/pairing/invitation/${accept ? "accept" : "reject"}`, {
+      method: "POST",
+      ...accept ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fingerprint }) } : {}
+    });
+    dashboardState.pairing.promptShown = true;
+    pairingInvitationDialog?.close();
+    if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept ? `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}.` : "Invitation declined.";
+    await loadPairingStatus();
+    await refresh();
+  } catch (err) {
+    if (pairingInvitationStatus) pairingInvitationStatus.textContent = `${accept ? "Could not join cluster" : "Could not decline invitation"}: ${err.message}`;
+  } finally {
+    pairingInvitationAcceptBtn.disabled = false;
+    pairingInvitationDeclineBtn.disabled = false;
+  }
+}
+pairingInvitationAcceptBtn?.addEventListener("click", () => respondToPairingInvitation(true));
+pairingInvitationDeclineBtn?.addEventListener("click", () => respondToPairingInvitation(false));
+pairingInvitationDialog?.addEventListener("cancel", (event) => event.preventDefault());
 async function activateAgentTab(harness) {
   if (isSending) return;
   const previousMode = activeChatMode;
@@ -978,9 +991,10 @@ pairingConnectForm?.addEventListener("submit", async (event) => {
     const result = await fetchJSON(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(invitation ? { pin: pairingCode.value.trim() } : {
+      body: JSON.stringify(invitation ? { pin: pairingCode.value.trim(), fingerprint: pairingFingerprint?.value.trim() || "" } : {
         address: pairingAddress.value.trim(),
         pin: pairingCode.value.trim(),
+        fingerprint: pairingFingerprint?.value.trim() || "",
         ...joiningOrchestrator ? { orchestrator_id: node.id } : {}
       })
     });
@@ -2182,8 +2196,8 @@ function sortNodesByCapability(nodes) {
 function gpuGaugeMarkup(node, size = 40) {
   const hardware = node.hardware || {};
   if (!hardware.has_gpu) return "";
-  const utilization = Number(hardware.gpu_utilization_percent);
-  if (!hardware.gpu_stats_available || !Number.isFinite(utilization)) {
+  const utilization = hardware.gpu_utilization_percent;
+  if (!hardware.gpu_stats_available || typeof utilization !== "number" || !Number.isFinite(utilization)) {
     return `<span class="gpu-gauge-unavailable" role="img" aria-label="GPU utilization unavailable">GPU n/a</span>`;
   }
   const value = Math.max(0, Math.min(100, utilization));
@@ -2203,8 +2217,8 @@ function gpuGaugeMarkup(node, size = 40) {
 function npuGaugeMarkup(node, size = 40) {
   const hardware = node.hardware || {};
   if (!hardware.has_npu) return "";
-  const utilization = Number(hardware.npu_utilization_percent);
-  if (!hardware.npu_stats_available || !Number.isFinite(utilization)) {
+  const utilization = hardware.npu_utilization_percent;
+  if (!hardware.npu_stats_available || typeof utilization !== "number" || !Number.isFinite(utilization)) {
     return `<span class="npu-gauge-unavailable" role="img" aria-label="NPU utilization unavailable">NPU n/a</span>`;
   }
   const value = Math.max(0, Math.min(100, utilization));
@@ -2229,6 +2243,15 @@ function nodeAcceleratorMarkup(node, size = 46) {
   return `${gauges}
     ${hardware.has_gpu ? `<div class="row"><span>GPU</span><span>${escapeHtml(hardware.gpu_vendor || "enabled")}</span></div>` : ""}
     ${hardware.has_npu ? `<div class="row"><span>NPU</span><span>${escapeHtml(hardware.npu_vendor || "enabled")}</span></div>` : ""}`;
+}
+function resourceTelemetryLabel(node, now = Date.now()) {
+  const capacity = typeof dashboardState === "undefined" ? null : dashboardState.capacity;
+  const state = capacity?.nodes?.find((item) => item.node_id === node.id)?.telemetry_state;
+  const timestamp = Date.parse(node.telemetry_at || "");
+  if (state === "unavailable" || !Number.isFinite(timestamp) || timestamp <= 0) return "Resource telemetry unavailable";
+  const age = now - timestamp;
+  const window2 = capacity?.telemetry_freshness?.freshness_window_ms ?? 3e4;
+  return state === "stale" || age < 0 || age > window2 ? "Stale resource telemetry" : "Fresh resource telemetry";
 }
 function resourceHistoryMarkup(node) {
   const hardware = node.hardware || {};
@@ -2283,8 +2306,8 @@ function resourceHistoryMarkup(node) {
     const segments = [];
     let segment = [];
     item.samples.forEach((sample, index) => {
-      const value = Number(sample[item.valueKey]);
-      if (!sample[item.availableKey] || !Number.isFinite(value)) {
+      const value = sample[item.valueKey];
+      if (!sample[item.availableKey] || typeof value !== "number" || !Number.isFinite(value)) {
         if (segment.length) segments.push(segment);
         segment = [];
         return;
@@ -2295,17 +2318,17 @@ function resourceHistoryMarkup(node) {
     return segments.map((points) => points.length === 1 ? `<circle class="resource-history-point resource-history-${item.key}" cx="${points[0].x.toFixed(1)}" cy="${points[0].y.toFixed(1)}" r="2.5"></circle>` : `<path class="resource-history-line resource-history-${item.key}" d="${points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}"></path>`).join("");
   }).join("");
   const legend = series.map((item) => {
-    const value = Number(item.currentValue);
-    const current = item.currentAvailable && Number.isFinite(value) ? `${Math.round(Math.max(0, Math.min(100, value)))}%` : "n/a";
+    const value = item.currentValue;
+    const current = item.currentAvailable && typeof value === "number" && Number.isFinite(value) ? `${Math.round(Math.max(0, Math.min(100, value)))}%` : "n/a";
     return `<span class="resource-history-item"><i class="resource-history-swatch resource-history-${item.key}"></i>${item.label} ${current}</span>`;
   }).join("");
   const labels = series.map((item) => item.label);
   const historyLabel = labels.length > 1 ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}` : labels[0];
   const hasSamples = series.some((item) => item.samples.some(
-    (sample) => sample[item.availableKey] && Number.isFinite(Number(sample[item.valueKey]))
+    (sample) => sample[item.availableKey] && typeof sample[item.valueKey] === "number" && Number.isFinite(sample[item.valueKey])
   ));
   return `<div class="resource-history">
-    <div class="resource-history-heading"><strong>Resource utilization</strong><span>Recent · up to 5 minutes</span></div>
+    <div class="resource-history-heading"><strong>Resource utilization</strong><span>${resourceTelemetryLabel(node)}</span></div>
     <div class="resource-history-legend">${legend}</div>
     <svg viewBox="0 0 180 48" role="img" aria-label="${historyLabel} utilization history for ${escapeHtml(node.id)}">
       <path class="resource-history-grid" d="M${left},${top}H${right} M${left},${(top + bottom) / 2}H${right} M${left},${bottom}H${right}"></path>
@@ -3344,7 +3367,7 @@ function shardGroupCard(group) {
     <div class="pipeline-stage">
       <div class="pipeline-stage-heading">
         <strong>${escapeHtml(member.role)} · ${escapeHtml(member.node_id)}</strong>
-        <span class="badge ${member.started ? "healthy" : "unknown"}">${escapeHtml(member.engine_kind)}</span>
+        <span class="badge ${member.started && group.state === "ready" ? "healthy" : "unknown"}">${escapeHtml(member.engine_kind)}${member.started && group.state !== "ready" ? " · started, group not ready" : ""}</span>
       </div>
       <div class="row"><span>Engine</span><span>${escapeHtml(member.engine_id)}</span></div>
       ${Number.isInteger(member.rank) ? `<div class="row"><span>Rank</span><span>${member.rank}</span></div>` : ""}

@@ -142,9 +142,9 @@ func TestRouterRetryClassificationIsLimitedToTransientFailures(t *testing.T) {
 		{http.StatusNotFound, `{"error":"model not found"}`, true, "stale_model"},
 		{http.StatusNotFound, `{"error":"route not found"}`, false, "client_error"},
 	} {
-		class, retryable := classifyRouterStatus(test.status, []byte(test.body))
+		class, retryable := classifyUpstreamStatus(test.status, []byte(test.body))
 		if retryable != test.retryable || class != test.class {
-			t.Errorf("classifyRouterStatus(%d, %q) = (%q, %t), want (%q, %t)",
+			t.Errorf("classifyUpstreamStatus(%d, %q) = (%q, %t), want (%q, %t)",
 				test.status, test.body, class, retryable, test.class, test.retryable)
 		}
 	}

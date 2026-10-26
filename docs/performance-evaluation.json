@@ -1,0 +1,6721 @@
+{
+  "SchemaVersion": 1,
+  "FixtureVersion": "synthetic-profile-v1",
+  "GeneratedUTC": "2026-10-26T03:33:21.8099326Z",
+  "BeforeUTC": "2026-10-26T03:11:11.3389133Z",
+  "AfterUTC": "2026-10-26T03:23:40.2499997Z",
+  "Environment": {
+    "BenchmarkCPU": 2,
+    "Go": "go version go1.27.3 linux/amd64",
+    "WslDistribution": "Ubuntu",
+    "HardwareInference": false
+  },
+  "Method": {
+    "Quantiles": "Nearest rank within each trial; median/min/max across trials, not pooled quantiles",
+    "Repetitions": 5,
+    "ChangePercent": "100 * (after median / before median - 1); null when baseline is zero",
+    "BenchTime": "1s",
+    "ProfileTime": "3s",
+    "LatencyWindow": 8192,
+    "ProfileTimings": "Excluded from benchmark comparisons"
+  },
+  "Workloads": [
+    {
+      "Pattern": "^BenchmarkProfileRouting$/^Direct$",
+      "Name": "direct",
+      "Package": "orchestrator"
+    },
+    {
+      "Pattern": "^BenchmarkProfileRouting$/^Transparent$",
+      "Name": "transparent",
+      "Package": "orchestrator"
+    },
+    {
+      "Pattern": "^BenchmarkProfileRouting$/^SlowStream$",
+      "Name": "slow-stream",
+      "Package": "orchestrator"
+    },
+    {
+      "Pattern": "^BenchmarkProfileHeterogeneousRouting$",
+      "Name": "heterogeneous",
+      "Package": "orchestrator"
+    },
+    {
+      "Fixed": "256x",
+      "Pattern": "^BenchmarkProfileWorkflow$",
+      "Name": "workflow",
+      "Package": "orchestrator"
+    },
+    {
+      "Pattern": "^BenchmarkBuildSnapshot$",
+      "Name": "snapshot",
+      "Package": "orchestrator"
+    },
+    {
+      "Pattern": "^BenchmarkProfileMemorySyncHTTP$",
+      "Name": "memory-http",
+      "Package": "orchestrator"
+    },
+    {
+      "Pattern": "^BenchmarkProfileShardLifecycle$",
+      "Name": "shard-lifecycle",
+      "Package": "orchestrator"
+    },
+    {
+      "Pattern": "^BenchmarkProfileInventory$",
+      "Name": "inventory",
+      "Package": "nodeagent"
+    },
+    {
+      "Pattern": "^BenchmarkProfileTelemetry$",
+      "Name": "telemetry",
+      "Package": "nodeagent"
+    },
+    {
+      "Pattern": "^BenchmarkProfilePublication$",
+      "Name": "publication",
+      "Package": "hub"
+    },
+    {
+      "Fixed": "256x",
+      "Pattern": "^BenchmarkProfileMemoryOperations$",
+      "Name": "memory-operations",
+      "Package": "memory"
+    },
+    {
+      "Pattern": "^BenchmarkProfileSyncPage$",
+      "Name": "sync-page",
+      "Package": "memory"
+    },
+    {
+      "Pattern": "^BenchmarkMemoryHistoryPageTransfer$/^100K$",
+      "Name": "sync-transfer",
+      "Package": "memory"
+    }
+  ],
+  "Results": [
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 1.3232349784665587,
+          "Before": {
+            "Min": 504835.0,
+            "Median": 505957.0,
+            "Max": 522966.0
+          },
+          "After": {
+            "Min": 509331.0,
+            "Median": 512652.0,
+            "Max": 524462.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.008247103415315316,
+          "Before": {
+            "Min": 587712.0,
+            "Median": 594148.0,
+            "Max": 635483.0
+          },
+          "After": {
+            "Min": 589027.0,
+            "Median": 594197.0,
+            "Max": 617376.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 1624.0,
+            "Median": 1624.0,
+            "Max": 1626.0
+          },
+          "After": {
+            "Min": 1624.0,
+            "Median": 1624.0,
+            "Max": 1625.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -40.35016705218348,
+          "Before": {
+            "Min": 483547744.0,
+            "Median": 489710151.0,
+            "Max": 503540222.0
+          },
+          "After": {
+            "Min": 289361086.0,
+            "Median": 292111287.0,
+            "Max": 293463658.0
+          }
+        },
+        "records/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 100000.0,
+            "Median": 100000.0,
+            "Max": 100000.0
+          },
+          "After": {
+            "Min": 100000.0,
+            "Median": 100000.0,
+            "Max": 100000.0
+          }
+        },
+        "snapshot-bytes": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 23666798.0,
+            "Median": 23666798.0,
+            "Max": 23666798.0
+          },
+          "After": {
+            "Min": 23666798.0,
+            "Median": 23666798.0,
+            "Max": 23666798.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": -52.845758245464836,
+          "Before": {
+            "Min": 1306241160.0,
+            "Median": 1307987144.0,
+            "Max": 1307989053.0
+          },
+          "After": {
+            "Min": 615461488.0,
+            "Median": 616771420.0,
+            "Max": 616771966.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.822690724879045,
+          "Before": {
+            "Min": 7096156.0,
+            "Median": 7096177.0,
+            "Max": 7096199.0
+          },
+          "After": {
+            "Min": 4696052.0,
+            "Median": 4696059.0,
+            "Max": 4696065.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 2.8534768522210374,
+          "Before": {
+            "Min": 7812859.0,
+            "Median": 7950266.0,
+            "Max": 8167338.0
+          },
+          "After": {
+            "Min": 7891654.0,
+            "Median": 8177125.0,
+            "Max": 8637548.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": -6.622516556291391,
+          "Before": {
+            "Min": 2320.0,
+            "Median": 2416.0,
+            "Max": 2528.0
+          },
+          "After": {
+            "Min": 2224.0,
+            "Median": 2256.0,
+            "Max": 2560.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 8.820512820512816,
+          "Before": {
+            "Min": 1831.0,
+            "Median": 1950.0,
+            "Max": 1982.0
+          },
+          "After": {
+            "Min": 1944.0,
+            "Median": 2122.0,
+            "Max": 2245.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 1.7224994060346832,
+          "Before": {
+            "Min": 8386.0,
+            "Median": 8418.0,
+            "Max": 8465.0
+          },
+          "After": {
+            "Min": 8357.0,
+            "Median": 8563.0,
+            "Max": 8797.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": 4.841178721775741,
+          "Before": {
+            "Min": 10338.0,
+            "Median": 10452.0,
+            "Max": 11268.0
+          },
+          "After": {
+            "Min": 10593.0,
+            "Median": 10958.0,
+            "Max": 11342.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -2.7819175360158988,
+          "Before": {
+            "Min": 1959.0,
+            "Median": 2013.0,
+            "Max": 2048.0
+          },
+          "After": {
+            "Min": 1852.0,
+            "Median": 1957.0,
+            "Max": 2027.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": -0.20743719808589134,
+          "Before": {
+            "Min": 660249.0,
+            "Median": 661405.0,
+            "Max": 663076.0
+          },
+          "After": {
+            "Min": 658145.0,
+            "Median": 660033.0,
+            "Max": 661823.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -0.1307759372275452,
+          "Before": {
+            "Min": 4579.0,
+            "Median": 4588.0,
+            "Max": 4596.0
+          },
+          "After": {
+            "Min": 4577.0,
+            "Median": 4582.0,
+            "Max": 4588.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -0.15027908973808124,
+          "Before": {
+            "Min": 4527.0,
+            "Median": 4658.0,
+            "Max": 4796.0
+          },
+          "After": {
+            "Min": 4631.0,
+            "Median": 4651.0,
+            "Max": 4937.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          },
+          "After": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 2.676977989292073,
+          "Before": {
+            "Min": 1.663,
+            "Median": 1.681,
+            "Max": 1.699
+          },
+          "After": {
+            "Min": 1.672,
+            "Median": 1.726,
+            "Max": 1.828
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 21.872103799814656,
+          "Before": {
+            "Min": 9.56,
+            "Median": 10.79,
+            "Max": 15.62
+          },
+          "After": {
+            "Min": 9.074,
+            "Median": 13.15,
+            "Max": 15.89
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -0.6231671554252305,
+          "Before": {
+            "Min": 69.79,
+            "Median": 81.84,
+            "Max": 86.3
+          },
+          "After": {
+            "Min": 63.88,
+            "Median": 81.33,
+            "Max": 89.98
+          }
+        },
+        "probes/op": {
+          "ChangePercent": null,
+          "Before": {
+            "Min": 0.0,
+            "Median": 0.0,
+            "Max": 0.0
+          },
+          "After": {
+            "Min": 0.0,
+            "Median": 0.0,
+            "Max": 0.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 0.14019300991132688,
+          "Before": {
+            "Min": 208489.0,
+            "Median": 214704.0,
+            "Max": 220899.0
+          },
+          "After": {
+            "Min": 202557.0,
+            "Median": 215005.0,
+            "Max": 215946.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 22144.0,
+            "Median": 22144.0,
+            "Max": 22144.0
+          },
+          "After": {
+            "Min": 22144.0,
+            "Median": 22144.0,
+            "Max": 22144.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 66.0,
+            "Median": 66.0,
+            "Max": 66.0
+          },
+          "After": {
+            "Min": 66.0,
+            "Median": 66.0,
+            "Max": 66.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 5.985267034990782,
+          "Before": {
+            "Min": 11651.0,
+            "Median": 11946.0,
+            "Max": 12117.0
+          },
+          "After": {
+            "Min": 12075.0,
+            "Median": 12661.0,
+            "Max": 13306.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          },
+          "After": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 1.5802469135802522,
+          "Before": {
+            "Min": 3.913,
+            "Median": 4.05,
+            "Max": 4.114
+          },
+          "After": {
+            "Min": 4.041,
+            "Median": 4.114,
+            "Max": 4.638
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 3.9740310840055137,
+          "Before": {
+            "Min": 48.12,
+            "Median": 50.83,
+            "Max": 54.14
+          },
+          "After": {
+            "Min": 52.12,
+            "Median": 52.85,
+            "Max": 61.78
+          }
+        },
+        "p99-us": {
+          "ChangePercent": 8.698999230177051,
+          "Before": {
+            "Min": 123.3,
+            "Median": 129.9,
+            "Max": 141.7
+          },
+          "After": {
+            "Min": 133.7,
+            "Median": 141.2,
+            "Max": 158.8
+          }
+        },
+        "probes/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 1.0,
+            "Median": 1.0,
+            "Max": 1.0
+          },
+          "After": {
+            "Min": 1.0,
+            "Median": 1.0,
+            "Max": 1.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -5.649130351681952,
+          "Before": {
+            "Min": 82530.0,
+            "Median": 83712.0,
+            "Max": 85829.0
+          },
+          "After": {
+            "Min": 75151.0,
+            "Median": 78983.0,
+            "Max": 82814.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 54632.0,
+            "Median": 54632.0,
+            "Max": 54632.0
+          },
+          "After": {
+            "Min": 54632.0,
+            "Median": 54632.0,
+            "Max": 54632.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 82.0,
+            "Median": 82.0,
+            "Max": 82.0
+          },
+          "After": {
+            "Min": 82.0,
+            "Median": 82.0,
+            "Max": 82.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 0.2823829155578217,
+          "Before": {
+            "Min": 9011327.0,
+            "Median": 9064996.0,
+            "Max": 9213811.0
+          },
+          "After": {
+            "Min": 8934506.0,
+            "Median": 9090594.0,
+            "Max": 9201748.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 256.0,
+            "Median": 256.0,
+            "Max": 256.0
+          },
+          "After": {
+            "Min": 256.0,
+            "Median": 256.0,
+            "Max": 256.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 0.8817948431744549,
+          "Before": {
+            "Min": 8940.0,
+            "Median": 8959.0,
+            "Max": 9156.0
+          },
+          "After": {
+            "Min": 8904.0,
+            "Median": 9038.0,
+            "Max": 9117.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -0.6962663975782046,
+          "Before": {
+            "Min": 9703.0,
+            "Median": 9910.0,
+            "Max": 10098.0
+          },
+          "After": {
+            "Min": 9731.0,
+            "Median": 9841.0,
+            "Max": 9938.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -2.237905097966386,
+          "Before": {
+            "Min": 10493.0,
+            "Median": 10769.0,
+            "Max": 12631.0
+          },
+          "After": {
+            "Min": 10363.0,
+            "Median": 10528.0,
+            "Max": 10617.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -0.27198549410697437,
+          "Before": {
+            "Min": 108.5,
+            "Median": 110.3,
+            "Max": 111.0
+          },
+          "After": {
+            "Min": 108.7,
+            "Median": 110.0,
+            "Max": 111.9
+          }
+        },
+        "B/op": {
+          "ChangePercent": -0.009743969811404352,
+          "Before": {
+            "Min": 677237.0,
+            "Median": 677342.0,
+            "Max": 677457.0
+          },
+          "After": {
+            "Min": 677067.0,
+            "Median": 677276.0,
+            "Max": 677342.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -0.026780931976433386,
+          "Before": {
+            "Min": 3733.0,
+            "Median": 3734.0,
+            "Max": 3741.0
+          },
+          "After": {
+            "Min": 3733.0,
+            "Median": 3733.0,
+            "Max": 3739.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -9.51909693305224,
+          "Before": {
+            "Min": 12471641.0,
+            "Median": 12541883.0,
+            "Max": 14124545.0
+          },
+          "After": {
+            "Min": 11216884.0,
+            "Median": 11348009.0,
+            "Max": 12072101.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 10.000000000000009,
+          "Before": {
+            "Min": 82.0,
+            "Median": 90.0,
+            "Max": 96.0
+          },
+          "After": {
+            "Min": 90.0,
+            "Median": 99.0,
+            "Max": 105.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -15.763747454175148,
+          "Before": {
+            "Min": 9756.0,
+            "Median": 9820.0,
+            "Max": 11005.0
+          },
+          "After": {
+            "Min": 8181.0,
+            "Median": 8272.0,
+            "Max": 9039.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -15.88050314465409,
+          "Before": {
+            "Min": 11181.0,
+            "Median": 11448.0,
+            "Max": 13196.0
+          },
+          "After": {
+            "Min": 9511.0,
+            "Median": 9630.0,
+            "Max": 11005.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -17.450826121164443,
+          "Before": {
+            "Min": 11738.0,
+            "Median": 12710.0,
+            "Max": 19367.0
+          },
+          "After": {
+            "Min": 9627.0,
+            "Median": 10492.0,
+            "Max": 13038.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 10.52301517621974,
+          "Before": {
+            "Min": 70.8,
+            "Median": 79.73,
+            "Max": 80.18
+          },
+          "After": {
+            "Min": 82.84,
+            "Median": 88.12,
+            "Max": 89.15
+          }
+        },
+        "B/op": {
+          "ChangePercent": -10.5610260806269,
+          "Before": {
+            "Min": 39591495.0,
+            "Median": 39592990.0,
+            "Max": 39612814.0
+          },
+          "After": {
+            "Min": 35407557.0,
+            "Median": 35411564.0,
+            "Max": 35436664.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.258401192797336,
+          "Before": {
+            "Min": 43595.0,
+            "Median": 43595.0,
+            "Max": 43612.0
+          },
+          "After": {
+            "Min": 29095.0,
+            "Median": 29096.0,
+            "Max": 29114.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -19.529989643985502,
+          "Before": {
+            "Min": 6110914.0,
+            "Median": 6273649.0,
+            "Max": 6707438.0
+          },
+          "After": {
+            "Min": 5011330.0,
+            "Median": 5048406.0,
+            "Max": 5502500.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 21.875,
+          "Before": {
+            "Min": 177.0,
+            "Median": 192.0,
+            "Max": 194.0
+          },
+          "After": {
+            "Min": 211.0,
+            "Median": 234.0,
+            "Max": 242.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -19.523986612123466,
+          "Before": {
+            "Min": 5280.0,
+            "Median": 5378.0,
+            "Max": 6051.0
+          },
+          "After": {
+            "Min": 4319.0,
+            "Median": 4328.0,
+            "Max": 4840.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -22.567934782608702,
+          "Before": {
+            "Min": 6877.0,
+            "Median": 7360.0,
+            "Max": 7652.0
+          },
+          "After": {
+            "Min": 5521.0,
+            "Median": 5699.0,
+            "Max": 5895.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -42.07903168387327,
+          "Before": {
+            "Min": 8403.0,
+            "Median": 11236.0,
+            "Max": 13207.0
+          },
+          "After": {
+            "Min": 6199.0,
+            "Median": 6508.0,
+            "Max": 7121.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 24.27854454203262,
+          "Before": {
+            "Min": 149.1,
+            "Median": 159.4,
+            "Max": 163.6
+          },
+          "After": {
+            "Min": 181.7,
+            "Median": 198.1,
+            "Max": 199.5
+          }
+        },
+        "B/op": {
+          "ChangePercent": -12.747537258838271,
+          "Before": {
+            "Min": 24865964.0,
+            "Median": 24868529.0,
+            "Max": 24890520.0
+          },
+          "After": {
+            "Min": 21696036.0,
+            "Median": 21698404.0,
+            "Max": 21719509.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.3060903257053,
+          "Before": {
+            "Min": 33034.0,
+            "Median": 33036.0,
+            "Max": 33051.0
+          },
+          "After": {
+            "Min": 22031.0,
+            "Median": 22033.0,
+            "Max": 22049.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -20.77055083477134,
+          "Before": {
+            "Min": 4082786.0,
+            "Median": 4408872.0,
+            "Max": 5021410.0
+          },
+          "After": {
+            "Min": 3362772.0,
+            "Median": 3493125.0,
+            "Max": 4141757.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 32.15686274509804,
+          "Before": {
+            "Min": 238.0,
+            "Median": 255.0,
+            "Max": 289.0
+          },
+          "After": {
+            "Min": 276.0,
+            "Median": 337.0,
+            "Max": 339.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -20.297862118664423,
+          "Before": {
+            "Min": 3869.0,
+            "Median": 4163.0,
+            "Max": 4949.0
+          },
+          "After": {
+            "Min": 3227.0,
+            "Median": 3318.0,
+            "Max": 3938.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -23.33446060196145,
+          "Before": {
+            "Min": 4994.0,
+            "Median": 5914.0,
+            "Max": 6317.0
+          },
+          "After": {
+            "Min": 3928.0,
+            "Median": 4534.0,
+            "Max": 5476.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -16.008869179600882,
+          "Before": {
+            "Min": 5814.0,
+            "Median": 6765.0,
+            "Max": 7716.0
+          },
+          "After": {
+            "Min": 4706.0,
+            "Median": 5682.0,
+            "Max": 7153.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 26.234567901234573,
+          "Before": {
+            "Min": 199.1,
+            "Median": 226.8,
+            "Max": 244.9
+          },
+          "After": {
+            "Min": 241.4,
+            "Median": 286.3,
+            "Max": 297.4
+          }
+        },
+        "B/op": {
+          "ChangePercent": -13.793072214178936,
+          "Before": {
+            "Min": 21082520.0,
+            "Median": 21086593.0,
+            "Max": 21104317.0
+          },
+          "After": {
+            "Min": 18170926.0,
+            "Median": 18178104.0,
+            "Max": 18184074.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.320137239377146,
+          "Before": {
+            "Min": 30309.0,
+            "Median": 30312.0,
+            "Max": 30326.0
+          },
+          "After": {
+            "Min": 20207.0,
+            "Median": 20212.0,
+            "Max": 20218.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 0.16328011611030924,
+          "Before": {
+            "Min": 53.89,
+            "Median": 55.12,
+            "Max": 55.45
+          },
+          "After": {
+            "Min": 55.08,
+            "Median": 55.21,
+            "Max": 56.86
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          },
+          "After": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 0.018,
+            "Median": 0.018,
+            "Max": 0.018
+          },
+          "After": {
+            "Min": 0.018,
+            "Median": 0.018,
+            "Max": 0.018
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 0.019,
+            "Median": 0.027,
+            "Max": 0.027
+          },
+          "After": {
+            "Min": 0.027,
+            "Median": 0.027,
+            "Max": 0.028
+          }
+        },
+        "p99-us": {
+          "ChangePercent": 27.77777777777779,
+          "Before": {
+            "Min": 0.028,
+            "Median": 0.036,
+            "Max": 0.046
+          },
+          "After": {
+            "Min": 0.037,
+            "Median": 0.046,
+            "Max": 0.055
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -0.16438604408451907,
+          "Before": {
+            "Min": 18035800.0,
+            "Median": 18143876.0,
+            "Max": 18554965.0
+          },
+          "After": {
+            "Min": 17587334.0,
+            "Median": 18114050.0,
+            "Max": 18156636.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": null,
+          "Before": {
+            "Min": 0.0,
+            "Median": 0.0,
+            "Max": 0.0
+          },
+          "After": {
+            "Min": 0.0,
+            "Median": 0.0,
+            "Max": 0.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": null,
+          "Before": {
+            "Min": 0.0,
+            "Median": 0.0,
+            "Max": 0.0
+          },
+          "After": {
+            "Min": 0.0,
+            "Median": 0.0,
+            "Max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 0.3350393965923626,
+          "Before": {
+            "Min": 58887.0,
+            "Median": 59396.0,
+            "Max": 62500.0
+          },
+          "After": {
+            "Min": 58965.0,
+            "Median": 59595.0,
+            "Max": 59905.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          },
+          "After": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 0.6780402449693801,
+          "Before": {
+            "Min": 45.53,
+            "Median": 45.72,
+            "Max": 47.12
+          },
+          "After": {
+            "Min": 45.82,
+            "Median": 46.03,
+            "Max": 46.31
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 0.20053475935830622,
+          "Before": {
+            "Min": 146.9,
+            "Median": 149.6,
+            "Max": 154.0
+          },
+          "After": {
+            "Min": 148.1,
+            "Median": 149.9,
+            "Max": 152.9
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -2.335164835164838,
+          "Before": {
+            "Min": 205.4,
+            "Median": 218.4,
+            "Max": 240.5
+          },
+          "After": {
+            "Min": 206.2,
+            "Median": 213.3,
+            "Max": 218.3
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -0.3326205749584199,
+          "Before": {
+            "Min": 16000.0,
+            "Median": 16836.0,
+            "Max": 16982.0
+          },
+          "After": {
+            "Min": 16693.0,
+            "Median": 16780.0,
+            "Max": 16959.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.019483093377758998,
+          "Before": {
+            "Min": 148772.0,
+            "Median": 148847.0,
+            "Max": 148934.0
+          },
+          "After": {
+            "Min": 148859.0,
+            "Median": 148876.0,
+            "Max": 148968.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 7.0,
+            "Median": 7.0,
+            "Max": 7.0
+          },
+          "After": {
+            "Min": 7.0,
+            "Median": 7.0,
+            "Max": 7.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 0.30335557940914804,
+          "Before": {
+            "Min": 63778.0,
+            "Median": 64281.0,
+            "Max": 66362.0
+          },
+          "After": {
+            "Min": 63862.0,
+            "Median": 64476.0,
+            "Max": 65037.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          },
+          "After": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 0.5245107928182335,
+          "Before": {
+            "Min": 49.18,
+            "Median": 49.57,
+            "Max": 49.7
+          },
+          "After": {
+            "Min": 49.67,
+            "Median": 49.83,
+            "Max": 50.11
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -1.4734144778987712,
+          "Before": {
+            "Min": 150.7,
+            "Median": 156.1,
+            "Max": 159.9
+          },
+          "After": {
+            "Min": 148.8,
+            "Median": 153.8,
+            "Max": 158.6
+          }
+        },
+        "p99-us": {
+          "ChangePercent": 0.9136592051165016,
+          "Before": {
+            "Min": 212.7,
+            "Median": 218.9,
+            "Max": 233.3
+          },
+          "After": {
+            "Min": 217.9,
+            "Median": 220.9,
+            "Max": 229.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -0.30211480362537513,
+          "Before": {
+            "Min": 15069.0,
+            "Median": 15557.0,
+            "Max": 15679.0
+          },
+          "After": {
+            "Min": 15376.0,
+            "Median": 15510.0,
+            "Max": 15659.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": -0.008063432334359799,
+          "Before": {
+            "Min": 148759.0,
+            "Median": 148820.0,
+            "Max": 148864.0
+          },
+          "After": {
+            "Min": 148772.0,
+            "Median": 148808.0,
+            "Max": 148924.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 7.0,
+            "Median": 7.0,
+            "Max": 7.0
+          },
+          "After": {
+            "Min": 7.0,
+            "Median": 7.0,
+            "Max": 7.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 12.19876865432652,
+          "Before": {
+            "Min": 474575.0,
+            "Median": 499616.0,
+            "Max": 508427.0
+          },
+          "After": {
+            "Min": 514971.0,
+            "Median": 560563.0,
+            "Max": 571447.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": -15.137987012987008,
+          "Before": {
+            "Min": 2272.0,
+            "Median": 2464.0,
+            "Max": 2631.0
+          },
+          "After": {
+            "Min": 2046.0,
+            "Median": 2091.0,
+            "Max": 2455.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 12.681388012618289,
+          "Before": {
+            "Min": 447.1,
+            "Median": 475.5,
+            "Max": 491.2
+          },
+          "After": {
+            "Min": 489.9,
+            "Median": 535.8,
+            "Max": 548.3
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 10.339576671234951,
+          "Before": {
+            "Min": 643.5,
+            "Median": 656.7,
+            "Max": 662.3
+          },
+          "After": {
+            "Min": 695.5,
+            "Median": 724.6,
+            "Max": 728.7
+          }
+        },
+        "p99-us": {
+          "ChangePercent": 6.798486512876845,
+          "Before": {
+            "Min": 809.0,
+            "Median": 819.3,
+            "Max": 822.4
+          },
+          "After": {
+            "Min": 859.0,
+            "Median": 875.0,
+            "Max": 950.7
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -10.889110889110887,
+          "Before": {
+            "Min": 1967.0,
+            "Median": 2002.0,
+            "Max": 2107.0
+          },
+          "After": {
+            "Min": 1750.0,
+            "Median": 1784.0,
+            "Max": 1942.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.007691420220745648,
+          "Before": {
+            "Min": 26001.0,
+            "Median": 26003.0,
+            "Max": 26006.0
+          },
+          "After": {
+            "Min": 26004.0,
+            "Median": 26005.0,
+            "Max": 26006.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 233.0,
+            "Median": 233.0,
+            "Max": 233.0
+          },
+          "After": {
+            "Min": 233.0,
+            "Median": 233.0,
+            "Max": 233.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 2.3120692987121494,
+          "Before": {
+            "Min": 12638480.0,
+            "Median": 12688028.0,
+            "Max": 12750459.0
+          },
+          "After": {
+            "Min": 12850498.0,
+            "Median": 12981384.0,
+            "Max": 13079132.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": -1.1363636363636354,
+          "Before": {
+            "Min": 88.0,
+            "Median": 88.0,
+            "Max": 92.0
+          },
+          "After": {
+            "Min": 86.0,
+            "Median": 87.0,
+            "Max": 88.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 2.3412164834295757,
+          "Before": {
+            "Min": 12580.0,
+            "Median": 12643.0,
+            "Max": 12713.0
+          },
+          "After": {
+            "Min": 12778.0,
+            "Median": 12939.0,
+            "Max": 13069.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 2.637413041816372,
+          "Before": {
+            "Min": 13019.0,
+            "Median": 13081.0,
+            "Max": 13230.0
+          },
+          "After": {
+            "Min": 13317.0,
+            "Median": 13426.0,
+            "Max": 13490.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": 2.1375186846038785,
+          "Before": {
+            "Min": 13109.0,
+            "Median": 13380.0,
+            "Max": 13561.0
+          },
+          "After": {
+            "Min": 13533.0,
+            "Median": 13666.0,
+            "Max": 13959.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -2.258596624793807,
+          "Before": {
+            "Min": 78.43,
+            "Median": 78.81,
+            "Max": 79.12
+          },
+          "After": {
+            "Min": 76.46,
+            "Median": 77.03,
+            "Max": 77.82
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.475109065917656,
+          "Before": {
+            "Min": 33237.0,
+            "Median": 33466.0,
+            "Max": 33617.0
+          },
+          "After": {
+            "Min": 33166.0,
+            "Median": 33625.0,
+            "Max": 33815.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 268.0,
+            "Median": 269.0,
+            "Max": 269.0
+          },
+          "After": {
+            "Min": 268.0,
+            "Median": 269.0,
+            "Max": 269.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 8.543195979578556,
+          "Before": {
+            "Min": 476658.0,
+            "Median": 501042.0,
+            "Max": 549172.0
+          },
+          "After": {
+            "Min": 534055.0,
+            "Median": 543847.0,
+            "Max": 594585.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.6896551724137945,
+          "Before": {
+            "Min": 2150.0,
+            "Median": 2175.0,
+            "Max": 2706.0
+          },
+          "After": {
+            "Min": 1995.0,
+            "Median": 2190.0,
+            "Max": 2380.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 5.585436491518414,
+          "Before": {
+            "Min": 453.2,
+            "Median": 483.4,
+            "Max": 524.8
+          },
+          "After": {
+            "Min": 499.7,
+            "Median": 510.4,
+            "Max": 571.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 14.145045326664585,
+          "Before": {
+            "Min": 629.0,
+            "Median": 639.8,
+            "Max": 719.7
+          },
+          "After": {
+            "Min": 708.1,
+            "Median": 730.3,
+            "Max": 762.2
+          }
+        },
+        "p99-us": {
+          "ChangePercent": 16.844106463878326,
+          "Before": {
+            "Min": 762.2,
+            "Median": 789.0,
+            "Max": 882.1
+          },
+          "After": {
+            "Min": 864.1,
+            "Median": 921.9,
+            "Max": 968.8
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -7.865731462925851,
+          "Before": {
+            "Min": 1821.0,
+            "Median": 1996.0,
+            "Max": 2098.0
+          },
+          "After": {
+            "Min": 1682.0,
+            "Median": 1839.0,
+            "Max": 1872.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.08379010578500878,
+          "Before": {
+            "Min": 28627.0,
+            "Median": 28643.0,
+            "Max": 28710.0
+          },
+          "After": {
+            "Min": 28647.0,
+            "Median": 28667.0,
+            "Max": 28710.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 247.0,
+            "Median": 247.0,
+            "Max": 247.0
+          },
+          "After": {
+            "Min": 247.0,
+            "Median": 247.0,
+            "Max": 247.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": 0.351359496629744,
+          "Before": {
+            "Min": 135518.0,
+            "Median": 136043.0,
+            "Max": 137017.0
+          },
+          "After": {
+            "Min": 134966.0,
+            "Median": 136521.0,
+            "Max": 138025.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 7893.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          },
+          "After": {
+            "Min": 8060.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 0.06282722513089034,
+          "Before": {
+            "Min": 95.25,
+            "Median": 95.5,
+            "Max": 95.55
+          },
+          "After": {
+            "Min": 94.53,
+            "Median": 95.56,
+            "Max": 95.81
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -1.2944162436548279,
+          "Before": {
+            "Min": 387.6,
+            "Median": 394.0,
+            "Max": 402.6
+          },
+          "After": {
+            "Min": 379.0,
+            "Median": 388.9,
+            "Max": 399.2
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -0.09022013713461119,
+          "Before": {
+            "Min": 545.3,
+            "Median": 554.2,
+            "Max": 580.5
+          },
+          "After": {
+            "Min": 536.8,
+            "Median": 553.7,
+            "Max": 573.3
+          }
+        },
+        "requests/s": {
+          "ChangePercent": -0.35369337505101184,
+          "Before": {
+            "Min": 7298.0,
+            "Median": 7351.0,
+            "Max": 7379.0
+          },
+          "After": {
+            "Min": 7245.0,
+            "Median": 7325.0,
+            "Max": 7409.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": -0.0014397396950638353,
+          "Before": {
+            "Min": 208363.0,
+            "Median": 208371.0,
+            "Max": 208387.0
+          },
+          "After": {
+            "Min": 208354.0,
+            "Median": 208368.0,
+            "Max": 208380.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 444.0,
+            "Median": 444.0,
+            "Max": 444.0
+          },
+          "After": {
+            "Min": 444.0,
+            "Median": 444.0,
+            "Max": 444.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -14.803024886986893,
+          "Before": {
+            "Min": 7554317.0,
+            "Median": 7592482.0,
+            "Max": 7701204.0
+          },
+          "After": {
+            "Min": 6332596.0,
+            "Median": 6468565.0,
+            "Max": 6586810.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 17.721518987341778,
+          "Before": {
+            "Min": 151.0,
+            "Median": 158.0,
+            "Max": 159.0
+          },
+          "After": {
+            "Min": 180.0,
+            "Median": 186.0,
+            "Max": 189.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -14.81187069422364,
+          "Before": {
+            "Min": 7461.0,
+            "Median": 7548.0,
+            "Max": 7665.0
+          },
+          "After": {
+            "Min": 6222.0,
+            "Median": 6430.0,
+            "Max": 6568.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -11.9838523644752,
+          "Before": {
+            "Min": 8512.0,
+            "Median": 8670.0,
+            "Max": 8782.0
+          },
+          "After": {
+            "Min": 7493.0,
+            "Median": 7631.0,
+            "Max": 8198.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -5.965446050201018,
+          "Before": {
+            "Min": 9088.0,
+            "Median": 9203.0,
+            "Max": 9467.0
+          },
+          "After": {
+            "Min": 7918.0,
+            "Median": 8654.0,
+            "Max": 9904.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 17.388003037205777,
+          "Before": {
+            "Min": 129.8,
+            "Median": 131.7,
+            "Max": 132.4
+          },
+          "After": {
+            "Min": 151.8,
+            "Median": 154.6,
+            "Max": 157.9
+          }
+        },
+        "B/op": {
+          "ChangePercent": -24.2788353636293,
+          "Before": {
+            "Min": 17520403.0,
+            "Median": 17555076.0,
+            "Max": 17555118.0
+          },
+          "After": {
+            "Min": 13182987.0,
+            "Median": 13292908.0,
+            "Max": 13297061.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -37.34064745422236,
+          "Before": {
+            "Min": 38828.0,
+            "Median": 38829.0,
+            "Max": 38829.0
+          },
+          "After": {
+            "Min": 24329.0,
+            "Median": 24330.0,
+            "Max": 24330.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -44.08142218758695,
+          "Before": {
+            "Min": 1703681.0,
+            "Median": 1714373.0,
+            "Max": 1768131.0
+          },
+          "After": {
+            "Min": 948151.0,
+            "Median": 958653.0,
+            "Max": 993185.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 78.53025936599423,
+          "Before": {
+            "Min": 681.0,
+            "Median": 694.0,
+            "Max": 715.0
+          },
+          "After": {
+            "Min": 1150.0,
+            "Median": 1239.0,
+            "Max": 1269.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -53.34530221424296,
+          "Before": {
+            "Min": 1647.0,
+            "Median": 1671.0,
+            "Max": 1724.0
+          },
+          "After": {
+            "Min": 758.6,
+            "Median": 779.6,
+            "Max": 880.8
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -31.56805957798924,
+          "Before": {
+            "Min": 2395.0,
+            "Median": 2417.0,
+            "Max": 2537.0
+          },
+          "After": {
+            "Min": 1609.0,
+            "Median": 1654.0,
+            "Max": 1701.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -26.57266811279827,
+          "Before": {
+            "Min": 2729.0,
+            "Median": 2766.0,
+            "Max": 2890.0
+          },
+          "After": {
+            "Min": 2002.0,
+            "Median": 2031.0,
+            "Max": 2090.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 78.81021772672725,
+          "Before": {
+            "Min": 565.6,
+            "Median": 583.3,
+            "Max": 587.0
+          },
+          "After": {
+            "Min": 1007.0,
+            "Median": 1043.0,
+            "Max": 1055.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": -65.30356150171986,
+          "Before": {
+            "Min": 4410821.0,
+            "Median": 4410836.0,
+            "Max": 4410840.0
+          },
+          "After": {
+            "Min": 1530395.0,
+            "Median": 1530403.0,
+            "Max": 1530420.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.60091357941759,
+          "Before": {
+            "Min": 29773.0,
+            "Median": 29773.0,
+            "Max": 29774.0
+          },
+          "After": {
+            "Min": 19769.0,
+            "Median": 19769.0,
+            "Max": 19770.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -30.359565225660077,
+          "Before": {
+            "Min": 3204357.0,
+            "Median": 3207457.0,
+            "Max": 3366826.0
+          },
+          "After": {
+            "Min": 2212303.0,
+            "Median": 2233687.0,
+            "Max": 2381303.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 46.48648648648648,
+          "Before": {
+            "Min": 366.0,
+            "Median": 370.0,
+            "Max": 373.0
+          },
+          "After": {
+            "Min": 524.0,
+            "Median": 542.0,
+            "Max": 572.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -31.908831908831914,
+          "Before": {
+            "Min": 3145.0,
+            "Median": 3159.0,
+            "Max": 3238.0
+          },
+          "After": {
+            "Min": 2146.0,
+            "Median": 2151.0,
+            "Max": 2290.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -28.539325842696627,
+          "Before": {
+            "Min": 3931.0,
+            "Median": 4005.0,
+            "Max": 4651.0
+          },
+          "After": {
+            "Min": 2694.0,
+            "Median": 2862.0,
+            "Max": 3071.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -25.259125732311848,
+          "Before": {
+            "Min": 4354.0,
+            "Median": 4438.0,
+            "Max": 5723.0
+          },
+          "After": {
+            "Min": 3136.0,
+            "Median": 3317.0,
+            "Max": 3753.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 43.58563181526618,
+          "Before": {
+            "Min": 297.0,
+            "Median": 311.8,
+            "Max": 312.1
+          },
+          "After": {
+            "Min": 419.9,
+            "Median": 447.7,
+            "Max": 452.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": -43.2523924437192,
+          "Before": {
+            "Min": 7314478.0,
+            "Median": 7317727.0,
+            "Max": 7320933.0
+          },
+          "After": {
+            "Min": 4152624.0,
+            "Median": 4152635.0,
+            "Max": 4152730.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -34.575621405901394,
+          "Before": {
+            "Min": 31822.0,
+            "Median": 31823.0,
+            "Max": 31823.0
+          },
+          "After": {
+            "Min": 20820.0,
+            "Median": 20820.0,
+            "Max": 20820.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -41.80630372725951,
+          "Before": {
+            "Min": 1938752.0,
+            "Median": 1966646.0,
+            "Max": 2032148.0
+          },
+          "After": {
+            "Min": 1079306.0,
+            "Median": 1144464.0,
+            "Max": 1164684.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 77.45098039215685,
+          "Before": {
+            "Min": 584.0,
+            "Median": 612.0,
+            "Max": 615.0
+          },
+          "After": {
+            "Min": 1014.0,
+            "Median": 1086.0,
+            "Max": 1096.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -45.896497647673804,
+          "Before": {
+            "Min": 1890.0,
+            "Median": 1913.0,
+            "Max": 1958.0
+          },
+          "After": {
+            "Min": 909.6,
+            "Median": 1035.0,
+            "Max": 1052.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -33.109303148213655,
+          "Before": {
+            "Min": 2649.0,
+            "Median": 2827.0,
+            "Max": 2874.0
+          },
+          "After": {
+            "Min": 1798.0,
+            "Median": 1891.0,
+            "Max": 1929.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -31.599999999999994,
+          "Before": {
+            "Min": 2903.0,
+            "Median": 3250.0,
+            "Max": 3614.0
+          },
+          "After": {
+            "Min": 2064.0,
+            "Median": 2223.0,
+            "Max": 2305.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 71.83874139626352,
+          "Before": {
+            "Min": 492.1,
+            "Median": 508.5,
+            "Max": 515.8
+          },
+          "After": {
+            "Min": 858.6,
+            "Median": 873.8,
+            "Max": 926.5
+          }
+        },
+        "B/op": {
+          "ChangePercent": -62.098838459080305,
+          "Before": {
+            "Min": 4684363.0,
+            "Median": 4684553.0,
+            "Max": 4684764.0
+          },
+          "After": {
+            "Min": 1775386.0,
+            "Median": 1775500.0,
+            "Max": 1775519.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.67772037993668,
+          "Before": {
+            "Min": 30004.0,
+            "Median": 30005.0,
+            "Max": 30005.0
+          },
+          "After": {
+            "Min": 19900.0,
+            "Median": 19900.0,
+            "Max": 19900.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -36.14952222299237,
+          "Before": {
+            "Min": 20706953.0,
+            "Median": 21323546.0,
+            "Max": 22751056.0
+          },
+          "After": {
+            "Min": 12837846.0,
+            "Median": 13615186.0,
+            "Max": 13960363.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 69.23076923076923,
+          "Before": {
+            "Min": 49.0,
+            "Median": 52.0,
+            "Max": 55.0
+          },
+          "After": {
+            "Min": 78.0,
+            "Median": 88.0,
+            "Max": 93.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -36.826189219027505,
+          "Before": {
+            "Min": 20400.0,
+            "Median": 20833.0,
+            "Max": 22287.0
+          },
+          "After": {
+            "Min": 12541.0,
+            "Median": 13161.0,
+            "Max": 13449.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -37.87788974510966,
+          "Before": {
+            "Min": 23858.0,
+            "Median": 26992.0,
+            "Max": 29745.0
+          },
+          "After": {
+            "Min": 15046.0,
+            "Median": 16768.0,
+            "Max": 18853.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -35.2729196283929,
+          "Before": {
+            "Min": 26756.0,
+            "Median": 30247.0,
+            "Max": 33696.0
+          },
+          "After": {
+            "Min": 18021.0,
+            "Median": 19578.0,
+            "Max": 24112.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 56.60980810234542,
+          "Before": {
+            "Min": 43.95,
+            "Median": 46.9,
+            "Max": 48.29
+          },
+          "After": {
+            "Min": 71.63,
+            "Median": 73.45,
+            "Max": 77.89
+          }
+        },
+        "B/op": {
+          "ChangePercent": -52.65908554804592,
+          "Before": {
+            "Min": 57055212.0,
+            "Median": 57150493.0,
+            "Max": 57150510.0
+          },
+          "After": {
+            "Min": 26996030.0,
+            "Median": 27055566.0,
+            "Max": 27055582.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.837724766126655,
+          "Before": {
+            "Min": 308821.0,
+            "Median": 308821.0,
+            "Max": 308822.0
+          },
+          "After": {
+            "Min": 204323.0,
+            "Median": 204323.0,
+            "Max": 204323.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -44.06167827032868,
+          "Before": {
+            "Min": 16172645.0,
+            "Median": 16407464.0,
+            "Max": 16611560.0
+          },
+          "After": {
+            "Min": 8511434.0,
+            "Median": 9178060.0,
+            "Max": 9711303.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 98.57142857142858,
+          "Before": {
+            "Min": 68.0,
+            "Median": 70.0,
+            "Max": 74.0
+          },
+          "After": {
+            "Min": 130.0,
+            "Median": 139.0,
+            "Max": 147.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -44.39188348064235,
+          "Before": {
+            "Min": 15859.0,
+            "Median": 16066.0,
+            "Max": 16147.0
+          },
+          "After": {
+            "Min": 8053.0,
+            "Median": 8934.0,
+            "Max": 9399.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -33.61009790746784,
+          "Before": {
+            "Min": 20289.0,
+            "Median": 20836.0,
+            "Max": 21421.0
+          },
+          "After": {
+            "Min": 11383.0,
+            "Median": 13833.0,
+            "Max": 14465.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -29.466932094669318,
+          "Before": {
+            "Min": 21593.0,
+            "Median": 22605.0,
+            "Max": 24636.0
+          },
+          "After": {
+            "Min": 12829.0,
+            "Median": 15944.0,
+            "Max": 18874.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 78.83511074651352,
+          "Before": {
+            "Min": 60.2,
+            "Median": 60.95,
+            "Max": 61.83
+          },
+          "After": {
+            "Min": 103.0,
+            "Median": 109.0,
+            "Max": 117.5
+          }
+        },
+        "B/op": {
+          "ChangePercent": -65.44492197069651,
+          "Before": {
+            "Min": 44007065.0,
+            "Median": 44007121.0,
+            "Max": 44007148.0
+          },
+          "After": {
+            "Min": 15206587.0,
+            "Median": 15206695.0,
+            "Max": 15206702.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.36002001501126,
+          "Before": {
+            "Min": 299774.0,
+            "Median": 299775.0,
+            "Max": 299775.0
+          },
+          "After": {
+            "Min": 199769.0,
+            "Median": 199770.0,
+            "Max": 199770.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -33.06339377219747,
+          "Before": {
+            "Min": 21644819.0,
+            "Median": 21697573.0,
+            "Max": 23961803.0
+          },
+          "After": {
+            "Min": 13688657.0,
+            "Median": 14523619.0,
+            "Max": 14795614.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 55.769230769230774,
+          "Before": {
+            "Min": 46.0,
+            "Median": 52.0,
+            "Max": 55.0
+          },
+          "After": {
+            "Min": 79.0,
+            "Median": 81.0,
+            "Max": 93.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -31.47103085026336,
+          "Before": {
+            "Min": 20990.0,
+            "Median": 21264.0,
+            "Max": 22968.0
+          },
+          "After": {
+            "Min": 13373.0,
+            "Median": 14572.0,
+            "Max": 14977.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -33.775816678408546,
+          "Before": {
+            "Min": 26059.0,
+            "Median": 26969.0,
+            "Max": 29161.0
+          },
+          "After": {
+            "Min": 16116.0,
+            "Median": 17860.0,
+            "Max": 18687.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -29.895178197064986,
+          "Before": {
+            "Min": 27536.0,
+            "Median": 31005.0,
+            "Max": 33127.0
+          },
+          "After": {
+            "Min": 19073.0,
+            "Median": 21736.0,
+            "Max": 23137.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 49.381644608374884,
+          "Before": {
+            "Min": 41.73,
+            "Median": 46.09,
+            "Max": 46.2
+          },
+          "After": {
+            "Min": 67.59,
+            "Median": 68.85,
+            "Max": 73.05
+          }
+        },
+        "B/op": {
+          "ChangePercent": -52.65772048770605,
+          "Before": {
+            "Min": 57113148.0,
+            "Median": 57113173.0,
+            "Max": 57113218.0
+          },
+          "After": {
+            "Min": 26982341.0,
+            "Median": 27038678.0,
+            "Max": 27038695.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.830504081897104,
+          "Before": {
+            "Min": 308679.0,
+            "Median": 308680.0,
+            "Max": 308680.0
+          },
+          "After": {
+            "Min": 204252.0,
+            "Median": 204252.0,
+            "Max": 204252.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -41.27514060722191,
+          "Before": {
+            "Min": 17675724.0,
+            "Median": 17804562.0,
+            "Max": 18210129.0
+          },
+          "After": {
+            "Min": 10276527.0,
+            "Median": 10455704.0,
+            "Max": 10581050.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 56.25,
+          "Before": {
+            "Min": 57.0,
+            "Median": 64.0,
+            "Max": 78.0
+          },
+          "After": {
+            "Min": 100.0,
+            "Median": 100.0,
+            "Max": 115.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -43.45483723062815,
+          "Before": {
+            "Min": 17041.0,
+            "Median": 17448.0,
+            "Max": 18367.0
+          },
+          "After": {
+            "Min": 9651.0,
+            "Median": 9866.0,
+            "Max": 10500.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": -32.093166607960555,
+          "Before": {
+            "Min": 22339.0,
+            "Median": 22712.0,
+            "Max": 23736.0
+          },
+          "After": {
+            "Min": 13123.0,
+            "Median": 15423.0,
+            "Max": 16061.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -35.5698421975453,
+          "Before": {
+            "Min": 23397.0,
+            "Median": 25665.0,
+            "Max": 27380.0
+          },
+          "After": {
+            "Min": 15613.0,
+            "Median": 16536.0,
+            "Max": 18320.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 70.268826775859,
+          "Before": {
+            "Min": 54.91,
+            "Median": 56.17,
+            "Max": 56.57
+          },
+          "After": {
+            "Min": 94.51,
+            "Median": 95.64,
+            "Max": 97.31
+          }
+        },
+        "B/op": {
+          "ChangePercent": -62.000187352711514,
+          "Before": {
+            "Min": 46916818.0,
+            "Median": 46916855.0,
+            "Max": 46916912.0
+          },
+          "After": {
+            "Min": 17816490.0,
+            "Median": 17828317.0,
+            "Max": 17828356.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": -33.46553089413924,
+          "Before": {
+            "Min": 301820.0,
+            "Median": 301821.0,
+            "Max": 301821.0
+          },
+          "After": {
+            "Min": 200815.0,
+            "Median": 200815.0,
+            "Max": 200816.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -0.46492823933697025,
+          "Before": {
+            "Min": 487.3,
+            "Median": 494.7,
+            "Max": 501.2
+          },
+          "After": {
+            "Min": 487.7,
+            "Median": 492.4,
+            "Max": 495.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          },
+          "After": {
+            "Min": 8192.0,
+            "Median": 8192.0,
+            "Max": 8192.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 0.331,
+            "Median": 0.331,
+            "Max": 0.331
+          },
+          "After": {
+            "Min": 0.331,
+            "Median": 0.331,
+            "Max": 0.339
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 3.392857142857131,
+          "Before": {
+            "Min": 0.478,
+            "Median": 0.56,
+            "Max": 0.606
+          },
+          "After": {
+            "Min": 0.542,
+            "Median": 0.579,
+            "Max": 0.964
+          }
+        },
+        "p99-us": {
+          "ChangePercent": 8.553654743390338,
+          "Before": {
+            "Min": 1.139,
+            "Median": 1.286,
+            "Max": 1.378
+          },
+          "After": {
+            "Min": 0.679,
+            "Median": 1.396,
+            "Max": 3.389
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 0.47315451681000376,
+          "Before": {
+            "Min": 1995374.0,
+            "Median": 2021327.0,
+            "Max": 2052103.0
+          },
+          "After": {
+            "Min": 2020051.0,
+            "Median": 2030891.0,
+            "Max": 2050441.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 640.0,
+            "Median": 640.0,
+            "Max": 640.0
+          },
+          "After": {
+            "Min": 640.0,
+            "Median": 640.0,
+            "Max": 640.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 8.0,
+            "Median": 8.0,
+            "Max": 8.0
+          },
+          "After": {
+            "Min": 8.0,
+            "Median": 8.0,
+            "Max": 8.0
+          }
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Metrics": {
+        "ns/op": {
+          "ChangePercent": -2.1828813919283374,
+          "Before": {
+            "Min": 5259555.0,
+            "Median": 5560861.0,
+            "Max": 5731594.0
+          },
+          "After": {
+            "Min": 5377162.0,
+            "Median": 5439474.0,
+            "Max": 5589286.0
+          }
+        },
+        "failed-attempts/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 2.0,
+            "Median": 2.0,
+            "Max": 2.0
+          },
+          "After": {
+            "Min": 2.0,
+            "Median": 2.0,
+            "Max": 2.0
+          }
+        },
+        "latency-samples": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 256.0,
+            "Median": 256.0,
+            "Max": 256.0
+          },
+          "After": {
+            "Min": 256.0,
+            "Median": 256.0,
+            "Max": 256.0
+          }
+        },
+        "p50-us": {
+          "ChangePercent": -2.987249544626591,
+          "Before": {
+            "Min": 5148.0,
+            "Median": 5490.0,
+            "Max": 5619.0
+          },
+          "After": {
+            "Min": 5269.0,
+            "Median": 5326.0,
+            "Max": 5528.0
+          }
+        },
+        "p95-us": {
+          "ChangePercent": 0.6028875138822887,
+          "Before": {
+            "Min": 6014.0,
+            "Median": 6303.0,
+            "Max": 6779.0
+          },
+          "After": {
+            "Min": 6139.0,
+            "Median": 6341.0,
+            "Max": 6369.0
+          }
+        },
+        "p99-us": {
+          "ChangePercent": -8.180479314499934,
+          "Before": {
+            "Min": 6517.0,
+            "Median": 7469.0,
+            "Max": 7527.0
+          },
+          "After": {
+            "Min": 6658.0,
+            "Median": 6858.0,
+            "Max": 6938.0
+          }
+        },
+        "requests/s": {
+          "ChangePercent": 2.2246941045606317,
+          "Before": {
+            "Min": 174.5,
+            "Median": 179.8,
+            "Max": 190.1
+          },
+          "After": {
+            "Min": 178.9,
+            "Median": 183.8,
+            "Max": 186.0
+          }
+        },
+        "B/op": {
+          "ChangePercent": 0.0006301375905515272,
+          "Before": {
+            "Min": 634532.0,
+            "Median": 634782.0,
+            "Max": 635685.0
+          },
+          "After": {
+            "Min": 634732.0,
+            "Median": 634786.0,
+            "Max": 635272.0
+          }
+        },
+        "allocs/op": {
+          "ChangePercent": 0.0,
+          "Before": {
+            "Min": 3208.0,
+            "Median": 3209.0,
+            "Max": 3213.0
+          },
+          "After": {
+            "Min": 3208.0,
+            "Median": 3209.0,
+            "Max": 3212.0
+          }
+        }
+      }
+    }
+  ],
+  "BeforeSamples": [
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2631,
+      "Metrics": {
+        "ns/op": 497078.0,
+        "latency-samples": 2631.0,
+        "p50-us": 474.8,
+        "p95-us": 662.3,
+        "p99-us": 815.3,
+        "requests/s": 2012.0,
+        "B/op": 26003.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2464,
+      "Metrics": {
+        "ns/op": 499616.0,
+        "latency-samples": 2464.0,
+        "p50-us": 475.5,
+        "p95-us": 656.7,
+        "p99-us": 820.6,
+        "requests/s": 2002.0,
+        "B/op": 26006.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2272,
+      "Metrics": {
+        "ns/op": 508394.0,
+        "latency-samples": 2272.0,
+        "p50-us": 489.7,
+        "p95-us": 662.3,
+        "p99-us": 822.4,
+        "requests/s": 1967.0,
+        "B/op": 26004.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2552,
+      "Metrics": {
+        "ns/op": 474575.0,
+        "latency-samples": 2552.0,
+        "p50-us": 447.1,
+        "p95-us": 643.5,
+        "p99-us": 819.3,
+        "requests/s": 2107.0,
+        "B/op": 26001.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2388,
+      "Metrics": {
+        "ns/op": 508427.0,
+        "latency-samples": 2388.0,
+        "p50-us": 491.2,
+        "p95-us": 649.1,
+        "p99-us": 809.0,
+        "requests/s": 1967.0,
+        "B/op": 26002.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 158,
+      "Metrics": {
+        "ns/op": 8005533.0,
+        "latency-samples": 2528.0,
+        "p50-us": 1982.0,
+        "p95-us": 8427.0,
+        "p99-us": 10570.0,
+        "requests/s": 1999.0,
+        "B/op": 663037.0,
+        "allocs/op": 4590.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 146,
+      "Metrics": {
+        "ns/op": 7812859.0,
+        "latency-samples": 2336.0,
+        "p50-us": 1907.0,
+        "p95-us": 8465.0,
+        "p99-us": 10407.0,
+        "requests/s": 2048.0,
+        "B/op": 663076.0,
+        "allocs/op": 4596.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 153,
+      "Metrics": {
+        "ns/op": 7950266.0,
+        "latency-samples": 2448.0,
+        "p50-us": 1831.0,
+        "p95-us": 8411.0,
+        "p99-us": 10452.0,
+        "requests/s": 2013.0,
+        "B/op": 660249.0,
+        "allocs/op": 4579.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 145,
+      "Metrics": {
+        "ns/op": 8167338.0,
+        "latency-samples": 2320.0,
+        "p50-us": 1953.0,
+        "p95-us": 8418.0,
+        "p99-us": 11268.0,
+        "requests/s": 1959.0,
+        "B/op": 661350.0,
+        "allocs/op": 4585.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 151,
+      "Metrics": {
+        "ns/op": 7845505.0,
+        "latency-samples": 2416.0,
+        "p50-us": 1950.0,
+        "p95-us": 8386.0,
+        "p99-us": 10338.0,
+        "requests/s": 2039.0,
+        "B/op": 661405.0,
+        "allocs/op": 4588.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 261162,
+      "Metrics": {
+        "ns/op": 4658.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.681,
+        "p95-us": 15.62,
+        "p99-us": 86.3,
+        "probes/op": 0.0,
+        "requests/s": 214704.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 253304,
+      "Metrics": {
+        "ns/op": 4581.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.663,
+        "p95-us": 9.56,
+        "p99-us": 71.27,
+        "probes/op": 0.0,
+        "requests/s": 218300.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 261728,
+      "Metrics": {
+        "ns/op": 4796.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.699,
+        "p95-us": 12.78,
+        "p99-us": 81.84,
+        "probes/op": 0.0,
+        "requests/s": 208489.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 237388,
+      "Metrics": {
+        "ns/op": 4527.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.689,
+        "p95-us": 10.79,
+        "p99-us": 69.79,
+        "probes/op": 0.0,
+        "requests/s": 220899.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 259402,
+      "Metrics": {
+        "ns/op": 4697.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.672,
+        "p95-us": 9.579,
+        "p99-us": 82.77,
+        "probes/op": 0.0,
+        "requests/s": 212920.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 99154,
+      "Metrics": {
+        "ns/op": 12019.0,
+        "latency-samples": 8192.0,
+        "p50-us": 4.05,
+        "p95-us": 50.83,
+        "p99-us": 129.9,
+        "probes/op": 1.0,
+        "requests/s": 83201.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 105680,
+      "Metrics": {
+        "ns/op": 11940.0,
+        "latency-samples": 8192.0,
+        "p50-us": 4.051,
+        "p95-us": 54.01,
+        "p99-us": 141.7,
+        "probes/op": 1.0,
+        "requests/s": 83752.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 97192,
+      "Metrics": {
+        "ns/op": 11946.0,
+        "latency-samples": 8192.0,
+        "p50-us": 4.114,
+        "p95-us": 54.14,
+        "p99-us": 134.8,
+        "probes/op": 1.0,
+        "requests/s": 83712.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 94958,
+      "Metrics": {
+        "ns/op": 12117.0,
+        "latency-samples": 8192.0,
+        "p50-us": 3.913,
+        "p95-us": 48.12,
+        "p99-us": 124.6,
+        "probes/op": 1.0,
+        "requests/s": 82530.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 101210,
+      "Metrics": {
+        "ns/op": 11651.0,
+        "latency-samples": 8192.0,
+        "p50-us": 3.922,
+        "p95-us": 49.68,
+        "p99-us": 123.3,
+        "probes/op": 1.0,
+        "requests/s": 85829.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 94,
+      "Metrics": {
+        "ns/op": 14124545.0,
+        "latency-samples": 94.0,
+        "p50-us": 11005.0,
+        "p95-us": 13196.0,
+        "p99-us": 19367.0,
+        "requests/s": 70.8,
+        "B/op": 39612814.0,
+        "allocs/op": 43612.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 96,
+      "Metrics": {
+        "ns/op": 12471641.0,
+        "latency-samples": 96.0,
+        "p50-us": 9756.0,
+        "p95-us": 11468.0,
+        "p99-us": 12710.0,
+        "requests/s": 80.18,
+        "B/op": 39592990.0,
+        "allocs/op": 43595.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 88,
+      "Metrics": {
+        "ns/op": 12541883.0,
+        "latency-samples": 88.0,
+        "p50-us": 9782.0,
+        "p95-us": 11196.0,
+        "p99-us": 12434.0,
+        "requests/s": 79.73,
+        "B/op": 39591495.0,
+        "allocs/op": 43595.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 82,
+      "Metrics": {
+        "ns/op": 12515530.0,
+        "latency-samples": 82.0,
+        "p50-us": 9849.0,
+        "p95-us": 11181.0,
+        "p99-us": 11738.0,
+        "requests/s": 79.9,
+        "B/op": 39592053.0,
+        "allocs/op": 43595.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 90,
+      "Metrics": {
+        "ns/op": 12650319.0,
+        "latency-samples": 90.0,
+        "p50-us": 9820.0,
+        "p95-us": 11448.0,
+        "p99-us": 12713.0,
+        "requests/s": 79.05,
+        "B/op": 39594491.0,
+        "allocs/op": 43595.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 177,
+      "Metrics": {
+        "ns/op": 6707438.0,
+        "latency-samples": 177.0,
+        "p50-us": 6051.0,
+        "p95-us": 7622.0,
+        "p99-us": 8403.0,
+        "requests/s": 149.1,
+        "B/op": 24890520.0,
+        "allocs/op": 33051.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 192,
+      "Metrics": {
+        "ns/op": 6110914.0,
+        "latency-samples": 192.0,
+        "p50-us": 5280.0,
+        "p95-us": 7183.0,
+        "p99-us": 13207.0,
+        "requests/s": 163.6,
+        "B/op": 24871029.0,
+        "allocs/op": 33037.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 194,
+      "Metrics": {
+        "ns/op": 6127084.0,
+        "latency-samples": 194.0,
+        "p50-us": 5343.0,
+        "p95-us": 6877.0,
+        "p99-us": 8417.0,
+        "requests/s": 163.2,
+        "B/op": 24867335.0,
+        "allocs/op": 33035.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 192,
+      "Metrics": {
+        "ns/op": 6313021.0,
+        "latency-samples": 192.0,
+        "p50-us": 5402.0,
+        "p95-us": 7652.0,
+        "p99-us": 12203.0,
+        "requests/s": 158.4,
+        "B/op": 24865964.0,
+        "allocs/op": 33034.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 192,
+      "Metrics": {
+        "ns/op": 6273649.0,
+        "latency-samples": 192.0,
+        "p50-us": 5378.0,
+        "p95-us": 7360.0,
+        "p99-us": 11236.0,
+        "requests/s": 159.4,
+        "B/op": 24868529.0,
+        "allocs/op": 33036.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 238,
+      "Metrics": {
+        "ns/op": 5021410.0,
+        "latency-samples": 238.0,
+        "p50-us": 4949.0,
+        "p95-us": 6054.0,
+        "p99-us": 6765.0,
+        "requests/s": 199.1,
+        "B/op": 21104317.0,
+        "allocs/op": 30326.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 289,
+      "Metrics": {
+        "ns/op": 4082786.0,
+        "latency-samples": 289.0,
+        "p50-us": 3869.0,
+        "p95-us": 4994.0,
+        "p99-us": 5814.0,
+        "requests/s": 244.9,
+        "B/op": 21082520.0,
+        "allocs/op": 30309.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 289,
+      "Metrics": {
+        "ns/op": 4372249.0,
+        "latency-samples": 289.0,
+        "p50-us": 4099.0,
+        "p95-us": 5914.0,
+        "p99-us": 7467.0,
+        "requests/s": 228.7,
+        "B/op": 21086848.0,
+        "allocs/op": 30312.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 255,
+      "Metrics": {
+        "ns/op": 4620448.0,
+        "latency-samples": 255.0,
+        "p50-us": 4333.0,
+        "p95-us": 6317.0,
+        "p99-us": 7716.0,
+        "requests/s": 216.4,
+        "B/op": 21086593.0,
+        "allocs/op": 30312.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 253,
+      "Metrics": {
+        "ns/op": 4408872.0,
+        "latency-samples": 253.0,
+        "p50-us": 4163.0,
+        "p95-us": 5833.0,
+        "p99-us": 6638.0,
+        "requests/s": 226.8,
+        "B/op": 21083579.0,
+        "allocs/op": 30310.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9078243.0,
+        "latency-samples": 256.0,
+        "p50-us": 9022.0,
+        "p95-us": 10098.0,
+        "p99-us": 10493.0,
+        "requests/s": 110.2,
+        "B/op": 677237.0,
+        "allocs/op": 3734.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9213811.0,
+        "latency-samples": 256.0,
+        "p50-us": 9156.0,
+        "p95-us": 9934.0,
+        "p99-us": 10565.0,
+        "requests/s": 108.5,
+        "B/op": 677457.0,
+        "allocs/op": 3734.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9011327.0,
+        "latency-samples": 256.0,
+        "p50-us": 8945.0,
+        "p95-us": 9771.0,
+        "p99-us": 10769.0,
+        "requests/s": 111.0,
+        "B/op": 677427.0,
+        "allocs/op": 3741.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9064996.0,
+        "latency-samples": 256.0,
+        "p50-us": 8940.0,
+        "p95-us": 9910.0,
+        "p99-us": 11416.0,
+        "requests/s": 110.3,
+        "B/op": 677342.0,
+        "allocs/op": 3733.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9019813.0,
+        "latency-samples": 256.0,
+        "p50-us": 8959.0,
+        "p95-us": 9703.0,
+        "p99-us": 12631.0,
+        "requests/s": 110.9,
+        "B/op": 677250.0,
+        "allocs/op": 3733.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 22144024,
+      "Metrics": {
+        "ns/op": 55.12,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.019,
+        "p99-us": 0.028,
+        "requests/s": 18143876.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 22047864,
+      "Metrics": {
+        "ns/op": 53.89,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.019,
+        "p99-us": 0.028,
+        "requests/s": 18554965.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 22147764,
+      "Metrics": {
+        "ns/op": 54.82,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.027,
+        "p99-us": 0.046,
+        "requests/s": 18240126.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 22290139,
+      "Metrics": {
+        "ns/op": 55.45,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.027,
+        "p99-us": 0.046,
+        "requests/s": 18035800.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 21984943,
+      "Metrics": {
+        "ns/op": 55.23,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.027,
+        "p99-us": 0.036,
+        "requests/s": 18106820.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20440,
+      "Metrics": {
+        "ns/op": 59396.0,
+        "latency-samples": 8192.0,
+        "p50-us": 45.72,
+        "p95-us": 148.8,
+        "p99-us": 218.4,
+        "requests/s": 16836.0,
+        "B/op": 148772.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20240,
+      "Metrics": {
+        "ns/op": 58887.0,
+        "latency-samples": 8192.0,
+        "p50-us": 45.53,
+        "p95-us": 152.9,
+        "p99-us": 205.4,
+        "requests/s": 16982.0,
+        "B/op": 148840.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20142,
+      "Metrics": {
+        "ns/op": 58969.0,
+        "latency-samples": 8192.0,
+        "p50-us": 45.59,
+        "p95-us": 146.9,
+        "p99-us": 206.4,
+        "requests/s": 16958.0,
+        "B/op": 148934.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20317,
+      "Metrics": {
+        "ns/op": 61037.0,
+        "latency-samples": 8192.0,
+        "p50-us": 46.85,
+        "p95-us": 149.6,
+        "p99-us": 240.5,
+        "requests/s": 16384.0,
+        "B/op": 148847.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 19206,
+      "Metrics": {
+        "ns/op": 62500.0,
+        "latency-samples": 8192.0,
+        "p50-us": 47.12,
+        "p95-us": 154.0,
+        "p99-us": 227.3,
+        "requests/s": 16000.0,
+        "B/op": 148871.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18853,
+      "Metrics": {
+        "ns/op": 65732.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.18,
+        "p95-us": 156.1,
+        "p99-us": 214.6,
+        "requests/s": 15213.0,
+        "B/op": 148864.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 17857,
+      "Metrics": {
+        "ns/op": 66362.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.39,
+        "p95-us": 156.1,
+        "p99-us": 233.3,
+        "requests/s": 15069.0,
+        "B/op": 148830.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18528,
+      "Metrics": {
+        "ns/op": 63778.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.57,
+        "p95-us": 150.7,
+        "p99-us": 212.7,
+        "requests/s": 15679.0,
+        "B/op": 148759.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18951,
+      "Metrics": {
+        "ns/op": 64206.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.7,
+        "p95-us": 152.9,
+        "p99-us": 218.9,
+        "requests/s": 15575.0,
+        "B/op": 148820.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18426,
+      "Metrics": {
+        "ns/op": 64281.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.64,
+        "p95-us": 159.9,
+        "p99-us": 230.1,
+        "requests/s": 15557.0,
+        "B/op": 148797.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 7893,
+      "Metrics": {
+        "ns/op": 136972.0,
+        "latency-samples": 7893.0,
+        "p50-us": 95.25,
+        "p95-us": 402.6,
+        "p99-us": 580.5,
+        "requests/s": 7301.0,
+        "B/op": 208387.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 8572,
+      "Metrics": {
+        "ns/op": 135580.0,
+        "latency-samples": 8192.0,
+        "p50-us": 95.55,
+        "p95-us": 394.0,
+        "p99-us": 545.3,
+        "requests/s": 7376.0,
+        "B/op": 208381.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 7983,
+      "Metrics": {
+        "ns/op": 136043.0,
+        "latency-samples": 7983.0,
+        "p50-us": 95.52,
+        "p95-us": 389.5,
+        "p99-us": 554.2,
+        "requests/s": 7351.0,
+        "B/op": 208368.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 8990,
+      "Metrics": {
+        "ns/op": 135518.0,
+        "latency-samples": 8192.0,
+        "p50-us": 95.36,
+        "p95-us": 387.6,
+        "p99-us": 545.8,
+        "requests/s": 7379.0,
+        "B/op": 208363.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 8658,
+      "Metrics": {
+        "ns/op": 137017.0,
+        "latency-samples": 8192.0,
+        "p50-us": 95.5,
+        "p95-us": 399.9,
+        "p99-us": 559.9,
+        "requests/s": 7298.0,
+        "B/op": 208371.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 88,
+      "Metrics": {
+        "ns/op": 12750459.0,
+        "latency-samples": 88.0,
+        "p50-us": 12713.0,
+        "p95-us": 13230.0,
+        "p99-us": 13380.0,
+        "requests/s": 78.43,
+        "B/op": 33237.0,
+        "allocs/op": 269.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 90,
+      "Metrics": {
+        "ns/op": 12653504.0,
+        "latency-samples": 90.0,
+        "p50-us": 12580.0,
+        "p95-us": 13081.0,
+        "p99-us": 13561.0,
+        "requests/s": 79.03,
+        "B/op": 33617.0,
+        "allocs/op": 269.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 88,
+      "Metrics": {
+        "ns/op": 12638480.0,
+        "latency-samples": 88.0,
+        "p50-us": 12643.0,
+        "p95-us": 13019.0,
+        "p99-us": 13109.0,
+        "requests/s": 79.12,
+        "B/op": 33557.0,
+        "allocs/op": 269.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 88,
+      "Metrics": {
+        "ns/op": 12731453.0,
+        "latency-samples": 88.0,
+        "p50-us": 12685.0,
+        "p95-us": 13034.0,
+        "p99-us": 13328.0,
+        "requests/s": 78.55,
+        "B/op": 33367.0,
+        "allocs/op": 269.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 92,
+      "Metrics": {
+        "ns/op": 12688028.0,
+        "latency-samples": 92.0,
+        "p50-us": 12636.0,
+        "p95-us": 13141.0,
+        "p99-us": 13536.0,
+        "requests/s": 78.81,
+        "B/op": 33466.0,
+        "allocs/op": 268.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2278,
+      "Metrics": {
+        "ns/op": 522966.0,
+        "B/op": 635483.0,
+        "allocs/op": 1626.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2307,
+      "Metrics": {
+        "ns/op": 505774.0,
+        "B/op": 595192.0,
+        "allocs/op": 1624.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2338,
+      "Metrics": {
+        "ns/op": 504835.0,
+        "B/op": 594148.0,
+        "allocs/op": 1624.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2284,
+      "Metrics": {
+        "ns/op": 507308.0,
+        "B/op": 587712.0,
+        "allocs/op": 1624.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2343,
+      "Metrics": {
+        "ns/op": 505957.0,
+        "B/op": 589676.0,
+        "allocs/op": 1624.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 159,
+      "Metrics": {
+        "ns/op": 7562398.0,
+        "latency-samples": 159.0,
+        "p50-us": 7461.0,
+        "p95-us": 8782.0,
+        "p99-us": 9174.0,
+        "requests/s": 132.2,
+        "B/op": 17555118.0,
+        "allocs/op": 38829.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 159,
+      "Metrics": {
+        "ns/op": 7592482.0,
+        "latency-samples": 159.0,
+        "p50-us": 7555.0,
+        "p95-us": 8593.0,
+        "p99-us": 9088.0,
+        "requests/s": 131.7,
+        "B/op": 17555038.0,
+        "allocs/op": 38828.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 158,
+      "Metrics": {
+        "ns/op": 7554317.0,
+        "latency-samples": 158.0,
+        "p50-us": 7491.0,
+        "p95-us": 8512.0,
+        "p99-us": 9467.0,
+        "requests/s": 132.4,
+        "B/op": 17555076.0,
+        "allocs/op": 38828.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 156,
+      "Metrics": {
+        "ns/op": 7701204.0,
+        "latency-samples": 156.0,
+        "p50-us": 7665.0,
+        "p95-us": 8751.0,
+        "p99-us": 9268.0,
+        "requests/s": 129.8,
+        "B/op": 17555112.0,
+        "allocs/op": 38829.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 151,
+      "Metrics": {
+        "ns/op": 7595336.0,
+        "latency-samples": 151.0,
+        "p50-us": 7548.0,
+        "p95-us": 8670.0,
+        "p99-us": 9203.0,
+        "requests/s": 131.7,
+        "B/op": 17520403.0,
+        "allocs/op": 38829.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 370,
+      "Metrics": {
+        "ns/op": 3207457.0,
+        "latency-samples": 370.0,
+        "p50-us": 3145.0,
+        "p95-us": 4028.0,
+        "p99-us": 4465.0,
+        "requests/s": 311.8,
+        "B/op": 7314524.0,
+        "allocs/op": 31822.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 373,
+      "Metrics": {
+        "ns/op": 3204856.0,
+        "latency-samples": 373.0,
+        "p50-us": 3159.0,
+        "p95-us": 3931.0,
+        "p99-us": 4354.0,
+        "requests/s": 312.0,
+        "B/op": 7320929.0,
+        "allocs/op": 31823.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 368,
+      "Metrics": {
+        "ns/op": 3249510.0,
+        "latency-samples": 368.0,
+        "p50-us": 3225.0,
+        "p95-us": 4005.0,
+        "p99-us": 4438.0,
+        "requests/s": 307.7,
+        "B/op": 7314478.0,
+        "allocs/op": 31822.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 366,
+      "Metrics": {
+        "ns/op": 3204357.0,
+        "latency-samples": 366.0,
+        "p50-us": 3159.0,
+        "p95-us": 3989.0,
+        "p99-us": 4392.0,
+        "requests/s": 312.1,
+        "B/op": 7320933.0,
+        "allocs/op": 31823.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 370,
+      "Metrics": {
+        "ns/op": 3366826.0,
+        "latency-samples": 370.0,
+        "p50-us": 3238.0,
+        "p95-us": 4651.0,
+        "p99-us": 5723.0,
+        "requests/s": 297.0,
+        "B/op": 7317727.0,
+        "allocs/op": 31823.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 584,
+      "Metrics": {
+        "ns/op": 1984141.0,
+        "latency-samples": 584.0,
+        "p50-us": 1936.0,
+        "p95-us": 2827.0,
+        "p99-us": 3250.0,
+        "requests/s": 504.0,
+        "B/op": 4684553.0,
+        "allocs/op": 30004.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 612,
+      "Metrics": {
+        "ns/op": 2032148.0,
+        "latency-samples": 612.0,
+        "p50-us": 1958.0,
+        "p95-us": 2874.0,
+        "p99-us": 3614.0,
+        "requests/s": 492.1,
+        "B/op": 4684395.0,
+        "allocs/op": 30005.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 615,
+      "Metrics": {
+        "ns/op": 1966646.0,
+        "latency-samples": 615.0,
+        "p50-us": 1894.0,
+        "p95-us": 2845.0,
+        "p99-us": 3402.0,
+        "requests/s": 508.5,
+        "B/op": 4684764.0,
+        "allocs/op": 30005.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 612,
+      "Metrics": {
+        "ns/op": 1950795.0,
+        "latency-samples": 612.0,
+        "p50-us": 1913.0,
+        "p95-us": 2702.0,
+        "p99-us": 2961.0,
+        "requests/s": 512.6,
+        "B/op": 4684363.0,
+        "allocs/op": 30004.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 591,
+      "Metrics": {
+        "ns/op": 1938752.0,
+        "latency-samples": 591.0,
+        "p50-us": 1890.0,
+        "p95-us": 2649.0,
+        "p99-us": 2903.0,
+        "requests/s": 515.8,
+        "B/op": 4684764.0,
+        "allocs/op": 30005.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 694,
+      "Metrics": {
+        "ns/op": 1705098.0,
+        "latency-samples": 694.0,
+        "p50-us": 1671.0,
+        "p95-us": 2404.0,
+        "p99-us": 2766.0,
+        "requests/s": 586.5,
+        "B/op": 4410821.0,
+        "allocs/op": 29773.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 681,
+      "Metrics": {
+        "ns/op": 1740887.0,
+        "latency-samples": 681.0,
+        "p50-us": 1694.0,
+        "p95-us": 2442.0,
+        "p99-us": 2890.0,
+        "requests/s": 574.4,
+        "B/op": 4410821.0,
+        "allocs/op": 29773.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 708,
+      "Metrics": {
+        "ns/op": 1768131.0,
+        "latency-samples": 708.0,
+        "p50-us": 1724.0,
+        "p95-us": 2537.0,
+        "p99-us": 2800.0,
+        "requests/s": 565.6,
+        "B/op": 4410840.0,
+        "allocs/op": 29774.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 684,
+      "Metrics": {
+        "ns/op": 1703681.0,
+        "latency-samples": 684.0,
+        "p50-us": 1654.0,
+        "p95-us": 2417.0,
+        "p99-us": 2729.0,
+        "requests/s": 587.0,
+        "B/op": 4410836.0,
+        "allocs/op": 29773.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 715,
+      "Metrics": {
+        "ns/op": 1714373.0,
+        "latency-samples": 715.0,
+        "p50-us": 1647.0,
+        "p95-us": 2395.0,
+        "p99-us": 2763.0,
+        "requests/s": 583.3,
+        "B/op": 4410836.0,
+        "allocs/op": 29773.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 52,
+      "Metrics": {
+        "ns/op": 20706953.0,
+        "latency-samples": 52.0,
+        "p50-us": 20413.0,
+        "p95-us": 23858.0,
+        "p99-us": 26756.0,
+        "requests/s": 48.29,
+        "B/op": 57150493.0,
+        "allocs/op": 308821.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 49,
+      "Metrics": {
+        "ns/op": 21404839.0,
+        "latency-samples": 49.0,
+        "p50-us": 20400.0,
+        "p95-us": 29126.0,
+        "p99-us": 29947.0,
+        "requests/s": 46.72,
+        "B/op": 57150497.0,
+        "allocs/op": 308821.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 55,
+      "Metrics": {
+        "ns/op": 21236450.0,
+        "latency-samples": 55.0,
+        "p50-us": 20918.0,
+        "p95-us": 25152.0,
+        "p99-us": 30345.0,
+        "requests/s": 47.09,
+        "B/op": 57055212.0,
+        "allocs/op": 308821.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 51,
+      "Metrics": {
+        "ns/op": 21323546.0,
+        "latency-samples": 51.0,
+        "p50-us": 20833.0,
+        "p95-us": 26992.0,
+        "p99-us": 30247.0,
+        "requests/s": 46.9,
+        "B/op": 57150510.0,
+        "allocs/op": 308822.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 55,
+      "Metrics": {
+        "ns/op": 22751056.0,
+        "latency-samples": 55.0,
+        "p50-us": 22287.0,
+        "p95-us": 29745.0,
+        "p99-us": 33696.0,
+        "requests/s": 43.95,
+        "B/op": 57150490.0,
+        "allocs/op": 308821.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 46,
+      "Metrics": {
+        "ns/op": 23961803.0,
+        "latency-samples": 46.0,
+        "p50-us": 22968.0,
+        "p95-us": 29161.0,
+        "p99-us": 33127.0,
+        "requests/s": 41.73,
+        "B/op": 57113173.0,
+        "allocs/op": 308679.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 52,
+      "Metrics": {
+        "ns/op": 21644819.0,
+        "latency-samples": 52.0,
+        "p50-us": 21366.0,
+        "p95-us": 26059.0,
+        "p99-us": 27536.0,
+        "requests/s": 46.2,
+        "B/op": 57113173.0,
+        "allocs/op": 308680.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 52,
+      "Metrics": {
+        "ns/op": 21697573.0,
+        "latency-samples": 52.0,
+        "p50-us": 21264.0,
+        "p95-us": 26969.0,
+        "p99-us": 31005.0,
+        "requests/s": 46.09,
+        "B/op": 57113148.0,
+        "allocs/op": 308679.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 50,
+      "Metrics": {
+        "ns/op": 21670243.0,
+        "latency-samples": 50.0,
+        "p50-us": 21043.0,
+        "p95-us": 26207.0,
+        "p99-us": 27973.0,
+        "requests/s": 46.15,
+        "B/op": 57113173.0,
+        "allocs/op": 308680.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 55,
+      "Metrics": {
+        "ns/op": 21799060.0,
+        "latency-samples": 55.0,
+        "p50-us": 20990.0,
+        "p95-us": 27146.0,
+        "p99-us": 32034.0,
+        "requests/s": 45.87,
+        "B/op": 57113218.0,
+        "allocs/op": 308680.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 78,
+      "Metrics": {
+        "ns/op": 17794677.0,
+        "latency-samples": 78.0,
+        "p50-us": 17279.0,
+        "p95-us": 22339.0,
+        "p99-us": 24563.0,
+        "requests/s": 56.2,
+        "B/op": 46916829.0,
+        "allocs/op": 301820.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 66,
+      "Metrics": {
+        "ns/op": 18110608.0,
+        "latency-samples": 66.0,
+        "p50-us": 17448.0,
+        "p95-us": 23469.0,
+        "p99-us": 27380.0,
+        "requests/s": 55.22,
+        "B/op": 46916912.0,
+        "allocs/op": 301821.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 61,
+      "Metrics": {
+        "ns/op": 17804562.0,
+        "latency-samples": 61.0,
+        "p50-us": 17639.0,
+        "p95-us": 22712.0,
+        "p99-us": 23397.0,
+        "requests/s": 56.17,
+        "B/op": 46916855.0,
+        "allocs/op": 301821.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 64,
+      "Metrics": {
+        "ns/op": 17675724.0,
+        "latency-samples": 64.0,
+        "p50-us": 17041.0,
+        "p95-us": 22507.0,
+        "p99-us": 26305.0,
+        "requests/s": 56.57,
+        "B/op": 46916818.0,
+        "allocs/op": 301820.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 57,
+      "Metrics": {
+        "ns/op": 18210129.0,
+        "latency-samples": 57.0,
+        "p50-us": 18367.0,
+        "p95-us": 23736.0,
+        "p99-us": 25665.0,
+        "requests/s": 54.91,
+        "B/op": 46916875.0,
+        "allocs/op": 301821.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 74,
+      "Metrics": {
+        "ns/op": 16611560.0,
+        "latency-samples": 74.0,
+        "p50-us": 16147.0,
+        "p95-us": 21421.0,
+        "p99-us": 22605.0,
+        "requests/s": 60.2,
+        "B/op": 44007138.0,
+        "allocs/op": 299775.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 68,
+      "Metrics": {
+        "ns/op": 16425420.0,
+        "latency-samples": 68.0,
+        "p50-us": 16008.0,
+        "p95-us": 20836.0,
+        "p99-us": 24636.0,
+        "requests/s": 60.88,
+        "B/op": 44007148.0,
+        "allocs/op": 299775.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 69,
+      "Metrics": {
+        "ns/op": 16407464.0,
+        "latency-samples": 69.0,
+        "p50-us": 16100.0,
+        "p95-us": 21174.0,
+        "p99-us": 21593.0,
+        "requests/s": 60.95,
+        "B/op": 44007104.0,
+        "allocs/op": 299774.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 72,
+      "Metrics": {
+        "ns/op": 16172645.0,
+        "latency-samples": 72.0,
+        "p50-us": 15859.0,
+        "p95-us": 20801.0,
+        "p99-us": 21781.0,
+        "requests/s": 61.83,
+        "B/op": 44007065.0,
+        "allocs/op": 299774.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 70,
+      "Metrics": {
+        "ns/op": 16358644.0,
+        "latency-samples": 70.0,
+        "p50-us": 16066.0,
+        "p95-us": 20289.0,
+        "p99-us": 23458.0,
+        "requests/s": 61.13,
+        "B/op": 44007121.0,
+        "allocs/op": 299775.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 3,
+      "Metrics": {
+        "ns/op": 483547744.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 1307987336.0,
+        "allocs/op": 7096177.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 3,
+      "Metrics": {
+        "ns/op": 489710151.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 1306241160.0,
+        "allocs/op": 7096182.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 2,
+      "Metrics": {
+        "ns/op": 503540222.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 1307984980.0,
+        "allocs/op": 7096156.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 3,
+      "Metrics": {
+        "ns/op": 483579568.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 1307989053.0,
+        "allocs/op": 7096199.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 3,
+      "Metrics": {
+        "ns/op": 492597954.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 1307987144.0,
+        "allocs/op": 7096176.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2351949,
+      "Metrics": {
+        "ns/op": 501.2,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.478,
+        "p99-us": 1.139,
+        "requests/s": 1995374.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2442402,
+      "Metrics": {
+        "ns/op": 490.8,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.56,
+        "p99-us": 1.221,
+        "requests/s": 2037362.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2445974,
+      "Metrics": {
+        "ns/op": 494.7,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.606,
+        "p99-us": 1.378,
+        "requests/s": 2021327.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2403454,
+      "Metrics": {
+        "ns/op": 487.3,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.56,
+        "p99-us": 1.286,
+        "requests/s": 2052103.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2475930,
+      "Metrics": {
+        "ns/op": 498.1,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.57,
+        "p99-us": 1.322,
+        "requests/s": 2007443.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2706,
+      "Metrics": {
+        "ns/op": 501042.0,
+        "latency-samples": 2706.0,
+        "p50-us": 483.4,
+        "p95-us": 633.4,
+        "p99-us": 762.2,
+        "requests/s": 1996.0,
+        "B/op": 28710.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2336,
+      "Metrics": {
+        "ns/op": 529649.0,
+        "latency-samples": 2336.0,
+        "p50-us": 514.0,
+        "p95-us": 663.2,
+        "p99-us": 864.9,
+        "requests/s": 1888.0,
+        "B/op": 28643.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2150,
+      "Metrics": {
+        "ns/op": 549172.0,
+        "latency-samples": 2150.0,
+        "p50-us": 524.8,
+        "p95-us": 719.7,
+        "p99-us": 882.1,
+        "requests/s": 1821.0,
+        "B/op": 28627.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2175,
+      "Metrics": {
+        "ns/op": 491159.0,
+        "latency-samples": 2175.0,
+        "p50-us": 465.0,
+        "p95-us": 639.8,
+        "p99-us": 789.0,
+        "requests/s": 2036.0,
+        "B/op": 28691.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2160,
+      "Metrics": {
+        "ns/op": 476658.0,
+        "latency-samples": 2160.0,
+        "p50-us": 453.2,
+        "p95-us": 629.0,
+        "p99-us": 780.8,
+        "requests/s": 2098.0,
+        "B/op": 28627.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5731594.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5619.0,
+        "p95-us": 6779.0,
+        "p99-us": 7492.0,
+        "requests/s": 174.5,
+        "B/op": 635685.0,
+        "allocs/op": 3213.0
+      },
+      "Source": "workflow-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5259555.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5148.0,
+        "p95-us": 6014.0,
+        "p99-us": 6517.0,
+        "requests/s": 190.1,
+        "B/op": 634889.0,
+        "allocs/op": 3209.0
+      },
+      "Source": "workflow-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5639330.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5548.0,
+        "p95-us": 6470.0,
+        "p99-us": 7527.0,
+        "requests/s": 177.3,
+        "B/op": 634714.0,
+        "allocs/op": 3209.0
+      },
+      "Source": "workflow-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5560861.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5490.0,
+        "p95-us": 6200.0,
+        "p99-us": 7469.0,
+        "requests/s": 179.8,
+        "B/op": 634532.0,
+        "allocs/op": 3208.0
+      },
+      "Source": "workflow-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5438471.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5310.0,
+        "p95-us": 6303.0,
+        "p99-us": 7101.0,
+        "requests/s": 183.9,
+        "B/op": 634782.0,
+        "allocs/op": 3209.0
+      },
+      "Source": "workflow-bench.jsonl"
+    }
+  ],
+  "AfterSamples": [
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2455,
+      "Metrics": {
+        "ns/op": 514971.0,
+        "latency-samples": 2455.0,
+        "p50-us": 489.9,
+        "p95-us": 695.5,
+        "p99-us": 875.0,
+        "requests/s": 1942.0,
+        "B/op": 26006.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2130,
+      "Metrics": {
+        "ns/op": 533591.0,
+        "latency-samples": 2130.0,
+        "p50-us": 502.2,
+        "p95-us": 706.4,
+        "p99-us": 870.1,
+        "requests/s": 1874.0,
+        "B/op": 26005.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2079,
+      "Metrics": {
+        "ns/op": 560563.0,
+        "latency-samples": 2079.0,
+        "p50-us": 535.8,
+        "p95-us": 728.7,
+        "p99-us": 859.0,
+        "requests/s": 1784.0,
+        "B/op": 26004.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2046,
+      "Metrics": {
+        "ns/op": 571447.0,
+        "latency-samples": 2046.0,
+        "p50-us": 548.3,
+        "p95-us": 724.6,
+        "p99-us": 950.7,
+        "requests/s": 1750.0,
+        "B/op": 26006.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2091,
+      "Metrics": {
+        "ns/op": 568448.0,
+        "latency-samples": 2091.0,
+        "p50-us": 541.1,
+        "p95-us": 728.4,
+        "p99-us": 922.5,
+        "requests/s": 1759.0,
+        "B/op": 26005.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 139,
+      "Metrics": {
+        "ns/op": 8637548.0,
+        "latency-samples": 2224.0,
+        "p50-us": 2245.0,
+        "p95-us": 8797.0,
+        "p99-us": 11342.0,
+        "requests/s": 1852.0,
+        "B/op": 661823.0,
+        "allocs/op": 4586.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 147,
+      "Metrics": {
+        "ns/op": 8435714.0,
+        "latency-samples": 2352.0,
+        "p50-us": 2162.0,
+        "p95-us": 8660.0,
+        "p99-us": 11109.0,
+        "requests/s": 1897.0,
+        "B/op": 660033.0,
+        "allocs/op": 4582.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 141,
+      "Metrics": {
+        "ns/op": 7979038.0,
+        "latency-samples": 2256.0,
+        "p50-us": 2122.0,
+        "p95-us": 8563.0,
+        "p99-us": 10593.0,
+        "requests/s": 2005.0,
+        "B/op": 658145.0,
+        "allocs/op": 4577.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 141,
+      "Metrics": {
+        "ns/op": 8177125.0,
+        "latency-samples": 2256.0,
+        "p50-us": 1999.0,
+        "p95-us": 8357.0,
+        "p99-us": 10660.0,
+        "requests/s": 1957.0,
+        "B/op": 659788.0,
+        "allocs/op": 4578.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileHeterogeneousRouting-2",
+      "Iterations": 160,
+      "Metrics": {
+        "ns/op": 7891654.0,
+        "latency-samples": 2560.0,
+        "p50-us": 1944.0,
+        "p95-us": 8404.0,
+        "p99-us": 10958.0,
+        "requests/s": 2027.0,
+        "B/op": 660968.0,
+        "allocs/op": 4588.0
+      },
+      "Source": "heterogeneous-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 253395,
+      "Metrics": {
+        "ns/op": 4631.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.672,
+        "p95-us": 9.524,
+        "p99-us": 84.33,
+        "probes/op": 0.0,
+        "requests/s": 215946.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 255980,
+      "Metrics": {
+        "ns/op": 4937.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.828,
+        "p95-us": 15.6,
+        "p99-us": 89.98,
+        "probes/op": 0.0,
+        "requests/s": 202557.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 244896,
+      "Metrics": {
+        "ns/op": 4718.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.69,
+        "p95-us": 9.074,
+        "p99-us": 63.88,
+        "probes/op": 0.0,
+        "requests/s": 211933.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 260990,
+      "Metrics": {
+        "ns/op": 4640.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.726,
+        "p95-us": 13.15,
+        "p99-us": 74.6,
+        "probes/op": 0.0,
+        "requests/s": 215500.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/false-2",
+      "Iterations": 278072,
+      "Metrics": {
+        "ns/op": 4651.0,
+        "latency-samples": 8192.0,
+        "p50-us": 1.727,
+        "p95-us": 15.89,
+        "p99-us": 81.33,
+        "probes/op": 0.0,
+        "requests/s": 215005.0,
+        "B/op": 22144.0,
+        "allocs/op": 66.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 95073,
+      "Metrics": {
+        "ns/op": 12661.0,
+        "latency-samples": 8192.0,
+        "p50-us": 4.445,
+        "p95-us": 61.78,
+        "p99-us": 155.7,
+        "probes/op": 1.0,
+        "requests/s": 78983.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 89738,
+      "Metrics": {
+        "ns/op": 13306.0,
+        "latency-samples": 8192.0,
+        "p50-us": 4.638,
+        "p95-us": 56.34,
+        "p99-us": 158.8,
+        "probes/op": 1.0,
+        "requests/s": 75151.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 91740,
+      "Metrics": {
+        "ns/op": 13217.0,
+        "latency-samples": 8192.0,
+        "p50-us": 4.06,
+        "p95-us": 52.12,
+        "p99-us": 133.7,
+        "probes/op": 1.0,
+        "requests/s": 75663.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 101737,
+      "Metrics": {
+        "ns/op": 12210.0,
+        "latency-samples": 8192.0,
+        "p50-us": 4.041,
+        "p95-us": 52.56,
+        "p99-us": 141.2,
+        "probes/op": 1.0,
+        "requests/s": 81897.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileInventory/true-2",
+      "Iterations": 102181,
+      "Metrics": {
+        "ns/op": 12075.0,
+        "latency-samples": 8192.0,
+        "p50-us": 4.114,
+        "p95-us": 52.85,
+        "p99-us": 138.7,
+        "probes/op": 1.0,
+        "requests/s": 82814.0,
+        "B/op": 54632.0,
+        "allocs/op": 82.0
+      },
+      "Source": "inventory-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 99,
+      "Metrics": {
+        "ns/op": 12072101.0,
+        "latency-samples": 99.0,
+        "p50-us": 9039.0,
+        "p95-us": 11005.0,
+        "p99-us": 13038.0,
+        "requests/s": 82.84,
+        "B/op": 35436664.0,
+        "allocs/op": 29114.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 98,
+      "Metrics": {
+        "ns/op": 11464730.0,
+        "latency-samples": 98.0,
+        "p50-us": 8273.0,
+        "p95-us": 10614.0,
+        "p99-us": 12873.0,
+        "requests/s": 87.22,
+        "B/op": 35407557.0,
+        "allocs/op": 29095.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 105,
+      "Metrics": {
+        "ns/op": 11345218.0,
+        "latency-samples": 105.0,
+        "p50-us": 8196.0,
+        "p95-us": 9549.0,
+        "p99-us": 9627.0,
+        "requests/s": 88.14,
+        "B/op": 35410283.0,
+        "allocs/op": 29096.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 105,
+      "Metrics": {
+        "ns/op": 11216884.0,
+        "latency-samples": 105.0,
+        "p50-us": 8272.0,
+        "p95-us": 9630.0,
+        "p99-us": 9994.0,
+        "requests/s": 89.15,
+        "B/op": 35412652.0,
+        "allocs/op": 29096.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/0PercentConsumed-2",
+      "Iterations": 90,
+      "Metrics": {
+        "ns/op": 11348009.0,
+        "latency-samples": 90.0,
+        "p50-us": 8181.0,
+        "p95-us": 9511.0,
+        "p99-us": 10492.0,
+        "requests/s": 88.12,
+        "B/op": 35411564.0,
+        "allocs/op": 29097.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 211,
+      "Metrics": {
+        "ns/op": 5502500.0,
+        "latency-samples": 211.0,
+        "p50-us": 4840.0,
+        "p95-us": 5895.0,
+        "p99-us": 6471.0,
+        "requests/s": 181.7,
+        "B/op": 21719509.0,
+        "allocs/op": 22049.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 242,
+      "Metrics": {
+        "ns/op": 5026007.0,
+        "latency-samples": 242.0,
+        "p50-us": 4320.0,
+        "p95-us": 5658.0,
+        "p99-us": 6508.0,
+        "requests/s": 199.0,
+        "B/op": 21698404.0,
+        "allocs/op": 22033.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 234,
+      "Metrics": {
+        "ns/op": 5065330.0,
+        "latency-samples": 234.0,
+        "p50-us": 4328.0,
+        "p95-us": 5710.0,
+        "p99-us": 6673.0,
+        "requests/s": 197.4,
+        "B/op": 21699709.0,
+        "allocs/op": 22034.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 229,
+      "Metrics": {
+        "ns/op": 5011330.0,
+        "latency-samples": 229.0,
+        "p50-us": 4319.0,
+        "p95-us": 5521.0,
+        "p99-us": 6199.0,
+        "requests/s": 199.5,
+        "B/op": 21696036.0,
+        "allocs/op": 22031.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/90PercentConsumed-2",
+      "Iterations": 234,
+      "Metrics": {
+        "ns/op": 5048406.0,
+        "latency-samples": 234.0,
+        "p50-us": 4342.0,
+        "p95-us": 5699.0,
+        "p99-us": 7121.0,
+        "requests/s": 198.1,
+        "B/op": 21697369.0,
+        "allocs/op": 22032.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 276,
+      "Metrics": {
+        "ns/op": 4141757.0,
+        "latency-samples": 276.0,
+        "p50-us": 3938.0,
+        "p95-us": 5476.0,
+        "p99-us": 7153.0,
+        "requests/s": 241.4,
+        "B/op": 18184074.0,
+        "allocs/op": 20218.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 337,
+      "Metrics": {
+        "ns/op": 3616894.0,
+        "latency-samples": 337.0,
+        "p50-us": 3425.0,
+        "p95-us": 4749.0,
+        "p99-us": 6237.0,
+        "requests/s": 276.5,
+        "B/op": 18171337.0,
+        "allocs/op": 20208.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 337,
+      "Metrics": {
+        "ns/op": 3362772.0,
+        "latency-samples": 337.0,
+        "p50-us": 3227.0,
+        "p95-us": 3928.0,
+        "p99-us": 4706.0,
+        "requests/s": 297.4,
+        "B/op": 18178104.0,
+        "allocs/op": 20212.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 339,
+      "Metrics": {
+        "ns/op": 3493125.0,
+        "latency-samples": 339.0,
+        "p50-us": 3318.0,
+        "p95-us": 4534.0,
+        "p99-us": 5682.0,
+        "requests/s": 286.3,
+        "B/op": 18170926.0,
+        "allocs/op": 20207.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemorySyncHTTP/99PercentConsumed-2",
+      "Iterations": 334,
+      "Metrics": {
+        "ns/op": 3464809.0,
+        "latency-samples": 334.0,
+        "p50-us": 3309.0,
+        "p95-us": 4322.0,
+        "p99-us": 5153.0,
+        "requests/s": 288.6,
+        "B/op": 18178890.0,
+        "allocs/op": 20212.0
+      },
+      "Source": "memory-http-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 8934506.0,
+        "latency-samples": 256.0,
+        "p50-us": 8904.0,
+        "p95-us": 9731.0,
+        "p99-us": 10616.0,
+        "requests/s": 111.9,
+        "B/op": 677067.0,
+        "allocs/op": 3733.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9115162.0,
+        "latency-samples": 256.0,
+        "p50-us": 9041.0,
+        "p95-us": 9902.0,
+        "p99-us": 10491.0,
+        "requests/s": 109.7,
+        "B/op": 677326.0,
+        "allocs/op": 3739.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9201748.0,
+        "latency-samples": 256.0,
+        "p50-us": 9117.0,
+        "p95-us": 9938.0,
+        "p99-us": 10363.0,
+        "requests/s": 108.7,
+        "B/op": 677276.0,
+        "allocs/op": 3739.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9090594.0,
+        "latency-samples": 256.0,
+        "p50-us": 9038.0,
+        "p95-us": 9778.0,
+        "p99-us": 10617.0,
+        "requests/s": 110.0,
+        "B/op": 677245.0,
+        "allocs/op": 3733.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileMemoryOperations-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 9006352.0,
+        "latency-samples": 256.0,
+        "p50-us": 8918.0,
+        "p95-us": 9841.0,
+        "p99-us": 10528.0,
+        "requests/s": 111.0,
+        "B/op": 677342.0,
+        "allocs/op": 3733.0
+      },
+      "Source": "memory-operations-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 21309177,
+      "Metrics": {
+        "ns/op": 55.21,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.027,
+        "p99-us": 0.055,
+        "requests/s": 18114050.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 21209397,
+      "Metrics": {
+        "ns/op": 55.1,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.027,
+        "p99-us": 0.037,
+        "requests/s": 18147287.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 21546048,
+      "Metrics": {
+        "ns/op": 56.86,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.027,
+        "p99-us": 0.046,
+        "requests/s": 17587334.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 21607465,
+      "Metrics": {
+        "ns/op": 56.85,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.028,
+        "p99-us": 0.046,
+        "requests/s": 17589097.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/0-2",
+      "Iterations": 21654973,
+      "Metrics": {
+        "ns/op": 55.08,
+        "latency-samples": 8192.0,
+        "p50-us": 0.018,
+        "p95-us": 0.027,
+        "p99-us": 0.046,
+        "requests/s": 18156636.0,
+        "B/op": 0.0,
+        "allocs/op": 0.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20180,
+      "Metrics": {
+        "ns/op": 59595.0,
+        "latency-samples": 8192.0,
+        "p50-us": 46.03,
+        "p95-us": 149.9,
+        "p99-us": 209.7,
+        "requests/s": 16780.0,
+        "B/op": 148917.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20023,
+      "Metrics": {
+        "ns/op": 59705.0,
+        "latency-samples": 8192.0,
+        "p50-us": 46.31,
+        "p95-us": 150.6,
+        "p99-us": 217.5,
+        "requests/s": 16749.0,
+        "B/op": 148859.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20368,
+      "Metrics": {
+        "ns/op": 58965.0,
+        "latency-samples": 8192.0,
+        "p50-us": 45.82,
+        "p95-us": 152.9,
+        "p99-us": 213.3,
+        "requests/s": 16959.0,
+        "B/op": 148968.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20056,
+      "Metrics": {
+        "ns/op": 59185.0,
+        "latency-samples": 8192.0,
+        "p50-us": 45.9,
+        "p95-us": 148.1,
+        "p99-us": 218.3,
+        "requests/s": 16896.0,
+        "B/op": 148876.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/1-2",
+      "Iterations": 20306,
+      "Metrics": {
+        "ns/op": 59905.0,
+        "latency-samples": 8192.0,
+        "p50-us": 46.19,
+        "p95-us": 148.2,
+        "p99-us": 206.2,
+        "requests/s": 16693.0,
+        "B/op": 148866.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18709,
+      "Metrics": {
+        "ns/op": 64532.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.83,
+        "p95-us": 154.6,
+        "p99-us": 218.8,
+        "requests/s": 15496.0,
+        "B/op": 148924.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18544,
+      "Metrics": {
+        "ns/op": 64208.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.8,
+        "p95-us": 151.3,
+        "p99-us": 217.9,
+        "requests/s": 15574.0,
+        "B/op": 148775.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18667,
+      "Metrics": {
+        "ns/op": 64476.0,
+        "latency-samples": 8192.0,
+        "p50-us": 50.11,
+        "p95-us": 158.6,
+        "p99-us": 229.0,
+        "requests/s": 15510.0,
+        "B/op": 148808.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18802,
+      "Metrics": {
+        "ns/op": 63862.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.67,
+        "p95-us": 148.8,
+        "p99-us": 220.9,
+        "requests/s": 15659.0,
+        "B/op": 148772.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfilePublication/64-2",
+      "Iterations": 18703,
+      "Metrics": {
+        "ns/op": 65037.0,
+        "latency-samples": 8192.0,
+        "p50-us": 49.83,
+        "p95-us": 153.8,
+        "p99-us": 223.9,
+        "requests/s": 15376.0,
+        "B/op": 148845.0,
+        "allocs/op": 7.0
+      },
+      "Source": "publication-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 8383,
+      "Metrics": {
+        "ns/op": 135897.0,
+        "latency-samples": 8192.0,
+        "p50-us": 94.53,
+        "p95-us": 399.2,
+        "p99-us": 573.3,
+        "requests/s": 7359.0,
+        "B/op": 208379.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 9228,
+      "Metrics": {
+        "ns/op": 134966.0,
+        "latency-samples": 8192.0,
+        "p50-us": 95.22,
+        "p95-us": 384.7,
+        "p99-us": 536.8,
+        "requests/s": 7409.0,
+        "B/op": 208368.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 9100,
+      "Metrics": {
+        "ns/op": 137863.0,
+        "latency-samples": 8192.0,
+        "p50-us": 95.74,
+        "p95-us": 388.9,
+        "p99-us": 542.8,
+        "requests/s": 7254.0,
+        "B/op": 208354.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 8060,
+      "Metrics": {
+        "ns/op": 138025.0,
+        "latency-samples": 8060.0,
+        "p50-us": 95.81,
+        "p95-us": 394.3,
+        "p99-us": 572.5,
+        "requests/s": 7245.0,
+        "B/op": 208380.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileShardLifecycle-2",
+      "Iterations": 8508,
+      "Metrics": {
+        "ns/op": 136521.0,
+        "latency-samples": 8192.0,
+        "p50-us": 95.56,
+        "p95-us": 379.0,
+        "p99-us": 553.7,
+        "requests/s": 7325.0,
+        "B/op": 208354.0,
+        "allocs/op": 444.0
+      },
+      "Source": "shard-lifecycle-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 86,
+      "Metrics": {
+        "ns/op": 12850498.0,
+        "latency-samples": 86.0,
+        "p50-us": 12778.0,
+        "p95-us": 13437.0,
+        "p99-us": 13619.0,
+        "requests/s": 77.82,
+        "B/op": 33739.0,
+        "allocs/op": 269.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 86,
+      "Metrics": {
+        "ns/op": 12981384.0,
+        "latency-samples": 86.0,
+        "p50-us": 12939.0,
+        "p95-us": 13426.0,
+        "p99-us": 13811.0,
+        "requests/s": 77.03,
+        "B/op": 33597.0,
+        "allocs/op": 269.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 88,
+      "Metrics": {
+        "ns/op": 12959710.0,
+        "latency-samples": 88.0,
+        "p50-us": 12929.0,
+        "p95-us": 13317.0,
+        "p99-us": 13666.0,
+        "requests/s": 77.16,
+        "B/op": 33815.0,
+        "allocs/op": 268.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 88,
+      "Metrics": {
+        "ns/op": 13055306.0,
+        "latency-samples": 88.0,
+        "p50-us": 13024.0,
+        "p95-us": 13403.0,
+        "p99-us": 13533.0,
+        "requests/s": 76.6,
+        "B/op": 33625.0,
+        "allocs/op": 269.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/SlowStream-2",
+      "Iterations": 87,
+      "Metrics": {
+        "ns/op": 13079132.0,
+        "latency-samples": 87.0,
+        "p50-us": 13069.0,
+        "p95-us": 13490.0,
+        "p99-us": 13959.0,
+        "requests/s": 76.46,
+        "B/op": 33166.0,
+        "allocs/op": 268.0
+      },
+      "Source": "slow-stream-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2278,
+      "Metrics": {
+        "ns/op": 524462.0,
+        "B/op": 617376.0,
+        "allocs/op": 1625.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2343,
+      "Metrics": {
+        "ns/op": 511205.0,
+        "B/op": 589969.0,
+        "allocs/op": 1624.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2347,
+      "Metrics": {
+        "ns/op": 512652.0,
+        "B/op": 594606.0,
+        "allocs/op": 1624.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2275,
+      "Metrics": {
+        "ns/op": 509331.0,
+        "B/op": 589027.0,
+        "allocs/op": 1624.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkBuildSnapshot-2",
+      "Iterations": 2314,
+      "Metrics": {
+        "ns/op": 518213.0,
+        "B/op": 594197.0,
+        "allocs/op": 1624.0
+      },
+      "Source": "snapshot-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 180,
+      "Metrics": {
+        "ns/op": 6463393.0,
+        "latency-samples": 180.0,
+        "p50-us": 6263.0,
+        "p95-us": 8198.0,
+        "p99-us": 9904.0,
+        "requests/s": 154.7,
+        "B/op": 13292908.0,
+        "allocs/op": 24330.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 188,
+      "Metrics": {
+        "ns/op": 6332596.0,
+        "latency-samples": 188.0,
+        "p50-us": 6222.0,
+        "p95-us": 7493.0,
+        "p99-us": 9403.0,
+        "requests/s": 157.9,
+        "B/op": 13296597.0,
+        "allocs/op": 24330.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 186,
+      "Metrics": {
+        "ns/op": 6557382.0,
+        "latency-samples": 186.0,
+        "p50-us": 6457.0,
+        "p95-us": 7695.0,
+        "p99-us": 8654.0,
+        "requests/s": 152.5,
+        "B/op": 13182987.0,
+        "allocs/op": 24329.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 189,
+      "Metrics": {
+        "ns/op": 6586810.0,
+        "latency-samples": 189.0,
+        "p50-us": 6568.0,
+        "p95-us": 7631.0,
+        "p99-us": 8209.0,
+        "requests/s": 151.8,
+        "B/op": 13297061.0,
+        "allocs/op": 24330.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/0-2",
+      "Iterations": 182,
+      "Metrics": {
+        "ns/op": 6468565.0,
+        "latency-samples": 182.0,
+        "p50-us": 6430.0,
+        "p95-us": 7568.0,
+        "p99-us": 7918.0,
+        "requests/s": 154.6,
+        "B/op": 13236314.0,
+        "allocs/op": 24330.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 542,
+      "Metrics": {
+        "ns/op": 2212303.0,
+        "latency-samples": 542.0,
+        "p50-us": 2151.0,
+        "p95-us": 2694.0,
+        "p99-us": 3136.0,
+        "requests/s": 452.0,
+        "B/op": 4152730.0,
+        "allocs/op": 20820.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 538,
+      "Metrics": {
+        "ns/op": 2233687.0,
+        "latency-samples": 538.0,
+        "p50-us": 2150.0,
+        "p95-us": 2862.0,
+        "p99-us": 3300.0,
+        "requests/s": 447.7,
+        "B/op": 4152630.0,
+        "allocs/op": 20820.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 553,
+      "Metrics": {
+        "ns/op": 2328612.0,
+        "latency-samples": 553.0,
+        "p50-us": 2225.0,
+        "p95-us": 3071.0,
+        "p99-us": 3737.0,
+        "requests/s": 429.4,
+        "B/op": 4152624.0,
+        "allocs/op": 20820.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 524,
+      "Metrics": {
+        "ns/op": 2381303.0,
+        "latency-samples": 524.0,
+        "p50-us": 2290.0,
+        "p95-us": 3070.0,
+        "p99-us": 3753.0,
+        "requests/s": 419.9,
+        "B/op": 4152671.0,
+        "allocs/op": 20820.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/90-2",
+      "Iterations": 572,
+      "Metrics": {
+        "ns/op": 2216407.0,
+        "latency-samples": 572.0,
+        "p50-us": 2146.0,
+        "p95-us": 2779.0,
+        "p99-us": 3317.0,
+        "requests/s": 451.2,
+        "B/op": 4152635.0,
+        "allocs/op": 20820.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 1069,
+      "Metrics": {
+        "ns/op": 1094223.0,
+        "latency-samples": 1069.0,
+        "p50-us": 909.6,
+        "p95-us": 1835.0,
+        "p99-us": 2101.0,
+        "requests/s": 913.9,
+        "B/op": 1775386.0,
+        "allocs/op": 19900.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 1086,
+      "Metrics": {
+        "ns/op": 1079306.0,
+        "latency-samples": 1086.0,
+        "p50-us": 909.9,
+        "p95-us": 1798.0,
+        "p99-us": 2064.0,
+        "requests/s": 926.5,
+        "B/op": 1775500.0,
+        "allocs/op": 19900.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 1086,
+      "Metrics": {
+        "ns/op": 1164684.0,
+        "latency-samples": 1086.0,
+        "p50-us": 1045.0,
+        "p95-us": 1929.0,
+        "p99-us": 2285.0,
+        "requests/s": 858.6,
+        "B/op": 1775519.0,
+        "allocs/op": 19900.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 1014,
+      "Metrics": {
+        "ns/op": 1144464.0,
+        "latency-samples": 1014.0,
+        "p50-us": 1035.0,
+        "p95-us": 1891.0,
+        "p99-us": 2223.0,
+        "requests/s": 873.8,
+        "B/op": 1775405.0,
+        "allocs/op": 19900.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/99-2",
+      "Iterations": 1096,
+      "Metrics": {
+        "ns/op": 1161740.0,
+        "latency-samples": 1096.0,
+        "p50-us": 1052.0,
+        "p95-us": 1920.0,
+        "p99-us": 2305.0,
+        "requests/s": 860.8,
+        "B/op": 1775511.0,
+        "allocs/op": 19900.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 1150,
+      "Metrics": {
+        "ns/op": 993185.0,
+        "latency-samples": 1150.0,
+        "p50-us": 880.8,
+        "p95-us": 1654.0,
+        "p99-us": 2090.0,
+        "requests/s": 1007.0,
+        "B/op": 1530420.0,
+        "allocs/op": 19770.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 1239,
+      "Metrics": {
+        "ns/op": 957754.0,
+        "latency-samples": 1239.0,
+        "p50-us": 782.7,
+        "p95-us": 1639.0,
+        "p99-us": 2012.0,
+        "requests/s": 1044.0,
+        "B/op": 1530406.0,
+        "allocs/op": 19769.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 1269,
+      "Metrics": {
+        "ns/op": 964976.0,
+        "latency-samples": 1269.0,
+        "p50-us": 765.5,
+        "p95-us": 1691.0,
+        "p99-us": 2052.0,
+        "requests/s": 1036.0,
+        "B/op": 1530395.0,
+        "allocs/op": 19769.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 1226,
+      "Metrics": {
+        "ns/op": 958653.0,
+        "latency-samples": 1226.0,
+        "p50-us": 758.6,
+        "p95-us": 1701.0,
+        "p99-us": 2031.0,
+        "requests/s": 1043.0,
+        "B/op": 1530403.0,
+        "allocs/op": 19769.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/10000/100-2",
+      "Iterations": 1246,
+      "Metrics": {
+        "ns/op": 948151.0,
+        "latency-samples": 1246.0,
+        "p50-us": 779.6,
+        "p95-us": 1609.0,
+        "p99-us": 2002.0,
+        "requests/s": 1055.0,
+        "B/op": 1530401.0,
+        "allocs/op": 19769.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 92,
+      "Metrics": {
+        "ns/op": 12837846.0,
+        "latency-samples": 92.0,
+        "p50-us": 12541.0,
+        "p95-us": 15046.0,
+        "p99-us": 18553.0,
+        "requests/s": 77.89,
+        "B/op": 27055582.0,
+        "allocs/op": 204323.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 86,
+      "Metrics": {
+        "ns/op": 13960363.0,
+        "latency-samples": 86.0,
+        "p50-us": 13449.0,
+        "p95-us": 18853.0,
+        "p99-us": 24112.0,
+        "requests/s": 71.63,
+        "B/op": 27055566.0,
+        "allocs/op": 204323.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 78,
+      "Metrics": {
+        "ns/op": 13152841.0,
+        "latency-samples": 78.0,
+        "p50-us": 12777.0,
+        "p95-us": 16019.0,
+        "p99-us": 18021.0,
+        "requests/s": 76.03,
+        "B/op": 27055582.0,
+        "allocs/op": 204323.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 88,
+      "Metrics": {
+        "ns/op": 13631165.0,
+        "latency-samples": 88.0,
+        "p50-us": 13183.0,
+        "p95-us": 16768.0,
+        "p99-us": 19882.0,
+        "requests/s": 73.36,
+        "B/op": 26996030.0,
+        "allocs/op": 204323.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/0-2",
+      "Iterations": 93,
+      "Metrics": {
+        "ns/op": 13615186.0,
+        "latency-samples": 93.0,
+        "p50-us": 13161.0,
+        "p95-us": 17517.0,
+        "p99-us": 19578.0,
+        "requests/s": 73.45,
+        "B/op": 27055555.0,
+        "allocs/op": 204323.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 81,
+      "Metrics": {
+        "ns/op": 14795614.0,
+        "latency-samples": 81.0,
+        "p50-us": 14977.0,
+        "p95-us": 17860.0,
+        "p99-us": 19073.0,
+        "requests/s": 67.59,
+        "B/op": 27038695.0,
+        "allocs/op": 204252.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 81,
+      "Metrics": {
+        "ns/op": 13688657.0,
+        "latency-samples": 81.0,
+        "p50-us": 13373.0,
+        "p95-us": 16116.0,
+        "p99-us": 21780.0,
+        "requests/s": 73.05,
+        "B/op": 27038683.0,
+        "allocs/op": 204252.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 81,
+      "Metrics": {
+        "ns/op": 14261755.0,
+        "latency-samples": 81.0,
+        "p50-us": 14468.0,
+        "p95-us": 17573.0,
+        "p99-us": 20813.0,
+        "requests/s": 70.12,
+        "B/op": 27038678.0,
+        "allocs/op": 204252.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 79,
+      "Metrics": {
+        "ns/op": 14759283.0,
+        "latency-samples": 79.0,
+        "p50-us": 14613.0,
+        "p95-us": 18687.0,
+        "p99-us": 23137.0,
+        "requests/s": 67.75,
+        "B/op": 27038671.0,
+        "allocs/op": 204252.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/90-2",
+      "Iterations": 93,
+      "Metrics": {
+        "ns/op": 14523619.0,
+        "latency-samples": 93.0,
+        "p50-us": 14572.0,
+        "p95-us": 18672.0,
+        "p99-us": 21736.0,
+        "requests/s": 68.85,
+        "B/op": 26982341.0,
+        "allocs/op": 204252.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 100,
+      "Metrics": {
+        "ns/op": 10581050.0,
+        "latency-samples": 100.0,
+        "p50-us": 10500.0,
+        "p95-us": 15484.0,
+        "p99-us": 16536.0,
+        "requests/s": 94.51,
+        "B/op": 17828315.0,
+        "allocs/op": 200815.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 100,
+      "Metrics": {
+        "ns/op": 10306436.0,
+        "latency-samples": 100.0,
+        "p50-us": 10205.0,
+        "p95-us": 13123.0,
+        "p99-us": 15613.0,
+        "requests/s": 97.03,
+        "B/op": 17828356.0,
+        "allocs/op": 200816.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 100,
+      "Metrics": {
+        "ns/op": 10276527.0,
+        "latency-samples": 100.0,
+        "p50-us": 9747.0,
+        "p95-us": 15311.0,
+        "p99-us": 16864.0,
+        "requests/s": 97.31,
+        "B/op": 17816490.0,
+        "allocs/op": 200815.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 115,
+      "Metrics": {
+        "ns/op": 10455704.0,
+        "latency-samples": 115.0,
+        "p50-us": 9866.0,
+        "p95-us": 16061.0,
+        "p99-us": 18320.0,
+        "requests/s": 95.64,
+        "B/op": 17828341.0,
+        "allocs/op": 200815.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/99-2",
+      "Iterations": 100,
+      "Metrics": {
+        "ns/op": 10541277.0,
+        "latency-samples": 100.0,
+        "p50-us": 9651.0,
+        "p95-us": 15423.0,
+        "p99-us": 16532.0,
+        "requests/s": 94.87,
+        "B/op": 17828317.0,
+        "allocs/op": 200815.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 141,
+      "Metrics": {
+        "ns/op": 8511434.0,
+        "latency-samples": 141.0,
+        "p50-us": 8053.0,
+        "p95-us": 11383.0,
+        "p99-us": 12829.0,
+        "requests/s": 117.5,
+        "B/op": 15206587.0,
+        "allocs/op": 199769.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 139,
+      "Metrics": {
+        "ns/op": 9178060.0,
+        "latency-samples": 139.0,
+        "p50-us": 8663.0,
+        "p95-us": 13833.0,
+        "p99-us": 18874.0,
+        "requests/s": 109.0,
+        "B/op": 15206647.0,
+        "allocs/op": 199770.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 147,
+      "Metrics": {
+        "ns/op": 9711303.0,
+        "latency-samples": 147.0,
+        "p50-us": 9399.0,
+        "p95-us": 14274.0,
+        "p99-us": 18636.0,
+        "requests/s": 103.0,
+        "B/op": 15206702.0,
+        "allocs/op": 199770.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 130,
+      "Metrics": {
+        "ns/op": 9462633.0,
+        "latency-samples": 130.0,
+        "p50-us": 9151.0,
+        "p95-us": 14465.0,
+        "p99-us": 15944.0,
+        "requests/s": 105.7,
+        "B/op": 15206697.0,
+        "allocs/op": 199770.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileSyncPage/100000/100-2",
+      "Iterations": 139,
+      "Metrics": {
+        "ns/op": 9042838.0,
+        "latency-samples": 139.0,
+        "p50-us": 8934.0,
+        "p95-us": 13302.0,
+        "p99-us": 14264.0,
+        "requests/s": 110.6,
+        "B/op": 15206695.0,
+        "allocs/op": 199770.0
+      },
+      "Source": "sync-page-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 4,
+      "Metrics": {
+        "ns/op": 293463658.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 616771772.0,
+        "allocs/op": 4696064.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 4,
+      "Metrics": {
+        "ns/op": 292111287.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 615461488.0,
+        "allocs/op": 4696057.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 4,
+      "Metrics": {
+        "ns/op": 291387000.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 616770754.0,
+        "allocs/op": 4696052.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 4,
+      "Metrics": {
+        "ns/op": 289361086.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 616771420.0,
+        "allocs/op": 4696059.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkMemoryHistoryPageTransfer/100K-2",
+      "Iterations": 4,
+      "Metrics": {
+        "ns/op": 292437129.0,
+        "records/op": 100000.0,
+        "snapshot-bytes": 23666798.0,
+        "B/op": 616771966.0,
+        "allocs/op": 4696065.0
+      },
+      "Source": "sync-transfer-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2304436,
+      "Metrics": {
+        "ns/op": 493.1,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.551,
+        "p99-us": 0.873,
+        "requests/s": 2028188.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2442714,
+      "Metrics": {
+        "ns/op": 487.7,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.964,
+        "p99-us": 3.389,
+        "requests/s": 2050441.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2433482,
+      "Metrics": {
+        "ns/op": 495.0,
+        "latency-samples": 8192.0,
+        "p50-us": 0.339,
+        "p95-us": 0.808,
+        "p99-us": 1.433,
+        "requests/s": 2020051.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2453476,
+      "Metrics": {
+        "ns/op": 492.3,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.579,
+        "p99-us": 1.396,
+        "requests/s": 2031386.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileTelemetry-2",
+      "Iterations": 2403014,
+      "Metrics": {
+        "ns/op": 492.4,
+        "latency-samples": 8192.0,
+        "p50-us": 0.331,
+        "p95-us": 0.542,
+        "p99-us": 0.679,
+        "requests/s": 2030891.0,
+        "B/op": 640.0,
+        "allocs/op": 8.0
+      },
+      "Source": "telemetry-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2380,
+      "Metrics": {
+        "ns/op": 535240.0,
+        "latency-samples": 2380.0,
+        "p50-us": 508.1,
+        "p95-us": 708.1,
+        "p99-us": 864.1,
+        "requests/s": 1868.0,
+        "B/op": 28676.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2190,
+      "Metrics": {
+        "ns/op": 594585.0,
+        "latency-samples": 2190.0,
+        "p50-us": 571.0,
+        "p95-us": 762.2,
+        "p99-us": 930.3,
+        "requests/s": 1682.0,
+        "B/op": 28652.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2319,
+      "Metrics": {
+        "ns/op": 564288.0,
+        "latency-samples": 2319.0,
+        "p50-us": 539.9,
+        "p95-us": 727.8,
+        "p99-us": 919.4,
+        "requests/s": 1772.0,
+        "B/op": 28710.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2026,
+      "Metrics": {
+        "ns/op": 543847.0,
+        "latency-samples": 2026.0,
+        "p50-us": 510.4,
+        "p95-us": 730.3,
+        "p99-us": 921.9,
+        "requests/s": 1839.0,
+        "B/op": 28647.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 1995,
+      "Metrics": {
+        "ns/op": 534055.0,
+        "latency-samples": 1995.0,
+        "p50-us": 499.7,
+        "p95-us": 744.0,
+        "p99-us": 968.8,
+        "requests/s": 1872.0,
+        "B/op": 28667.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5589286.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5528.0,
+        "p95-us": 6369.0,
+        "p99-us": 6658.0,
+        "requests/s": 178.9,
+        "B/op": 635272.0,
+        "allocs/op": 3212.0
+      },
+      "Source": "workflow-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5505035.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5412.0,
+        "p95-us": 6341.0,
+        "p99-us": 6938.0,
+        "requests/s": 181.7,
+        "B/op": 634732.0,
+        "allocs/op": 3209.0
+      },
+      "Source": "workflow-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5392147.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5304.0,
+        "p95-us": 6254.0,
+        "p99-us": 6858.0,
+        "requests/s": 185.5,
+        "B/op": 634786.0,
+        "allocs/op": 3209.0
+      },
+      "Source": "workflow-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5377162.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5269.0,
+        "p95-us": 6139.0,
+        "p99-us": 6882.0,
+        "requests/s": 186.0,
+        "B/op": 634942.0,
+        "allocs/op": 3208.0
+      },
+      "Source": "workflow-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileWorkflow-2",
+      "Iterations": 256,
+      "Metrics": {
+        "ns/op": 5439474.0,
+        "failed-attempts/op": 2.0,
+        "latency-samples": 256.0,
+        "p50-us": 5326.0,
+        "p95-us": 6368.0,
+        "p99-us": 6810.0,
+        "requests/s": 183.8,
+        "B/op": 634786.0,
+        "allocs/op": 3209.0
+      },
+      "Source": "workflow-bench.jsonl"
+    }
+  ]
+}

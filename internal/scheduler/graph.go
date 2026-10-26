@@ -150,17 +150,6 @@ func (g *TaskGraph) Dependencies(nodeID string) []string {
 	return deps
 }
 
-// Dependents returns all direct dependents that rely on the given node.
-func (g *TaskGraph) Dependents(nodeID string) []string {
-	deps := make([]string, 0)
-	for _, e := range g.Edges {
-		if e.From == nodeID {
-			deps = append(deps, e.To)
-		}
-	}
-	return deps
-}
-
 // InDegree returns the number of prerequisites that must complete before this node can run.
 func (g *TaskGraph) InDegree(nodeID string) int {
 	count := 0
@@ -181,27 +170,6 @@ func (g *TaskGraph) OutDegree(nodeID string) int {
 		}
 	}
 	return count
-}
-
-// TransitiveDependents returns all downstream nodes reachable from nodeID.
-func (g *TaskGraph) TransitiveDependents(nodeID string) []string {
-	visited := make(map[string]bool)
-	var dfs func(curr string)
-	dfs = func(curr string) {
-		for _, dep := range g.Dependents(curr) {
-			if !visited[dep] {
-				visited[dep] = true
-				dfs(dep)
-			}
-		}
-	}
-	dfs(nodeID)
-	out := make([]string, 0, len(visited))
-	for id := range visited {
-		out = append(out, id)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // ReadyNodes returns all subtasks that are ready to run next (prerequisites are satisfied and not yet completed).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"runtime"
 	"sync/atomic"
@@ -108,6 +109,13 @@ func (d *dispatcherComponent) reservations() workpool.CapacityGate {
 }
 
 func (d *dispatcherComponent) schedulerNodes() []cluster.NodeStatus {
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		for _, node := range d.registry.All() {
+			if !node.Healthy {
+				scheduler.LogDecision("registry_filter", "unhealthy", node, "", 0, scheduler.ScoreFactors{})
+			}
+		}
+	}
 	nodes := d.registry.Active()
 	if d.shards != nil {
 		groups := d.shards.List()
@@ -143,7 +151,7 @@ func (d *dispatcherComponent) submitDispatch(taskID string, assignment scheduler
 	if d.pool == nil {
 		return errors.New("dispatch pool is unavailable")
 	}
-	return d.pool.Submit(taskCtx, dispatchJob{taskID: taskID, assignment: assignment})
+	return d.pool.TrySubmit(taskCtx, dispatchJob{taskID: taskID, assignment: assignment})
 }
 
 type dispatchSnapshot struct {

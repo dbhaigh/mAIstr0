@@ -416,7 +416,6 @@ func TestValidatedRPCCapabilityRequiresOperatorOptIn(t *testing.T) {
 					},
 				},
 				telemetry: &telemetryComponent{},
-				state:     &agentState{},
 				operatorCapabilities: map[string]engine.Capabilities{
 					"llamacpp": {ValidatedRPC: test.set},
 				},
@@ -465,7 +464,7 @@ func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/pairing/join" {
 			t.Errorf("pairing path = %q", r.URL.Path)
 		}
@@ -481,6 +480,8 @@ func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
 			ID: orchestrator.ID(), Role: "orchestrator", CertificatePEM: orchestrator.CertificatePEM(),
 		})
 	}))
+	server.TLS = orchestrator.ServerTLSConfig()
+	server.StartTLS()
 	defer server.Close()
 
 	agent := mustNewTestAgent(t, config.NodeConfig{
@@ -492,7 +493,7 @@ func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
 	if err := agent.InitializeIdentity(); err != nil {
 		t.Fatal(err)
 	}
-	requestBody, _ := json.Marshal(map[string]string{"address": server.URL, "pin": "123456"})
+	requestBody, _ := json.Marshal(map[string]string{"address": server.URL, "pin": "123456", "fingerprint": securityFingerprint(t, orchestrator)})
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(requestBody))
 	response := httptest.NewRecorder()
 	agent.handlePairingConnect(response, request)
@@ -511,7 +512,7 @@ func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
 	}
 }
 
-func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
+func TestFirstContactRequiresVerifiedFingerprintEvenOnSameSubnet(t *testing.T) {
 	orchestrator, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), "orchestrator-auto-test")
 	if err != nil {
 		t.Fatal(err)
@@ -557,11 +558,11 @@ func TestPairingConnectWithoutPINOnSameSubnet(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(requestBody))
 	response := httptest.NewRecorder()
 	agent.handlePairingConnect(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("auto-join without PIN returned %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "verified certificate fingerprint") {
+		t.Fatalf("first contact without fingerprint returned %d: %s", response.Code, response.Body.String())
 	}
-	if !agent.identity.IsTrustedID(orchestrator.ID()) || agent.getOrchestratorAddr() != server.URL {
-		t.Fatal("node did not trust and select the auto-joined orchestrator")
+	if agent.identity.IsTrustedID(orchestrator.ID()) {
+		t.Fatal("same-subnet discovery established trust without verification")
 	}
 }
 
@@ -642,7 +643,7 @@ func TestPairingStatusRequestsPINForUntrustedOrchestrator(t *testing.T) {
 	}
 }
 
-func TestPairingStatusOffersAutomaticJoinOnSameSubnet(t *testing.T) {
+func TestPairingStatusDoesNotOfferPINlessEnrollment(t *testing.T) {
 	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "node-same-subnet", OrchestratorAddr: "https://127.0.0.1:7450",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
@@ -654,8 +655,8 @@ func TestPairingStatusOffersAutomaticJoinOnSameSubnet(t *testing.T) {
 	response := httptest.NewRecorder()
 	agent.handlePairingStatus(response, httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil))
 	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `"auto_join_available":true`) {
-		t.Fatalf("pairing status did not report automatic same-subnet joining: %d: %s", response.Code, response.Body.String())
+		!strings.Contains(response.Body.String(), `"auto_join_available":false`) {
+		t.Fatalf("pairing status offered PINless enrollment: %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -732,7 +733,7 @@ func TestFormerOrchestratorWorkerJoinsNewLeader(t *testing.T) {
 		!strings.Contains(response.Body.String(), `"trusted":false`) {
 		t.Fatalf("former local pairing hid the new leader's pairing requirement: %s", response.Body.String())
 	}
-	body, err := json.Marshal(map[string]string{"address": server.URL, "pin": "123456"})
+	body, err := json.Marshal(map[string]string{"address": server.URL, "pin": "123456", "fingerprint": securityFingerprint(t, newLeader)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1160,7 +1161,7 @@ func TestModelPullUsesRequestedEngine(t *testing.T) {
 	first := &pullTestEngine{name: "first"}
 	target := &pullTestEngine{name: "target"}
 	agent := &Agent{
-		engineComponent:    &engineComponent{engines: []engine.Engine{first, target}, telemetry: &telemetryComponent{}, state: &agentState{}},
+		engineComponent:    &engineComponent{engines: []engine.Engine{first, target}, telemetry: &telemetryComponent{}},
 		telemetryComponent: &telemetryComponent{},
 		agentState:         &agentState{},
 	}
@@ -1180,7 +1181,7 @@ func TestModelPullUsesRequestedEngine(t *testing.T) {
 
 func TestModelPullRejectsUnknownRequestedEngine(t *testing.T) {
 	agent := &Agent{
-		engineComponent:    &engineComponent{engines: []engine.Engine{&pullTestEngine{name: "configured"}}, telemetry: &telemetryComponent{}, state: &agentState{}},
+		engineComponent:    &engineComponent{engines: []engine.Engine{&pullTestEngine{name: "configured"}}, telemetry: &telemetryComponent{}},
 		telemetryComponent: &telemetryComponent{},
 		agentState:         &agentState{},
 	}
@@ -1293,10 +1294,43 @@ func TestPairingInvitationRequiresLocalAcceptance(t *testing.T) {
 		t.Fatalf("invitation status exposed invalid state: %d: %s", statusResponse.Code, statusResponse.Body.String())
 	}
 
+	for _, test := range []struct {
+		name        string
+		fingerprint string
+		status      int
+	}{
+		{"missing anchor", "", http.StatusBadRequest},
+		{"malformed anchor", strings.Repeat("z", 64), http.StatusBadRequest},
+		{"wrong anchor", strings.Repeat("0", 64), http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]string{"fingerprint": test.fingerprint})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			agent.handlePairingInvitationAccept(response, httptest.NewRequest(http.MethodPost, "/api/pairing/invitation/accept", bytes.NewReader(payload)))
+			if response.Code != test.status || agent.identity.IsTrustedID(orchestrator.ID()) {
+				t.Fatalf("invalid acceptance = %d: %s", response.Code, response.Body.String())
+			}
+			if agent.orchestratorLink.pairingInvitationStatus(time.Now()) == nil {
+				t.Fatal("rejected acceptance discarded the pending invitation")
+			}
+		})
+	}
+	acceptPayload, err := json.Marshal(map[string]string{"fingerprint": securityFingerprint(t, orchestrator)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	acceptResponse := httptest.NewRecorder()
-	agent.handlePairingInvitationAccept(acceptResponse, httptest.NewRequest(http.MethodPost, "/api/pairing/invitation/accept", nil))
+	agent.handlePairingInvitationAccept(acceptResponse, httptest.NewRequest(http.MethodPost, "/api/pairing/invitation/accept", bytes.NewReader(acceptPayload)))
 	if acceptResponse.Code != http.StatusOK || !agent.identity.IsTrustedID(orchestrator.ID()) {
 		t.Fatalf("local acceptance returned %d: %s", acceptResponse.Code, acceptResponse.Body.String())
+	}
+	gone := httptest.NewRecorder()
+	agent.handlePairingInvitationAccept(gone, httptest.NewRequest(http.MethodPost, "/api/pairing/invitation/accept", bytes.NewReader(acceptPayload)))
+	if gone.Code != http.StatusGone {
+		t.Fatalf("consumed invitation returned %d: %s", gone.Code, gone.Body.String())
 	}
 }
 

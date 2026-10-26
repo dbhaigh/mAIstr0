@@ -3,21 +3,28 @@ package nodeagent
 import "context"
 
 func (c *executorComponent) beginActiveTask() func() {
-	c.state.mu.Lock()
-	c.state.activeTasks++
-	c.state.mu.Unlock()
+	c.activeMu.Lock()
+	c.activeTasks++
+	c.activeMu.Unlock()
 	return func() {
-		c.state.mu.Lock()
-		c.state.activeTasks--
-		c.state.mu.Unlock()
+		c.activeMu.Lock()
+		c.activeTasks--
+		c.activeMu.Unlock()
 	}
 }
 
 func (c *executorComponent) beginExecution(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	select {
 	case c.executionSlots <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		<-c.executionSlots
+		return nil, err
 	}
 	releaseActive := c.beginActiveTask()
 	return func() {
@@ -27,9 +34,9 @@ func (c *executorComponent) beginExecution(ctx context.Context) (func(), error) 
 }
 
 func (c *executorComponent) activeTaskCount() int {
-	c.state.mu.Lock()
-	defer c.state.mu.Unlock()
-	return c.state.activeTasks
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
+	return c.activeTasks
 }
 
 func (c *executorComponent) availableCapacity(maxConcurrent int) int {
@@ -38,8 +45,4 @@ func (c *executorComponent) availableCapacity(maxConcurrent int) int {
 		return 0
 	}
 	return maxConcurrent - active
-}
-
-func (a *Agent) activeTaskCount() int {
-	return a.executorComponent.activeTaskCount()
 }

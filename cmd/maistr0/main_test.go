@@ -70,6 +70,39 @@ func TestPrintNormalizedConfigRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestPrintNormalizedConfigRedactsPINAndURLCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.json")
+	const raw = `{"pairing_pin":"012345","engines":[{"name":"ollama","url":"https://private-user:private-password@example.test/v1?opaque=private-query#private-fragment","registry_url":"https://private-registry:private-key@example.test/models?opaque=private-metadata"}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"node", "both"} {
+		t.Run(role, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := printNormalizedConfig(&output, configPrintOptions{
+				role: role, nodeConfigPath: path, orchestratorFingerprint: strings.Repeat("a", 64),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{"012345", "private-user", "private-password", "private-query", "private-fragment", "private-registry", "private-key", "private-metadata"} {
+				if strings.Contains(output.String(), secret) {
+					t.Fatalf("normalized config exposed %q", secret)
+				}
+			}
+			if !strings.Contains(output.String(), strings.Repeat("a", 64)) || !strings.Contains(output.String(), "https://example.test/v1") {
+				t.Fatal("public fingerprint or useful endpoint path was removed")
+			}
+		})
+	}
+	original := config.NodeConfig{PairingPIN: "012345", Engines: []config.EngineConfig{{APIKey: "private-api-key", URL: "https://private-user:private-password@example.test"}}}
+	if _, err := redactNodeConfig(original); err != nil {
+		t.Fatal(err)
+	}
+	if original.Engines[0].APIKey != "private-api-key" || original.PairingPIN != "012345" {
+		t.Fatal("redaction changed executable configuration")
+	}
+}
+
 func TestStartupOrchestratorWinnerPrefersActiveCoordinatorInAutoMode(t *testing.T) {
 	candidate := discovery.Announcement{
 		Role: "candidate", ID: "new-node", PeerAddr: "https://new-node:7450", Score: 100,

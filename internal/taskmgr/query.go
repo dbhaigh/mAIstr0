@@ -132,6 +132,12 @@ func (m *Manager) Recent(limit int) []*Task {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.ensureRecentTasksLocked()
+	return m.recentTasksLocked(limit)
+}
+
+// ensureRecentTasksLocked rebuilds the shared history ordering under m.mu's write lock.
+func (m *Manager) ensureRecentTasksLocked() {
 	if !m.recentTasksValid {
 		m.recentTasks = make([]*Task, 0, len(m.tasks))
 		for _, task := range m.tasks {
@@ -145,7 +151,6 @@ func (m *Manager) Recent(limit int) []*Task {
 		})
 		m.recentTasksValid = true
 	}
-	return m.recentTasksLocked(limit)
 }
 
 func (m *Manager) recentTasksLocked(limit int) []*Task {

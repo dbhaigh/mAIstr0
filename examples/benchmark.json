@@ -1,0 +1,71 @@
+{
+  "timeout_ms": 120000,
+  "targets": [
+    {
+      "name": "engine-direct",
+      "url": "http://127.0.0.1:8080/v1/chat/completions",
+      "nodes": 1,
+      "engine": "REPLACE with engine version and build",
+      "hardware": ["REPLACE with CPU, GPU, RAM, OS and driver"],
+      "settings": "REPLACE with quantization, context window, threads and device settings; no secrets"
+    },
+    {
+      "name": "maistr0-single",
+      "url": "http://127.0.0.1:7450/router/v1/chat/completions",
+      "nodes": 1,
+      "engine": "REPLACE with the identical engine version and build",
+      "hardware": ["REPLACE with the identical engine host"],
+      "settings": "REPLACE with the identical engine settings; no secrets"
+    }
+  ],
+  "workloads": [
+    {
+      "name": "small-short",
+      "model": "REPLACE-small-model",
+      "model_revision": "REPLACE-model-hash",
+      "prompt_words": 32,
+      "output_tokens": 32,
+      "concurrency": 1,
+      "requests": 100,
+      "warmup": 3,
+      "stream": false,
+      "load_state": "warm"
+    },
+    {
+      "name": "small-long-concurrent-stream",
+      "model": "REPLACE-small-model",
+      "model_revision": "REPLACE-model-hash",
+      "prompt_words": 1024,
+      "output_tokens": 32,
+      "concurrency": 4,
+      "requests": 100,
+      "warmup": 3,
+      "stream": true,
+      "load_state": "warm"
+    },
+    {
+      "name": "large-short",
+      "model": "REPLACE-large-model",
+      "model_revision": "REPLACE-model-hash",
+      "prompt_words": 32,
+      "output_tokens": 32,
+      "concurrency": 1,
+      "requests": 100,
+      "warmup": 3,
+      "stream": false,
+      "load_state": "warm"
+    },
+    {
+      "name": "large-long-concurrent-stream",
+      "model": "REPLACE-large-model",
+      "model_revision": "REPLACE-model-hash",
+      "prompt_words": 1024,
+      "output_tokens": 32,
+      "concurrency": 4,
+      "requests": 100,
+      "warmup": 3,
+      "stream": true,
+      "load_state": "warm"
+    }
+  ]
+}

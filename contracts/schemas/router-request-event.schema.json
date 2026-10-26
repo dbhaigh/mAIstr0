@@ -7,7 +7,7 @@
   "properties": {
     "request_id": {"type": "string"},
     "attempt_id": {"type": "string"},
-    "phase": {"type": "string"},
+    "phase": {"type": "string", "description": "Open-ended phase code. Lifecycle adds accepted, scheduled, queued, dispatched, upstream_response, first_upstream_byte and exactly one completed/failed terminal event. Existing attempt_started/failed/succeeded, rejected and finished phases remain. Consumers must ignore unknown phases; bounded retention can omit earlier events."},
     "timestamp": {"type": "string", "format": "date-time"},
     "node_id": {"type": "string"},
     "model": {"type": "string"},

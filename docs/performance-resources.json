@@ -1,0 +1,153 @@
+{
+  "Samples": [
+    {
+      "Workload": "sync-transfer",
+      "Phase": "before",
+      "Trial": 0,
+      "TimedIterations": 20,
+      "WarmupIterations": 1,
+      "UserSeconds": 14.54,
+      "SystemSeconds": 1.33,
+      "CPUSecondsPerOperation": 0.7557142857142857,
+      "ElapsedSeconds": 10.53,
+      "PeakRSSKiB": 179288
+    },
+    {
+      "Workload": "memory-http",
+      "Phase": "before",
+      "Trial": 0,
+      "TimedIterations": 1000,
+      "WarmupIterations": 1,
+      "UserSeconds": 6.35,
+      "SystemSeconds": 1.63,
+      "CPUSecondsPerOperation": 0.007972027972027972,
+      "ElapsedSeconds": 5.09,
+      "PeakRSSKiB": 89936
+    },
+    {
+      "Workload": "sync-transfer",
+      "Phase": "after",
+      "Trial": 0,
+      "TimedIterations": 20,
+      "WarmupIterations": 1,
+      "UserSeconds": 7.96,
+      "SystemSeconds": 0.66,
+      "CPUSecondsPerOperation": 0.41047619047619044,
+      "ElapsedSeconds": 6.49,
+      "PeakRSSKiB": 180324
+    },
+    {
+      "Workload": "memory-http",
+      "Phase": "after",
+      "Trial": 0,
+      "TimedIterations": 1000,
+      "WarmupIterations": 1,
+      "UserSeconds": 4.88,
+      "SystemSeconds": 1.46,
+      "CPUSecondsPerOperation": 0.006333666333666333,
+      "ElapsedSeconds": 4.13,
+      "PeakRSSKiB": 51920
+    },
+    {
+      "Workload": "sync-transfer",
+      "Phase": "after",
+      "Trial": 1,
+      "TimedIterations": 20,
+      "WarmupIterations": 1,
+      "UserSeconds": 8.42,
+      "SystemSeconds": 0.77,
+      "CPUSecondsPerOperation": 0.4376190476190476,
+      "ElapsedSeconds": 9.93,
+      "PeakRSSKiB": 173740
+    },
+    {
+      "Workload": "memory-http",
+      "Phase": "after",
+      "Trial": 1,
+      "TimedIterations": 1000,
+      "WarmupIterations": 1,
+      "UserSeconds": 5.08,
+      "SystemSeconds": 1.58,
+      "CPUSecondsPerOperation": 0.006653346653346654,
+      "ElapsedSeconds": 4.33,
+      "PeakRSSKiB": 95232
+    },
+    {
+      "Workload": "sync-transfer",
+      "Phase": "before",
+      "Trial": 1,
+      "TimedIterations": 20,
+      "WarmupIterations": 1,
+      "UserSeconds": 14.71,
+      "SystemSeconds": 1.37,
+      "CPUSecondsPerOperation": 0.7657142857142858,
+      "ElapsedSeconds": 10.62,
+      "PeakRSSKiB": 189736
+    },
+    {
+      "Workload": "memory-http",
+      "Phase": "before",
+      "Trial": 1,
+      "TimedIterations": 1000,
+      "WarmupIterations": 1,
+      "UserSeconds": 6.31,
+      "SystemSeconds": 1.28,
+      "CPUSecondsPerOperation": 0.007582417582417582,
+      "ElapsedSeconds": 4.81,
+      "PeakRSSKiB": 52040
+    },
+    {
+      "Workload": "sync-transfer",
+      "Phase": "before",
+      "Trial": 2,
+      "TimedIterations": 20,
+      "WarmupIterations": 1,
+      "UserSeconds": 14.36,
+      "SystemSeconds": 1.36,
+      "CPUSecondsPerOperation": 0.7485714285714286,
+      "ElapsedSeconds": 13.36,
+      "PeakRSSKiB": 180032
+    },
+    {
+      "Workload": "memory-http",
+      "Phase": "before",
+      "Trial": 2,
+      "TimedIterations": 1000,
+      "WarmupIterations": 1,
+      "UserSeconds": 6.37,
+      "SystemSeconds": 1.57,
+      "CPUSecondsPerOperation": 0.007932067932067932,
+      "ElapsedSeconds": 5.08,
+      "PeakRSSKiB": 92644
+    },
+    {
+      "Workload": "sync-transfer",
+      "Phase": "after",
+      "Trial": 2,
+      "TimedIterations": 20,
+      "WarmupIterations": 1,
+      "UserSeconds": 7.96,
+      "SystemSeconds": 0.64,
+      "CPUSecondsPerOperation": 0.4095238095238095,
+      "ElapsedSeconds": 6.45,
+      "PeakRSSKiB": 180356
+    },
+    {
+      "Workload": "memory-http",
+      "Phase": "after",
+      "Trial": 2,
+      "TimedIterations": 1000,
+      "WarmupIterations": 1,
+      "UserSeconds": 4.74,
+      "SystemSeconds": 1.69,
+      "CPUSecondsPerOperation": 0.006423576423576423,
+      "ElapsedSeconds": 4.2,
+      "PeakRSSKiB": 87512
+    }
+  ],
+  "SchemaVersion": 1,
+  "Go": "go version go1.27.3 linux/amd64",
+  "GeneratedUTC": "2026-10-26T03:48:55.5588447Z",
+  "CPU": 2,
+  "Method": "Three paired, alternating-order trials of existing before/after binaries; no profiling instrumentation; /usr/bin/time includes process startup, benchmark setup, one warmup operation, measured operations, and cleanup. CPU normalized by measured plus warmup operations, not hardware inference time. Peak RSS is whole-process resident memory, not retained heap."
+}

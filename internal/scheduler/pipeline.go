@@ -40,13 +40,16 @@ func PlacePipeline(
 	for _, node := range nodes {
 		if !node.Healthy || node.ID == "" || node.Address == "" ||
 			node.MaxLayersItCanHost <= 0 || !supportsShardModel(node, model) {
+			LogDecision("pipeline", "node_or_model_ineligible", node, "", 0, ScoreFactors{})
 			continue
 		}
 		if _, exists := seen[node.ID]; exists {
+			LogDecision("pipeline", "duplicate_node", node, "", 0, ScoreFactors{})
 			continue
 		}
 		stageEngine, maxLayers := readyStageEngine(node, model.SourceModelID)
 		if stageEngine == "" || maxLayers <= 0 {
+			LogDecision("pipeline", "stage_engine_unready", node, "", 0, ScoreFactors{})
 			continue
 		}
 		maxLayers = min(maxLayers, node.MaxLayersItCanHost)
@@ -54,6 +57,9 @@ func PlacePipeline(
 		candidates = append(candidates, pipelineCandidate{
 			node: node, maxLayers: maxLayers, stageEngine: stageEngine,
 		})
+		diagnosticNode := node
+		diagnosticNode.MaxLayersItCanHost = maxLayers
+		LogDecision("pipeline", "eligible", diagnosticNode, "", node.FastScore, ScoreFactors{})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].maxLayers != candidates[j].maxLayers {
@@ -79,6 +85,7 @@ func PlacePipeline(
 		}
 	}
 	if len(selected) < 2 || totalCapacity < model.TotalLayers {
+		LogDecision("pipeline", "incomplete_placement", cluster.NodeStatus{}, "", 0, ScoreFactors{})
 		return config.PipelinePlan{}, ErrNoPipelinePlacement
 	}
 
@@ -88,6 +95,9 @@ func PlacePipeline(
 	}
 	layer := 0
 	for i, candidate := range selected {
+		diagnosticNode := candidate.node
+		diagnosticNode.MaxLayersItCanHost = candidate.maxLayers
+		LogDecision("pipeline", "selected", diagnosticNode, "", candidate.node.FastScore, ScoreFactors{})
 		remaining := model.TotalLayers - layer
 		remainingCapacity := 0
 		for _, next := range selected[i+1:] {

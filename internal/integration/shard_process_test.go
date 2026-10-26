@@ -23,6 +23,9 @@ import (
 )
 
 func TestManagedShardProcessLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fake-process lifecycle is covered by full qualification")
+	}
 	binaries := buildShardFakes(t)
 	for _, mode := range []shard.Mode{shard.ModeLlamaCPPRPC, shard.ModeVLLMMP} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -34,6 +37,8 @@ func TestManagedShardProcessLifecycle(t *testing.T) {
 			baseURL := "http://" + address
 			client := &http.Client{Timeout: 15 * time.Second}
 			nodes := newShardFixtureNodes(t, mode, binaries)
+			// Stop the producer before fixture cleanup, including assertion failures.
+			t.Cleanup(func() { process.stop(t) })
 			nodeStatuses := make([]cluster.NodeStatus, len(nodes))
 			for i, node := range nodes {
 				nodeStatuses[i] = cluster.NodeStatus{

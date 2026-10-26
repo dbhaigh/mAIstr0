@@ -6,6 +6,30 @@ in another language.
 
 ## Contract sources
 
+### Security migration
+
+New enrollment requires a valid one-use PIN on every subnet and a verified
+server certificate SHA-256 fingerprint (64 hex characters, complete DER leaf).
+Discovery addresses and IDs are not trust anchors. Send `fingerprint` on
+`POST /api/pairing/connect`, or configure `orchestrator_fingerprint`; existing
+stored pins reconnect without a new anchor. A discovery invitation requires
+the destination node fingerprint. Local invitation acceptance now requires
+JSON `{"fingerprint":"<independently verified orchestrator SHA-256>"}`; wrong
+anchors return 403 without discarding pending state. Both enrollment directions
+bind advertised certificates to the actual TLS leaf and refuse redirects.
+The coordinator's roster entry cannot override that leaf; invalid roster
+certificates are rejected before any trust writes. Disk failures can still
+leave partially persisted enrollment; trust storage is not transactional.
+
+Pairing status adds the public `fingerprint`; remote TLS status omits PIN and
+expiry. `auto_join_available` remains present but false. Peer executable updates
+are disabled by default and require `--allow-peer-updates`; the legacy disable
+flag overrides it. Public engine URLs omit userinfo/query/fragment, and inventory
+errors are generic. Unchanged redacted endpoint saves preserve credentials.
+Protected configuration is the credential-editing surface. See
+[security migration](../docs/pairing-and-security.md#migration) and the tested
+[missing-fingerprint fixture](./fixtures/security/invitation-requires-fingerprint.json).
+
 Version 0.0.24.1 adds `POST /api/shards/{id}/members` with the
 `shard-membership.schema.json` request and existing shard-group response.
 It retains the model head, drains inference and reloads placement; it is not
@@ -39,6 +63,26 @@ manually upgraded to a release containing this updater.
   both managed sharding modes, create/list/get/delete, and degraded/failed
   snapshots. Each response includes its HTTP status and schema where it has
   a body. A successful delete is `204` with no body.
+
+## Dispatch admission and request lifetime
+
+Task creation, node-local `POST /submit` (and standalone `POST /api/tasks`),
+and task resume reject saturated or closed dispatch queues with HTTP `503`
+using the existing plain-text error format. There are no new configuration
+keys, schema fields, buckets, or key encodings. Existing successful responses
+are unchanged. A caller already canceled before task persistence receives
+`409`, with no task created.
+
+Admission follows persistence and is not atomic across subtasks. A `503`
+message identifies the persisted/resumed task; rejected subtasks are recorded
+as failed. Previously accepted subtasks may already be running and continue
+independently of the creating HTTP request. Inspect the identified task before
+retrying creation; a new creation is not an idempotent retry. Resume only after
+the task has stopped, preserving completed results and attempt history.
+Synchronous workflow calls cancel their task if admission or their wait fails.
+The bounded queue sizes and dispatch/execution concurrency limits are unchanged.
+See [the overload fixture](./fixtures/concurrency/task-create-overload.json)
+and [resource ownership](../docs/concurrency-ownership.md).
 
 ## Managed shard groups
 

@@ -10,6 +10,9 @@ import (
 // ErrClosed is returned when a submission observes that the pool has closed.
 var ErrClosed = errors.New("workpool: pool is closed")
 
+// ErrFull is returned by TrySubmit when no queue slot is immediately available.
+var ErrFull = errors.New("workpool: queue is full")
+
 // CapacityTarget identifies a node that may accept a unit of work. Pass one
 // target to pin a reservation to a node, or multiple eligible targets for
 // automatic routing.
@@ -64,6 +67,8 @@ type Pool[J any] struct {
 	jobs                      chan job[J]
 	handle                    func(context.Context, J)
 	propagateSubmitterContext bool
+	// submissions lets Close drain queued references after all submitters leave.
+	submissions sync.RWMutex
 	// closeOnce serializes pool shutdown; it is not held while workers finish.
 	closeOnce sync.Once
 	workers   sync.WaitGroup
@@ -105,9 +110,21 @@ func NewWithOptions[J any](workers, queueCap int, handle func(context.Context, J
 }
 
 func (p *Pool[J]) Submit(ctx context.Context, value J) error {
+	return p.submit(ctx, value, true)
+}
+
+// TrySubmit never waits for queue space. Acceptance and cancellation semantics
+// match Submit; a submission racing Close may be accepted and then abandoned.
+func (p *Pool[J]) TrySubmit(ctx context.Context, value J) error {
+	return p.submit(ctx, value, false)
+}
+
+func (p *Pool[J]) submit(ctx context.Context, value J, wait bool) error {
 	if ctx == nil {
 		return errors.New("workpool: submit context cannot be nil")
 	}
+	p.submissions.RLock()
+	defer p.submissions.RUnlock()
 	if p.ctx.Err() != nil {
 		return ErrClosed
 	}
@@ -115,6 +132,18 @@ func (p *Pool[J]) Submit(ctx context.Context, value J) error {
 		return err
 	}
 
+	if !wait {
+		select {
+		case <-p.ctx.Done():
+			return ErrClosed
+		case <-ctx.Done():
+			return ctx.Err()
+		case p.jobs <- job[J]{ctx: ctx, value: value}:
+			return nil
+		default:
+			return ErrFull
+		}
+	}
 	select {
 	case <-p.ctx.Done():
 		return ErrClosed
@@ -145,6 +174,9 @@ func (p *Pool[J]) run(next job[J]) {
 	var stopSubmitter func() bool
 	if p.propagateSubmitterContext {
 		stopSubmitter = context.AfterFunc(next.ctx, cancel)
+		if next.ctx.Err() != nil {
+			cancel()
+		}
 	}
 	defer func() {
 		if stopSubmitter != nil {
@@ -158,8 +190,19 @@ func (p *Pool[J]) run(next job[J]) {
 }
 
 func (p *Pool[J]) Close() {
-	p.closeOnce.Do(p.cancel)
-	p.workers.Wait()
+	p.closeOnce.Do(func() {
+		p.cancel()
+		p.workers.Wait()
+		p.submissions.Lock()
+		defer p.submissions.Unlock()
+		for {
+			select {
+			case <-p.jobs:
+			default:
+				return
+			}
+		}
+	})
 }
 
 func (p *Pool[J]) QueueDepth() int {

@@ -825,7 +825,7 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
-	request.TLS = &tls.ConnectionState{}
+	request.TLS = trustTLS(t, node)
 	response := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -843,7 +843,7 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 	}
 
 	replay := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
-	replay.TLS = &tls.ConnectionState{}
+	replay.TLS = trustTLS(t, node)
 	replayResponse := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(replayResponse, replay)
 	if replayResponse.Code != http.StatusUnauthorized {
@@ -880,7 +880,7 @@ func TestPairingJoinRejectsWrongPINFromRemotePeer(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
 	request.RemoteAddr = "203.0.113.10:1234"
-	request.TLS = &tls.ConnectionState{}
+	request.TLS = trustTLS(t, node)
 	response := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(response, request)
 
@@ -892,7 +892,7 @@ func TestPairingJoinRejectsWrongPINFromRemotePeer(t *testing.T) {
 	}
 }
 
-func TestAutoJoinOnSameSubnetWithoutPIN(t *testing.T) {
+func TestSameSubnetWithoutPINIsRejected(t *testing.T) {
 	srv := newTestServer(t)
 	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
@@ -915,15 +915,15 @@ func TestAutoJoinOnSameSubnetWithoutPIN(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
-	request.TLS = &tls.ConnectionState{}
+	request.TLS = trustTLS(t, node)
 	request.RemoteAddr = "127.0.0.1:54321" // loopback is on the same subnet
 	response := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("auto-join on same subnet returned %d: %s", response.Code, response.Body.String())
 	}
-	if !identity.IsTrustedID(node.ID()) {
-		t.Fatal("node certificate was not pinned by orchestrator")
+	if identity.IsTrustedID(node.ID()) {
+		t.Fatal("same-subnet discovery bypassed PIN authentication")
 	}
 
 	// The active pairing PIN must remain untouched so off-subnet nodes can still use it
@@ -932,7 +932,7 @@ func TestAutoJoinOnSameSubnetWithoutPIN(t *testing.T) {
 	}
 }
 
-func TestAutoJoinOnSameSubnetWithInvalidPIN(t *testing.T) {
+func TestSameSubnetWithInvalidPINIsRejected(t *testing.T) {
 	srv := newTestServer(t)
 	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
@@ -955,15 +955,15 @@ func TestAutoJoinOnSameSubnetWithInvalidPIN(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
-	request.TLS = &tls.ConnectionState{}
+	request.TLS = trustTLS(t, node)
 	request.RemoteAddr = "127.0.0.1:54321" // loopback is on the same subnet
 	response := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("auto-join with wrong PIN on same subnet returned %d: %s", response.Code, response.Body.String())
 	}
-	if !identity.IsTrustedID(node.ID()) {
-		t.Fatal("node certificate was not pinned by orchestrator")
+	if identity.IsTrustedID(node.ID()) {
+		t.Fatal("same-subnet discovery bypassed PIN authentication")
 	}
 
 	// Active PIN must still be valid
@@ -997,7 +997,7 @@ func TestPairingFromDifferentSubnetRequiresPIN(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqNoPIN := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(bodyNoPIN))
-	reqNoPIN.TLS = &tls.ConnectionState{}
+	reqNoPIN.TLS = trustTLS(t, node)
 	reqNoPIN.RemoteAddr = "192.0.2.1:54321"
 	respNoPIN := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(respNoPIN, reqNoPIN)
@@ -1013,7 +1013,7 @@ func TestPairingFromDifferentSubnetRequiresPIN(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqWithPIN := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(bodyWithPIN))
-	reqWithPIN.TLS = &tls.ConnectionState{}
+	reqWithPIN.TLS = trustTLS(t, node)
 	reqWithPIN.RemoteAddr = "192.0.2.1:54321"
 	respWithPIN := httptest.NewRecorder()
 	var pairingLogs bytes.Buffer
@@ -2142,9 +2142,9 @@ func TestDispatchRetryClassificationExcludesClientErrors(t *testing.T) {
 		{http.StatusUnauthorized, "", false, "client_error"},
 		{http.StatusNotFound, "model not found", true, "stale_model"},
 	} {
-		class, retryable := classifyDispatchStatus(test.status, []byte(test.body))
+		class, retryable := classifyUpstreamStatus(test.status, []byte(test.body))
 		if retryable != test.retryable || class != test.class {
-			t.Errorf("classifyDispatchStatus(%d, %q) = (%q, %t), want (%q, %t)",
+			t.Errorf("classifyUpstreamStatus(%d, %q) = (%q, %t), want (%q, %t)",
 				test.status, test.body, class, retryable, test.class, test.retryable)
 		}
 

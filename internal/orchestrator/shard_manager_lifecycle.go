@@ -139,7 +139,15 @@ func (m *ShardManager) startGroup(ctx context.Context, id string, request Create
 			return m.failCreate(id, fmt.Errorf("start %s engine %s on node %s: %w", member.Role, member.EngineID, member.NodeID, startErr))
 		}
 		if !strings.EqualFold(status.State, "ready") {
-			return m.failCreate(id, fmt.Errorf("managed engine %s on node %s did not report ready", member.EngineID, member.NodeID))
+			cause := fmt.Errorf("managed engine %s on node %s did not report ready", member.EngineID, member.NodeID)
+			// The supervisor accepted the start, so its process may still be running or
+			// auto-restarting; mark it started so failure teardown stops it.
+			if err := m.mutate(id, func(current *ShardGroup) {
+				current.Members[index].Started = true
+			}); err != nil {
+				return m.failCreate(id, errors.Join(cause, err))
+			}
+			return m.failCreate(id, cause)
 		}
 		if err := m.mutate(id, func(current *ShardGroup) {
 			current.Members[index].Started = true

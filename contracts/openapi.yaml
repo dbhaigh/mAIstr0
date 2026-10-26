@@ -206,7 +206,11 @@ paths:
       responses: {"200": {description: List known peers}}
   /submit:
     post:
-      responses: {"200": {description: Submit work to the orchestrator}}
+      responses:
+        "200": {description: Submit work to the orchestrator}
+        "202": {description: Node accepted peer-dispatched work}
+        "409": {description: Caller canceled before task persistence}
+        "503": {description: Dispatch queue full or unavailable; a persisted task ID is included in the plain-text error}
   /tasks:
     get:
       description: >
@@ -216,7 +220,10 @@ paths:
         "200": {description: List tasks or task-sync data}
         "204": {description: No task changes for a protocol v3 sync request}
     post:
-      responses: {"200": {description: Create a task}}
+      responses:
+        "200": {description: Create a task}
+        "409": {description: Caller canceled before task persistence}
+        "503": {description: No eligible node, or dispatch admission failed; persisted tasks are identified in the plain-text error and may have partially accepted work}
   /tasks/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -282,41 +289,76 @@ paths:
               schema: {$ref: "#/components/schemas/ClusterHealth"}
   /api/pairing/join:
     post:
-      responses: {"200": {description: Join a cluster}}
+      description: >-
+        Enroll with a valid one-use PIN on every subnet. The claimed certificate
+        and identity must match the client TLS leaf. Callers must authenticate
+        first-contact server TLS using an independently verified SHA-256 fingerprint.
+      responses:
+        "200": {description: Join a cluster}
+        "401": {description: Missing, expired, reused, or invalid PIN}
+        "403": {description: Missing client TLS proof or certificate substitution}
   /api/pairing/status:
     get:
-      responses: {"200": {description: Get pairing status}}
+      responses:
+        "200":
+          description: >-
+            Pairing status includes the public 64-hex certificate fingerprint.
+            PIN and expiry are visible only on the local plaintext listener.
+            Node auto_join_available is retained for compatibility and always false.
   /api/pairing/pin:
     post:
       responses: {"200": {description: Regenerate the pairing PIN}}
   /api/pairing/connect:
     post:
-      description: Connect this node to an orchestrator. When orchestrator_id is supplied, it must identify a currently discovered orchestrator at the supplied HTTPS address.
+      description: >-
+        Connect this node to an orchestrator using a one-use PIN. New or rotated
+        certificates require an independently verified fingerprint (or the
+        configured bootstrap orchestrator_fingerprint); existing pins reconnect
+        without reusing another leader's configured bootstrap anchor. Rotation
+        of an already selected pinned identity requires explicit fingerprint input.
+        When orchestrator_id is supplied it must identify a currently discovered
+        orchestrator at the supplied HTTPS address. Discovery is not authentication.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [address]
+              required: [address, pin]
               properties:
                 address: {type: string, format: uri, description: Orchestrator HTTPS address}
-                pin: {type: string, description: Optional one-use PIN for cross-subnet pairing}
+                pin: {type: string, pattern: '^[0-9]{6}$', description: One-use PIN required on every subnet}
+                fingerprint: {type: string, pattern: '^[a-fA-F0-9]{64}$', description: Out-of-band verified certificate SHA-256 for first contact or rotation}
                 orchestrator_id: {type: string, description: Stable identity of the selected discovered orchestrator}
       responses:
         "200": {description: Connected to the orchestrator}
+        "400": {description: Invalid input or fingerprint}
         "409": {description: Selected orchestrator is no longer discovered}
   /api/pairing/roster:
     get:
       responses: {"200": {description: Get the pairing roster}}
   /api/pairing/invitation:
     get:
-      responses: {"200": {description: Get invitation status}}
+      responses: {"200": {description: Get invitation status including the offered public fingerprint; it is not an authenticated trust anchor}}
     post:
-      responses: {"200": {description: Create a pairing invitation}}
+      responses: {"202": {description: Invitation pending local out-of-band fingerprint confirmation}}
   /api/pairing/invitation/accept:
     post:
-      responses: {"200": {description: Accept an invitation}}
+      description: Local operator confirmation; never auto-copy the unverified offered fingerprint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fingerprint]
+              properties:
+                fingerprint: {type: string, pattern: '^[a-fA-F0-9]{64}$', description: Independently verified orchestrator certificate SHA-256}
+      responses:
+        "200": {description: Accepted and paired}
+        "400": {description: Missing or malformed verified fingerprint}
+        "403": {description: Fingerprint does not match the invitation; pending state is retained}
+        "410": {description: Invitation expired or already consumed}
   /api/pairing/invitation/reject:
     post:
       responses: {"200": {description: Reject an invitation}}
@@ -880,6 +922,16 @@ paths:
     parameters:
       - $ref: "#/components/parameters/ID"
     post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pin, fingerprint]
+              properties:
+                pin: {type: string, pattern: '^[0-9]{6}$'}
+                fingerprint: {type: string, pattern: '^[a-fA-F0-9]{64}$', description: Independently verified destination node certificate SHA-256}
       responses: {"200": {description: Invite a discovered instance}}
   /api/events:
     get:
@@ -917,6 +969,12 @@ paths:
         "503": {description: No complete placement or capacity is available}
   /api/router/requests:
     get:
+      description: >-
+        Bounded prompt-free lifecycle and attempt history correlated by generated
+        request_id and attempt_id. Additive phases include accepted, scheduled,
+        queued, dispatched, upstream_response, first_upstream_byte and completed
+        or failed. Consumers must ignore unknown phases. Earlier events can be
+        evicted; absence is not a zero measurement or proof of nonexecution.
       responses:
         "200":
           description: List recent prompt-free routing events and per-node/model circuit-breaker states
@@ -979,7 +1037,8 @@ paths:
         "202": {description: Task accepted}
         "400": {description: Invalid task request}
         "502": {description: Planning model failed to produce a valid plan}
-        "503": {description: No healthy node can accept the task}
+        "409": {description: Caller canceled before task persistence}
+        "503": {description: No eligible node, or dispatch admission failed; persisted tasks are identified in the plain-text error and may have partially accepted work}
   /api/tasks/resumable:
     get:
       responses: {"200": {description: List resumable tasks}}
@@ -1024,7 +1083,10 @@ paths:
     parameters:
       - $ref: "#/components/parameters/ID"
     post:
-      responses: {"200": {description: Resume a task}}
+      responses:
+        "200": {description: Resume a task}
+        "409": {description: Task is not failed or cancelled and cannot be resumed}
+        "503": {description: Task resumed but dispatch queue full or unavailable; rejected subtasks are recorded as failed}
   /api/tasks/{id}/checkpoints:
     parameters:
       - $ref: "#/components/parameters/ID"

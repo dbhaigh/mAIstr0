@@ -425,13 +425,6 @@ func SelfScore(hw hardware.Info) float64 {
 	return CapabilityScore(NodeStatus{Hardware: hw, FastScore: FastScore(hw), Healthy: true})
 }
 
-// MostCapableNode returns the healthiest candidate with the highest capability
-// score. The node that wins this election is the default coordinator when a
-// cluster has multiple potential orchestrators.
-func (r *Registry) MostCapableNode() (NodeStatus, bool) {
-	return r.Leader()
-}
-
 // Leader returns the currently elected cluster leader, if any healthy node exists.
 func (r *Registry) Leader() (NodeStatus, bool) {
 	for _, n := range r.All() {

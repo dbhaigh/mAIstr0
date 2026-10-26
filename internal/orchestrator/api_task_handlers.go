@@ -348,16 +348,26 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	resumed, err := s.tasks.ResumeTaskChecked(id)
 	if err != nil {
+		if errors.Is(err, taskmgr.ErrNotResumable) {
+			writeError(w, apperr.ConflictError(errors.New("task is not resumable")))
+			return
+		}
 		writeError(w, apperr.InternalError(fmt.Errorf("could not resume task: %w", err)))
 		return
 	}
+	var admissionErr error
 	for _, subtask := range resumed.Subtasks {
 		if subtask.Status == taskmgr.StatusPending {
 			if err := s.submitDispatch(resumed.ID, subtask.Assignment); err != nil {
 				logging.Errorf("orchestrator", "orchestrator: could not queue resumed subtask %s: %v", subtask.Subtask.ID, err)
 				s.tasks.CompleteSubtask(resumed.ID, subtask.Subtask.ID, "", err)
+				admissionErr = errors.Join(admissionErr, err)
 			}
 		}
+	}
+	if admissionErr != nil {
+		writeError(w, apperr.UnavailableError(fmt.Errorf("task %s was resumed but dispatch admission failed: %w", resumed.ID, admissionErr)))
+		return
 	}
 	writeJSON(w, http.StatusOK, resumed)
 }

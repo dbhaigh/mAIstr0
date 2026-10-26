@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/workpool"
 )
 
@@ -60,6 +62,7 @@ func (g *dispatchCapacityGate) Reserve(ctx context.Context, candidates []workpoo
 		for _, candidate := range candidates {
 			status, exists := g.registry.Get(candidate.NodeID)
 			if !exists || !status.Healthy || status.Address != candidate.Address {
+				scheduler.LogDecision("reservation", "node_unavailable", status, "", 0, scheduler.ScoreFactors{})
 				continue
 			}
 			limit := status.MaxConcurrentTasks
@@ -71,10 +74,14 @@ func (g *dispatchCapacityGate) Reserve(ctx context.Context, candidates []workpoo
 				return g.dispatchCapacity(ctx, nodeGate, candidate.NodeID, candidate.Address)
 			})
 			if !healthy {
+				scheduler.LogDecision("reservation", "refresh_unavailable", status, "", 0, scheduler.ScoreFactors{})
 				continue
 			}
 			healthyCandidates++
 			if acquired {
+				if len(g.slots) == cap(g.slots) {
+					logNodeCapacityDecision("reservation", "global_capacity_wait", status, nodeGate)
+				}
 				select {
 				case g.slots <- struct{}{}:
 					if err := ctx.Err(); err != nil {
@@ -82,6 +89,7 @@ func (g *dispatchCapacityGate) Reserve(ctx context.Context, candidates []workpoo
 						<-g.slots
 						return nil, err
 					}
+					logNodeCapacityDecision("reservation", "reserved", status, nodeGate)
 					return &dispatchCapacityReservation{
 						target: candidate, nodeGate: nodeGate, slots: g.slots,
 					}, nil
@@ -90,6 +98,7 @@ func (g *dispatchCapacityGate) Reserve(ctx context.Context, candidates []workpoo
 					return nil, ctx.Err()
 				}
 			}
+			logNodeCapacityDecision("reservation", "node_capacity_wait", status, nodeGate)
 			if changed == nil {
 				changed = signal
 			}
@@ -107,6 +116,33 @@ func (g *dispatchCapacityGate) Reserve(ctx context.Context, candidates []workpoo
 		case <-ticker.C:
 		}
 	}
+}
+
+func (g *dispatchCapacityGate) logCapacityTargets(stage, reason string, targets []workpool.CapacityTarget) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	for _, target := range targets {
+		status, ok := g.registry.Get(target.NodeID)
+		if !ok {
+			status.ID = target.NodeID
+		}
+		g.nodeGateMu.Lock()
+		nodeGate := g.nodeGates[target.NodeID]
+		g.nodeGateMu.Unlock()
+		logNodeCapacityDecision(stage, reason, status, nodeGate)
+	}
+}
+
+func logNodeCapacityDecision(stage, reason string, status cluster.NodeStatus, gate *nodeDispatchGate) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	if gate != nil {
+		status.ActiveTasks, status.MaxConcurrentTasks = gate.occupancy()
+		status.AvailableCapacity = max(0, status.MaxConcurrentTasks-status.ActiveTasks)
+	}
+	scheduler.LogDecision(stage, reason, status, "", 0, scheduler.ScoreFactors{})
 }
 
 func (g *dispatchCapacityGate) Active() int {
@@ -158,6 +194,7 @@ func (g *dispatchCapacityGate) dispatchCapacity(
 		if time.Since(status.LastSeen) <= nodeCapacityFreshnessWindow {
 			break
 		}
+		scheduler.LogDecision("reservation", "stale_capacity_refresh", status, "", 0, scheduler.ScoreFactors{})
 
 		done, owner := nodeGate.beginRefresh()
 		if !owner {

@@ -139,8 +139,6 @@ func (c *engineComponent) enabledModels() []engine.Model {
 
 func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 	engines := c.engineSnapshot()
-	disabled := c.state.disabledModelSnapshot()
-	defaultModel := c.state.defaultModelName()
 	models := make([]ModelState, 0)
 	statuses := make([]engine.Status, 0, len(engines))
 	for _, eng := range engines {
@@ -152,9 +150,9 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 		listed, err := eng.ListModels()
 		status.LastCheckedAt = time.Now()
 		if err != nil {
-			logging.Errorf("nodeagent", "nodeagent: list models for engine %s failed: %v", eng.Name(), err)
+			logging.Errorf("nodeagent", "nodeagent: list models for engine %s failed (error type %T)", eng.Name(), err)
 			status.InventoryState = engine.ModelInventoryError
-			status.LastError = err.Error()
+			status.LastError = "model inventory request failed; check engine health and configuration"
 			statuses = append(statuses, status)
 			continue
 		}
@@ -174,7 +172,7 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 			capabilities, probeErr := capabilityProber.ProbeCapabilities(ctx)
 			cancel()
 			if probeErr != nil {
-				status.CapabilitiesError = probeErr.Error()
+				status.CapabilitiesError = "engine capability probe failed; check engine health and configuration"
 			} else {
 				status.Capabilities = engine.MergeCapabilities(status.Capabilities, capabilities)
 			}
@@ -192,7 +190,7 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 			capabilities, probeErr := capabilityProvider.ProbePipelineStageCapabilities(ctx)
 			cancel()
 			if probeErr != nil {
-				status.PipelineStageError = probeErr.Error()
+				status.PipelineStageError = "pipeline capability probe failed; check engine health and configuration"
 			} else {
 				status.PipelineStage = capabilities
 			}
@@ -200,10 +198,7 @@ func (c *engineComponent) inspectInventory() ([]ModelState, []engine.Status) {
 		for _, model := range listed {
 			model.Engine = eng.Name()
 			model.Protocols = append([]string(nil), protocols...)
-			models = append(models, ModelState{
-				Model: model, Enabled: !disabled[model.Name],
-				Default: model.Name == defaultModel,
-			})
+			models = append(models, ModelState{Model: model})
 		}
 		statuses = append(statuses, status)
 	}
@@ -445,8 +440,6 @@ func (c *engineComponent) refreshReportedModelsWithForce(force bool) {
 		c.refreshMu.Unlock()
 
 		models, engines := c.inspectInventory()
-		disabled := c.state.disabledModelSnapshot()
-		defaultModel := c.state.defaultModelName()
 		c.modelMu.Lock()
 		previousModels := append([]ModelState(nil), c.reportedModels...)
 		previousEngines := make(map[string]engine.Status, len(c.reportedEngines))
@@ -469,8 +462,6 @@ func (c *engineComponent) refreshReportedModelsWithForce(force bool) {
 				if !strings.EqualFold(model.Engine, status.Name) {
 					continue
 				}
-				model.Enabled = !disabled[model.Name]
-				model.Default = model.Name == defaultModel
 				models = append(models, model)
 			}
 		}
@@ -483,6 +474,8 @@ func (c *engineComponent) refreshReportedModelsWithForce(force bool) {
 			continue
 		}
 		c.modelMu.Lock()
+		// Selection may change while engine probes run; publish using its current value.
+		c.applyModelSelectionLocked(models)
 		c.reportedModels = models
 		c.reportedEngines = engines
 		c.reportedAt = time.Now()
@@ -536,18 +529,42 @@ func (c *engineComponent) engineForModel(model, engineName string) engine.Engine
 }
 
 func (c *engineComponent) defaultModelName() string {
-	return c.state.defaultModelName()
+	c.modelMu.Lock()
+	defer c.modelMu.Unlock()
+	return c.defaultModel
 }
 
-func (c *engineComponent) configureModels(disabled map[string]bool, defaultModel string) {
-	c.state.setModelConfig(disabled, defaultModel)
-	defaultModel = c.state.defaultModelName()
+func (c *engineComponent) modelSelectionSnapshot() ([]string, string) {
 	c.modelMu.Lock()
-	for i := range c.reportedModels {
-		c.reportedModels[i].Enabled = !disabled[c.reportedModels[i].Name]
-		c.reportedModels[i].Default = c.reportedModels[i].Name == defaultModel
+	defer c.modelMu.Unlock()
+	var disabled []string
+	for name, isDisabled := range c.disabledModels {
+		if isDisabled {
+			disabled = append(disabled, name)
+		}
 	}
+	return disabled, c.defaultModel
+}
+
+// A nil disabled map preserves the selection; a non-nil map transfers ownership.
+// An empty default retains the current default, matching the HTTP adapters.
+func (c *engineComponent) configureModels(disabled map[string]bool, defaultModel string) {
+	c.modelMu.Lock()
+	if disabled != nil {
+		c.disabledModels = disabled
+	}
+	if defaultModel != "" {
+		c.defaultModel = defaultModel
+	}
+	c.applyModelSelectionLocked(c.reportedModels)
 	c.modelMu.Unlock()
+}
+
+func (c *engineComponent) applyModelSelectionLocked(models []ModelState) {
+	for i := range models {
+		models[i].Enabled = !c.disabledModels[models[i].Name]
+		models[i].Default = models[i].Name == c.defaultModel
+	}
 }
 
 func (c *engineComponent) replaceConfiguredEngine(eng engine.Engine) {
@@ -593,10 +610,6 @@ func (a *Agent) reportedModelList() []engine.Model {
 }
 func (a *Agent) reportedEngineList() []engine.Status {
 	return a.engineComponent.reportedEngineList()
-}
-func (a *Agent) refreshReportedModels() { a.engineComponent.refreshReportedModels() }
-func (a *Agent) defaultModelName() string {
-	return a.engineComponent.defaultModelName()
 }
 func (a *Agent) engineFor(model string) engine.Engine {
 	return a.engineComponent.engineFor(model)

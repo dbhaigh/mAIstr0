@@ -50,7 +50,7 @@ func dispatchContextFailure(ctx context.Context) error {
 	return nil
 }
 
-func classifyDispatchStatus(status int, body []byte) (string, bool) {
+func classifyUpstreamStatus(status int, body []byte) (string, bool) {
 	switch {
 	case status == http.StatusRequestTimeout:
 		return "timeout", true
@@ -81,6 +81,8 @@ func (d *dispatcherComponent) retryAssignment(
 		for _, model := range node.Models {
 			if !excluded[routerPairKey(node.ID, model.Name)] {
 				models = append(models, model)
+			} else {
+				scheduler.LogDecision("retry_filter", "already_tried", node, model.Name, 0, scheduler.ScoreFactors{})
 			}
 		}
 		if len(models) > 0 {

@@ -56,6 +56,7 @@ type peerDispatchJob struct {
 }
 
 type pairingInvitation struct {
+	Fingerprint    string    `json:"fingerprint"`
 	OrchestratorID string    `json:"orchestrator_id"`
 	Address        string    `json:"address"`
 	PIN            string    `json:"pin"`
@@ -158,8 +159,8 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		}
 		return usage
 	}
-	executor := newExecutorComponent(cfg.MaxConcurrentTasks, state)
-	engines := newEngineComponent(configuredEngines, detector, telemetry, state)
+	executor := newExecutorComponent(cfg.MaxConcurrentTasks)
+	engines := newEngineComponent(configuredEngines, detector, telemetry, cfg.DisabledModels, cfg.DefaultModel)
 	engines.operatorCapabilities = make(map[string]engine.Capabilities)
 	for _, configured := range cfg.Engines {
 		if configured.ValidatedRPC {
@@ -230,6 +231,11 @@ func (a *Agent) Close() error {
 	}
 	if a.peerComponent != nil && a.peerComponent.dispatchPool != nil {
 		a.peerComponent.dispatchPool.Close()
+	}
+	if a.stageComponent != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		closeErr = errors.Join(closeErr, a.stageComponent.close(ctx))
+		cancel()
 	}
 	if a.managedEngines != nil {
 		closeErr = errors.Join(closeErr, a.managedEngines.Close())
@@ -324,18 +330,6 @@ func normalizeOrchestratorAddress(address string) (string, error) {
 		return "", errors.New("orchestrator address must be an https URL without user information")
 	}
 	return "https://" + parsed.Host, nil
-}
-
-func validPairingPIN(pin string) bool {
-	if len(pin) != 6 {
-		return false
-	}
-	for _, digit := range pin {
-		if digit < '0' || digit > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func (a *Agent) pairWithAddress(address, expectedID, pin string) error {

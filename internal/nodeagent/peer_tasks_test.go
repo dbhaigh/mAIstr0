@@ -26,8 +26,8 @@ func peerTasksComponent(client *http.Client, address string, limit int64) *peerC
 	telemetry := &telemetryComponent{}
 	return &peerComponent{
 		state: state, telemetry: telemetry,
-		models:   &engineComponent{state: state, telemetry: telemetry},
-		executor: newExecutorComponent(1, state),
+		models:   &engineComponent{telemetry: telemetry},
+		executor: newExecutorComponent(1),
 		peerHTTP: func() *http.Client { return client },
 	}
 }

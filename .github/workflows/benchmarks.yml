@@ -8,60 +8,61 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   benchmarks:
-    name: Snapshot, scheduler, and sync paging
-    runs-on: ubuntu-latest
+    name: Paired performance qualification (synthetic, no accelerators)
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      GOMAXPROCS: "2"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Record benchmark environment
+          cache-dependency-path: |
+            go.mod
+            go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+      - name: Prepare approved baseline
         shell: bash
         run: |
-          mkdir -p benchmark-results
-          {
-            printf 'commit=%s\nrun_id=%s\nrunner=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$RUNNER_OS"
-            printf 'GOMAXPROCS=%s\n' "$GOMAXPROCS"
-            go version
-            go env GOOS GOARCH
-            lscpu
-          } > benchmark-results/environment.txt
-      - name: Run repeatable focused benchmarks
+          baseline="$(node -p 'JSON.parse(require("fs").readFileSync("build/benchmark-gate.json")).baseline_commit')"
+          git worktree add --detach "$RUNNER_TEMP/performance-baseline" "$baseline"
+      - name: Qualify timing and allocation regressions
         shell: bash
         run: |
-          set -o pipefail
-          go test -json -run '^$' \
-            -bench '^(BenchmarkBuildSnapshot|BenchmarkPublishSnapshotRequests|BenchmarkPublisherRequest|BenchmarkAssignWithConfigNodes80|BenchmarkAssignWithExperienceNodes32ManyModels|BenchmarkAssignWithExperienceNodeModels|BenchmarkMemoryHistoryPageTransfer)$' \
-            -benchmem -benchtime=1s -count=5 \
-            ./internal/orchestrator ./internal/hub ./internal/scheduler ./internal/memory \
-            | tee benchmark-results/benchmarks.json
-      - name: Export benchstat-compatible results
+          node build/benchmark-gate.mjs build/benchmark-gate.json \
+            "$RUNNER_TEMP/performance-baseline" "$PWD" "$RUNNER_TEMP/benchmark-results"
+      - name: Record direct and single/multi-node routing
+        shell: bash
+        env:
+          GOMAXPROCS: "2"
+          MAISTR0_E2E_REQUESTS: "100"
+          MAISTR0_BENCH_REVISION: ${{ github.sha }}
+          MAISTR0_BENCH_DIRTY: "false"
+        run: |
+          export MAISTR0_E2E_REPORT="$RUNNER_TEMP/benchmark-results/end-to-end.json"
+          go test ./internal/orchestrator -run '^TestEndToEndInferenceBenchmarks$' -count=1 -timeout=15m
+      - name: Upload raw samples, comparison and environment
         if: always()
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          root = Path("benchmark-results")
-          source = root / "benchmarks.json"
-          if source.exists():
-              with (root / "benchmarks.txt").open("w") as output:
-                  for line in source.read_text().splitlines():
-                      event = json.loads(line)
-                      if event.get("Action") == "output":
-                          output.write(event.get("Output", ""))
-          PY
-      - name: Upload benchmark samples and environment
-        if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: benchmarks-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: benchmark-results/
+          path: ${{ runner.temp }}/benchmark-results/
           retention-days: 90
           if-no-files-found: error
+      - name: Remove isolated baseline checkout
+        if: always()
+        shell: bash
+        run: |
+          if [ -d "$RUNNER_TEMP/performance-baseline" ]; then
+            git worktree remove "$RUNNER_TEMP/performance-baseline"
+          fi

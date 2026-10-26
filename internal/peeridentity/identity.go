@@ -478,17 +478,22 @@ func (i *Identity) invalidateConnections() {
 // BootstrapTransport is used only for PIN-authenticated first contact. It
 // must not be used for ordinary cluster requests.
 func (i *Identity) BootstrapTransport() *http.Transport {
-	return i.bootstrapTransport("")
+	return i.bootstrapTransport("", "")
 }
 
-// BootstrapTransportForID is used to send an out-of-band pairing invitation
-// to a discovered peer. It verifies that the TLS endpoint presents the
-// expected stable identity before any invitation PIN is sent.
+// BootstrapTransportForID verifies a previously pinned identity. A discovered
+// name alone does not authenticate a first-contact certificate.
 func (i *Identity) BootstrapTransportForID(expectedID string) *http.Transport {
-	return i.bootstrapTransport(expectedID)
+	return i.bootstrapTransport(expectedID, "")
 }
 
-func (i *Identity) bootstrapTransport(expectedID string) *http.Transport {
+// BootstrapTransportForFingerprint uses an operator-verified out-of-band pin
+// for enrollment or certificate rotation. It does not trust discovery metadata.
+func (i *Identity) BootstrapTransportForFingerprint(expectedID, fingerprint string) *http.Transport {
+	return i.bootstrapTransport(expectedID, fingerprint)
+}
+
+func (i *Identity) bootstrapTransport(expectedID, fingerprint string) *http.Transport {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	config := &tls.Config{
@@ -506,6 +511,16 @@ func (i *Identity) bootstrapTransport(expectedID string) *http.Transport {
 		}
 		if expectedID != "" && certificate.Subject.CommonName != expectedID {
 			return fmt.Errorf("peeridentity: bootstrap server identity does not match expected peer %q", expectedID)
+		}
+		if fingerprint != "" {
+			if err := ValidateFingerprint(fingerprint); err != nil {
+				return err
+			}
+			if !strings.EqualFold(certificateFingerprint(certificate), fingerprint) {
+				return errors.New("peeridentity: bootstrap server certificate fingerprint does not match the verified fingerprint")
+			}
+		} else if !i.IsTrustedCertificate(certificate) {
+			return errors.New("peeridentity: first-contact pairing requires an out-of-band verified certificate fingerprint")
 		}
 		return nil
 	}
@@ -533,7 +548,7 @@ func (i *Identity) NewPairingPIN() (string, error) {
 func (i *Identity) VerifyPairingPIN(pin string) bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.pairingPIN != "" && i.pairingAttempts < 20 && time.Now().Before(i.pairingExpires) &&
+	return i.pairingPINActiveLocked(time.Now()) &&
 		len(pin) == len(i.pairingPIN) &&
 		subtle.ConstantTimeCompare([]byte(pin), []byte(i.pairingPIN)) == 1
 }
@@ -543,17 +558,21 @@ func (i *Identity) VerifyPairingPIN(pin string) bool {
 func (i *Identity) ActivePairingPIN() (string, time.Time, bool) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	if i.pairingPIN == "" || i.pairingAttempts >= 20 || !time.Now().Before(i.pairingExpires) {
+	if !i.pairingPINActiveLocked(time.Now()) {
 		return "", time.Time{}, false
 	}
 	return i.pairingPIN, i.pairingExpires, true
+}
+
+func (i *Identity) pairingPINActiveLocked(now time.Time) bool {
+	return i.pairingPIN != "" && i.pairingAttempts < 20 && now.Before(i.pairingExpires)
 }
 
 // ConsumePairingPIN atomically accepts a valid code once.
 func (i *Identity) ConsumePairingPIN(pin string) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.pairingPIN == "" || time.Now().After(i.pairingExpires) || i.pairingAttempts >= 20 {
+	if !i.pairingPINActiveLocked(time.Now()) {
 		return false
 	}
 	if len(pin) != len(i.pairingPIN) || subtle.ConstantTimeCompare([]byte(pin), []byte(i.pairingPIN)) != 1 {
@@ -571,23 +590,7 @@ func (i *Identity) ConsumePairingPIN(pin string) bool {
 // TrustPeer adds or refreshes a peer certificate pin after pairing or a
 // trusted roster update.
 func (i *Identity) TrustPeer(id, certificatePEM string) error {
-	cert, err := validatePeerCertificate(id, certificatePEM)
-	if err != nil {
-		return err
-	}
-	fingerprint := certificateFingerprint(cert)
-	i.mu.Lock()
-	peer := i.trusted[id]
-	changed := peer.Fingerprint != fingerprint
-	peer.Fingerprint = fingerprint
-	peer.Certificate = certificatePEM
-	i.trusted[id] = peer
-	err = i.persistLocked()
-	i.mu.Unlock()
-	if changed {
-		i.invalidateConnections()
-	}
-	return err
+	return i.TrustPeerDetails(id, certificatePEM, "", "")
 }
 
 // TrustPeerDetails pins a peer certificate and stores its role and optional
@@ -609,7 +612,8 @@ func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) er
 		return err
 	}
 	i.mu.Lock()
-	peer := i.trusted[id]
+	previous, existed := i.trusted[id]
+	peer := previous
 	fingerprint := certificateFingerprint(cert)
 	changed := peer.Fingerprint != fingerprint
 	peer.Fingerprint = fingerprint
@@ -622,11 +626,25 @@ func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) er
 	}
 	i.trusted[id] = peer
 	err = i.persistLocked()
+	if err != nil {
+		i.restoreTrustLocked(id, previous, existed)
+		changed = false
+	}
 	i.mu.Unlock()
 	if changed {
 		i.invalidateConnections()
 	}
 	return err
+}
+
+// restoreTrustLocked undoes an unpersisted pin change so a peer is never
+// trusted in memory without also being trusted after a restart. Callers hold mu.
+func (i *Identity) restoreTrustLocked(id string, previous trustedPeer, existed bool) {
+	if existed {
+		i.trusted[id] = previous
+		return
+	}
+	delete(i.trusted, id)
 }
 
 // RemovePairedOrchestrators removes federation-era orchestrator pins so
@@ -849,7 +867,18 @@ func (i *Identity) persistLocked() error {
 	if err != nil {
 		return fmt.Errorf("peeridentity: encode identity file: %w", err)
 	}
-	if err := os.WriteFile(i.path, raw, 0o600); err != nil {
+	file, err := os.OpenFile(i.path, os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("peeridentity: persist identity file: %w", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("peeridentity: restrict identity permissions: %w", errors.Join(err, file.Close()))
+	}
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("peeridentity: truncate identity file: %w", errors.Join(err, file.Close()))
+	}
+	_, writeErr := file.Write(raw)
+	if err := errors.Join(writeErr, file.Close()); err != nil {
 		return fmt.Errorf("peeridentity: persist identity file: %w", err)
 	}
 	return nil

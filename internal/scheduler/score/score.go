@@ -580,12 +580,7 @@ func scorePrepared(
 	}
 
 	hardware := node.Hardware
-	telemetryAge := time.Duration(0)
-	if !node.TelemetryAt.IsZero() && !node.TelemetryAt.After(now) {
-		telemetryAge = now.Sub(node.TelemetryAt)
-	}
-	telemetryFresh := !node.TelemetryAt.IsZero() && !node.TelemetryAt.After(now) &&
-		telemetryAge <= telemetryFreshnessWindow
+	telemetryAge, telemetryFresh := TelemetryFreshness(node.TelemetryAt, now)
 
 	var gpuPenalty, npuPenalty, cpuPenalty, memoryPenalty float64
 	if telemetryFresh {
@@ -684,6 +679,16 @@ func scorePrepared(
 		factors.GPUUtilizationPenalty - factors.NPUUtilizationPenalty -
 		factors.CPUUtilizationPenalty - factors.MemoryUsagePenalty + factors.LearnedBias
 	return score, factors
+}
+
+// TelemetryFreshness exposes the scorer's established utilization policy.
+// Missing and future timestamps are not fresh and have an unknown (zero) age.
+func TelemetryFreshness(at, now time.Time) (time.Duration, bool) {
+	if at.IsZero() || at.After(now) {
+		return 0, false
+	}
+	age := now.Sub(at)
+	return age, age <= telemetryFreshnessWindow
 }
 
 func fallbackTokensPerSecond(modelSizeGB float64) float64 {

@@ -4,8 +4,59 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/scheduler"
 )
+
+func TestRecentAndPageRecentShareCacheOrdering(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		pageFirst bool
+	}{
+		{"Recent builds cache", false},
+		{"PageRecent builds cache", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewManager()
+			defer closeutil.Discard(manager)
+			base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			manager.tasks = map[string]*Task{
+				"a": {ID: "a", UpdatedAt: base},
+				"b": {ID: "b", UpdatedAt: base},
+				"c": {ID: "c", UpdatedAt: base.Add(time.Second)},
+			}
+			check := func(want []string) {
+				t.Helper()
+				for _, paged := range []bool{test.pageFirst, !test.pageFirst} {
+					var tasks []*Task
+					if paged {
+						page, err := manager.PageRecent(nil, "", "", 3, 0)
+						if err != nil {
+							t.Fatal(err)
+						}
+						tasks = page.Items
+					} else {
+						tasks = manager.Recent(3)
+					}
+					if len(tasks) != len(want) {
+						t.Fatalf("paged=%t: got %d tasks, want %d", paged, len(tasks), len(want))
+					}
+					for i, id := range want {
+						if tasks[i].ID != id {
+							t.Fatalf("paged=%t: task %d = %s, want %s", paged, i, tasks[i].ID, id)
+						}
+					}
+				}
+			}
+			check([]string{"c", "b", "a"})
+			manager.mu.Lock()
+			manager.tasks["a"].UpdatedAt = base.Add(time.Minute)
+			manager.invalidateRecentTasksLocked()
+			manager.mu.Unlock()
+			check([]string{"a", "c", "b"})
+		})
+	}
+}
 
 func TestRecentCacheInvalidatesAfterTaskWrite(t *testing.T) {
 	manager := NewManager()

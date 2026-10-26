@@ -3,12 +3,39 @@ package logging
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
 )
+
+func TestDailyFileRestrictsExistingPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes do not enforce Windows ACLs")
+	}
+	path := filepath.Join(t.TempDir(), "maistr0.log")
+	if err := os.WriteFile(path, []byte("existing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log, err := OpenDailyFile(path, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeutil.Discard(log)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("existing log permissions = %o, want 600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "existing\n" {
+		t.Fatalf("existing log was not preserved: %q, %v", data, err)
+	}
+}
 
 func TestDailyFileRotatesAndRetainsSevenDays(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "maistr0.log")

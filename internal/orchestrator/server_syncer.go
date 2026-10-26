@@ -23,7 +23,7 @@ func (s *Server) mergeMemorySnapshot(snapshot memory.Snapshot, source string) er
 	return s.syncerComponent().mergeMemorySnapshot(snapshot, source)
 }
 
-func (s *Server) memorySnapshotForPeer(version int, watermarks map[string]uint64) memory.Snapshot {
+func (s *Server) memorySnapshotForPeer(version int, watermarks map[string]uint64) (memory.Snapshot, error) {
 	return s.syncerComponent().memorySnapshotForPeer(version, watermarks)
 }
 

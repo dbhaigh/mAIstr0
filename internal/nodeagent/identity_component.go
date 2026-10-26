@@ -68,11 +68,25 @@ func (c *identityComponent) BootstrapTransportForID(expectedID string) *http.Tra
 	return c.identity.BootstrapTransportForID(expectedID)
 }
 
+func (c *identityComponent) BootstrapTransportForFingerprint(expectedID, fingerprint string) *http.Transport {
+	if c.identity == nil {
+		return nil
+	}
+	return c.identity.BootstrapTransportForFingerprint(expectedID, fingerprint)
+}
+
 func (c *identityComponent) TrustPeer(id, certificate string) error {
 	if c.identity == nil {
 		return errors.New("node identity is not initialized")
 	}
 	return c.identity.TrustPeer(id, certificate)
+}
+
+func (c *identityComponent) ValidatePeer(id, certificate string) error {
+	if c.identity == nil {
+		return errors.New("node identity is not initialized")
+	}
+	return c.identity.ValidatePeer(id, certificate)
 }
 
 func (c *identityComponent) TrustPeerDetails(id, certificate, role, address string) error {

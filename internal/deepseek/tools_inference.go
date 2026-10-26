@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/workpool"
 	"sort"
 	"strings"
 	"sync"
@@ -289,36 +290,50 @@ func (t *ClusterParallelDispatchTool) Execute(ctx context.Context, h *Harness, s
 	// released before network dispatch and is not nested with component locks.
 	var nodesUsedMu sync.Mutex
 
+	workers := 0
+	for _, node := range nodes {
+		workers += min(max(node.MaxConcurrentTasks, 1), len(assignments)-workers)
+	}
+	wg.Add(len(assignments))
+	pool := workpool.New[int](workers, 0, func(_ context.Context, i int) {
+		defer wg.Done()
+		a := assignments[i]
+		h.registry.IncrementLoad(a.node.ID, 1)
+		defer h.registry.IncrementLoad(a.node.ID, -1)
+
+		nodesUsedMu.Lock()
+		nodesUsed[a.node.ID] = true
+		nodesUsedMu.Unlock()
+
+		start := time.Now()
+		out, err := h.dispatchToNode(ctx, a.node.Address, a.model, a.item.description)
+		elapsed := time.Since(start).Milliseconds()
+
+		res := parallelResult{
+			SubtaskID:   a.item.id,
+			Description: a.item.description,
+			NodeID:      a.node.ID,
+			NodeAddress: a.node.Address,
+			Model:       a.model,
+			DurationMs:  elapsed,
+		}
+		if err != nil {
+			res.Error = err.Error()
+		} else {
+			res.Output = out
+		}
+		results[i] = res
+	})
+	defer pool.Close()
 	for idx, asg := range assignments {
-		wg.Add(1)
-		go func(i int, a assignment) {
-			defer wg.Done()
-			h.registry.IncrementLoad(a.node.ID, 1)
-			defer h.registry.IncrementLoad(a.node.ID, -1)
-
-			nodesUsedMu.Lock()
-			nodesUsed[a.node.ID] = true
-			nodesUsedMu.Unlock()
-
-			start := time.Now()
-			out, err := h.dispatchToNode(ctx, a.node.Address, a.model, a.item.description)
-			elapsed := time.Since(start).Milliseconds()
-
-			res := parallelResult{
-				SubtaskID:   a.item.id,
-				Description: a.item.description,
-				NodeID:      a.node.ID,
-				NodeAddress: a.node.Address,
-				Model:       a.model,
-				DurationMs:  elapsed,
+		if err := pool.Submit(ctx, idx); err != nil {
+			results[idx] = parallelResult{
+				SubtaskID: asg.item.id, Description: asg.item.description,
+				NodeID: asg.node.ID, NodeAddress: asg.node.Address, Model: asg.model,
+				Error: err.Error(),
 			}
-			if err != nil {
-				res.Error = err.Error()
-			} else {
-				res.Output = out
-			}
-			results[i] = res
-		}(idx, asg)
+			wg.Done()
+		}
 	}
 
 	wg.Wait()

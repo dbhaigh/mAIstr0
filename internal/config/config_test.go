@@ -7,6 +7,55 @@ import (
 	"testing"
 )
 
+func TestValidPairingPIN(t *testing.T) {
+	tests := []struct {
+		name string
+		pin  string
+		want bool
+	}{
+		{"leading zero", "012345", true},
+		{"all zeroes", "000000", true},
+		{"all nines", "999999", true},
+		{"empty", "", false},
+		{"short", "12345", false},
+		{"long", "1234567", false},
+		{"letter", "12345a", false},
+		{"space", "12345 ", false},
+		{"newline", "12345\n", false},
+		{"non-ASCII digits", "\u0661\u0662\u0663\u0664\u0665\u0666", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ValidPairingPIN(test.pin); got != test.want {
+				t.Fatalf("ValidPairingPIN(%q) = %t, want %t", test.pin, got, test.want)
+			}
+		})
+	}
+}
+
+func TestNodeOrchestratorFingerprintValidation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		fingerprint string
+		valid       bool
+	}{
+		{"existing pin or interactive enrollment", "", true},
+		{"lowercase", strings.Repeat("a", 64), true},
+		{"uppercase", strings.Repeat("F", 64), true},
+		{"short", strings.Repeat("a", 63), false},
+		{"nonhex", strings.Repeat("z", 64), false},
+		{"whitespace", " " + strings.Repeat("a", 64), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := DefaultNodeConfig()
+			cfg.OrchestratorFingerprint = test.fingerprint
+			if err := cfg.Validate(); (err == nil) != test.valid {
+				t.Fatalf("fingerprint validation = %v, valid = %t", err, test.valid)
+			}
+		})
+	}
+}
+
 func TestOrchestratorHarnessConfig(t *testing.T) {
 	defaults := DefaultOrchestratorConfig()
 	if defaults.Harness != "pi" {

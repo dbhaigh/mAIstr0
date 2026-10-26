@@ -3,8 +3,6 @@ package orchestrator
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,7 +55,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	requestID, err := newRouterRequestID()
+	requestID, err := httpx.NewRequestID()
 	if err != nil {
 		logging.Errorf("orchestrator", "orchestrator: generate router request ID failed: %v", err)
 		writeRouterError(w, http.StatusInternalServerError, "could not initialize request")
@@ -65,9 +63,31 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("X-Request-ID", requestID)
 	startedAt := time.Now()
+	terminal := routerRequestEvent{RequestID: requestID, Phase: "failed", FailureClass: "request_preparation"}
+	recordEvent := func(event routerRequestEvent) {
+		switch event.Phase {
+		case "rejected", "finished", "attempt_failed", "attempt_succeeded":
+			terminal = event
+		}
+		s.recordRouterEvent(event)
+	}
 	defer func() {
 		s.metrics.observeRouterRequest(time.Since(startedAt))
+		if terminal.Phase == "attempt_succeeded" {
+			terminal.Phase = "completed"
+		} else {
+			terminal.Phase = "failed"
+			if errors.Is(r.Context().Err(), context.Canceled) {
+				terminal.FailureClass = "cancelled"
+			} else if errors.Is(r.Context().Err(), context.DeadlineExceeded) || time.Since(startedAt) >= routerRequestTimeout {
+				terminal.FailureClass = "timeout"
+			}
+		}
+		terminal.Timestamp = time.Now()
+		terminal.DurationMs = time.Since(startedAt).Milliseconds()
+		s.recordRouterEvent(terminal)
 	}()
+	recordEvent(routerRequestEvent{RequestID: requestID, Phase: "accepted", Timestamp: startedAt})
 
 	limit := s.routerClients.acquire(r)
 	if limit.Reason != "" {
@@ -84,7 +104,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			message = "client limit capacity is temporarily unavailable"
 		}
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", limit.RetryAfter))
-		s.recordRouterEvent(routerRequestEvent{
+		recordEvent(routerRequestEvent{
 			RequestID: requestID, Phase: "rejected", Timestamp: time.Now(),
 			Status: status, FailureClass: failureClass,
 		})
@@ -96,20 +116,20 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 	requestBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRouterRequestBytes))
 	if err != nil {
 		writeRouterError(w, http.StatusRequestEntityTooLarge, "request body is too large or unreadable")
-		s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "rejected", Timestamp: time.Now(), FailureClass: "invalid_request"})
+		recordEvent(routerRequestEvent{RequestID: requestID, Phase: "rejected", Timestamp: time.Now(), FailureClass: "invalid_request"})
 		return
 	}
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(requestBody, &payload); err != nil || payload == nil {
 		writeRouterError(w, http.StatusBadRequest, "invalid inference request JSON")
-		s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "rejected", Timestamp: time.Now(), FailureClass: "invalid_request"})
+		recordEvent(routerRequestEvent{RequestID: requestID, Phase: "rejected", Timestamp: time.Now(), FailureClass: "invalid_request"})
 		return
 	}
 	preferredModel := ""
 	if rawModel, found := payload["model"]; found {
 		if err := json.Unmarshal(rawModel, &preferredModel); err != nil {
 			writeRouterError(w, http.StatusBadRequest, "model must be a string")
-			s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "rejected", Timestamp: time.Now(), FailureClass: "invalid_request"})
+			recordEvent(routerRequestEvent{RequestID: requestID, Phase: "rejected", Timestamp: time.Now(), FailureClass: "invalid_request"})
 			return
 		}
 	}
@@ -126,14 +146,14 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, context.Canceled) {
 				failureClass = "cancelled"
 			}
-			s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: failureClass})
+			recordEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: failureClass})
 			writeRouterContextError(w, r, ctx)
 			return
 		}
 		assignment, assignErr := s.assignRouterRequest(preferredModel, route.Protocol, tried)
 		if assignErr != nil {
 			if errors.Is(assignErr, apperr.Unavailable) {
-				s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: "shard_group_unavailable"})
+				recordEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: "shard_group_unavailable"})
 				writeRouterError(w, apperr.StatusCode(assignErr), assignErr.Error())
 				return
 			}
@@ -147,7 +167,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 					status = http.StatusGatewayTimeout
 				}
 			}
-			s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: failureClass})
+			recordEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: failureClass})
 			writeRouterError(w, status, "no additional compatible inference node is available")
 			return
 		}
@@ -158,11 +178,13 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		tried[pairKey] = true
 		attemptID := fmt.Sprintf("%s:%d", requestID, attemptNumber)
+		recordEvent(routerRequestEvent{RequestID: requestID, AttemptID: attemptID, Phase: "scheduled",
+			Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model, Engine: assignment.Engine})
 		node, exists := s.registry.Get(assignment.NodeID)
 		if !exists || !node.Healthy || node.Address != assignment.Address {
 			s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
 			lastAttemptFailureClass = "node_unavailable"
-			s.recordRouterEvent(routerRequestEvent{
+			recordEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: time.Since(startedAt).Milliseconds(),
@@ -180,6 +202,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			group, ok := s.shards.Get(shardGroupID)
 			if !ok || group.State != ShardGroupReady {
 				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+				recordEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: "shard_group_unavailable"})
 				writeRouterError(w, http.StatusServiceUnavailable, apperr.UnavailableError(errors.New("shard group is not ready")).Error())
 				return
 			}
@@ -192,6 +215,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			}
 			if head.NodeID != assignment.NodeID || head.Address != assignment.Address {
 				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+				recordEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: "shard_group_unavailable"})
 				writeRouterError(w, http.StatusServiceUnavailable, apperr.UnavailableError(errors.New("shard group head is unavailable")).Error())
 				return
 			}
@@ -200,32 +224,40 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var reservation workpool.CapacityReservation
+		recordEvent(routerRequestEvent{RequestID: requestID, AttemptID: attemptID, Phase: "queued", Timestamp: time.Now(),
+			NodeID: assignment.NodeID, Model: assignment.Model, Engine: assignment.Engine})
 		if isShardGroup {
 			releaseRequest, err := s.shards.AcquireRequest(ctx, shardGroupID)
 			if err != nil {
+				// AcquireRequest returns no release callback on error.
 				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+				recordEvent(routerRequestEvent{RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
+					Timestamp: time.Now(), FailureClass: "reservation"})
 				if ctx.Err() != nil {
 					return
 				}
-				group, exists := s.shards.Get(shardGroupID)
-				var verifyErr error
-				if !exists {
-					verifyErr = errShardGroupNotFound
-				} else {
-					for _, member := range group.Members {
-						if member.Role == "head" {
-							verifyErr = s.nodeClient.VerifyModel(ctx, member.Address, member.EngineID, group.Model, false)
-							break
-						}
+				writeRouterError(w, http.StatusServiceUnavailable, apperr.UnavailableError(err).Error())
+				return
+			}
+			group, exists := s.shards.Get(shardGroupID)
+			verifyErr := errShardGroupNotFound
+			if exists {
+				for _, member := range group.Members {
+					if member.Role == "head" {
+						verifyErr = s.nodeClient.VerifyModel(ctx, member.Address, member.EngineID, group.Model, false)
+						break
 					}
 				}
-				if verifyErr != nil {
-					releaseRequest()
-					s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
-					writeRouterError(w, http.StatusServiceUnavailable, "shard head model does not match saved group; stop and start the group to restore its model: "+verifyErr.Error())
+			}
+			if verifyErr != nil {
+				releaseRequest()
+				s.routerBreakers.releaseProbe(assignment.NodeID, assignment.Model)
+				recordEvent(routerRequestEvent{RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
+					Timestamp: time.Now(), FailureClass: "stale_model"})
+				if ctx.Err() != nil {
 					return
 				}
-				writeRouterError(w, http.StatusServiceUnavailable, apperr.UnavailableError(err).Error())
+				writeRouterError(w, http.StatusServiceUnavailable, "shard head model does not match saved group; stop and start the group to restore its model: "+verifyErr.Error())
 				return
 			}
 			reservation = staticRouterReservation{target: workpool.CapacityTarget{
@@ -242,7 +274,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				if ctx.Err() != nil {
 					continue
 				}
-				s.recordRouterEvent(routerRequestEvent{
+				recordEvent(routerRequestEvent{
 					RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 					Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 					Engine: assignment.Engine, QueueMs: time.Since(startedAt).Milliseconds(),
@@ -257,7 +289,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		s.metrics.recordCapacityReservation()
 		queueMs := time.Since(startedAt).Milliseconds()
 		s.registry.IncrementLoad(reservedNodeID, 1)
-		s.recordRouterEvent(routerRequestEvent{
+		recordEvent(routerRequestEvent{
 			RequestID: requestID, AttemptID: attemptID, Phase: "attempt_started",
 			Timestamp: time.Now(), NodeID: reservedNodeID, Model: assignment.Model,
 			Engine: assignment.Engine, QueueMs: queueMs,
@@ -304,6 +336,8 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			ttfbExpired.Store(true)
 			attemptCancel()
 		})
+		recordEvent(routerRequestEvent{RequestID: requestID, AttemptID: attemptID, Phase: "dispatched",
+			Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model, Engine: assignment.Engine})
 		resp, requestErr := s.nodeClientPort().DoDispatch(upstreamReq)
 
 		if requestErr != nil {
@@ -325,7 +359,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				failureClass = "cancelled"
 			}
 			lastAttemptFailureClass = failureClass
-			s.recordRouterEvent(routerRequestEvent{
+			recordEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: queueMs, DurationMs: time.Since(attemptStarted).Milliseconds(),
@@ -343,6 +377,8 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		recordEvent(routerRequestEvent{RequestID: requestID, AttemptID: attemptID, Phase: "upstream_response",
+			Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model, Engine: assignment.Engine, Status: resp.StatusCode})
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			ttfbTimer.Stop()
 			responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, routerMaxErrorBytes+1))
@@ -350,7 +386,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			attemptCancel()
 			s.releaseRouterReservation(reservedNodeID, reservation)
 			if ctx.Err() != nil {
-				s.recordRouterEvent(routerRequestEvent{
+				recordEvent(routerRequestEvent{
 					RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 					Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 					Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
@@ -364,12 +400,12 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			if truncated {
 				responseBody = responseBody[:routerMaxErrorBytes]
 			}
-			failureClass, retryable := classifyRouterStatus(resp.StatusCode, responseBody)
+			failureClass, retryable := classifyUpstreamStatus(resp.StatusCode, responseBody)
 			if readErr != nil && retryable {
 				failureClass = "upstream_read"
 			}
 			lastAttemptFailureClass = failureClass
-			s.recordRouterEvent(routerRequestEvent{
+			recordEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
@@ -421,7 +457,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				failureClass = "time_to_first_byte_timeout"
 			}
 			lastAttemptFailureClass = failureClass
-			s.recordRouterEvent(routerRequestEvent{
+			recordEvent(routerRequestEvent{
 				RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 				Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 				Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
@@ -449,6 +485,8 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		if n > 0 {
 			s.metrics.observeRouterTTFB(time.Since(attemptStarted))
+			recordEvent(routerRequestEvent{RequestID: requestID, AttemptID: attemptID, Phase: "first_upstream_byte",
+				Timestamp: time.Now(), TimeToFirstByteMs: firstByteMs, Status: resp.StatusCode})
 		}
 
 		copyRouterHeaders(w.Header(), resp.Header)
@@ -464,7 +502,7 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 				if r.Context().Err() != nil {
 					failureClass = "cancelled"
 				}
-				s.recordRouterEvent(routerRequestEvent{
+				recordEvent(routerRequestEvent{
 					RequestID: requestID, AttemptID: attemptID, Phase: "attempt_failed",
 					Timestamp: time.Now(), NodeID: assignment.NodeID, Model: assignment.Model,
 					Engine: assignment.Engine, QueueMs: queueMs, Status: resp.StatusCode,
@@ -509,12 +547,10 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 			slog.Default().Warn("router stream ended after response commit",
 				"component", "orchestrator",
 				"request_id", requestID,
-				"node_id", assignment.NodeID,
-				"model", assignment.Model,
 				"failure_class", event.FailureClass,
 			)
 		}
-		s.recordRouterEvent(event)
+		recordEvent(event)
 		return
 	}
 	failureClass := "attempts_exhausted"
@@ -523,14 +559,17 @@ func (s *Server) handleRouterRequest(w http.ResponseWriter, r *http.Request) {
 		failureClass = lastAttemptFailureClass
 		status = http.StatusGatewayTimeout
 	}
-	s.recordRouterEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: failureClass})
+	recordEvent(routerRequestEvent{RequestID: requestID, Phase: "finished", Timestamp: time.Now(), FailureClass: failureClass})
 	writeRouterError(w, status, "inference could not be completed on a compatible node")
 }
 
 func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol, tried map[string]bool) (scheduler.Assignment, error) {
+	started := time.Now()
+	defer func() { s.metrics.recordAssignment(time.Since(started)) }()
 	if model != "" && s.shards != nil {
 		if group, found := s.shards.GroupForModel(model); found {
 			if group.State != ShardGroupReady {
+				scheduler.LogDecision("router_shard", "group_unready", cluster.NodeStatus{}, "", 0, scheduler.ScoreFactors{})
 				return scheduler.Assignment{}, apperr.UnavailableError(fmt.Errorf("shard group for model %q is %s", model, group.State))
 			}
 			var head ShardGroupMember
@@ -542,11 +581,14 @@ func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol,
 			}
 			node, ok := s.registry.Get(head.NodeID)
 			if !ok || !node.Healthy || node.Address != head.Address {
+				scheduler.LogDecision("router_shard", "head_unavailable", node, "", 0, scheduler.ScoreFactors{})
 				return scheduler.Assignment{}, apperr.UnavailableError(fmt.Errorf("shard group head for model %q is unavailable", model))
 			}
 			if tried[routerPairKey(head.NodeID, group.Model.Name)] {
+				scheduler.LogDecision("router_shard", "already_tried", node, group.Model.Name, 0, scheduler.ScoreFactors{})
 				return scheduler.Assignment{}, apperr.UnavailableError(fmt.Errorf("shard group for model %q has no additional inference head", model))
 			}
+			scheduler.LogDecision("router_shard", "head_selected", node, group.Model.Name, 0, scheduler.ScoreFactors{})
 			return scheduler.Assignment{
 				NodeID: head.NodeID, Address: head.Address, Model: group.Model.Name,
 				Engine: "shard-group:" + group.ID,
@@ -560,9 +602,11 @@ func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol,
 		for _, candidate := range node.Models {
 			engineName := candidate.Engine
 			if engineName == "" || !node.EngineReady(engineName) {
+				scheduler.LogDecision("router_filter", "engine_unready", node, candidate.Name, 0, scheduler.ScoreFactors{})
 				continue
 			}
 			if model != "" && !strings.EqualFold(candidate.Name, model) {
+				scheduler.LogDecision("router_filter", "model_filter", node, candidate.Name, 0, scheduler.ScoreFactors{})
 				continue
 			}
 			compatible := false
@@ -575,12 +619,19 @@ func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol,
 			if len(candidate.Protocols) == 0 {
 				compatible = engine.SupportsProtocol(engineName, string(protocol))
 			}
-			if !compatible || tried[routerPairKey(node.ID, candidate.Name)] {
+			if !compatible {
+				scheduler.LogDecision("router_filter", "protocol_incompatible", node, candidate.Name, 0, scheduler.ScoreFactors{})
+				continue
+			}
+			if tried[routerPairKey(node.ID, candidate.Name)] {
+				scheduler.LogDecision("router_filter", "already_tried", node, candidate.Name, 0, scheduler.ScoreFactors{})
 				continue
 			}
 			if !s.routerBreakers.eligible(node.ID, candidate.Name) {
+				scheduler.LogDecision("router_filter", "circuit_open", node, candidate.Name, 0, scheduler.ScoreFactors{})
 				continue
 			}
+			scheduler.LogDecision("router_filter", "eligible", node, candidate.Name, 0, scheduler.ScoreFactors{})
 			models = append(models, candidate)
 		}
 		if len(models) > 0 {
@@ -646,26 +697,21 @@ func (s *Server) recordRouterEvent(event routerRequestEvent) {
 			"component", "orchestrator",
 			"request_id", event.RequestID,
 			"attempt_id", event.AttemptID,
-			"node_id", event.NodeID,
-			"model", event.Model,
-			"engine", event.Engine,
 			"duration_ms", event.DurationMs,
 			"http_status", event.Status,
 			"failure_class", failureClass,
 			"success", event.Phase == "attempt_succeeded",
 		)
 	}
+	if logger := slog.Default(); logger.Enabled(context.Background(), slog.LevelDebug) {
+		logger.Debug("router lifecycle",
+			"component", "orchestrator", "request_id", event.RequestID, "attempt_id", event.AttemptID,
+			"phase", event.Phase, "http_status", event.Status, "failure_class", event.FailureClass,
+			"duration_ms", event.DurationMs, "queue_ms", event.QueueMs, "first_byte_ms", event.TimeToFirstByteMs)
+	}
 }
 
 func routerPairKey(nodeID, model string) string { return nodeID + "\x00" + model }
-
-func newRouterRequestID() (string, error) {
-	var id [16]byte
-	if _, err := rand.Read(id[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(id[:]), nil
-}
 
 func writeRouterError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
@@ -684,22 +730,6 @@ func writeRouterContextError(w http.ResponseWriter, r *http.Request, ctx context
 		message = "inference request was interrupted"
 	}
 	writeRouterError(w, status, message)
-}
-
-func classifyRouterStatus(status int, body []byte) (string, bool) {
-	switch {
-	case status == http.StatusRequestTimeout:
-		return "timeout", true
-	case status == http.StatusTooManyRequests:
-		return "rate_limit", true
-	case status == http.StatusInternalServerError || status == http.StatusBadGateway ||
-		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout:
-		return "upstream_5xx", true
-	case status == http.StatusNotFound && strings.Contains(strings.ToLower(string(body)), "model"):
-		return "stale_model", true
-	default:
-		return "client_error", false
-	}
 }
 
 func sleepWithContext(ctx context.Context, delay time.Duration) bool {

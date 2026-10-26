@@ -9,6 +9,7 @@ import (
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/maistr0/maistr0/internal/workpool"
 	"net/http"
 	"net/url"
 )
@@ -51,6 +52,10 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := r.Context().Err(); err != nil {
+		writeError(w, apperr.ConflictError(fmt.Errorf("task creation canceled before persistence: %w", err)))
+		return
+	}
 	task, err := a.orchestratorLink.tasks.CreateChecked(req.Description, assignments)
 	if err != nil {
 		writeError(w, apperr.InternalError(fmt.Errorf("could not persist task: %w", err)))
@@ -61,10 +66,23 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.InternalError(errors.New("created task is no longer available")))
 		return
 	}
+	var admissionErr error
 	for _, asg := range assignments {
-		if err := a.peerComponent.dispatchPool.Submit(taskCtx, peerDispatchJob{taskID: task.ID, assignment: asg}); err != nil {
-			a.orchestratorLink.tasks.CompleteSubtask(task.ID, asg.Subtask.ID, "", err)
+		var err error
+		if a.peerComponent.dispatchPool == nil {
+			err = workpool.ErrClosed
+		} else {
+			err = a.peerComponent.dispatchPool.TrySubmit(taskCtx, peerDispatchJob{taskID: task.ID, assignment: asg})
 		}
+		if err != nil {
+			logging.Errorf("nodeagent", "nodeagent: could not queue subtask %s: %v", asg.Subtask.ID, err)
+			a.orchestratorLink.tasks.CompleteSubtask(task.ID, asg.Subtask.ID, "", err)
+			admissionErr = errors.Join(admissionErr, err)
+		}
+	}
+	if admissionErr != nil {
+		writeError(w, apperr.UnavailableError(fmt.Errorf("task %s was persisted but dispatch admission failed: %w", task.ID, admissionErr)))
+		return
 	}
 	writeJSON(w, http.StatusAccepted, task)
 }

@@ -43,24 +43,6 @@ func RegisterCustomAgentProfile(role string, profile AgentProfile) {
 	customProfiles.Store(&agentProfileRegistry{profiles: profiles})
 }
 
-// UnregisterCustomAgentProfile removes a registered custom profile.
-func UnregisterCustomAgentProfile(role string) {
-	customProfilesMu.Lock()
-	defer customProfilesMu.Unlock()
-	current := customProfiles.Load()
-	key := strings.ToLower(strings.TrimSpace(role))
-	if _, exists := current.profiles[key]; !exists {
-		return
-	}
-	profiles := make(map[string]AgentProfile, len(current.profiles)-1)
-	for registeredKey, registered := range current.profiles {
-		if registeredKey != key {
-			profiles[registeredKey] = registered
-		}
-	}
-	customProfiles.Store(&agentProfileRegistry{profiles: profiles})
-}
-
 func cloneAgentProfile(profile AgentProfile) AgentProfile {
 	profile.Tools = append([]string(nil), profile.Tools...)
 	return profile

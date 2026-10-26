@@ -29,3 +29,6 @@ secrets or personal absolute paths.
 Before requesting review, run the applicable checks from
 [Development](./docs/development.md). If a check cannot run on your platform,
 report the limitation rather than marking it as passed.
+See [CI quality gates](./docs/ci-quality-gates.md) for the short PR suite,
+full process/race/package qualification, approved performance baseline,
+dependency-license review, and required-check administration.

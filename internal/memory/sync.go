@@ -306,6 +306,41 @@ func SnapshotForPeer(store Store, peerVersion int, watermarks map[string]uint64)
 	return store.SnapshotSince(watermarks)
 }
 
+// snapshotLoader is implemented by stores whose snapshot reads can fail. It is
+// optional so the Store interface and Snapshot signature remain unchanged.
+type snapshotLoader interface {
+	loadSnapshot() (Snapshot, error)
+}
+
+// LoadSnapshotForPeer selects the same records as SnapshotForPeer but reports
+// store read failures, so sync callers do not mistake them for "no changes"
+// and do not advance watermarks. Stores without a fallible snapshot path
+// behave exactly like SnapshotForPeer.
+func LoadSnapshotForPeer(store Store, peerVersion int, watermarks map[string]uint64) (Snapshot, error) {
+	loader, ok := store.(snapshotLoader)
+	if !ok {
+		return SnapshotForPeer(store, peerVersion, watermarks), nil
+	}
+	full := !SupportsIncrementalSync(peerVersion)
+	if !full {
+		localWatermarks := store.Watermarks()
+		for origin, sequence := range watermarks {
+			if sequence > localWatermarks[origin] {
+				full = true
+				break
+			}
+		}
+	}
+	snapshot, err := loader.loadSnapshot()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if full {
+		return snapshot, nil
+	}
+	return snapshotSince(snapshot, watermarks), nil
+}
+
 func snapshotSince(snapshot Snapshot, watermarks map[string]uint64) Snapshot {
 	filtered := Snapshot{
 		SyncVersion: SyncProtocolVersion,

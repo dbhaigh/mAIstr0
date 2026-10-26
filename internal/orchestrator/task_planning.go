@@ -102,10 +102,6 @@ func (s *Server) createTask(ctx context.Context, req createTaskRequest) (*taskmg
 	return s.plannerPort().createTask(ctx, req)
 }
 
-func (s *Server) planSubtasks(ctx context.Context, description string) (*scheduler.TaskGraph, []scheduler.Subtask, error) {
-	return s.plannerPort().planSubtasks(ctx, description)
-}
-
 func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*taskmgr.Task, error) {
 	if strings.TrimSpace(req.Description) == "" {
 		return nil, apperr.Invalid(errors.New("description is required"))
@@ -227,15 +223,23 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 	if len(assignments) != len(subtasks) {
 		return nil, apperr.UnavailableError(errors.New("scheduler returned an incomplete assignment"))
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, apperr.ConflictError(fmt.Errorf("task creation canceled before persistence: %w", err))
+	}
 	task, err := p.tasks.CreateWithGraphAndOptionsChecked(req.Description, graph, assignments, req.RequireApproval)
 	if err != nil {
 		return nil, apperr.InternalError(fmt.Errorf("could not persist task: %w", err))
 	}
+	var admissionErr error
 	for _, assignment := range assignments {
 		if err := p.dispatch.submitDispatch(task.ID, assignment); err != nil {
 			logging.Errorf("orchestrator", "orchestrator: could not queue subtask %s: %v", assignment.Subtask.ID, err)
 			p.tasks.CompleteSubtask(task.ID, assignment.Subtask.ID, "", err)
+			admissionErr = errors.Join(admissionErr, err)
 		}
+	}
+	if admissionErr != nil {
+		return task, apperr.UnavailableError(fmt.Errorf("task %s was persisted but dispatch admission failed: %w", task.ID, admissionErr))
 	}
 	return task, nil
 }
@@ -256,6 +260,9 @@ func (p *taskPlanner) executeWorkflow(ctx context.Context, description string, s
 		RequireReview: requireReview,
 	})
 	if err != nil {
+		if task != nil {
+			_ = p.tasks.Cancel(task.ID)
+		}
 		return "", err
 	}
 	result, err := p.tasks.Wait(ctx, task.ID)

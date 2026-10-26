@@ -13,6 +13,17 @@ import (
 
 const dateFormat = "2006-01-02"
 
+func openPrivateLog(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return file, nil
+}
+
 type DailyFile struct {
 	// mu serializes writes, rotation, and close for this file; it is the only
 	// lock in the logger and may cover the corresponding filesystem operations.
@@ -31,7 +42,7 @@ func OpenDailyFile(path string, retentionDays int) (*DailyFile, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := openPrivateLog(path)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
@@ -106,12 +117,12 @@ func (l *DailyFile) rotate(now time.Time) error {
 	archive := fmt.Sprintf("%s-%s-%s%s", name, l.date, now.Format("150405.000000000"), extension)
 	archivePath := filepath.Join(filepath.Dir(l.path), archive)
 	if err := os.Rename(l.path, archivePath); err != nil {
-		file, reopenErr := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		file, reopenErr := openPrivateLog(l.path)
 		l.file = file
 		return errors.Join(fmt.Errorf("archive current log: %w", err), reopenErr)
 	}
 
-	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := openPrivateLog(l.path)
 	if err != nil {
 		return fmt.Errorf("create new daily log: %w", err)
 	}

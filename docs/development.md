@@ -6,6 +6,13 @@ Commands below are available in both PowerShell and bash.
 
 ## Build and test
 
+For direct-versus-routed measurements, native package reproducibility,
+isolated installation/replacement checks, and release acceptance scope, see
+[End-to-end benchmarks and release acceptance](./end-to-end-benchmarks.md).
+Both release-tag paths now depend on reusable CI, and tags must match the
+source version. Native acceptance uses PowerShell 7 on Windows and Ubuntu;
+the ordinary race helper retains its older PowerShell compatibility.
+
 PowerShell:
 
 ```powershell
@@ -129,12 +136,35 @@ go test -run '^$' -bench 'BenchmarkBuildSnapshot|BenchmarkPublishSnapshotRequest
 ```
 
 The [scheduled benchmark workflow](../.github/workflows/benchmarks.yml) runs weekly
-and manually. It records five samples with fixed `GOMAXPROCS`, environment metadata,
-JSON events, and benchstat-compatible text as 90-day artifacts. Compare like-for-like
-runner/toolchain samples before claiming a regression or speedup; the workflow does
-not automatically fail on timing variance.
+and manually. It compares six interleaved baseline/candidate rounds on the same
+runner, retaining JSON events and comparisons for 90 days. Conservative timing
+and allocation thresholds distinguish regressions from inconclusive measurements.
+See [CI quality gates](./ci-quality-gates.md) for approved policy, short PR versus
+full qualification commands, required-check configuration, and limitations.
+
+### Scheduler evaluation
+
+See [Scheduler evaluation and routing diagnostics](./scheduler-evaluation.md)
+for the selection/reservation pipeline, privacy-safe debug reasons, reproducible
+synthetic policy comparisons, process-CPU/allocation measurements, and recorded
+tradeoffs. The existing scorer is retained; simulated service latency is kept
+separate from measured scheduler overhead.
+
+### Profile-guided performance evaluation
+
+See [Performance evaluation](./performance-evaluation.md) for the representative
+workload matrix, before/after CPU/allocation/latency evidence, retained-memory
+limitations, and paired controls. The PowerShell 7 profiling runner supports
+native Go and WSL, accepts an explicit out-of-tree output directory, and keeps
+instrumented captures separate from repeated benchmark trials. No live models
+or hardware-dependent inference are needed.
 
 ## Contracts and fixtures
+
+See [Concurrency and resource ownership](./concurrency-ownership.md) for the
+reproducible AST census, asynchronous job policy, overload contracts, shutdown
+budgets, ownership tests, measured correctness costs, and remaining limitations.
+
 
 Check generated contract fixtures with:
 
@@ -193,10 +223,12 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
 
 ### Rapid iteration releases
 
-The source release number is now `0.0.24.4`. Increment the fourth numeric
-component for rapid iterations (`0.0.24.5`, ..., `0.0.24.10`); use the next
-third component for a new patch series. This is a numeric four-component
-release convention, not SemVer. Peer manifests accept both three and four
+The source release number is now `0.1.0`, a three-component SemVer minor
+release. Normal minor releases increment the second component and reset the
+patch and optional iteration components. For explicitly requested rapid
+iterations, append/increment a fourth numeric component (`0.1.0.1`, ...,
+`0.1.0.10`); use the next third component for a new patch series. The optional
+four-component convention is not SemVer. Peer manifests accept both three and four
 components and compare components numerically, with an omitted fourth
 component treated as zero.
 

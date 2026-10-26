@@ -1,8 +1,9 @@
 package scheduler
 
 import (
+	"context"
 	"errors"
-	"github.com/maistr0/maistr0/internal/logging"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -114,6 +115,8 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	for _, n := range nodes {
 		if n.Healthy {
 			healthy = append(healthy, n)
+		} else {
+			LogDecision("planning", "unhealthy", n, "", 0, ScoreFactors{})
 		}
 	}
 	if len(healthy) == 0 {
@@ -145,7 +148,11 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 			outDegree = graph.OutDegree(st.ID)
 		}
 
-		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, nodeCapabilities, simulatedLoad, exp, cfg, now)
+		logger := slog.Default()
+		if logger.Enabled(context.Background(), slog.LevelDebug) {
+			logger = logger.With("decision_seq", decisionSequence.Add(1))
+		}
+		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, nodeCapabilities, simulatedLoad, exp, cfg, now, logger)
 		if bestNode == nil {
 			unassignable = append(unassignable, st.ID)
 			modelRejections = append(
@@ -162,10 +169,8 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 		}
 		simulatedLoad[bestNode.ID] = load
 
-		logging.Infof("scheduler", "scheduler: subtask %s (%s) assigned to node %s (model %s, engine %s, score %.2f) [match=%.1f cap=%.1f qual=%.1f hw=%.1f load=-%.1f tele_fresh=%v]",
-			st.ID, st.Role, bestNode.ID, bestModel, bestEngine, bestScore,
-			factors.ModelMatch, factors.CapabilityScore, factors.ModelQualityScore,
-			factors.Hardware, factors.LoadPenalty, factors.TelemetryFresh)
+		logDecision(logger, slog.LevelInfo, "planning", "selected", *bestNode,
+			bestModel, bestScore, factors, score.Eligibility{})
 
 		assignments = append(assignments, Assignment{
 			Subtask: st,
@@ -186,7 +191,7 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	return assignments, nil
 }
 
-func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabilities [][]string, load map[string]simulatedNodeLoad, exp Experience, cfg *ScoringConfig, now time.Time) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
+func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabilities [][]string, load map[string]simulatedNodeLoad, exp Experience, cfg *ScoringConfig, now time.Time, logger *slog.Logger) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
 	var best *cluster.NodeStatus
 	bestScore := math.Inf(-1)
 	bestBias := 0.0
@@ -194,10 +199,16 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabil
 	bestLoad := simulatedNodeLoad{}
 	var bestCapabilities []string
 	scoringSubtask := toScoringSubtask(st, outDegree)
+	debug := logger.Enabled(context.Background(), slog.LevelDebug)
 
 	for i := range nodes {
 		candidate, ok := prepareScoringCandidateForScore(&nodes[i], scoringSubtask, nodeCapabilities[i])
 		if !ok {
+			if debug {
+				eligibility := score.ExplainEligibility(nodes[i], scoringSubtask)
+				logDecision(logger, slog.LevelDebug, "planning", eligibility.Reason,
+					nodes[i], "", 0, ScoreFactors{}, eligibility)
+			}
 			continue
 		}
 		node := candidate.node
@@ -214,6 +225,13 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabil
 			*node, scoringSubtask, candidate.prepared, nodeLoad.active, nodeLoad.pendingDependents,
 			score.Experience{LearnedBias: learnedBias, TokensPerSecond: tokensPerSecond}, *cfg, now,
 		)
+		if debug {
+			_, details := score.ScorePrepared(*node, scoringSubtask, candidate.prepared,
+				nodeLoad.active, nodeLoad.pendingDependents,
+				score.Experience{LearnedBias: learnedBias, TokensPerSecond: tokensPerSecond}, *cfg, now)
+			logDecision(logger, slog.LevelDebug, "planning", "eligible", *node,
+				candidate.prepared.Model(), scoreValue, details, score.ExplainEligibility(*node, scoringSubtask))
+		}
 		if scoreValue > bestScore {
 			bestScore = scoreValue
 			best = node

@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
-	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +18,7 @@ import (
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/version"
 )
 
@@ -81,13 +80,19 @@ func (s *Server) handlePairingRoster(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.identity.TrustedPeers())
 }
 
-func (s *Server) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handlePairingStatus(w http.ResponseWriter, r *http.Request) {
 	if s.identity == nil {
 		writeError(w, apperr.UnavailableError(errors.New("pairing is not initialized")))
 		return
 	}
 	status := map[string]any{"role": "orchestrator", "address": s.advertiseAddr, "orchestrator_id": s.SelfID()}
-	if pin, expiresAt, ok := s.identity.ActivePairingPIN(); ok {
+	fingerprint, err := peeridentity.CertificateFingerprint(s.identity.CertificatePEM())
+	if err != nil {
+		writeError(w, apperr.InternalError(err))
+		return
+	}
+	status["fingerprint"] = fingerprint
+	if pin, expiresAt, ok := s.identity.ActivePairingPIN(); ok && r.TLS == nil {
 		status["pin"] = pin
 		status["expires_at"] = expiresAt
 	}
@@ -149,15 +154,12 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
+	if err := peeridentity.ValidatePeerConnection(request.ID, request.CertificatePEM, r.TLS); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
 	}
-	remoteIP := net.ParseIP(host)
-	sameSubnet := discovery.IsSameSubnet(remoteIP)
-
 	pinValid := s.identity.ConsumePairingPIN(request.PIN)
-	if !sameSubnet && !pinValid {
+	if !pinValid {
 		logging.Errorf("orchestrator", "orchestrator: rejected pairing request from %s: PIN invalid, expired, or already used", r.RemoteAddr)
 		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
 		return
@@ -182,8 +184,6 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logging.Infof("orchestrator", "orchestrator: successfully paired peer role=%s from %s using PIN", request.Role, r.RemoteAddr)
-	} else {
-		logging.Infof("orchestrator", "orchestrator: automatically paired node %s from same subnet (%s)", request.ID, r.RemoteAddr)
 	}
 	s.metrics.recordPairingEvent()
 	writeJSON(w, http.StatusOK, pairingJoinResponse{
@@ -217,10 +217,15 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request, err := httpx.DecodeJSON[struct {
-		PIN string `json:"pin"`
+		PIN         string `json:"pin"`
+		Fingerprint string `json:"fingerprint"`
 	}](w, r, 4<<10)
 	if err != nil {
 		writeError(w, apperr.Invalid(errors.New("invalid pairing invitation request")))
+		return
+	}
+	if err := peeridentity.ValidateFingerprint(request.Fingerprint); err != nil {
+		writeError(w, apperr.Invalid(errors.New("the out-of-band verified destination fingerprint is required")))
 		return
 	}
 	activePIN, expiresAt, active := s.identity.ActivePairingPIN()
@@ -287,7 +292,10 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	client := httpx.NewClient(httpx.ClientOptions{
 		Timeout:   discoveryRequestTimeout,
-		Transport: s.identity.BootstrapTransportForID(nodeID),
+		Transport: s.identity.BootstrapTransportForFingerprint(nodeID, request.Fingerprint),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("pairing invitation redirects are not permitted")
+		},
 	})
 	response, err := client.Do(outbound)
 	if err != nil {
@@ -296,8 +304,7 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	defer closeutil.Discard(response.Body)
 	if response.StatusCode != http.StatusAccepted {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
-		writeError(w, apperr.UpstreamError(fmt.Errorf("node rejected pairing invitation: %s", strings.TrimSpace(string(message)))))
+		writeError(w, apperr.UpstreamError(fmt.Errorf("node rejected pairing invitation with HTTP status %d", response.StatusCode)))
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{

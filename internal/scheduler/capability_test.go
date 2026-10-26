@@ -12,18 +12,18 @@ import (
 func TestScheduler_CapabilityMatchingRequiredAndPreferred(t *testing.T) {
 	nodes := []cluster.NodeStatus{
 		{
-			ID:      "coder-node",
-			Address: "http://coder:8080",
-			Healthy: true,
+			ID:           "coder-node",
+			Address:      "http://coder:8080",
+			Healthy:      true,
 			Capabilities: []string{"coder", "fast"},
 			Models: []engine.Model{
 				{Name: "qwen2.5-coder:7b", Tags: []string{"code", "general"}, SizeGB: 4.5},
 			},
 		},
 		{
-			ID:      "research-node",
-			Address: "http://research:8080",
-			Healthy: true,
+			ID:           "research-node",
+			Address:      "http://research:8080",
+			Healthy:      true,
 			Capabilities: []string{"researcher", "high-quality"},
 			Models: []engine.Model{
 				{Name: "deepseek-r1:7b", Tags: []string{"reasoning", "general"}, SizeGB: 7.0},
@@ -52,10 +52,10 @@ func TestScheduler_CapabilityMatchingRequiredAndPreferred(t *testing.T) {
 
 	// Subtask requiring "researcher" capability
 	researchTask := Subtask{
-		ID:                   "sub-2",
-		Description:          "Deep research",
-		TaskType:             "general",
-		RequiredCapabilities: []string{"researcher"},
+		ID:                    "sub-2",
+		Description:           "Deep research",
+		TaskType:              "general",
+		RequiredCapabilities:  []string{"researcher"},
 		PreferredCapabilities: []string{"high-quality"},
 	}
 	assignments, err = Assign([]Subtask{researchTask}, nodes)
@@ -168,18 +168,18 @@ func TestScheduler_TelemetryFreshnessWindow(t *testing.T) {
 func TestScheduler_TopologyAwareLoadPenalty(t *testing.T) {
 	nodes := []cluster.NodeStatus{
 		{
-			ID:      "node-1",
-			Address: "http://n1:8080",
-			Healthy: true,
+			ID:       "node-1",
+			Address:  "http://n1:8080",
+			Healthy:  true,
 			Hardware: hardware.Info{Score: 80.0},
-			Models:  []engine.Model{{Name: "model", Tags: []string{"general"}}},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
 		},
 		{
-			ID:      "node-2",
-			Address: "http://n2:8080",
-			Healthy: true,
+			ID:       "node-2",
+			Address:  "http://n2:8080",
+			Healthy:  true,
 			Hardware: hardware.Info{Score: 80.0},
-			Models:  []engine.Model{{Name: "model", Tags: []string{"general"}}},
+			Models:   []engine.Model{{Name: "model", Tags: []string{"general"}}},
 		},
 	}
 

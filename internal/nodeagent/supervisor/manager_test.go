@@ -147,7 +147,7 @@ func TestManagerAutomaticallyRestartsCrashLoopWithBackoffLimit(t *testing.T) {
 		t.Fatalf("initial start: %v", err)
 	}
 	status := waitForStatus(t, manager, "test-engine", func(status Status) bool {
-		return status.State == stateFailed && status.RestartCount == 2
+		return status.State == stateFailed && status.RestartCount == 2 && status.LastError == "restart limit exceeded"
 	})
 	if status.LastError != "restart limit exceeded" {
 		t.Fatalf("crash-loop status error = %q", status.LastError)
@@ -411,12 +411,15 @@ func (testRPCRelayController) StartHead(_ context.Context, _ string, targets []R
 
 func (testRPCRelayController) Stop(context.Context, string) error { return nil }
 
-func TestSanitizedProcessOutputRedactsCredentialForms(t *testing.T) {
+func TestProcessOutputSummaryOmitsCredentialAndUnlabelledContent(t *testing.T) {
 	line := []byte(`api_key="secret-one" AWS_SECRET_ACCESS_KEY=secret-five Authorization: Bearer secret-two URL=https://user:secret-three@example.test/?token=secret-four`)
-	sanitized := sanitizedProcessOutput(line, false)
-	for _, secret := range []string{"secret-one", "secret-two", "secret-three", "secret-four", "secret-five"} {
+	sanitized := processOutputSummary(append(line, []byte(" bare-secret prompt-content")...), false)
+	for _, secret := range []string{"secret-one", "secret-two", "secret-three", "secret-four", "secret-five", "bare-secret", "prompt-content"} {
 		if strings.Contains(sanitized, secret) {
 			t.Errorf("sanitized output %q contains %q", sanitized, secret)
+		}
+		if !strings.Contains(sanitized, "raw output omitted") {
+			t.Fatalf("missing explicit privacy metadata: %q", sanitized)
 		}
 	}
 }
@@ -445,6 +448,9 @@ func testConfig(binary string, kind config.ManagedEngineKind, port int) config.N
 
 func buildFakeEngine(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("fake-engine processes are covered by full qualification")
+	}
 	name := "fake-engine"
 	if runtime.GOOS == "windows" {
 		name += ".exe"

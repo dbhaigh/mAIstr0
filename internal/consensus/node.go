@@ -53,7 +53,6 @@ type Config struct {
 
 type Node struct {
 	id                raft.ServerID
-	clusterID         string
 	raft              *raft.Raft
 	fsm               *stateMachine
 	transport         raft.Transport
@@ -74,7 +73,7 @@ func Open(cfg Config) (*Node, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("consensus: create data directory: %w", err)
 	}
-	identity, err := LoadOrCreateIdentity(
+	_, err := LoadOrCreateIdentity(
 		filepath.Join(cfg.DataDir, "cluster-identity.json"),
 		cfg.ID,
 		cfg.ClusterID,
@@ -120,7 +119,6 @@ func Open(cfg Config) (*Node, error) {
 	}
 	node := &Node{
 		id:                raft.ServerID(cfg.ID),
-		clusterID:         identity.ClusterID,
 		raft:              raftNode,
 		fsm:               fsm,
 		transport:         cfg.Transport,
@@ -221,8 +219,7 @@ func uintOr(value, fallback uint64) uint64 {
 	return value
 }
 
-func (n *Node) ID() string        { return string(n.id) }
-func (n *Node) ClusterID() string { return n.clusterID }
+func (n *Node) ID() string { return string(n.id) }
 
 // IsLeader is a state hint only. Mutations must use Apply or a membership
 // method, which require the Raft quorum to commit the operation.
@@ -233,22 +230,6 @@ func (n *Node) IsLeader() bool { return n.raft.State() == raft.Leader }
 func (n *Node) Leader() (id, address string) {
 	leaderAddress, leaderID := n.raft.LeaderWithID()
 	return string(leaderID), string(leaderAddress)
-}
-
-func (n *Node) WaitForLeader(ctx context.Context) (id, address string, err error) {
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		id, address = n.Leader()
-		if id != "" && address != "" {
-			return id, address, nil
-		}
-		select {
-		case <-ctx.Done():
-			return "", "", ctx.Err()
-		case <-ticker.C:
-		}
-	}
 }
 
 // VerifyLeader confirms that this node still has quorum-backed leadership.

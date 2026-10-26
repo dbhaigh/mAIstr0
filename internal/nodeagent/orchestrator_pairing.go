@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/logging"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
+	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
 func (c *orchestratorLink) pairLocal(orchestratorID, certificatePEM, address string) error {
@@ -40,7 +42,7 @@ func (c *orchestratorLink) pairWithOrchestrator(address, pin string) error {
 	return c.pairWithAddress(address, "", strings.TrimSpace(pin))
 }
 
-func (c *orchestratorLink) pairWithDiscoveredOrchestrator(id, address, pin string) error {
+func (c *orchestratorLink) pairWithDiscoveredOrchestrator(id, address, pin string, fingerprint ...string) error {
 	if strings.TrimSpace(id) == "" {
 		return errors.New("selected orchestrator identity is required")
 	}
@@ -54,17 +56,17 @@ func (c *orchestratorLink) pairWithDiscoveredOrchestrator(id, address, pin strin
 		}
 		candidateAddress, err := normalizeOrchestratorAddress(candidate.address)
 		if err == nil && candidateAddress == address {
-			return c.pairWithAddress(address, id, strings.TrimSpace(pin))
+			return c.pairWithAddress(address, id, strings.TrimSpace(pin), fingerprint...)
 		}
 	}
 	return errSelectedOrchestratorNotDiscovered
 }
 
-func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string) error {
-	return c.pairWithAddressContext(context.Background(), address, expectedID, pin)
+func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string, fingerprint ...string) error {
+	return c.pairWithAddressContext(context.Background(), address, expectedID, pin, fingerprint...)
 }
 
-func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, expectedID, pin string) (resultErr error) {
+func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, expectedID, pin string, fingerprint ...string) (resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			logging.Errorf("nodeagent", "nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
@@ -90,10 +92,26 @@ func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, 
 	if expectedID != "" {
 		transport = c.trust.BootstrapTransportForID(expectedID)
 	}
+	verifiedFingerprint := ""
+	if expectedID == "" || !c.trust.IsTrustedID(expectedID) {
+		verifiedFingerprint = cfg.OrchestratorFingerprint
+	}
+	if len(fingerprint) > 0 && fingerprint[0] != "" {
+		verifiedFingerprint = strings.TrimSpace(fingerprint[0])
+	}
+	if verifiedFingerprint != "" {
+		if err := peeridentity.ValidateFingerprint(verifiedFingerprint); err != nil {
+			return err
+		}
+		transport = c.trust.BootstrapTransportForFingerprint(expectedID, verifiedFingerprint)
+	}
 	defer transport.CloseIdleConnections()
 	client := httpx.NewClient(httpx.ClientOptions{
 		Timeout:   httpx.ProbeTimeout,
 		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("pairing redirects are not permitted")
+		},
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address+"/api/pairing/join", bytes.NewReader(body))
 	if err != nil {
@@ -109,17 +127,40 @@ func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, 
 		return fmt.Errorf("pairing rejected by orchestrator at %s with HTTP status %d", address, resp.StatusCode)
 	}
 	var result nodePairingResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, httpx.ControlJSONBodyBytes+1))
+	if err != nil {
+		return fmt.Errorf("read pairing response: %w", err)
+	}
+	if int64(len(data)) > httpx.ControlJSONBodyBytes {
+		return errors.New("pairing response exceeds the control-body limit")
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
 		return fmt.Errorf("decode pairing response: %w", err)
 	}
 	if result.Role != "orchestrator" || result.ID == "" || (expectedID != "" && result.ID != expectedID) {
 		return fmt.Errorf("pairing server identity %q does not match discovered orchestrator %q", result.ID, expectedID)
 	}
+	if err := peeridentity.ValidatePeerConnection(result.ID, result.CertificatePEM, resp.TLS); err != nil {
+		return fmt.Errorf("authenticate pairing response: %w", err)
+	}
+	for id, certificate := range result.Peers {
+		if id == cfg.NodeID {
+			continue
+		}
+		if err := c.trust.ValidatePeer(id, certificate); err != nil {
+			return fmt.Errorf("validate paired peer %q: %w", id, err)
+		}
+		if id == result.ID {
+			if err := peeridentity.ValidatePeerConnection(id, certificate, resp.TLS); err != nil {
+				return fmt.Errorf("authenticate coordinator roster entry: %w", err)
+			}
+		}
+	}
 	if err := c.trust.TrustPeerDetails(result.ID, result.CertificatePEM, "orchestrator", address); err != nil {
 		return err
 	}
 	for id, certificate := range result.Peers {
-		if id == cfg.NodeID {
+		if id == cfg.NodeID || id == result.ID {
 			continue
 		}
 		if err := c.trust.TrustPeer(id, certificate); err != nil {

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "3a8864a2c281340745bd89794ba242785297df45",
+  "gomaxprocs": 2,
+  "rounds": 6,
+  "benchtime": "200ms",
+  "timing_ratio": 1.5,
+  "timing_absolute_ns": 100000,
+  "maximum_relative_range": 0.5,
+  "allocation_ratio": 1.15,
+  "allocation_absolute_bytes": 256,
+  "allocation_absolute_count": 1,
+  "benchmarks": [
+    {
+      "package": "./internal/orchestrator",
+      "names": ["BenchmarkBuildSnapshot", "BenchmarkPublishSnapshotRequests"]
+    },
+    {
+      "package": "./internal/hub",
+      "names": ["BenchmarkPublisherRequest"]
+    },
+    {
+      "package": "./internal/scheduler",
+      "names": ["BenchmarkAssignWithConfigNodes80", "BenchmarkAssignWithExperienceNodes32ManyModels", "BenchmarkAssignWithExperienceNodeModels"]
+    },
+    {
+      "package": "./internal/memory",
+      "names": ["BenchmarkMemoryHistoryPageTransfer"]
+    }
+  ]
+}

@@ -452,7 +452,7 @@ func TestShardGroupHandlersExposeCreateListGetAndDelete(t *testing.T) {
 	}
 }
 
-func newTestShardManager(t *testing.T, failStart string) (*ShardManager, *testShardRegistry, *testManagedEngines, *testShardCapacity, *testShardStore) {
+func newTestShardManager(t testing.TB, failStart string) (*ShardManager, *testShardRegistry, *testManagedEngines, *testShardCapacity, *testShardStore) {
 	t.Helper()
 	registry := newTestShardRegistry()
 	engines := newTestManagedEngines()

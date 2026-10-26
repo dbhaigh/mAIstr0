@@ -10,6 +10,18 @@ import (
 	"testing"
 )
 
+func TestStructuredLoggingOmitsOpaqueURLSecrets(t *testing.T) {
+	result := redactURLSecrets("https://example.test/path?opaque=private-query#private-fragment")
+	for _, secret := range []string{"private-query", "private-fragment"} {
+		if strings.Contains(result, secret) {
+			t.Fatalf("URL diagnostics exposed %q", secret)
+		}
+	}
+	if !strings.Contains(result, "https://example.test/path") || !strings.Contains(result, "redacted") {
+		t.Fatalf("redacted endpoint lost useful routing/omission context: %q", result)
+	}
+}
+
 func TestStructuredLoggingRedactsDynamicErrorsAndRoutesFileOnlyRecords(t *testing.T) {
 	var console, file bytes.Buffer
 	logger := NewSlogLogger(&console, &file, slog.LevelInfo)

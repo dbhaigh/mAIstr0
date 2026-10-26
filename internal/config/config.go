@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
 const (
@@ -54,6 +55,7 @@ type NodeConfig struct {
 	OrchestratorAddr             string                `json:"orchestrator_addr"` // empty = auto-discover on the LAN
 	MaxConcurrentTasks           int                   `json:"max_concurrent_tasks"`
 	PairingPIN                   string                `json:"pairing_pin,omitempty"`
+	OrchestratorFingerprint      string                `json:"orchestrator_fingerprint,omitempty"`
 	DisabledModels               []string              `json:"disabled_models"`
 	DefaultModel                 string                `json:"default_model"`
 	Engines                      []EngineConfig        `json:"engines,omitempty"`
@@ -183,8 +185,13 @@ func (cfg NodeConfig) Validate() error {
 			violations = append(violations, err)
 		}
 	}
-	if cfg.PairingPIN != "" && !validPairingPIN(cfg.PairingPIN) {
+	if cfg.PairingPIN != "" && !ValidPairingPIN(cfg.PairingPIN) {
 		violations = append(violations, fmt.Errorf("pairing_pin must be empty or exactly six digits"))
+	}
+	if cfg.OrchestratorFingerprint != "" {
+		if err := peeridentity.ValidateFingerprint(cfg.OrchestratorFingerprint); err != nil {
+			violations = append(violations, fmt.Errorf("orchestrator_fingerprint: %w", err))
+		}
 	}
 	if err := validateMemoryPath(cfg.MemoryPath); err != nil {
 		violations = append(violations, err)
@@ -446,7 +453,8 @@ func validateURL(field, value string, schemes ...string) error {
 	return fmt.Errorf("%s must use %s", field, strings.Join(schemes, " or "))
 }
 
-func validPairingPIN(pin string) bool {
+// ValidPairingPIN checks the shared six-ASCII-digit format, not PIN lifetime or reuse.
+func ValidPairingPIN(pin string) bool {
 	if len(pin) != 6 {
 		return false
 	}

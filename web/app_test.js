@@ -36,6 +36,17 @@ const dashboardSnapshot = require("./src/shared/snapshot.js");
 const dashboardDOM = require("./src/shared/dom.js");
 const dashboardFormat = require("./src/shared/format.js");
 
+test("Hardware summaries distinguish unavailable utilization from measured zero", () => {
+  const hardware = { has_gpu: true, has_npu: true, gpu_stats_available: true, npu_stats_available: true };
+  assert.doesNotMatch(dashboardViewModel.formatNodeHardware({ hardware }), /busy|null|undefined/);
+  hardware.gpu_utilization_percent = null;
+  hardware.npu_utilization_percent = null;
+  assert.doesNotMatch(dashboardViewModel.formatNodeHardware({ hardware }), /busy|null/);
+  hardware.gpu_utilization_percent = 0;
+  hardware.npu_utilization_percent = 0;
+  assert.match(dashboardViewModel.formatNodeHardware({ hardware }), /0% busy/);
+});
+
 test("Dashboard loads its generated bundle through the Go embedded static path", () => {
   assert.equal(appScriptPaths.length, 1);
   assert.match(appScriptPaths[0], /^\/app\.[a-f0-9]{12}\.js$/);
@@ -106,7 +117,7 @@ test("Shard dashboard renders group state, members, and escaped rationale", () =
     escapeHtml: dashboardFormat.escapeHtml,
   });
   vm.runInContext(shardViewSource, context);
-  context.renderShardGroups([{
+  const groups = [{
     id: "shard-1",
     model: { name: "model<&>" },
     mode: "llamacpp-rpc",
@@ -119,13 +130,18 @@ test("Shard dashboard renders group state, members, and escaped rationale", () =
       started: true,
     }],
     plan: { rationale: ["GPU <memory> fit"] },
-  }]);
+  }];
+  context.renderShardGroups(groups);
 
   assert.match(elements["shard-group-list"].innerHTML, /model&lt;&amp;&gt;/);
   assert.match(elements["shard-group-list"].innerHTML, /node&lt;&amp;&gt;/);
   assert.match(elements["shard-group-list"].innerHTML, /GPU &lt;memory&gt; fit/);
   assert.match(elements["shard-group-list"].innerHTML, /badge healthy/);
   assert.equal(elements["shard-group-status"].textContent, "1 shard group");
+  groups[0].state = "degraded";
+  context.renderShardGroups(groups);
+  assert.match(elements["shard-group-list"].innerHTML, /started, group not ready/);
+  assert.doesNotMatch(elements["shard-group-list"].innerHTML, /badge healthy/);
 });
 
 test("Failed shard groups can be deleted without deleting ready groups or hiding errors", async () => {
@@ -1128,6 +1144,29 @@ test("Nodes page combines GPU, NPU, CPU, and RAM histories in one graph", () => 
   }
 });
 
+test("Resource telemetry distinguishes missing values, genuine zero, stale and fresh samples", () => {
+  const context = vm.createContext({ escapeHtml: String });
+  vm.runInContext(resourceHistorySource, context);
+  const now = Date.parse("2026-10-26T12:00:00Z");
+  assert.equal(context.resourceTelemetryLabel({}, now), "Resource telemetry unavailable");
+  assert.equal(context.resourceTelemetryLabel({ telemetry_at: "0001-01-01T00:00:00Z" }, now), "Resource telemetry unavailable");
+  assert.equal(context.resourceTelemetryLabel({ telemetry_at: new Date(now - 30000).toISOString() }, now), "Fresh resource telemetry");
+  assert.equal(context.resourceTelemetryLabel({ telemetry_at: new Date(now - 30001).toISOString() }, now), "Stale resource telemetry");
+  assert.equal(context.resourceTelemetryLabel({ telemetry_at: new Date(now + 1).toISOString() }, now), "Stale resource telemetry");
+  for (const kind of ["gpu", "npu"]) {
+    const gauge = kind === "gpu" ? context.gpuGaugeMarkup : context.npuGaugeMarkup;
+    const hardware = { [`has_${kind}`]: true, [`${kind}_stats_available`]: true };
+    assert.match(gauge({ hardware }), /n\/a/);
+    hardware[`${kind}_utilization_percent`] = null;
+    assert.match(gauge({ hardware }), /n\/a/);
+    hardware[`${kind}_utilization_percent`] = 0;
+    assert.match(gauge({ hardware }), /utilization 0%/);
+  }
+  const html = context.resourceHistoryMarkup({ id: "missing", hardware: { cpu_stats_available: true, cpu_utilization_percent: null } });
+  assert.match(html, /CPU n\/a/);
+  assert.doesNotMatch(html, /CPU 0%/);
+});
+
 test("Nodes page omits GPU and NPU details when the hardware is absent", () => {
   const context = vm.createContext({
     escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
@@ -1740,7 +1779,7 @@ test("Persistence warning is displayed only when the API reports degraded storag
 });
 
 test("An open yielded dashboard navigates to the local worker before using pairing controls", async () => {
-  const pairingSource = source.slice(source.indexOf("async function loadPairingStatus("), source.indexOf("async function activateAgentTab("));
+  const pairingSource = source.slice(source.indexOf("async function loadPairingStatus("), source.indexOf("async function checkPairingInvitation("));
   let destination;
   const context = vm.createContext({
     fetchJSON: async () => ({ role: "node", dashboard_url: "http://localhost:7451" }),
@@ -1751,7 +1790,7 @@ test("An open yielded dashboard navigates to the local worker before using pairi
   assert.equal(destination, "http://localhost:7451");
 });
 
-test("Same-subnet auto-join suppresses the automatic pairing dialog", async () => {
+test("Legacy auto-join status remains displayable; current manual status prompts for verified pairing", async () => {
   const pairingSource = source.slice(source.indexOf("async function loadPairingStatus("), source.indexOf("async function activateAgentTab("));
   async function pairingContext(autoJoinAvailable, promptAlreadyOpen = false) {
     let dialogsShown = 0;
@@ -1773,6 +1812,7 @@ test("Same-subnet auto-join suppresses the automatic pairing dialog", async () =
         },
       },
       pairingPinView: {},
+      pairingFingerprintDisplay: {},
       pairingNodeConnect: {},
       pairingConnectOpenBtn: {},
       pairingInstructions: {},
@@ -1817,6 +1857,7 @@ test("Pairing the local worker uses its join form, not an invitation to itself",
     pairingAddressField: {},
     pairingAddress: { value: "", focus: () => {} },
     pairingCode: {},
+    pairingFingerprint: { value: "" },
     pairingConnectButton: {},
     document: { getElementById: () => ({}) },
   });
@@ -1829,7 +1870,7 @@ test("Pairing the local worker uses its join form, not an invitation to itself",
   assert.equal(context.pairingAddressField.hidden, false);
 });
 
-test("Pairing a selected orchestrator pre-fills its secure address and optional PIN", () => {
+test("Pairing a selected orchestrator never trusts a discovery fingerprint", () => {
   const dialogSource = source.slice(source.indexOf("function openPairingDialog("), source.indexOf("pairingPinRegenerateBtn?.addEventListener("));
   let shown = false;
   const title = {};
@@ -1846,6 +1887,7 @@ test("Pairing a selected orchestrator pre-fills its secure address and optional 
     pairingAddressField: {},
     pairingAddress: { value: "", focus: () => {} },
     pairingCode: { value: "old-pin" },
+    pairingFingerprint: { value: "old-fingerprint" },
     pairingConnectButton: {},
     document: {
       getElementById: (id) => id === "pairing-title-node" ? title : description,
@@ -1859,10 +1901,12 @@ test("Pairing a selected orchestrator pre-fills its secure address and optional 
     peer_addr: "https://192.168.1.20:7450",
     discovered: true,
     joinOrchestrator: true,
+    fingerprint: "untrusted-discovery-fingerprint",
   });
   assert.equal(shown, true);
   assert.equal(title.textContent, "Join selected-orchestrator's cluster");
-  assert.match(description.textContent, /PIN is only needed when joining across subnets/);
+  assert.match(description.textContent, /fingerprint out of band/);
+  assert.equal(context.pairingFingerprint.value, "");
   assert.equal(context.pairingAddress.value, "https://192.168.1.20:7450");
   assert.equal(context.pairingAddress.required, true);
   assert.equal(context.pairingAddressField.hidden, false);
@@ -1886,6 +1930,7 @@ test("Pairing a selected orchestrator sends its expected identity to the local n
     pairingConnectButton: { disabled: false },
     pairingAddress: { value: "https://192.168.1.20:7450" },
     pairingCode: { value: "" },
+    pairingFingerprint: { value: "a".repeat(64) },
     pairingStatus: { textContent: "" },
     pairingState: { textContent: "" },
     pairingConnectDialog: { close() {} },
@@ -1903,9 +1948,49 @@ test("Pairing a selected orchestrator sends its expected identity to the local n
   assert.deepEqual(JSON.parse(requests[0].options.body), {
     address: "https://192.168.1.20:7450",
     pin: "",
+    fingerprint: "a".repeat(64),
     orchestrator_id: "selected-orchestrator",
   });
   assert.match(context.pairingStatus.textContent, /Connected to selected-orchestrator/);
+});
+
+test("Invitation polling preserves typed verification and acceptance never copies the offered fingerprint", async () => {
+  const invitationSource = source.slice(source.indexOf("async function checkPairingInvitation("), source.indexOf("async function activateAgentTab("));
+  const requests = [];
+  const listeners = [];
+  const fingerprint = { value: "old value" };
+  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; }, addEventListener() {} };
+  const context = vm.createContext({
+    fetchJSON: async (path, options) => {
+      if (path === "/api/pairing/invitation") return { pending: true, orchestrator_id: "leader", address: "https://leader:7450", fingerprint: "a".repeat(64), expires_at: "2030-01-01" };
+      requests.push({ path, options });
+      return { orchestrator_id: "leader", orchestrator_addr: "https://leader:7450" };
+    },
+    dashboardState: { pairing: {} },
+    pairingInvitationFingerprint: fingerprint,
+    pairingInvitationDetails: {},
+    pairingInvitationStatus: {},
+    pairingInvitationDialog: dialog,
+    pairingConnectDialog: { close() {} },
+    pairingInvitationAcceptBtn: { addEventListener: () => listeners.push("accept") },
+    pairingInvitationDeclineBtn: { addEventListener: () => listeners.push("decline") },
+    loadPairingStatus: async () => {},
+    refresh: async () => {},
+  });
+  vm.runInContext(invitationSource, context);
+  await context.checkPairingInvitation();
+  assert.equal(fingerprint.value, "");
+  await context.respondToPairingInvitation(true);
+  assert.equal(requests.length, 0);
+  assert.match(context.pairingInvitationStatus.textContent, /verified out of band/);
+  fingerprint.value = "b".repeat(64);
+  await context.checkPairingInvitation();
+  assert.equal(fingerprint.value, "b".repeat(64));
+  assert.deepEqual(listeners, ["accept", "decline"]);
+  await context.respondToPairingInvitation(true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].path, "/api/pairing/invitation/accept");
+  assert.deepEqual(JSON.parse(requests[0].options.body), { fingerprint: "b".repeat(64) });
 });
 
 test("Direct chat removes the welcome card before showing the first message", () => {

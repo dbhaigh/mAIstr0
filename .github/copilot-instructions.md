@@ -1,4 +1,37 @@
-# mAIstr0 Copilot Instructions
+## mAIstr0 Engineering Rules for GitHub Copilot
+
+You are modifying the existing mAIstr0 repository, a Go-based local-first distributed AI orchestration platform.
+
+## Non-negotiable rules
+
+1. Inspect the current code before proposing or implementing changes. Treat the current repository as authoritative; historical plans and previous reviews are evidence, not proof that a task remains unfinished.
+2. Read `AGENTS.md`, `improvements.md`, the relevant architecture documentation, and applicable tests before modifying a subsystem.
+3. Preserve existing HTTP endpoints, JSON schemas, configuration keys, command-line behavior, and bbolt on-disk formats unless a specific task explicitly authorizes a compatibility change.
+4. Do not rewrite working components merely to make them shorter, more fashionable, or architecturally different.
+5. Do not introduce abstractions, dependencies, caching, goroutines, or parallelism without a concrete justification.
+6. Before removing code, prove that it is unused across production code, tests, generated code, build scripts, configuration, runtime registration, reflection, and external contracts.
+7. Prefer standard-library functionality and existing project dependencies.
+8. Make concurrency, cancellation, resource ownership, timeouts, retries, and cleanup behavior explicit.
+9. Add regression tests for every bug fix and characterization tests before behavior-preserving refactors.
+10. Measure performance before and after performance changes using repeatable workloads and representative cluster configurations.
+11. Never claim an optimization is faster without measured evidence. Report regressions as well as improvements.
+12. Run the applicable formatting, static analysis, unit tests, race tests where supported, integration tests, frontend tests, and build checks.
+13. Update documentation and changelog entries when externally observable behavior changes.
+14. Never commit, push, delete user work, or overwrite unrelated changes without explicit approval.
+
+## Required completion report
+
+For every phase, provide:
+- The problem and evidence supporting the change.
+- Files and components changed.
+- Dead code and duplication removed, including how usage was verified.
+- Tests added and commands executed, with actual results.
+- Before/after performance measurements where relevant.
+- Compatibility, security, and concurrency implications.
+- Remaining risks and deferred work.
+- A concise proposed commit message.
+
+Stop and report blockers rather than weakening tests or inventing successful results.
 
 ## Architecture map
 - `cmd/maistr0`: CLI composition root; loads configuration and starts node and/or orchestrator roles.

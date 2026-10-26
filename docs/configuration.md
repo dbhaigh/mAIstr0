@@ -14,12 +14,18 @@ The main options include:
 - `--node-listen-addr <address>` and `--orchestrator-listen-addr <address>`
 - `--orchestrator-addr <https-url>` for a node
 - `--pairing-pin <six-digit-pin>` for unattended node enrollment
+- `--orchestrator-fingerprint <64-hex-SHA256>` for verified first-contact
+  enrollment; also `orchestrator_fingerprint` in node JSON. Stored pins take
+  precedence when reconnecting to a known selected identity, preserving failover.
+  For certificate rotation, supply the verified new fingerprint explicitly in
+  the local re-pairing UI/API.
 - `--no-discovery` for node-only configurations
 - `--no-browser` to suppress automatic dashboard launch
 - `--harness pi|deepseek` to select the default interactive harness
 - `--print-config` to print normalized configuration and exit
 - `--diagnostics` to print a prompt-free local health summary
-- `--no-peer-updates` to disable automatic executable updates from paired peers
+- `--allow-peer-updates` to opt in to executable updates from paired peers
+- `--no-peer-updates` to prohibit those updates, overriding the allow flag
 
 Run `maistr0 --help` for the complete option list. Orchestrator election
 requires LAN discovery; disabling discovery is supported only for
@@ -27,9 +33,15 @@ node-oriented startup.
 
 ## Automatic peer executable updates
 
-Version 0.0.24.1 introduces automatic updates from **paired peers**, not GitHub.
+Peer executable updates are **disabled by default**. Opt in with
+`--allow-peer-updates` only if every paired publisher is trusted to execute
+code as the application account. `--no-peer-updates` overrides that opt-in.
+Existing launch scripts must add the allow flag if this authority is intended;
+ordinary pairing, configuration, and trust-store formats remain compatible.
+
+Version 0.0.24.1 introduced updates from **paired peers**, not GitHub.
 Install this version manually once on existing nodes: earlier executables do
-not contain the updater and cannot bootstrap themselves. Thereafter a node
+not contain the updater and cannot bootstrap themselves. When opted in, a node
 checks healthy registered peers and LAN-discovered paired identities every
 30 seconds, using pinned mutual TLS and the peer's executable manifest.
 Only strictly newer numeric `major.minor.patch` or
@@ -66,9 +78,9 @@ this is not a post-start health supervisor. For a later startup failure,
 close the process, restore the `.previous` executable, then restart manually
 with `--no-peer-updates` until the faulty release is withdrawn.
 
-**Accepted security risk / deferred security work:** pairing now grants a
-peer the ability to publish executable code that runs as the local application
-account. A compromised paired node can supply a malicious binary and matching
+**Opt-in security risk / deferred security work:** enabling peer updates grants
+paired publishers the ability to supply executable code that runs as the local
+application account. A compromised paired node can supply a malicious binary and matching
 checksum/version. Mutual TLS authenticates the publisher and SHA-256 detects
 transfer corruption; neither is an independent release signature. Signed
 releases, publisher authorization and revocation policy remain future work.
@@ -189,6 +201,9 @@ orchestrator's `log_level`.
   through 3600 seconds.
 - `log_level` accepts `debug`, `info`, `warn`, or `error` and defaults to
   `info`.
+  Orchestrator debug logs include privacy-safe scheduler candidate rejection,
+  score, telemetry, and capacity-wait explanations; see
+  [scheduler diagnostics](./scheduler-evaluation.md#structured-diagnostics).
 
 For a slow distributed model, use a thirty-minute budget without changing the
 global default:

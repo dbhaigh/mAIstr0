@@ -5,19 +5,19 @@ machines on a LAN. It combines task planning and scheduling, a transparent
 inference router, interactive Pi and DeepSeek harnesses, and synchronized
 cluster memory. It does not require cloud inference.
 
-Current version: **0.0.24.4**. See the [release notes](./changelog.md#00244)
-for the lint-clean codebase, CI tooling updates for Go 1.27, and the consensus
-test fix; [0.0.24.3](./changelog.md#00243) for the race-test scripts and the
-native Windows cgo toolchain fix; and [0.0.24.2](./changelog.md#00242) for
-coalesced dashboard updates, cancellable background services, shared HTTP
-clients, and faster isolated tests. API, configuration, and storage formats
-remain unchanged.
+Current version: **0.1.0**. See the [release notes](./changelog.md#010-2026-10-26)
+for distributed-system correctness fixes, bounded concurrency and shutdown,
+measured routing/dashboard improvements, reproducible benchmarks, and stronger
+CI and package qualification. Before upgrading, review the
+[security migration](./docs/pairing-and-security.md#migration): new pairing
+requires verified certificate fingerprints and peer executable updates now
+require explicit opt-in. Existing stored certificate pins remain compatible.
 
 ## Updating nodes and editing shard members
 
-Starting with 0.0.24.1, nodes download strictly newer versions directly from
-paired peers, then restart **only when idle**. Existing installations need one
-manual upgrade to this version. Stop active shard groups to allow replacement;
+Nodes can opt into downloading strictly newer versions directly from paired
+peers with `--allow-peer-updates` (off by default), then restart **only when
+idle**. Stop active shard groups to allow replacement;
 the updater never force-stops a running group. See
 [peer updates and their accepted executable-trust risk](./docs/configuration.md#automatic-peer-executable-updates)
 before enabling this on machines you do not fully trust.
@@ -32,6 +32,11 @@ remaining memory or runtime failures remain visible on the group. Correct the
 selection and retry, or use **Start** after fixing the reported cause.
 
 ## Quick start
+
+Published archives target Windows/Linux amd64. Source/service examples for
+other platforms are not equivalent release or accelerator qualification.
+See [benchmark and release acceptance](./docs/end-to-end-benchmarks.md) for
+reproducible comparisons, package checks, and explicitly unmeasured benefits.
 
 Download the Windows or Linux archive from
 [GitHub Releases](https://github.com/dbhaigh/mAIstr0/releases). Start the
@@ -53,7 +58,9 @@ bash:
 
 On another machine, start a node and pair it with the orchestrator from the
 dashboard's **Setup** panel. The default dashboard/API ports are `7450` for the
-orchestrator and `7451` for a node. Pairing uses an out-of-band, one-time PIN;
+orchestrator and `7451` for a node. New pairing requires an out-of-band verified
+certificate SHA-256 fingerprint and a one-time PIN, including on the same subnet.
+Peer executable updates default off; opt in only with `--allow-peer-updates`;
 see [Pairing and security](./docs/pairing-and-security.md).
 
 PowerShell:
@@ -114,6 +121,12 @@ cancels background synchronization and upstream event streams before stores clos
   compatibility, limits, and observability.
 - [Development](./docs/development.md) — build, test, contracts, and release
   workflows.
+- [Scheduler evaluation](./docs/scheduler-evaluation.md) — routing diagnostics,
+  reproducible baseline comparisons, and measured policy tradeoffs.
+- [Performance evaluation](./docs/performance-evaluation.md) — CPU/heap/trace
+  coverage, reproducible workloads, measured sync improvements, and tradeoffs.
+- [Concurrency and resource ownership](./docs/concurrency-ownership.md) — queue
+  admission, cancellation, shutdown, resource cleanup, and retained limits.
 - [Security policy](./SECURITY.md) — private vulnerability reporting.
 - [MIT License](./LICENSE).
 - [Contributing](./CONTRIBUTING.md) — pull-request and compatibility

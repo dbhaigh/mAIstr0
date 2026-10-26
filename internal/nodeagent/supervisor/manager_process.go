@@ -12,6 +12,9 @@ import (
 	"github.com/maistr0/maistr0/internal/logging"
 )
 
+// openProcessOutputPipe is replaceable by tests that verify descriptor cleanup.
+var openProcessOutputPipe = os.Pipe
+
 func (m *Manager) launch(engine *managedEngine, controlGeneration uint64, state string) (uint64, <-chan struct{}, error) {
 	if m.isClosed() {
 		return 0, nil, ErrClosed
@@ -43,16 +46,10 @@ func (m *Manager) launch(engine *managedEngine, controlGeneration uint64, state 
 	if engine.modelName != "" {
 		args = append(args, "--alias", engine.modelName)
 	}
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		return 0, nil, ErrStart
-	}
 	cmd := exec.Command(engine.config.BinaryPath, args...)
 	if engine.config.Template != "" {
 		template, ok := enginepkg.ManagedEngineTemplateFor(engine.config.Template)
 		if !ok {
-			_ = reader.Close()
-			_ = writer.Close()
 			return 0, nil, fmt.Errorf("%w: managed engine template is not available", ErrStart)
 		}
 		cmd.Env = applyTemplateEnvironment(os.Environ(), template.Environment)
@@ -78,6 +75,12 @@ func (m *Manager) launch(engine *managedEngine, controlGeneration uint64, state 
 			engine.mu.Unlock()
 			logging.FileWarnf("managed_engine", "%s", warning)
 		}
+	}
+	// The output pipe is opened only after every pre-launch check so early
+	// configuration failures cannot leak descriptors.
+	reader, writer, err := openProcessOutputPipe()
+	if err != nil {
+		return 0, nil, ErrStart
 	}
 	cmd.Stdout = writer
 	cmd.Stderr = writer

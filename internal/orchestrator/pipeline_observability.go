@@ -111,9 +111,16 @@ func (gate *pipelineRequestGate) state(logicalID string) *pipelineRequestState {
 }
 
 func (gate *pipelineRequestGate) begin(ctx context.Context, logicalID string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	state := gate.state(logicalID)
 	for {
 		state.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			state.mu.Unlock()
+			return nil, err
+		}
 		if !state.resharding {
 			state.active++
 			state.mu.Unlock()
@@ -135,9 +142,16 @@ func (gate *pipelineRequestGate) begin(ctx context.Context, logicalID string) (f
 }
 
 func (gate *pipelineRequestGate) beginReshard(ctx context.Context, logicalID string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	state := gate.state(logicalID)
 	for {
 		state.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			state.mu.Unlock()
+			return nil, err
+		}
 		if state.resharding {
 			changed := state.changed
 			state.mu.Unlock()
@@ -163,6 +177,12 @@ func (gate *pipelineRequestGate) beginReshard(ctx context.Context, logicalID str
 			case <-changed:
 				state.mu.Lock()
 			}
+		}
+		if err := ctx.Err(); err != nil {
+			state.resharding = false
+			state.signalLocked()
+			state.mu.Unlock()
+			return nil, err
 		}
 		state.mu.Unlock()
 		return func() {

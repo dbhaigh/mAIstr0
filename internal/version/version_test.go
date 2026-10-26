@@ -3,8 +3,8 @@ package version
 import "testing"
 
 func TestStringPreservesSemanticVersion(t *testing.T) {
-	if got := String(); got != "0.0.24.4" {
-		t.Fatalf("String() = %q, want 0.0.24.4", got)
+	if got := String(); got != "0.1.0" {
+		t.Fatalf("String() = %q, want 0.1.0", got)
 	}
 }
 
@@ -13,6 +13,8 @@ func TestCompareSemanticAndLegacyVersions(t *testing.T) {
 		left, right string
 		want        int
 	}{
+		{"0.0.24.4", "0.1.0", -1},
+		{"0.1.0", "0.0.24.4", 1},
 		{"0.0.24", "0.0.24.1", -1},
 		{"0.0.24.1", "0.0.24", 1},
 		{"0.0.24.9", "0.0.24.10", -1},

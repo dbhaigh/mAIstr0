@@ -12,17 +12,21 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/nodeagent"
 	"github.com/maistr0/maistr0/internal/orchestrator"
@@ -42,6 +46,7 @@ func main() {
 	orchestratorAddr := flag.String("orchestrator-addr", "", "override the orchestrator address the node registers with (empty = auto-discover on the LAN)")
 	pairTo := flag.String("pair-to", "", "deprecated; orchestrator federation is disabled")
 	pairingPIN := flag.String("pairing-pin", "", "one-time PIN displayed by the orchestrator accepting a node")
+	orchestratorFingerprint := flag.String("orchestrator-fingerprint", "", "out-of-band verified SHA-256 certificate fingerprint for first-contact pairing")
 	trayMode := flag.String("tray-mode", "", `override tray behavior: "taskbar" or "hidden"`)
 	noBrowser := flag.Bool("no-browser", false, "do not auto-open the dashboard in a browser on startup")
 	noDiscovery := flag.Bool("no-discovery", false, "disable LAN auto-discovery (node-only; orchestrator election requires discovery)")
@@ -51,6 +56,7 @@ func main() {
 	printConfig := flag.Bool("print-config", false, "print normalized configuration and exit")
 	diagnostics := flag.Bool("diagnostics", false, "print a redacted local health summary and exit")
 	noPeerUpdates := flag.Bool("no-peer-updates", false, "disable automatic idle updates from paired peers")
+	allowPeerUpdates := flag.Bool("allow-peer-updates", false, "allow paired peers to publish executable code that runs as this account (disabled by default)")
 	applyPeerUpdate := flag.String("apply-peer-update", "", "internal staged executable replacement job")
 	cleanupPeerUpdate := flag.String("cleanup-peer-update", "", "internal exited replacement-helper cleanup")
 	flag.Parse()
@@ -75,7 +81,7 @@ func main() {
 		if err := runDiagnostics(os.Stdout, configPrintOptions{
 			role: *role, nodeConfigPath: *nodeConfigPath, orchConfigPath: *orchConfigPath,
 			nodeListenAddr: *nodeListenAddr, orchListenAddr: *orchListenAddr,
-			orchestratorAddr: *orchestratorAddr, pairingPIN: *pairingPIN,
+			orchestratorAddr: *orchestratorAddr, pairingPIN: *pairingPIN, orchestratorFingerprint: *orchestratorFingerprint,
 			trayMode: *trayMode, noBrowser: *noBrowser, noDiscovery: *noDiscovery,
 			harness: *harness, memoryPath: *memoryPath,
 		}); err != nil {
@@ -88,7 +94,7 @@ func main() {
 		err := printNormalizedConfig(os.Stdout, configPrintOptions{
 			role: *role, nodeConfigPath: *nodeConfigPath, orchConfigPath: *orchConfigPath,
 			nodeListenAddr: *nodeListenAddr, orchListenAddr: *orchListenAddr,
-			orchestratorAddr: *orchestratorAddr, pairingPIN: *pairingPIN,
+			orchestratorAddr: *orchestratorAddr, pairingPIN: *pairingPIN, orchestratorFingerprint: *orchestratorFingerprint,
 			trayMode: *trayMode, noBrowser: *noBrowser, noDiscovery: *noDiscovery,
 			harness: *harness, memoryPath: *memoryPath,
 		})
@@ -109,6 +115,8 @@ func main() {
 	if *role == "auto" && *orchestratorAddr != "" {
 		*role = "node"
 	}
+	runCtx, stopRuntime := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopRuntime()
 	preferActiveOrchestrator := *role == "auto"
 	var electionOrchCfg config.OrchestratorConfig
 	var electionNodeCfg config.NodeConfig
@@ -134,6 +142,9 @@ func main() {
 		if *pairingPIN != "" {
 			electionNodeCfg.PairingPIN = *pairingPIN
 		}
+		if *orchestratorFingerprint != "" {
+			electionNodeCfg.OrchestratorFingerprint = *orchestratorFingerprint
+		}
 		if *trayMode != "" {
 			electionNodeCfg.TrayMode = *trayMode
 		}
@@ -153,12 +164,20 @@ func main() {
 			fatalf("cannot elect a single orchestrator without LAN discovery: %v", err)
 		}
 		stop := make(chan struct{})
-		go discovery.Beacon(func() discovery.Announcement { return candidate }, 250*time.Millisecond, stop)
+		beaconDone := make(chan struct{})
+		go func() {
+			defer close(beaconDone)
+			discovery.Beacon(func() discovery.Announcement { return candidate }, 250*time.Millisecond, stop)
+		}()
 		logging.Infof("main", "main: checking for an active orchestrator and startup candidates for %s", startupElectionWindow)
-		time.Sleep(startupElectionWindow)
+		started := background.Wait(runCtx, startupElectionWindow)
 		close(stop)
+		<-beaconDone
 		peers := probe.Snapshot()
 		probe.Close()
+		if !started {
+			return
+		}
 		winner := startupOrchestratorWinner(candidate, peers, preferActiveOrchestrator)
 		if winner.ID != candidate.ID {
 			if winner.PeerAddr == "" {
@@ -186,6 +205,9 @@ func main() {
 		cfg := loadNodeConfig(*nodeConfigPath, *nodeListenAddr, *orchestratorAddr, *noDiscovery)
 		if *pairingPIN != "" {
 			cfg.PairingPIN = *pairingPIN
+		}
+		if *orchestratorFingerprint != "" {
+			cfg.OrchestratorFingerprint = *orchestratorFingerprint
 		}
 		if *memoryPath != "" {
 			cfg.MemoryPath = *memoryPath
@@ -332,14 +354,16 @@ func main() {
 
 	if autoOpen {
 		go func() {
-			time.Sleep(750 * time.Millisecond)
-			openBrowser(dashboardURL)
+			if background.Wait(runCtx, 750*time.Millisecond) {
+				openBrowser(dashboardURL)
+			}
 		}()
 	}
 
 	var shutdownOnce sync.Once
 	shutdown := func() {
 		shutdownOnce.Do(func() {
+			stopRuntime()
 			if closeNode != nil {
 				closeNode()
 			}
@@ -349,26 +373,41 @@ func main() {
 		})
 		os.Exit(0)
 	}
-	if !*noPeerUpdates {
-		go selfupdate.Run(context.Background(), func() selfupdate.Source {
-			source := updateNode.UpdateSource()
-			if updateOrchestrator != nil {
-				source.Peers = append(source.Peers, updateOrchestrator.UpdateSource().Peers...)
-			}
-			return source
-		}, func() bool {
-			return updateNode.UpdateIdle() &&
-				(updateOrchestrator == nil || updateOrchestrator.UpdateIdle()) &&
-				(updateFailover == nil || updateFailover.UpdateIdle())
-		}, shutdown)
+	updaterDone := make(chan struct{})
+	if *allowPeerUpdates && !*noPeerUpdates {
+		go func() {
+			defer close(updaterDone)
+			selfupdate.Run(runCtx, func() selfupdate.Source {
+				source := updateNode.UpdateSource()
+				if updateOrchestrator != nil {
+					source.Peers = append(source.Peers, updateOrchestrator.UpdateSource().Peers...)
+				}
+				return source
+			}, func() bool {
+				return updateNode.UpdateIdle() &&
+					(updateOrchestrator == nil || updateOrchestrator.UpdateIdle()) &&
+					(updateFailover == nil || updateFailover.UpdateIdle())
+			}, shutdown)
+		}()
+	} else {
+		close(updaterDone)
 	}
+	quit := func() {
+		stopRuntime()
+		<-updaterDone
+		shutdown()
+	}
+	go func() {
+		<-runCtx.Done()
+		quit()
+	}()
 	trayapp.Run(trayapp.Options{
 		Title:        "mAIstr0 (" + *role + ")",
 		Mode:         effectiveTrayMode,
 		DashboardURL: dashboardURL,
 		LogFilePath:  logFilePath,
 		LogDirectory: filepath.Dir(logFilePath),
-		OnQuit:       shutdown,
+		OnQuit:       quit,
 	})
 }
 
@@ -421,18 +460,19 @@ func loadOrchestratorConfig(path, listenOverride string, noDiscovery bool) confi
 }
 
 type configPrintOptions struct {
-	role             string
-	nodeConfigPath   string
-	orchConfigPath   string
-	nodeListenAddr   string
-	orchListenAddr   string
-	orchestratorAddr string
-	pairingPIN       string
-	trayMode         string
-	noBrowser        bool
-	noDiscovery      bool
-	harness          string
-	memoryPath       string
+	role                    string
+	nodeConfigPath          string
+	orchConfigPath          string
+	nodeListenAddr          string
+	orchListenAddr          string
+	orchestratorAddr        string
+	pairingPIN              string
+	orchestratorFingerprint string
+	trayMode                string
+	noBrowser               bool
+	noDiscovery             bool
+	harness                 string
+	memoryPath              string
 }
 
 func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
@@ -453,6 +493,9 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 		}
 		if options.pairingPIN != "" {
 			cfg.PairingPIN = options.pairingPIN
+		}
+		if options.orchestratorFingerprint != "" {
+			cfg.OrchestratorFingerprint = options.orchestratorFingerprint
 		}
 		if options.trayMode != "" {
 			cfg.TrayMode = options.trayMode
@@ -480,9 +523,13 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 		if err := cfg.Validate(); err != nil {
 			return fmt.Errorf("node config: %w", err)
 		}
+		cfg, err = redactNodeConfig(cfg)
+		if err != nil {
+			return err
+		}
 		return writeNormalizedConfig(out, struct {
 			Node config.NodeConfig `json:"node"`
-		}{Node: redactNodeConfig(cfg)})
+		}{Node: cfg})
 	}
 	if role != "auto" && role != "both" && role != "orchestrator" {
 		return fmt.Errorf("unknown --role %q (want auto, orchestrator, node, or both)", role)
@@ -528,6 +575,9 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 	if options.pairingPIN != "" {
 		nodeCfg.PairingPIN = options.pairingPIN
 	}
+	if options.orchestratorFingerprint != "" {
+		nodeCfg.OrchestratorFingerprint = options.orchestratorFingerprint
+	}
 	if options.trayMode != "" {
 		nodeCfg.TrayMode = options.trayMode
 	}
@@ -541,19 +591,39 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 	if err := nodeCfg.Validate(); err != nil {
 		return fmt.Errorf("node config: %w", err)
 	}
+	nodeCfg, err = redactNodeConfig(nodeCfg)
+	if err != nil {
+		return err
+	}
 	return writeNormalizedConfig(out, struct {
 		Node         config.NodeConfig         `json:"node"`
 		Orchestrator config.OrchestratorConfig `json:"orchestrator"`
-	}{Node: redactNodeConfig(nodeCfg), Orchestrator: orchCfg})
+	}{Node: nodeCfg, Orchestrator: orchCfg})
 }
 
-func redactNodeConfig(cfg config.NodeConfig) config.NodeConfig {
+func redactNodeConfig(cfg config.NodeConfig) (config.NodeConfig, error) {
+	if cfg.PairingPIN != "" {
+		cfg.PairingPIN = "[REDACTED]"
+	}
+	cfg.Engines = append([]config.EngineConfig(nil), cfg.Engines...)
+	urls := []*string{&cfg.OrchestratorAddr, &cfg.AdvertiseAddr}
 	for index := range cfg.Engines {
 		if cfg.Engines[index].APIKey != "" {
 			cfg.Engines[index].APIKey = "[REDACTED]"
 		}
+		urls = append(urls, &cfg.Engines[index].URL, &cfg.Engines[index].RegistryURL)
 	}
-	return cfg
+	for _, value := range urls {
+		if *value == "" {
+			continue
+		}
+		redacted, err := httpx.RedactedURL(*value)
+		if err != nil {
+			return config.NodeConfig{}, fmt.Errorf("redact configuration endpoint: %w", err)
+		}
+		*value = redacted
+	}
+	return cfg, nil
 }
 
 func writeNormalizedConfig(out io.Writer, value any) error {

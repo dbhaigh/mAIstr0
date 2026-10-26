@@ -20,6 +20,14 @@ type Status string
 
 var ErrNotAwaitingApproval = errors.New("task is not awaiting approval")
 
+// ErrNotResumable reports a resume request for a task that is not stopped in
+// a failed or cancelled state.
+var ErrNotResumable = errors.New("task is not resumable")
+
+// ErrSubtaskFinished reports an attempt to start a subtask that already has a
+// terminal outcome.
+var ErrSubtaskFinished = errors.New("subtask has already finished")
+
 const (
 	StatusPending          Status = "pending"
 	StatusRunning          Status = "running"

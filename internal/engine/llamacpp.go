@@ -24,8 +24,6 @@ func NewLlamaCPP(baseURL string) *LlamaCPP {
 	return &LlamaCPP{VLLM: newOpenAICompatibleEngine(baseURL, "llamacpp")}
 }
 
-func (l *LlamaCPP) Name() string { return l.VLLM.Name() }
-
 func (l *LlamaCPP) Capabilities() Capabilities {
 	l.capabilitiesMu.RLock()
 	if l.capabilitiesKnown {

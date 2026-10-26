@@ -371,13 +371,17 @@ func (instance *rpcRelayInstance) relay(
 		closeWrite(inbound)
 		copyDone <- struct{}{}
 	}()
+	remaining := 2
 	select {
 	case <-copyDone:
+		remaining--
 	case <-instance.ctx.Done():
 	}
 	_ = inbound.Close()
 	_ = outbound.Close()
-	<-copyDone
+	for range remaining {
+		<-copyDone
+	}
 }
 
 func (instance *rpcRelayInstance) track(connection net.Conn, add bool) {

@@ -468,7 +468,10 @@ func (a *Agent) syncOrchestratorMemoryWithContext(ctx context.Context, addr stri
 	logging.FileInfof("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=orchestrator->node event=merge_complete %s peer=%s body_bytes=%d records=%d elapsed=%s",
 		syncLogFields(requestID, a.cfg.NodeID, time.Since(mergeStarted), "none"), addr, bodyBytes, memorySyncRecordCount(remoteSnapshot), time.Since(mergeStarted))
 
-	snapshot := memory.SnapshotForPeer(a.mem, remoteSnapshot.SyncVersion, remoteSnapshot.Watermarks)
+	snapshot, err := memory.LoadSnapshotForPeer(a.mem, remoteSnapshot.SyncVersion, remoteSnapshot.Watermarks)
+	if err != nil {
+		return fmt.Errorf("read local snapshot: %w", err)
+	}
 	if memorySyncRecordCount(snapshot) == 0 {
 		if memory.SupportsIncrementalSync(remoteSnapshot.SyncVersion) {
 			if err := a.mem.SetPeerWatermarks(peerID, snapshot.Watermarks); err != nil {

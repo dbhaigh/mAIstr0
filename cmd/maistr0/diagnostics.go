@@ -86,6 +86,9 @@ func loadDiagnosticsConfig(options configPrintOptions) (string, diagnosticConfig
 		if options.pairingPIN != "" {
 			nodeCfg.PairingPIN = options.pairingPIN
 		}
+		if options.orchestratorFingerprint != "" {
+			nodeCfg.OrchestratorFingerprint = options.orchestratorFingerprint
+		}
 		if options.trayMode != "" {
 			nodeCfg.TrayMode = options.trayMode
 		}
@@ -157,6 +160,9 @@ func loadDiagnosticsConfig(options configPrintOptions) (string, diagnosticConfig
 	}
 	if options.pairingPIN != "" {
 		nodeCfg.PairingPIN = options.pairingPIN
+	}
+	if options.orchestratorFingerprint != "" {
+		nodeCfg.OrchestratorFingerprint = options.orchestratorFingerprint
 	}
 	if options.trayMode != "" {
 		nodeCfg.TrayMode = options.trayMode

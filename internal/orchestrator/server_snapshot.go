@@ -94,9 +94,8 @@ func (s *Server) snapshot() clusterSnapshot {
 		if node.Healthy {
 			activeNodes++
 		}
-		if node.Leader {
+		if node.Leader && leaderID == "" {
 			leaderID = node.ID
-			break
 		}
 	}
 	dispatch := s.dispatcher.snapshot()

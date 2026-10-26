@@ -16,7 +16,7 @@ type syncerAPI interface {
 	syncTaskHistory()
 	recoverTaskHistory()
 	mergeMemorySnapshot(memory.Snapshot, string) error
-	memorySnapshotForPeer(int, map[string]uint64) memory.Snapshot
+	memorySnapshotForPeer(int, map[string]uint64) (memory.Snapshot, error)
 }
 
 type taskHistoryClient interface {
@@ -61,9 +61,9 @@ func (s *syncerComponent) mergeMemorySnapshot(snapshot memory.Snapshot, source s
 	return s.memory.MergeSnapshotFrom(snapshot, source)
 }
 
-func (s *syncerComponent) memorySnapshotForPeer(version int, watermarks map[string]uint64) memory.Snapshot {
+func (s *syncerComponent) memorySnapshotForPeer(version int, watermarks map[string]uint64) (memory.Snapshot, error) {
 	if s.memory == nil {
-		return memory.Snapshot{SyncVersion: memory.SyncProtocolVersion}
+		return memory.Snapshot{SyncVersion: memory.SyncProtocolVersion}, nil
 	}
-	return memory.SnapshotForPeer(s.memory, version, watermarks)
+	return memory.LoadSnapshotForPeer(s.memory, version, watermarks)
 }

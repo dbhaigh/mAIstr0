@@ -2,6 +2,8 @@ package nodeagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -29,6 +31,8 @@ func TestPairWithAddressContextCancelsInFlightRequest(t *testing.T) {
 	}))
 	defer server.Close()
 	defer close(release)
+	digest := sha256.Sum256(server.Certificate().Raw)
+	fingerprint := hex.EncodeToString(digest[:])
 	agent := mustNewTestAgent(t, config.NodeConfig{
 		NodeID: "pairing-context-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
@@ -44,7 +48,7 @@ func TestPairWithAddressContextCancelsInFlightRequest(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- agent.orchestratorLink.pairWithAddressContext(ctx, server.URL, "", "123456")
+		done <- agent.orchestratorLink.pairWithAddressContext(ctx, server.URL, "", "123456", fingerprint)
 	}()
 	select {
 	case <-started:

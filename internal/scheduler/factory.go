@@ -102,12 +102,10 @@ func (h *SubAgentHandle) FormatPrompt(subtaskDescription, prereqOutputs string) 
 	return b.String()
 }
 
-// SubAgentFactory creates and tracks specialized virtual workers for the scheduler.
+// SubAgentFactory creates specialized virtual workers for the scheduler.
 type SubAgentFactory struct {
-	// mu protects the sequence and registered handle map; it is released before
-	// invoking scheduler, agent, or handle behavior.
-	mu      sync.RWMutex
-	agents  map[string]*SubAgentHandle
+	// mu protects the sequence; it is released before invoking scheduler behavior.
+	mu      sync.Mutex
 	seq     int
 	scoring ScoringConfig
 }
@@ -115,7 +113,6 @@ type SubAgentFactory struct {
 // NewSubAgentFactory creates a new SubAgentFactory.
 func NewSubAgentFactory() *SubAgentFactory {
 	return &SubAgentFactory{
-		agents:  make(map[string]*SubAgentHandle),
 		scoring: DefaultScoringConfig(),
 	}
 }
@@ -189,28 +186,5 @@ func (f *SubAgentFactory) Create(spec SubAgentSpec, nodes []cluster.NodeStatus, 
 		CreatedAt: time.Now(),
 	}
 
-	f.mu.Lock()
-	f.agents[handle.ID] = handle
-	f.mu.Unlock()
-
 	return handle, nil
-}
-
-// Get returns a created SubAgentHandle by ID.
-func (f *SubAgentFactory) Get(id string) (*SubAgentHandle, bool) {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	h, ok := f.agents[id]
-	return h, ok
-}
-
-// List returns all currently registered SubAgentHandles.
-func (f *SubAgentFactory) List() []*SubAgentHandle {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	out := make([]*SubAgentHandle, 0, len(f.agents))
-	for _, h := range f.agents {
-		out = append(out, h)
-	}
-	return out
 }

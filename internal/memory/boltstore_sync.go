@@ -15,13 +15,25 @@ import (
 	"time"
 )
 
+// Snapshot logs read and decode failures and returns an empty snapshot.
+// Synchronization paths use loadSnapshot through LoadSnapshotForPeer so a
+// failed read is not mistaken for a store with no changes.
 func (s *boltStore) Snapshot() Snapshot {
+	snapshot, err := s.loadSnapshot()
+	if err != nil {
+		logging.Errorf("memory", "memory: create snapshot: %v", errors.Unwrap(err))
+		return Snapshot{SyncVersion: SyncProtocolVersion}
+	}
+	return snapshot
+}
+
+func (s *boltStore) loadSnapshot() (Snapshot, error) {
 	s.mu.RLock()
 	generation := s.snapshotCacheGeneration
 	if s.snapshotCacheValid {
 		cached := cloneSnapshot(s.snapshotCache)
 		s.mu.RUnlock()
-		return cached
+		return cached, nil
 	}
 	s.mu.RUnlock()
 
@@ -82,8 +94,7 @@ func (s *boltStore) Snapshot() Snapshot {
 		})
 	})
 	if err != nil {
-		logging.Errorf("memory", "memory: create snapshot: %v", err)
-		return Snapshot{SyncVersion: SyncProtocolVersion}
+		return Snapshot{}, fmt.Errorf("memory: create snapshot: %w", err)
 	}
 	sort.Slice(snapshot.Facts, func(i, j int) bool {
 		return snapshot.Facts[i].UpdatedAt.After(snapshot.Facts[j].UpdatedAt)
@@ -105,7 +116,7 @@ func (s *boltStore) Snapshot() Snapshot {
 		}
 		s.mu.Unlock()
 	}
-	return snapshot
+	return snapshot, nil
 }
 
 func (s *boltStore) SnapshotSince(watermarks map[string]uint64) Snapshot {

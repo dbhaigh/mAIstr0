@@ -64,11 +64,6 @@ func newWithStyle(registry *cluster.Registry, dispatcher *http.Client, style str
 	return h
 }
 
-// RegisterTool adds a tool to the harness catalog.
-func (h *Harness) RegisterTool(t Tool) {
-	h.tools.Register(t)
-}
-
 // SetEventsHub attaches an SSE hub to broadcast agent events cluster-wide.
 func (h *Harness) SetEventsHub(events *hub.Hub) {
 	h.events = events

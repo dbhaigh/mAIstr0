@@ -155,6 +155,9 @@ func (m *Manager) StartSubtaskChecked(taskID, subtaskID string) error {
 	}
 	for i := range t.Subtasks {
 		if t.Subtasks[i].Subtask.ID == subtaskID {
+			if status := t.Subtasks[i].Status; status != StatusPending && status != StatusRunning {
+				return fmt.Errorf("taskmgr: subtask %s in task %s is %s: %w", subtaskID, taskID, status, ErrSubtaskFinished)
+			}
 			t.Subtasks[i].Status = StatusRunning
 			t.UpdatedAt = time.Now()
 			signalChanged(t)
@@ -205,7 +208,9 @@ func (m *Manager) CompleteSubtaskChecked(taskID, subtaskID string, output string
 	if !ok {
 		return fmt.Errorf("taskmgr: task %s not found", taskID)
 	}
-	if t.Status == StatusCancelled {
+	if t.Status == StatusCancelled || subtaskFinished(t, subtaskID) {
+		// Stale outcomes from duplicate or superseded dispatches must not
+		// reopen a finished subtask or change a terminal task.
 		m.unlockTaskForUpdate(t)
 		return nil
 	}
@@ -223,6 +228,16 @@ type subtaskCompletion struct {
 	snapshot   *Task
 	taskCtx    context.Context
 	persistErr error
+}
+
+func subtaskFinished(t *Task, subtaskID string) bool {
+	for i := range t.Subtasks {
+		if t.Subtasks[i].Subtask.ID == subtaskID {
+			status := t.Subtasks[i].Status
+			return status != StatusPending && status != StatusRunning
+		}
+	}
+	return false
 }
 
 func (m *Manager) completeSubtaskLocked(t *Task, subtaskID, output string, taskErr error) (subtaskCompletion, error) {

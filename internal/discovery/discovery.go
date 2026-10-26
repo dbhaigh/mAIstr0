@@ -44,10 +44,12 @@ type Peer struct {
 
 // Listener collects announcements from other instances on the LAN.
 type Listener struct {
-	selfIDs map[string]bool
-	stop    chan struct{}
-	conn    net.PacketConn
-	ready   chan struct{}
+	selfIDs   map[string]bool
+	stop      chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+	conn      net.PacketConn
+	ready     chan struct{}
 	// bind opens the discovery socket; nil uses UDP Port. Tests inject fakes.
 	bind func() (net.PacketConn, error)
 
@@ -78,10 +80,14 @@ func listenWith(bind func() (net.PacketConn, error), selfIDs ...string) *Listene
 		peers:    make(map[string]Peer),
 		excluded: make(map[string]bool),
 		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 		ready:    make(chan struct{}),
 		bind:     bind,
 	}
-	go l.run()
+	go func() {
+		defer close(l.done)
+		l.run()
+	}()
 	return l
 }
 
@@ -241,17 +247,17 @@ func (l *Listener) WaitReady(timeout time.Duration) error {
 // Close stops the listener. It is used by startup auto-detection so the
 // probe socket does not block the real node/orchestrator listener.
 func (l *Listener) Close() {
-	select {
-	case <-l.stop:
-		return
-	default:
+	l.closeOnce.Do(func() {
 		close(l.stop)
-	}
-	l.mu.RLock()
-	conn := l.conn
-	l.mu.RUnlock()
-	if conn != nil {
-		_ = conn.Close()
+		l.mu.RLock()
+		conn := l.conn
+		l.mu.RUnlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
+	})
+	if l.done != nil {
+		<-l.done
 	}
 }
 
@@ -300,21 +306,6 @@ func (l *Listener) IncludePeer(id string) {
 	l.mu.Lock()
 	delete(l.excluded, id)
 	l.mu.Unlock()
-}
-
-// FirstOrchestrator blocks (up to timeout) waiting for an orchestrator to be
-// discovered, returning its mutual-TLS address. Returns "" if none is found.
-func (l *Listener) FirstOrchestrator(timeout time.Duration) string {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		for _, p := range l.Snapshot() {
-			if p.Role == "orchestrator" {
-				return p.PeerAddr
-			}
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return ""
 }
 
 // BestOrchestrator returns the announcing orchestrator with the highest

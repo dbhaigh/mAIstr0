@@ -24,6 +24,9 @@ import (
 )
 
 func TestOrchestratorProcessAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process API is covered by full qualification")
+	}
 	address := freeTCPAddress(t)
 	memoryPath := filepath.Join(t.TempDir(), "orchestrator.db")
 	process := startOrchestratorProcess(t, address, memoryPath)
@@ -49,8 +52,9 @@ func TestOrchestratorProcessAPI(t *testing.T) {
 	}
 
 	var pairing struct {
-		ID  string `json:"orchestrator_id"`
-		PIN string `json:"pin"`
+		ID          string `json:"orchestrator_id"`
+		PIN         string `json:"pin"`
+		Fingerprint string `json:"fingerprint"`
 	}
 	pairingResponse, err := localClient.Get("http://" + address + "/api/pairing/status")
 	if err != nil {
@@ -61,7 +65,7 @@ func TestOrchestratorProcessAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = pairingResponse.Body.Close()
-	if pairingResponse.StatusCode != http.StatusOK || pairing.ID == "" || pairing.PIN == "" {
+	if pairingResponse.StatusCode != http.StatusOK || pairing.ID == "" || pairing.PIN == "" || pairing.Fingerprint == "" {
 		t.Fatalf("unexpected pairing response: code=%d status=%+v", pairingResponse.StatusCode, pairing)
 	}
 
@@ -77,8 +81,9 @@ func TestOrchestratorProcessAPI(t *testing.T) {
 	}
 	bootstrapClient := &http.Client{
 		Timeout:   3 * time.Second,
-		Transport: node.BootstrapTransport(),
+		Transport: node.BootstrapTransportForFingerprint(pairing.ID, pairing.Fingerprint),
 	}
+	defer bootstrapClient.CloseIdleConnections()
 	joinResponse, err := bootstrapClient.Post("https://"+address+"/api/pairing/join", "application/json", bytes.NewReader(joinBody))
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +101,9 @@ func TestOrchestratorProcessAPI(t *testing.T) {
 	if joinResponse.StatusCode != http.StatusOK || joined.ID != pairing.ID ||
 		joined.Role != "orchestrator" || joined.CertificatePEM == "" {
 		t.Fatalf("unexpected pairing join response: code=%d response=%+v", joinResponse.StatusCode, joined)
+	}
+	if err := peeridentity.ValidatePeerConnection(joined.ID, joined.CertificatePEM, joinResponse.TLS); err != nil {
+		t.Fatal(err)
 	}
 	if err := node.TrustPeerDetails(joined.ID, joined.CertificatePEM, joined.Role, "https://"+address); err != nil {
 		t.Fatal(err)

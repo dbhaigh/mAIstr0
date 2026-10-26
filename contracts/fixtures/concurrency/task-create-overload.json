@@ -1,0 +1,22 @@
+{
+  "name": "task-create-overload",
+  "request": {
+    "method": "POST",
+    "path": "/api/tasks",
+    "body": {
+      "description": "one operation",
+      "subtasks": [{"id": "one", "description": "one operation", "task_type": "general"}]
+    }
+  },
+  "precondition": "The dispatch worker and its bounded queue are occupied.",
+  "expected_response": {
+    "status": 503,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "task <TASK_ID> was persisted but dispatch admission failed: workpool: queue is full\n"
+  },
+  "normalization_rules": ["Replace the persisted task ID with <TASK_ID>."],
+  "side_effects": [
+    "The rejected subtask is persisted as failed and resumable.",
+    "Admission is not transactional across a multi-subtask task; previously accepted work is not rolled back."
+  ]
+}

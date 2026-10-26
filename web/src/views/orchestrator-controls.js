@@ -150,10 +150,11 @@ pairingConnectForm?.addEventListener("submit", async (event) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(invitation
-        ? { pin: pairingCode.value.trim() }
+        ? { pin: pairingCode.value.trim(), fingerprint: pairingFingerprint?.value.trim() || "" }
         : {
             address: pairingAddress.value.trim(),
             pin: pairingCode.value.trim(),
+            fingerprint: pairingFingerprint?.value.trim() || "",
             ...(joiningOrchestrator ? { orchestrator_id: node.id } : {}),
           }),
     });

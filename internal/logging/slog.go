@@ -12,8 +12,6 @@ import (
 	"strings"
 )
 
-const DefaultLevel = "info"
-
 var (
 	processLevel = new(slog.LevelVar)
 	urlUserInfo  = regexp.MustCompile(`(?i)(https?://)[^/\s@]+@`)
@@ -75,10 +73,6 @@ func SetLevel(value string) error {
 		return fmt.Errorf("log level must be debug, info, warn, or error")
 	}
 	return nil
-}
-
-func Debugf(component, format string, args ...any) {
-	logf(slog.LevelDebug, false, component, format, args...)
 }
 
 func Infof(component, format string, args ...any) {
@@ -152,8 +146,19 @@ func safeErrorType(err error) string {
 func redactURLSecrets(value string) string {
 	value = urlUserInfo.ReplaceAllString(value, `${1}[redacted]@`)
 	value = secretQuery.ReplaceAllString(value, `${1}[redacted]`)
-	if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
-		parsed.User = url.User("[redacted]")
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" &&
+		(parsed.Scheme == "http" || parsed.Scheme == "https") &&
+		(parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "") {
+		if parsed.User != nil {
+			parsed.User = url.User("[redacted]")
+		}
+		if parsed.RawQuery != "" {
+			parsed.RawQuery = "redacted"
+		}
+		if parsed.Fragment != "" {
+			parsed.Fragment = "redacted"
+			parsed.RawFragment = ""
+		}
 		value = parsed.String()
 	}
 	return value

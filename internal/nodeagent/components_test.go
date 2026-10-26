@@ -1,7 +1,11 @@
 package nodeagent
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,9 +16,6 @@ import (
 )
 
 func TestExecutorCapacityClampsAtZero(t *testing.T) {
-	state := &agentState{}
-	executor := newExecutorComponent(2, state)
-
 	for _, tc := range []struct {
 		active    int
 		available int
@@ -24,9 +25,10 @@ func TestExecutorCapacityClampsAtZero(t *testing.T) {
 		{active: 2, available: 0},
 		{active: 3, available: 0},
 	} {
-		state.mu.Lock()
-		state.activeTasks = tc.active
-		state.mu.Unlock()
+		executor := newExecutorComponent(2)
+		for range tc.active {
+			t.Cleanup(executor.beginActiveTask())
+		}
 		if got := executor.availableCapacity(2); got != tc.available {
 			t.Errorf("active=%d: availableCapacity = %d, want %d", tc.active, got, tc.available)
 		}
@@ -35,7 +37,6 @@ func TestExecutorCapacityClampsAtZero(t *testing.T) {
 
 func TestPeerComponentSelection(t *testing.T) {
 	state := &agentState{
-		defaultModel: "local",
 		peers: []cluster.NodeStatus{
 			{ID: "alpha", Address: "https://alpha", Healthy: true, Leader: true, FastScore: 2},
 			{ID: "beta", Address: "https://beta", Healthy: true, FastScore: 10},
@@ -44,8 +45,8 @@ func TestPeerComponentSelection(t *testing.T) {
 		},
 	}
 	telemetry := &telemetryComponent{}
-	models := &engineComponent{state: state, telemetry: telemetry}
-	executor := newExecutorComponent(4, state)
+	models := &engineComponent{defaultModel: "local", telemetry: telemetry}
+	executor := newExecutorComponent(4)
 	cfg := config.NodeConfig{NodeID: "self", AdvertiseAddr: "https://self"}
 	state.cfg = cfg
 	peers := &peerComponent{
@@ -110,15 +111,15 @@ func TestDialogueSnapshotsDoNotExposeMutableState(t *testing.T) {
 }
 
 func TestEngineComponentAppliesDisabledAndDefaultState(t *testing.T) {
-	state := newAgentState(config.NodeConfig{
+	cfg := config.NodeConfig{
 		DefaultModel:   "enabled-model",
 		DisabledModels: []string{"disabled-model"},
-	})
+	}
 	models := []engine.Engine{componentTestEngine{models: []engine.Model{
 		{Name: "enabled-model"},
 		{Name: "disabled-model"},
 	}}}
-	component := newEngineComponent(models, func() []engine.Engine { return nil }, &telemetryComponent{}, state)
+	component := newEngineComponent(models, func() []engine.Engine { return nil }, &telemetryComponent{}, cfg.DisabledModels, cfg.DefaultModel)
 
 	if got := component.defaultModelName(); got != "enabled-model" {
 		t.Fatalf("default model = %q, want enabled-model", got)
@@ -134,9 +135,8 @@ func TestEngineComponentAppliesDisabledAndDefaultState(t *testing.T) {
 
 func TestEngineInventoryRefreshTracksChangesAndRetainsLastGoodModelsOnError(t *testing.T) {
 	eng := &inventoryTestEngine{models: []engine.Model{{Name: "alpha"}}}
-	state := newAgentState(config.NodeConfig{DefaultModel: "alpha"})
 	component := newEngineComponent(
-		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{}, state,
+		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{}, nil, "alpha",
 	)
 	assertModels := func(want ...string) {
 		t.Helper()
@@ -194,13 +194,142 @@ func TestEngineInventoryRefreshTracksChangesAndRetainsLastGoodModelsOnError(t *t
 	component.refreshReportedModels()
 	assertModels("alpha", "beta")
 	failedStatus := assertStatus(engine.ModelInventoryError, false, 2)
-	if failedStatus.LastError != "engine temporarily unavailable" {
+	if failedStatus.LastError != "model inventory request failed; check engine health and configuration" {
 		t.Fatalf("last inventory error = %q", failedStatus.LastError)
 	}
 	if failedStatus.LastCheckedAt.IsZero() || !failedStatus.LastSuccessfulAt.Equal(lastSuccess) {
 		t.Fatalf("failed inventory timestamps = checked %v, successful %v; want checked time and retained success %v",
 			failedStatus.LastCheckedAt, failedStatus.LastSuccessfulAt, lastSuccess)
 	}
+}
+
+func TestModelSelectionUpdatedDuringInventoryProbeIsPublished(t *testing.T) {
+	backend := &blockingInventoryEngine{started: make(chan struct{}), release: make(chan struct{})}
+	component := newEngineComponent([]engine.Engine{backend}, func() []engine.Engine { return nil },
+		&telemetryComponent{}, nil, "")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		component.refreshReportedModels()
+	}()
+	var release sync.Once
+	unblock := func() { release.Do(func() { close(backend.release) }) }
+	defer func() { unblock(); <-done }()
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("inventory probe did not start")
+	}
+	component.configureModels(map[string]bool{"model": true}, "model")
+	unblock()
+	<-done
+	models := component.reportedAllModelList()
+	if len(models) != 1 || models[0].Enabled || !models[0].Default {
+		t.Fatalf("inventory published stale model selection: %+v", models)
+	}
+}
+
+func TestModelSelectionUpdateSemantics(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		body           string
+		defaultModel   string
+		disabled       bool
+		modelsEndpoint bool
+	}{
+		{"properties omitted retains selection", `{"default_model":"beta"}`, "beta", true, false},
+		{"properties null retains selection", `{"default_model":"beta","disabled_models":null}`, "beta", true, false},
+		{"properties empty clears selection", `{"default_model":"beta","disabled_models":[]}`, "beta", false, false},
+		{"properties empty default retains default", `{"default_model":""}`, "alpha", true, false},
+		{"models omitted clears selection", `{}`, "alpha", false, true},
+		{"models null clears selection", `{"disabled_models":null}`, "alpha", false, true},
+		{"models empty clears selection", `{"disabled_models":[]}`, "alpha", false, true},
+		{"models default updates selection", `{"default_model":"beta"}`, "beta", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newAgentState(config.NodeConfig{DefaultModel: "alpha", DisabledModels: []string{"alpha"}})
+			component := newEngineComponent([]engine.Engine{componentTestEngine{models: []engine.Model{{Name: "alpha"}, {Name: "beta"}}}},
+				func() []engine.Engine { return nil }, &telemetryComponent{}, state.cfg.DisabledModels, state.cfg.DefaultModel)
+			component.refreshReportedModels()
+			a := &Agent{agentState: state, engineComponent: component, orchestratorLink: &orchestratorLink{}}
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(test.body))
+			if test.modelsEndpoint {
+				a.handleModelsPatch(response, request)
+			} else {
+				a.handleProperties(response, request)
+			}
+			if response.Code != http.StatusOK {
+				t.Fatalf("selection patch = %d: %s", response.Code, response.Body.String())
+			}
+			if !test.modelsEndpoint {
+				var properties nodeProperties
+				if err := json.Unmarshal(response.Body.Bytes(), &properties); err != nil {
+					t.Fatal(err)
+				}
+				wantDisabled := 0
+				if test.disabled {
+					wantDisabled = 1
+				}
+				if properties.DefaultModel != test.defaultModel || len(properties.DisabledModels) != wantDisabled ||
+					(wantDisabled == 1 && properties.DisabledModels[0] != "alpha") {
+					t.Fatalf("properties selection = %+v", properties)
+				}
+			}
+			models := component.reportedAllModelList()
+			if len(models) != 2 || models[0].Enabled == test.disabled ||
+				models[0].Default != (test.defaultModel == "alpha") || models[1].Default != (test.defaultModel == "beta") {
+				t.Fatalf("properties and inventory selection disagree: %+v", models)
+			}
+		})
+	}
+}
+
+func TestModelSelectionSnapshotsAndConcurrentPublication(t *testing.T) {
+	disabled := []string{"beta"}
+	component := newEngineComponent([]engine.Engine{componentTestEngine{models: []engine.Model{{Name: "alpha"}, {Name: "beta"}}}},
+		func() []engine.Engine { return nil }, &telemetryComponent{}, disabled, "alpha")
+	disabled[0] = "alpha"
+	snapshot, defaultModel := component.modelSelectionSnapshot()
+	if len(snapshot) != 1 || snapshot[0] != "beta" || defaultModel != "alpha" {
+		t.Fatalf("initial selection was aliased: %v %q", snapshot, defaultModel)
+	}
+	snapshot[0] = "alpha"
+	snapshot, _ = component.modelSelectionSnapshot()
+	if len(snapshot) != 1 || snapshot[0] != "beta" {
+		t.Fatalf("snapshot exposed mutable selection: %v", snapshot)
+	}
+	component.refreshReportedModels()
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		for i := range 100 {
+			if i%2 == 0 {
+				component.configureModels(map[string]bool{"alpha": true}, "beta")
+			} else {
+				component.configureModels(map[string]bool{"beta": true}, "alpha")
+			}
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		for range 100 {
+			component.refreshReportedModels()
+			models := component.reportedAllModelList()
+			if len(models) != 2 || models[0].Default == models[1].Default ||
+				models[0].Enabled != models[0].Default || models[1].Enabled != models[1].Default {
+				t.Errorf("non-atomic selection publication: %+v", models)
+				return
+			}
+			names, selected := component.modelSelectionSnapshot()
+			if len(names) != 1 || names[0] == selected {
+				t.Errorf("non-atomic selection snapshot: %v %q", names, selected)
+				return
+			}
+		}
+	}()
+	workers.Wait()
 }
 
 func TestEngineInventorySurfacesModelAndEngineCapabilities(t *testing.T) {
@@ -212,7 +341,7 @@ func TestEngineInventorySurfacesModelAndEngineCapabilities(t *testing.T) {
 	}
 	component := newEngineComponent(
 		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{},
-		newAgentState(config.NodeConfig{}),
+		nil, "",
 	)
 
 	component.refreshReportedModels()
@@ -240,7 +369,7 @@ func TestModelInventoryTTLAndHardwareGenerationCaches(t *testing.T) {
 	eng := &inventoryTestEngine{models: []engine.Model{{Name: "alpha"}}}
 	telemetry := &telemetryComponent{}
 	component := newEngineComponent(
-		[]engine.Engine{eng}, func() []engine.Engine { return nil }, telemetry, newAgentState(config.NodeConfig{}),
+		[]engine.Engine{eng}, func() []engine.Engine { return nil }, telemetry, nil, "",
 	)
 
 	if got := component.enabledModels(); len(got) != 1 || got[0].Name != "alpha" {
@@ -294,7 +423,7 @@ func TestInventoryInvalidationDoesNotWaitForEngineProbe(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	component := newEngineComponent(
-		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{}, newAgentState(config.NodeConfig{}),
+		[]engine.Engine{eng}, func() []engine.Engine { return nil }, &telemetryComponent{}, nil, "",
 	)
 	refreshed := make(chan struct{})
 	go func() {
@@ -333,7 +462,7 @@ func TestPeriodicEngineScanRetainsUnavailableEngineDuringGracePeriod(t *testing.
 	eng := &inventoryTestEngine{models: []engine.Model{{Name: "cached-model"}}}
 	detected := []engine.Engine{eng}
 	component := newEngineComponent(
-		nil, func() []engine.Engine { return detected }, &telemetryComponent{}, newAgentState(config.NodeConfig{}),
+		nil, func() []engine.Engine { return detected }, &telemetryComponent{}, nil, "",
 	)
 	component.rescanDetectedEngines()
 	component.refreshReportedModels()
@@ -376,7 +505,7 @@ func TestConfiguredEngineProfileReplacesDetectedEngineAtSameEndpoint(t *testing.
 		[]engine.Engine{configured},
 		func() []engine.Engine { return []engine.Engine{detected} },
 		&telemetryComponent{},
-		newAgentState(config.NodeConfig{}),
+		nil, "",
 	)
 	component.rescanDetectedEngines()
 

@@ -69,6 +69,7 @@ func (g *dispatchCapacityGate) ReservePipeline(
 			return nil, err
 		}
 		if !healthy {
+			g.logCapacityTargets("pipeline_reservation", "member_unavailable", targets)
 			return nil, errPipelineNodeUnavailable
 		}
 
@@ -121,9 +122,11 @@ func (g *dispatchCapacityGate) ReservePipeline(
 				<-g.slots
 				return nil, err
 			}
+			g.logCapacityTargets("pipeline_reservation", "reserved", targets)
 			return &pipelineCapacityReservation{targets: targets, gates: gates, slots: g.slots}, nil
 		}
 		<-g.slots
+		g.logCapacityTargets("pipeline_reservation", "node_capacity_wait", targets)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

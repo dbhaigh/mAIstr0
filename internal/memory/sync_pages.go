@@ -9,22 +9,26 @@ import (
 
 func PageSnapshot(snapshot Snapshot, cursor, upper map[string]uint64, maxBytes int64, envelopeBytes int) (Snapshot, map[string]uint64, bool, error) {
 	records := make([]syncpage.Record[any], 0, len(snapshot.Experiences)+len(snapshot.Facts)+len(snapshot.Performances)+len(snapshot.Dialogues))
-	for _, experience := range snapshot.Experiences {
+	for i := range snapshot.Experiences {
+		experience := &snapshot.Experiences[i]
 		records = append(records, syncpage.Record[any]{
 			Value: experience, Origin: experience.Origin, Sequence: experience.Sequence, Key: fmt.Sprintf("experience:%020d", experience.ID),
 		})
 	}
-	for _, fact := range snapshot.Facts {
+	for i := range snapshot.Facts {
+		fact := &snapshot.Facts[i]
 		records = append(records, syncpage.Record[any]{
 			Value: fact, Origin: fact.Origin, Sequence: fact.Sequence, Key: "fact:" + fact.Scope + "\x00" + fact.Key,
 		})
 	}
-	for _, performance := range snapshot.Performances {
+	for i := range snapshot.Performances {
+		performance := &snapshot.Performances[i]
 		records = append(records, syncpage.Record[any]{
 			Value: performance, Origin: performance.Origin, Sequence: performance.Sequence, Key: "performance:" + performance.NodeID + "\x00" + performance.Model + "\x00" + performance.TaskType,
 		})
 	}
-	for _, dialogue := range snapshot.Dialogues {
+	for i := range snapshot.Dialogues {
+		dialogue := &snapshot.Dialogues[i]
 		records = append(records, syncpage.Record[any]{
 			Value: dialogue, Origin: dialogue.Origin, Sequence: dialogue.Sequence, Key: "dialogue:" + dialogue.ID,
 		})
@@ -53,14 +57,14 @@ func PageSnapshot(snapshot Snapshot, cursor, upper map[string]uint64, maxBytes i
 	}
 	for _, value := range values {
 		switch record := value.(type) {
-		case Experience:
-			page.Experiences = append(page.Experiences, record)
-		case Fact:
-			page.Facts = append(page.Facts, record)
-		case Performance:
-			page.Performances = append(page.Performances, record)
-		case DialogueRecord:
-			page.Dialogues = append(page.Dialogues, record)
+		case *Experience:
+			page.Experiences = append(page.Experiences, *record)
+		case *Fact:
+			page.Facts = append(page.Facts, *record)
+		case *Performance:
+			page.Performances = append(page.Performances, *record)
+		case *DialogueRecord:
+			page.Dialogues = append(page.Dialogues, *record)
 		default:
 			return Snapshot{}, nil, false, fmt.Errorf("memory: unsupported sync record type %T", value)
 		}

@@ -17,7 +17,9 @@ type harnessManager struct {
 	activeHarness    string
 	sessionHarnesses map[string]string
 	sessionStore     SessionStore
-	sessionCancels   map[string]context.CancelFunc
+	// sessionCancels holds one handle per in-flight turn so overlapping turns
+	// on a session cannot remove each other's cancellation.
+	sessionCancels map[string]map[*harnessTurnHandle]struct{}
 	// cancelsMu protects active-turn cancellation handles; copy handles before invoking them.
 	cancelsMu sync.Mutex
 }
@@ -33,8 +35,7 @@ type harnessAPI interface {
 	restoreAgentSessions() error
 	persistAgentSession(*agent.Session) error
 	agentStats() agent.AgentStats
-	setTurnCancel(string, func())
-	clearTurnCancel(string)
+	registerTurnCancel(string, context.CancelFunc) func()
 	interruptSession(string) bool
 	deletePersistedSession(string, string) error
 	close() error
@@ -44,7 +45,7 @@ func newHarnessManager(agents map[string]agent.Backend, activeHarness string, se
 	return &harnessManager{
 		agents: agents, activeHarness: activeHarness,
 		sessionHarnesses: make(map[string]string), sessionStore: sessionStore,
-		sessionCancels: make(map[string]context.CancelFunc),
+		sessionCancels: make(map[string]map[*harnessTurnHandle]struct{}),
 	}
 }
 
@@ -219,23 +220,43 @@ func (h *harnessManager) agentStats() agent.AgentStats {
 	return stats
 }
 
-func (h *harnessManager) setTurnCancel(id string, cancel func()) {
-	h.cancelsMu.Lock()
-	h.sessionCancels[id] = cancel
-	h.cancelsMu.Unlock()
-}
+type harnessTurnHandle struct{ cancel context.CancelFunc }
 
-func (h *harnessManager) clearTurnCancel(id string) {
+// registerTurnCancel records an in-flight turn and returns a cleanup that
+// removes only that turn's handle and cancels its context.
+func (h *harnessManager) registerTurnCancel(id string, cancel context.CancelFunc) func() {
+	handle := &harnessTurnHandle{cancel: cancel}
 	h.cancelsMu.Lock()
-	delete(h.sessionCancels, id)
+	turns := h.sessionCancels[id]
+	if turns == nil {
+		turns = make(map[*harnessTurnHandle]struct{})
+		h.sessionCancels[id] = turns
+	}
+	turns[handle] = struct{}{}
 	h.cancelsMu.Unlock()
+	return func() {
+		h.cancelsMu.Lock()
+		if turns := h.sessionCancels[id]; turns != nil {
+			delete(turns, handle)
+			if len(turns) == 0 {
+				delete(h.sessionCancels, id)
+			}
+		}
+		h.cancelsMu.Unlock()
+		cancel()
+	}
 }
 
 func (h *harnessManager) interruptSession(id string) bool {
 	h.cancelsMu.Lock()
-	cancel, hasCancel := h.sessionCancels[id]
+	turns := h.sessionCancels[id]
+	cancels := make([]context.CancelFunc, 0, len(turns))
+	for handle := range turns {
+		cancels = append(cancels, handle.cancel)
+	}
 	h.cancelsMu.Unlock()
-	if hasCancel && cancel != nil {
+	hasCancel := len(cancels) > 0
+	for _, cancel := range cancels {
 		cancel()
 	}
 

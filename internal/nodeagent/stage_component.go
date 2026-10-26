@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/logging"
 )
@@ -34,6 +35,10 @@ type stageComponent struct {
 	requests map[string]*activePipelineRequest
 
 	requestIdleTimeout time.Duration
+	background         background.Group
+	closed             bool
+	closeOnce          sync.Once
+	closeErr           error
 }
 
 type loadedStage struct {
@@ -60,7 +65,7 @@ type stageLease struct {
 }
 
 type activePipelineRequest struct {
-	mu               sync.Mutex
+	operation        chan struct{}
 	assignment       engine.StageAssignment
 	requestID        string
 	runtime          engine.PipelineStageEngineV2
@@ -89,6 +94,10 @@ func (c *stageComponent) load(
 	}
 	key := nodeStageKey(assignment)
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return errStageUnavailable
+	}
 	if current, exists := c.stages[key]; exists {
 		if current.assignment != assignment {
 			c.mu.Unlock()
@@ -118,6 +127,13 @@ func (c *stageComponent) load(
 	}
 
 	c.mu.Lock()
+	if c.closed && err == nil {
+		c.mu.Unlock()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), pipelineRequestCloseTimeout)
+		err = errors.Join(errStageUnavailable, runtime.UnloadStage(cleanupCtx, assignment))
+		cancel()
+		c.mu.Lock()
+	}
 	entry.loadErr = err
 	entry.loaded = err == nil
 	if err != nil {
@@ -193,7 +209,7 @@ func (c *stageComponent) acquire(ctx context.Context, assignment engine.StageAss
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stages[key] != entry || !entry.loaded || entry.unloading {
+	if c.closed || c.stages[key] != entry || !entry.loaded || entry.unloading {
 		return nil, errStageUnavailable
 	}
 	if !stageAssignmentMatches(entry.assignment, assignment) {
@@ -221,29 +237,71 @@ func (c *stageComponent) openPipelineRequest(
 		lease.release()
 		return errStageEngineUnsupported
 	}
-	if err := runtime.OpenPipelineRequest(ctx, lease.entry.assignment, requestID); err != nil {
-		lease.release()
-		return err
-	}
 	request := &activePipelineRequest{
 		assignment: lease.entry.assignment, requestID: requestID,
 		runtime: runtime, lease: lease, releaseCapacity: releaseCapacity,
+		operation: make(chan struct{}, 1),
 	}
+	if err := request.lock(ctx); err != nil {
+		lease.release()
+		return err
+	}
+	defer request.unlock()
 	key := pipelineRequestKey(assignment, requestID)
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		lease.release()
+		return errStageUnavailable
+	}
 	if _, exists := c.requests[key]; exists {
 		c.mu.Unlock()
-		closeErr := runtime.ClosePipelineRequest(context.Background(), lease.entry.assignment, requestID)
 		lease.release()
-		return errors.Join(errors.New("pipeline request is already open"), closeErr)
+		return errors.New("pipeline request is already open")
 	}
 	c.requests[key] = request
 	c.mu.Unlock()
-	request.mu.Lock()
+	if err := runtime.OpenPipelineRequest(ctx, lease.entry.assignment, requestID); err != nil {
+		c.mu.Lock()
+		delete(c.requests, key)
+		c.mu.Unlock()
+		lease.release()
+		return err
+	}
+	c.mu.Lock()
+	closing := c.closed
+	if closing {
+		delete(c.requests, key)
+	}
+	c.mu.Unlock()
+	if closing {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), pipelineRequestCloseTimeout)
+		closeErr := runtime.ClosePipelineRequest(cleanupCtx, lease.entry.assignment, requestID)
+		cancel()
+		lease.release()
+		return errors.Join(errStageUnavailable, closeErr)
+	}
 	c.schedulePipelineRequestExpiryLocked(key, request, c.requestIdleTimeout)
-	request.mu.Unlock()
 	return nil
 }
+
+func (active *activePipelineRequest) lock(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case active.operation <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		active.unlock()
+		return err
+	}
+	return nil
+}
+
+func (active *activePipelineRequest) unlock() { <-active.operation }
 
 func (c *stageComponent) pipelineRequest(
 	assignment engine.StageAssignment,
@@ -271,8 +329,10 @@ func (c *stageComponent) prefillPipelineStage(
 	if err != nil {
 		return engine.PipelineStageOutput{}, err
 	}
-	active.mu.Lock()
-	defer active.mu.Unlock()
+	if err := active.lock(ctx); err != nil {
+		return engine.PipelineStageOutput{}, err
+	}
+	defer active.unlock()
 	key := pipelineRequestKey(active.assignment, active.requestID)
 	if err := c.touchPipelineRequestLocked(key, active); err != nil {
 		return engine.PipelineStageOutput{}, err
@@ -290,8 +350,10 @@ func (c *stageComponent) decodePipelineStage(
 	if err != nil {
 		return engine.PipelineStageOutput{}, err
 	}
-	active.mu.Lock()
-	defer active.mu.Unlock()
+	if err := active.lock(ctx); err != nil {
+		return engine.PipelineStageOutput{}, err
+	}
+	defer active.unlock()
 	key := pipelineRequestKey(active.assignment, active.requestID)
 	if err := c.touchPipelineRequestLocked(key, active); err != nil {
 		return engine.PipelineStageOutput{}, err
@@ -310,8 +372,10 @@ func (c *stageComponent) closePipelineRequest(
 	if err != nil {
 		return err
 	}
-	active.mu.Lock()
-	defer active.mu.Unlock()
+	if err := active.lock(ctx); err != nil {
+		return err
+	}
+	defer active.unlock()
 	key := pipelineRequestKey(active.assignment, active.requestID)
 	if !c.pipelineRequestRegistered(key, active) {
 		return errPipelineRequestNotOpen
@@ -356,6 +420,12 @@ func (c *stageComponent) schedulePipelineRequestExpiryLocked(
 	active *activePipelineRequest,
 	delay time.Duration,
 ) {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return
+	}
 	if delay <= 0 {
 		delay = pipelineRequestIdleTimeout
 	}
@@ -366,7 +436,10 @@ func (c *stageComponent) schedulePipelineRequestExpiryLocked(
 	generation := active.expiryGeneration
 	active.expiresAt = time.Now().Add(delay)
 	active.expiryTimer = time.AfterFunc(delay, func() {
-		c.expirePipelineRequest(key, active, generation)
+		_ = c.background.Run(func(context.Context) error {
+			c.expirePipelineRequest(key, active, generation)
+			return nil
+		})
 	})
 }
 
@@ -375,8 +448,13 @@ func (c *stageComponent) expirePipelineRequest(
 	active *activePipelineRequest,
 	generation uint64,
 ) {
-	active.mu.Lock()
-	defer active.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), pipelineRequestCloseTimeout)
+	defer cancel()
+	if err := active.lock(ctx); err != nil {
+		logging.Errorf("nodeagent", "nodeagent: pipeline expiry could not acquire request ownership: %v", err)
+		return
+	}
+	defer active.unlock()
 	if active.expiryGeneration != generation {
 		return
 	}
@@ -395,9 +473,7 @@ func (c *stageComponent) expirePipelineRequest(
 
 	active.expiryTimer = nil
 	active.expiryGeneration++
-	ctx, cancel := context.WithTimeout(context.Background(), pipelineRequestCloseTimeout)
 	closeErr := active.runtime.ClosePipelineRequest(ctx, active.assignment, active.requestID)
-	cancel()
 	active.lease.release()
 	if active.releaseCapacity != nil {
 		active.releaseCapacity()
@@ -410,6 +486,36 @@ func (c *stageComponent) expirePipelineRequest(
 			closeErr,
 		)
 	}
+}
+
+func (c *stageComponent) close(ctx context.Context) error {
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		c.closed = true
+		requests := make([]*activePipelineRequest, 0, len(c.requests))
+		for _, request := range c.requests {
+			requests = append(requests, request)
+		}
+		assignments := make([]engine.StageAssignment, 0, len(c.stages))
+		for _, stage := range c.stages {
+			assignments = append(assignments, stage.assignment)
+		}
+		c.mu.Unlock()
+		c.background.Stop()
+		for _, request := range requests {
+			err := c.closePipelineRequest(ctx, request.assignment, request.requestID)
+			if !errors.Is(err, errPipelineRequestNotOpen) {
+				c.closeErr = errors.Join(c.closeErr, err)
+			}
+		}
+		for _, assignment := range assignments {
+			err := c.unload(ctx, assignment)
+			if !errors.Is(err, errStageNotLoaded) {
+				c.closeErr = errors.Join(c.closeErr, err)
+			}
+		}
+	})
+	return c.closeErr
 }
 
 func (lease *stageLease) release() {

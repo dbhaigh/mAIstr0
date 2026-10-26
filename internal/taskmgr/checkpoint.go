@@ -155,10 +155,15 @@ func (m *Manager) ResumeTaskChecked(taskID string) (*Task, error) {
 	}
 	defer m.unlockTaskForUpdate(t)
 	if t.Status == StatusCompleted {
-		return nil, fmt.Errorf("taskmgr: task %s is already completed", taskID)
+		return nil, fmt.Errorf("taskmgr: task %s is already completed: %w", taskID, ErrNotResumable)
 	}
 	if !t.Resumable {
-		return nil, fmt.Errorf("taskmgr: task %s is not marked resumable", taskID)
+		return nil, fmt.Errorf("taskmgr: task %s is not marked resumable: %w", taskID, ErrNotResumable)
+	}
+	// Live tasks are also marked resumable; resuming one would reset in-flight
+	// subtasks to pending and dispatch them a second time.
+	if t.Status != StatusFailed && t.Status != StatusCancelled {
+		return nil, fmt.Errorf("taskmgr: task %s is %s: %w", taskID, t.Status, ErrNotResumable)
 	}
 
 	// Reset task state back to running
@@ -174,6 +179,9 @@ func (m *Manager) ResumeTaskChecked(taskID string) (*Task, error) {
 		}
 	}
 
+	if t.cancel != nil {
+		t.cancel()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.ctx = ctx
 	t.cancel = cancel

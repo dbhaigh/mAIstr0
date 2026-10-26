@@ -1,5 +1,39 @@
 # API reference
 
+## Transparent-router lifecycle diagnostics
+
+The existing router event API adds `accepted`, `scheduled`, `queued`,
+`dispatched`, `upstream_response`, `first_upstream_byte`, and terminal
+`completed`/`failed` phases, retaining previous attempt/rejection/finished
+phases and JSON fields. Correlate by generated request/attempt IDs; tolerate
+unknown phases and bounded-log eviction. These events are diagnostics, not a
+durable audit log. First upstream byte is not first generated token.
+See [timing, privacy, retention and benchmark semantics](./end-to-end-benchmarks.md#request-diagnostics-and-dashboard-interpretation).
+
+## Enrollment security migration
+
+New `POST /api/pairing/connect` requests supply `address`, a valid one-use `pin`
+on every subnet, and the out-of-band verified `fingerprint` (64 hexadecimal
+characters, SHA-256 of the complete DER leaf certificate), unless that
+fingerprint is configured or an existing pin is being reused. Discovery IDs
+and addresses are not authentication. TLS redirects are refused and enrollment
+certificates must match the actual TLS leaf before trust changes.
+
+`POST /api/discovery/{id}/pairing/invite` requires `pin` and the destination
+node's verified `fingerprint`. Incoming invitations remain pending until local
+`POST /api/pairing/invitation/accept` receives
+`{"fingerprint":"<independently verified orchestrator SHA-256>"}`.
+Missing/malformed fingerprints return 400, mismatches 403 (pending invitation
+retained), and expired/consumed invitations 410. Invitation status includes an
+offered fingerprint for comparison, not automatic trust.
+
+`GET /api/pairing/status` adds the public `fingerprint`; the active PIN and
+expiry are local-plaintext-only. `auto_join_available` is retained but false.
+Public engine endpoints omit URL userinfo/query/fragment and sanitize inventory
+errors. Saving an unchanged redacted endpoint preserves its existing credentials;
+change credentials in protected configuration. Existing trust files need no
+conversion. See [migration](./pairing-and-security.md#migration).
+
 ## Peer executable distribution and shard membership
 
 - `GET /api/updates/manifest?os=windows&arch=amd64` returns

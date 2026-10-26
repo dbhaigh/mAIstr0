@@ -6,24 +6,43 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  acceptance:
+    name: Release acceptance
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  qualification:
+    name: Full release qualification
+    uses: ./.github/workflows/qualification.yml
+
   release:
     name: Publish Windows and Linux binaries
+    needs: [acceptance, qualification]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
       - name: Detect numeric iteration release
         id: version
         shell: bash
         run: |
+          source_version=$(sed -n 's/^[[:space:]]*var Value = "\([^"]*\)".*/\1/p' internal/version/version.go)
+          test "${GITHUB_REF_NAME#v}" = "$source_version"
           if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "iteration=true" >> "$GITHUB_OUTPUT"
           else
@@ -31,10 +50,10 @@ jobs:
           fi
       - name: Build and publish semantic release
         if: steps.version.outputs.iteration != 'true'
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.15.0
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -46,22 +65,23 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          source_version=$(sed -n 's/^[[:space:]]*var Value = "\([^"]*\)".*/\1/p' internal/version/version.go)
-          test "$version" = "$source_version"
           bash build/build.sh
           mkdir -p dist/packages
           for target in windows-amd64 linux-amd64 linux-ubuntu-amd64; do
             os="${target%-amd64}"
             name="maistr0_${version}_${os}_amd64"
             folder="dist/packages/$name"
-            mkdir -p "$folder/docs"
-            cp LICENSE README.md "$folder/"
-            cp docs/*.md "$folder/docs/"
+            mkdir -p "$folder/docs" "$folder/examples"
+            cp LICENSE README.md changelog.md SECURITY.md "$folder/"
+            cp docs/*.md docs/*.json docs/*.jsonl "$folder/docs/"
+            cp examples/benchmark.json "$folder/examples/"
             cp dist/"$target"/maistr0* "$folder/"
             if [[ "$target" == windows-* ]]; then
-              (cd "$folder" && zip -qr "../$name.zip" .)
+              find "$folder" -exec touch -d "@$(git log -1 --format=%ct)" {} +
+              (cd "$folder" && find . -type f | LC_ALL=C sort | zip -Xq "../$name.zip" -@)
             else
-              tar -czf "dist/packages/$name.tar.gz" -C "$folder" .
+              tar --sort=name --mtime="@$(git log -1 --format=%ct)" --owner=0 --group=0 --numeric-owner \
+                -czf "dist/packages/$name.tar.gz" -C "$folder" .
             fi
           done
           (cd dist/packages && sha256sum *.zip *.tar.gz > checksums.txt)

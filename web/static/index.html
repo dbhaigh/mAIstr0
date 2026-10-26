@@ -169,6 +169,7 @@
           </div>
           <p id="pairing-pin-expiry" class="panel-caption"></p>
         </div>
+        <p>Local certificate SHA-256 (verify out of band): <code id="pairing-fingerprint-display"></code></p>
         <p id="pairing-state" class="pairing-state" role="status" aria-live="polite">Loading pairing status…</p>
         <div id="pairing-node-connect" class="pairing-node-connect" hidden>
           <h4>Join this node to a cluster</h4>
@@ -327,7 +328,8 @@
       <p id="pairing-dialog-description">Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.</p>
       <div class="pairing-connect-fields">
         <label id="pairing-address-field">Orchestrator HTTPS address<input id="pairing-address" type="url" placeholder="https://192.168.1.10:7450" required /></label>
-        <label>One-use PIN (optional on same subnet)<input id="pairing-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="([0-9]{6})?" maxlength="6" placeholder="123456" /></label>
+        <label>Verified destination certificate SHA-256<input id="pairing-fingerprint" type="text" autocomplete="off" pattern="[a-fA-F0-9]{64}" maxlength="64" placeholder="Copy from the destination's local Setup page, not discovery" required /></label>
+        <label>One-use PIN<input id="pairing-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required /></label>
       </div>
       <p id="pairing-status" class="setup-status" role="status" aria-live="polite"></p>
       <div class="pairing-dialog-actions">
@@ -341,6 +343,7 @@
     <div>
       <h3 id="pairing-invitation-title">Cluster pairing request</h3>
       <p id="pairing-invitation-details"></p>
+      <label>Orchestrator SHA-256 verified out of band<input id="pairing-invitation-fingerprint" type="text" autocomplete="off" pattern="[a-fA-F0-9]{64}" maxlength="64" required /></label>
       <p id="pairing-invitation-status" class="setup-status" role="status" aria-live="polite">Confirm this request on the node to join the cluster.</p>
       <div class="pairing-dialog-actions">
         <button id="pairing-invitation-decline" class="icon-button" type="button">Decline</button>
@@ -442,6 +445,6 @@
     </div>
   </div>
 
-  <script src="/app.10396464156f.js"></script>
+  <script src="/app.13500eb3efb5.js"></script>
 </body>
 </html>

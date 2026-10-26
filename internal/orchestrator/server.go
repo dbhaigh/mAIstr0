@@ -78,8 +78,6 @@ type SessionStore interface {
 const discoveryRequestTimeout = 5 * time.Second
 const nodeCapacityFreshnessWindow = 6 * time.Second
 
-func New() (*Server, error) { return NewWithMemory("") }
-
 // NewWithMemory builds an orchestrator backed by a persistent memory
 // database at memoryPath (empty selects the default per-user location).
 func NewWithMemory(memoryPath string) (*Server, error) {

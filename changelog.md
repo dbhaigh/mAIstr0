@@ -2,6 +2,178 @@
 
 ## Unreleased
 
+## 0.1.0 (2026-10-26)
+
+Minor release consolidating the engineering audit, characterization coverage,
+measured cleanup and performance work, concurrency and trust-boundary fixes,
+responsibility refactoring, operational diagnostics, and CI regression gates.
+Review the security migration below before upgrading.
+
+### CI quality gates
+
+- Split always-on Windows/Linux short PR checks from full process/race and
+  independent native-package qualification. Both release formats require both
+  reusable workflows; failed/skipped dependencies cannot satisfy aggregate gates.
+- Added formatting, workflow and frontend/dependency vulnerability checks;
+  consolidated repeated generation/scans and redundant fake-build jobs. Actions
+  are SHA-pinned with read-only defaults and monthly reviewed updates.
+- Scheduled benchmarks now compare six interleaved rounds against an approved
+  fixed commit with conservative timing/allocation thresholds. Noisy or missing
+  evidence is explicitly inconclusive, not a code regression or false pass.
+- Benchmark fixtures join HTTP handlers before asserting released capacity;
+  production routing behavior is unchanged. See [CI quality gates](./docs/ci-quality-gates.md).
+
+### Operational measurement and release readiness
+
+- Added bounded opt-in `maistr0-bench` HTTP workloads and machine-readable
+  engine-direct/single-router/multi-router synthetic comparisons. Reports keep
+  environment, outcomes and timing samples, not prompts, secrets or output.
+  Real-model/hardware performance remains operator qualification, not a CI claim.
+- Existing router events add correlated lifecycle/terminal phases without
+  changing fields/routes; consumers should tolerate unknown phase strings.
+  Transparent routing contributes to existing assignment wall-time metrics.
+  Dispatch logs omit raw node/model/engine identifiers.
+- Dashboard utilization distinguishes missing values from measured zero and
+  labels telemetry freshness; non-ready shard members no longer appear ready.
+- Release publication now depends on full reusable CI, tag/source-version
+  equality and native package/install/replacement acceptance. Native archives
+  use normalized metadata and include security and benchmark documentation.
+  Same-source replacement is not historical-version migration or signature proof.
+- Corrected the supervisor crash-loop test's terminal-error observation window;
+  production supervisor behavior is unchanged.
+
+### Security migration
+
+- New pairing requires an out-of-band verified certificate SHA-256 fingerprint
+  (`--orchestrator-fingerprint` / `orchestrator_fingerprint`) and a valid one-use
+  PIN on every subnet. Existing stored pins remain compatible; discovery no
+  longer permits PIN-less enrollment. Invitations require verified fingerprints
+  in both directions, including JSON confirmation on local acceptance.
+- Peer executable updates now default off. Enable only with
+  `--allow-peer-updates`; `--no-peer-updates` overrides it. Opting in still grants
+  paired publishers code-execution authority; checksums are not signatures.
+- Enrollment certificates must match the actual TLS leaf before trust is
+  persisted. Pairing responses are bounded, redirects refused, and remote
+  status omits the active PIN. Both PIN checks reject expiration equality.
+- Engine API URLs and health failures no longer expose endpoint credentials or
+  arbitrary upstream errors. Unchanged redacted endpoint saves retain credentials.
+  Printed configuration also redacts PINs and credential-bearing URLs without
+  mutating executable configuration. Managed-process logs omit raw stdout/stderr,
+  retaining metadata only.
+- Existing identity and log files are restricted to mode 0600 when reopened on
+  POSIX. Windows deployments must enforce directory/file ACLs separately.
+  See [pairing/security migration](./docs/pairing-and-security.md#migration).
+
+### Fixes
+
+- Runtime model selection now belongs to the node inventory owner. Default-only
+  properties updates immediately update cached flags, and an in-flight inventory
+  refresh cannot overwrite newer disabled/default selections. Endpoint omission
+  rules, API/storage formats, and inventory refresh behavior remain compatible.
+- Task creation, peer submission, and resume now reject a saturated or closed
+  dispatch queue with `503` instead of waiting indefinitely or hiding admission
+  failure. The plain-text error identifies the persisted task; admission is
+  per subtask, so previously accepted work can continue independently. Inspect
+  that task before retrying creation. Already-canceled requests return `409`
+  before persistence. Payloads, storage formats, queue sizes, and direct-node
+  inference limit scope are unchanged.
+- Canceled queued jobs enter handlers canceled; canceled execution/pipeline
+  admission no longer grants capacity. Pool close now joins workers and drains
+  queued references safely with concurrent submit/close.
+- Agent SSE write or encoding failures cancel and join the backend instead of
+  continuing work for a lost client or silently dropping an unencodable event.
+- Discovery shutdown joins its reader and tolerates concurrent Close callers.
+  RPC cancellation joins both copy directions; dual HTTP/TLS shutdown closes
+  and joins pending classifiers and grants handlers a five-second grace.
+- SIGTERM and Ctrl+C initiate cooperative application shutdown. Normal quits
+  cancel/join the updater; startup election/browser delays are cancellable.
+- Node shutdown owns stage expiry callbacks, request closes, and runtime
+  unloads. Stage operation waits honor cancellation, duplicate opens do not
+  disturb existing engine state, and shutdown races clean up new resources.
+  Parallel inference tools bound fanout through the existing worker pool.
+
+- Managed-engine starts refused by the vLLM shard-network preflight no longer
+  leak an output pipe (two file descriptors) per attempt; the pipe is now
+  opened only after all pre-launch checks pass.
+- If a shard member's start call succeeds but its status is not `ready` (for
+  example, it crashed and is auto-restarting), failed shard-group startup now
+  stops that member along with the members started before it.
+
+- `POST /api/tasks/{id}/resume` now returns `409 Conflict` for a task that is
+  still running, synthesizing, or awaiting approval instead of resetting
+  in-flight subtasks to pending and dispatching them a second time. Resume
+  also cancels the superseded task context, so a later cancel stops all work.
+- Late subtask outcomes from duplicate or superseded dispatches no longer
+  reopen a finished subtask or turn a completed task into a failed one.
+- Memory sync no longer hides a failed read of a bbolt memory store.
+  `GET /memory/sync` (node) and `GET /api/memory/sync` (orchestrator) now
+  return `500` instead of an empty `200`/`204`. Node push and pull sync
+  skip or fail that pass, so no peer watermark advances past unread data.
+  `memory.Store.Snapshot()` and `SnapshotForPeer` are unchanged and still log
+  and return an empty snapshot on read errors.
+- Shutting down a node during a failover election now ends the 15-second
+  candidate window immediately and prevents the node from promoting itself
+  or starting a step-down watch after its failover coordinator has closed.
+- The OpenAI-compatible router no longer panics when a managed shard group
+  rejects a request: it skips the missing release callback and returns the
+  rejection. It also checks that the head serves the model only after the
+  group's capacity is acquired. If that check fails, it releases the capacity
+  and returns `503`.
+- `member_count` in the orchestrator snapshot counts every registered node
+  again. A `break` after the first leader had stopped the count early.
+- A dialogue or harness turn that ends no longer clears the cancel handle of a
+  newer overlapping turn for the same ID. Interrupting a dialogue or deleting a
+  harness session cancels every in-flight turn.
+- Pairing trust is rolled back when the identity file cannot be saved, so a
+  peer is never trusted in memory but untrusted after a restart. A failed
+  pairing join still returns `400` and consumes the PIN, but no longer leaves
+  the node trusted. A failed revocation still keeps the peer revoked in memory
+  and returns the error.
+
+### Development
+
+- Added [concurrency/resource ownership](docs/concurrency-ownership.md),
+  a reproducible production AST census, deterministic saturation and cleanup
+  regressions, and a real-main Linux SIGTERM subprocess test. Documented
+  intentional detached jobs, panic policy, remaining connection/polling limits,
+  and the allocation cost of cancellable stage ownership.
+
+- Reduced repeated record-copy allocations during memory-sync pagination
+  without changing payloads, cursors, legacy ordering, byte limits, or storage.
+  Added reproducible CPU/heap/trace workloads and before/after data covering
+  routing, workflows, inventory/telemetry, publication, memory, and sharding.
+  See [docs/performance-evaluation.md](docs/performance-evaluation.md) for measured
+  gains, unchanged peak-memory behavior, controls, and limitations.
+- Added structured, privacy-safe scheduler candidate/score/capacity diagnostics
+  using the existing debug log level, plus a reproducible synthetic evaluation
+  harness comparing round-robin, least-loaded, capability-aware, and existing
+  scoring. Recorded CPU/allocation and simulated workload results across two
+  seeds; retained the current scorer because alternatives have mixed tradeoffs.
+  See [docs/scheduler-evaluation.md](docs/scheduler-evaluation.md).
+- Removed verified uncalled internal helpers, redundant factory/consensus state,
+  and adapter forwarding methods. Shared pairing-PIN validation, trust-pin
+  updates, request-ID generation, upstream status classification, and recent-task
+  cache rebuilding without changing public contracts or dependencies.
+- Added [docs/cleanup-inventory.md](docs/cleanup-inventory.md) with usage evidence,
+  retained indirect/platform code and intentional duplication, dependency
+  findings, regression coverage, and validation results.
+
+### Documentation
+
+- Added [docs/distributed-guarantees.md](docs/distributed-guarantees.md). It
+  lists what election, trust, task, capacity, streaming, memory-sync, and
+  shard-group behavior does and does not guarantee, especially under network
+  partition, and names the tests that cover each guarantee.
+
+### Compatibility
+
+- `POST /api/tasks/{id}/resume` returns `409` for tasks that are not failed or
+  cancelled. The OpenAPI spec now documents this.
+- The memory sync `GET` endpoints return `500` instead of an empty success
+  when the local store cannot be read.
+- Request and response bodies, routes, configuration keys, and storage
+  formats are unchanged.
+
 ## 0.0.24.4
 
 Released: 2026-10-25.

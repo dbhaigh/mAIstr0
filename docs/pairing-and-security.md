@@ -3,32 +3,53 @@
 mAIstr0 is local-first. Inference and orchestration run on configured engines
 and cluster nodes; a cloud service is not required. Cluster peers authenticate
 with self-signed certificates whose SHA-256 fingerprints are pinned during
-pairing. Remote cluster traffic requires mutual TLS 1.3 or later and a
+pairing. Normal HTTP control-plane and RPC-relay traffic requires mutual TLS 1.3 or later and a
 currently valid, explicitly trusted peer certificate. The trust roster is
-stored with the node identity using owner-only file permissions.
+stored with the node identity. POSIX identity and log files are restricted to
+mode 0600, including existing files reopened by the application. On Windows
+these modes are not owner-only ACL enforcement: protect the profile and any
+custom data/log directories with OS ACLs.
 
 ## Pairing a node
 
 1. Open the orchestrator dashboard's **Setup** panel and copy its one-time
-   pairing PIN.
+   pairing PIN and certificate SHA-256 fingerprint over an authenticated
+   out-of-band channel. The fingerprint is 64 hexadecimal characters of the
+   complete DER-encoded leaf certificate, not the public key alone.
 2. Open the node dashboard's **Setup** panel, enter the orchestrator's HTTPS
-   address and PIN, and confirm the selected orchestrator identity.
+   address, verified fingerprint, and PIN. Never use discovery data or an
+   unverified remote certificate as the fingerprint's source.
 3. For unattended enrollment, provide the PIN out of band with
-   `--pairing-pin` or the node config's `pairing_pin`.
+   `--pairing-pin` and `--orchestrator-fingerprint`, or the node config's
+   `pairing_pin` and `orchestrator_fingerprint`.
 
 PINs are six digits, expire after 30 minutes, can be used once, and are
 invalidated after 20 failed attempts. Comparisons use a constant-time
 comparison. Attempt and outcome logs omit PIN values. The local operator can
 view the active PIN or generate a replacement from the Setup panel.
 
-Nodes on the same discovered subnet may use the existing automatic-join path
-without a PIN. This is a deliberate trust boundary: enable LAN discovery only
-on networks where devices are trusted. Cross-subnet pairing requires the
-out-of-band PIN. Orchestrator-to-orchestrator pairing is disabled.
+New enrollment requires the PIN on every subnet. Discovery is an unauthenticated
+availability/election mechanism, not a membership credential. First-contact
+TLS refuses unknown certificates without the verified fingerprint; existing
+pins reconnect without supplying it again. Orchestrator-to-orchestrator
+pairing is disabled. Remote pairing status never discloses the active PIN.
 
-TLS invitations to nodes remain pending until accepted locally. An invitation
-does not bypass the orchestrator's PIN validation. Discovery visibility alone
-does not grant membership.
+TLS invitations require the sender to verify the destination node's fingerprint.
+They remain pending until the node's local operator supplies the orchestrator's
+fingerprint, independently verified out of band. The offered fingerprint is
+informational, never an automatically trusted anchor. Neither direction follows
+redirects or persists an enrollment certificate different from the actual TLS
+leaf. Pairing responses are bounded to 1 MiB. Invitations do not bypass PIN
+validation.
+
+### Migration
+
+Existing stored pins and identities do not need conversion. New enrollment and
+re-pairing after rotation require the verified new fingerprint and a valid PIN;
+PIN-less same-subnet enrollment is removed. Invitation-accept clients must send
+JSON `{"fingerprint":"<verified 64-hex SHA-256>"}`. The compatibility status field
+`auto_join_available` is always false. Peer executable updates are now opt-in
+with `--allow-peer-updates`; `--no-peer-updates` wins if both flags are present.
 
 ## Certificates and pin changes
 
@@ -94,6 +115,36 @@ Default logs and SSE snapshots omit prompts, model outputs, pairing PINs, API
 keys, authentication material, and private keys. Pairing errors returned by a
 peer are not copied into local errors or logs. CI runs `go vet` and
 `govulncheck`.
+
+Public engine URLs omit userinfo, query strings, and fragments; inventory
+failures expose a generic health message instead of upstream content. Saving an
+unchanged redacted engine endpoint preserves its existing credentials; change
+credentials through protected configuration. Managed-process stdout/stderr is
+drained with bounded line buffering but logged only as byte/truncation metadata,
+not regex-filtered raw output. This intentionally reduces engine log detail.
+
+## External integrations and remaining trust
+
+Managed executables run as the application account, inherit its environment,
+and are not sandboxed. Use a dedicated account with a minimal environment and
+operator-controlled executable/model allowlists. HTTPS host, archive path,
+size, and digest checks restrict downloads but do not independently authenticate
+their publishers. A checksum fetched from the same source is not a release
+signature. Peer updates are disabled unless explicitly enabled; enabling them
+trusts paired publishers to execute code (see [configuration](./configuration.md#automatic-peer-executable-updates)).
+External inference adapters retain their configured HTTP/TLS transport; cluster
+certificate pinning does not secure a separate remote engine HTTP endpoint.
+Use HTTPS or an authenticated encrypted network for those connections. Keep
+PIN-bearing configuration files private; command-line PINs may also appear in
+shell history or process listings.
+
+vLLM distributed data traffic is **not mTLS protected**. Keep it on explicitly
+trusted private interfaces, preferably an authenticated encrypted overlay such
+as WireGuard; `allow_insecure_shard_network` deliberately bypasses the network
+preflight. The GGML peer RPC relay uses mTLS, while its worker-side raw service
+is loopback-only. Discovery can still be spoofed or disrupted, and network
+partitions can elect multiple local coordinators. Neither certificate pins nor
+PINs provide global consensus or availability against network attackers.
 
 For coordinated vulnerability reporting, see the repository
 [security policy](../SECURITY.md).

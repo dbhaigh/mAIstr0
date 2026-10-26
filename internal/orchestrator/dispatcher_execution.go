@@ -259,7 +259,7 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 			}
 			var upstream *nodeResponseError
 			if errors.As(err, &upstream) {
-				failureClass, retryable := classifyDispatchStatus(upstream.statusCode, []byte(upstream.body))
+				failureClass, retryable := classifyUpstreamStatus(upstream.statusCode, []byte(upstream.body))
 				return dispatchOutcome{err: err, failureClass: failureClass, retryable: retryable, httpStatus: upstream.statusCode}
 			}
 			return dispatchOutcome{err: err, failureClass: "shard_execution_failure", retryable: !errors.Is(err, errShardGroupUnavailable) && !errors.Is(err, errShardGroupNotFound)}
@@ -309,7 +309,7 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		failureClass, retryable := classifyDispatchStatus(resp.StatusCode, errBody)
+		failureClass, retryable := classifyUpstreamStatus(resp.StatusCode, errBody)
 		if readErr != nil {
 			if retryable {
 				failureClass = "upstream_read"

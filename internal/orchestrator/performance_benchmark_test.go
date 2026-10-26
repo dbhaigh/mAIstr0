@@ -114,7 +114,7 @@ func writeBenchmarkStreamEvent(w http.ResponseWriter, value any) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
-func newPerformanceOrchestrator(b *testing.B, worker *httptest.Server, capacity int) *Server {
+func newPerformanceOrchestrator(b testing.TB, worker *httptest.Server, capacity int) *Server {
 	b.Helper()
 	registry := cluster.NewRegistry()
 	taskStore, err := taskmgr.NewManagerWithStore(taskmgr.NewMemoryStore(), nil)
@@ -135,6 +135,8 @@ func newPerformanceOrchestrator(b *testing.B, worker *httptest.Server, capacity 
 		election:      newElectionComponent(registry, nil, "benchmark-orchestrator", 0, false),
 		events:        hub.New(), routerEvents: newRouterEventLog(200),
 		metrics: metrics, mem: memoryStore, mode: config.OrchestratorModeMinimal,
+		routerTTFBTimeout: time.Duration(config.DefaultRouterTTFBTimeoutSeconds) * time.Second,
+		routerIdleTimeout: time.Duration(config.DefaultRouterIdleStreamTimeoutSeconds) * time.Second,
 	}
 	b.Cleanup(func() {
 		server.background.Stop()

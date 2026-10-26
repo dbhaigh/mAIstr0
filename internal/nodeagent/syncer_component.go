@@ -245,7 +245,12 @@ func (s *syncerComponent) syncPeerMemoryWithContext(ctx context.Context) {
 			peerVersion = remoteSnapshot.SyncVersion
 			peerWatermarks = remoteSnapshot.Watermarks
 		}
-		outgoing := memory.SnapshotForPeer(s.memory, peerVersion, peerWatermarks)
+		outgoing, err := memory.LoadSnapshotForPeer(s.memory, peerVersion, peerWatermarks)
+		if err != nil {
+			logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: memory sync direction=node->peer event=send_failed %s peer_id=%s stage=snapshot error=%v",
+				syncLogFields(syncLogRequestID(nil), s.nodeID, 0, "snapshot"), peer.ID, err)
+			continue
+		}
 		if fetched && !memory.SupportsIncrementalSync(peerVersion) {
 			filtered, err := memory.SnapshotDifference(outgoing, remoteSnapshot)
 			if err != nil {

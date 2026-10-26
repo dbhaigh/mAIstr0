@@ -3,7 +3,6 @@ package taskmgr
 import (
 	"encoding/json"
 	"errors"
-	"sort"
 	"strings"
 	"time"
 )
@@ -34,19 +33,7 @@ func (m *Manager) PageRecent(cursor *PageCursor, query string, status Status, li
 	m.mu.RUnlock()
 	if !valid {
 		m.mu.Lock()
-		if !m.recentTasksValid {
-			m.recentTasks = make([]*Task, 0, len(m.tasks))
-			for _, task := range m.tasks {
-				m.recentTasks = append(m.recentTasks, task)
-			}
-			sort.Slice(m.recentTasks, func(i, j int) bool {
-				if m.recentTasks[i].UpdatedAt.Equal(m.recentTasks[j].UpdatedAt) {
-					return m.recentTasks[i].ID > m.recentTasks[j].ID
-				}
-				return m.recentTasks[i].UpdatedAt.After(m.recentTasks[j].UpdatedAt)
-			})
-			m.recentTasksValid = true
-		}
+		m.ensureRecentTasksLocked()
 		m.mu.Unlock()
 	}
 

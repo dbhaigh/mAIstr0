@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -343,6 +344,65 @@ func TestPairingPersistsAndChecksCertificatePins(t *testing.T) {
 	}
 }
 
+func TestTrustPeerRefreshPreservesDetails(t *testing.T) {
+	methods := []struct {
+		name string
+		pin  func(*Identity, string, string) error
+	}{
+		{"TrustPeer", (*Identity).TrustPeer},
+		{"TrustPeerDetails", func(identity *Identity, id, certificate string) error {
+			return identity.TrustPeerDetails(id, certificate, "", "")
+		}},
+	}
+	for _, method := range methods {
+		for _, failWrite := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/failWrite=%t", method.name, failWrite), func(t *testing.T) {
+				identity := tcOpen(t, "owner")
+				peer := tcOpen(t, "peer")
+				replacement := tcOpen(t, peer.ID())
+				const address = "https://192.0.2.10:7450"
+				if err := identity.TrustPeerDetails(peer.ID(), peer.CertificatePEM(), "orchestrator", address); err != nil {
+					t.Fatal(err)
+				}
+				previous := identity.trusted[peer.ID()]
+				if err := method.pin(identity, peer.ID(), identity.CertificatePEM()); err == nil {
+					t.Fatal("accepted certificate with a mismatched identity")
+				}
+				if identity.trusted[peer.ID()] != previous {
+					t.Fatal("invalid refresh changed the trusted peer")
+				}
+				path := identity.path
+				if failWrite {
+					identity.path = t.TempDir()
+				}
+				err := method.pin(identity, peer.ID(), replacement.CertificatePEM())
+				if (err != nil) != failWrite {
+					t.Fatalf("refresh error = %v, want failure = %t", err, failWrite)
+				}
+				want := previous
+				if !failWrite {
+					cert, err := parseCertificate(replacement.CertificatePEM())
+					if err != nil {
+						t.Fatal(err)
+					}
+					want.Fingerprint = certificateFingerprint(cert)
+					want.Certificate = replacement.CertificatePEM()
+				}
+				if identity.trusted[peer.ID()] != want {
+					t.Fatal("refresh did not preserve metadata and the expected certificate")
+				}
+				reloaded, err := Open(path, identity.ID())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reloaded.trusted[peer.ID()] != want {
+					t.Fatal("live and persisted trust differ after refresh")
+				}
+			})
+		}
+	}
+}
+
 func TestRemovePairedOrchestratorsKeepsNodeTrust(t *testing.T) {
 	identity, err := Open(filepath.Join(t.TempDir(), "identity.json"), "cluster-orchestrator")
 	if err != nil {
@@ -409,7 +469,11 @@ func TestBootstrapTransportForIDChecksDiscoveredPeerIdentity(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	client := &http.Client{Transport: clientIdentity.BootstrapTransportForID(serverIdentity.ID())}
+	fingerprint, err := CertificateFingerprint(serverIdentity.CertificatePEM())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: clientIdentity.BootstrapTransportForFingerprint(serverIdentity.ID(), fingerprint)}
 	response, err := client.Get(server.URL)
 	if err != nil {
 		t.Fatalf("request to the expected discovered peer failed: %v", err)
@@ -419,7 +483,7 @@ func TestBootstrapTransportForIDChecksDiscoveredPeerIdentity(t *testing.T) {
 		t.Fatalf("expected peer returned %d", response.StatusCode)
 	}
 
-	client = &http.Client{Transport: clientIdentity.BootstrapTransportForID("different-node")}
+	client = &http.Client{Transport: clientIdentity.BootstrapTransportForFingerprint("different-node", fingerprint)}
 	if _, err := client.Get(server.URL); err == nil {
 		t.Fatal("bootstrap request succeeded against a peer with a different identity")
 	}

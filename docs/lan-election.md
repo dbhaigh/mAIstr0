@@ -27,8 +27,9 @@ it does not create a new trust identity. Members that already trust that node
 can register with the promoted coordinator, and update its role to
 orchestrator after registration. Untrusted LAN announcements cannot win a
 failover election. New members still require authorization: remote pairing
-requires the elected leader's one-time PIN, and the existing same-subnet
-auto-pairing and invitation flows remain unchanged. Discovery visibility alone
+requires the elected leader's one-time PIN and an out-of-band verified
+certificate fingerprint on every subnet. Invitations require local fingerprint
+confirmation as well. Discovery visibility alone
 does not grant membership.
 
 A combined-role host can advertise both its worker and a coordinator candidate
@@ -95,10 +96,11 @@ to that node.
 
 Pairing bootstrap is the deliberate exception to ordinary pin authentication.
 `POST /api/pairing/join` is accepted only by the locally elected orchestrator
-and requires its one-time PIN, except for the existing same-subnet auto-pair
-flow. A TLS invitation to a node creates only a pending invitation; the node
-user must accept it locally, and the subsequent join still goes through the
-orchestrator's PIN check. An off-subnet join with a wrong or expired PIN does
+and requires its one-time PIN on every subnet. First-contact TLS also requires
+an out-of-band verified server certificate fingerprint. A TLS invitation to a
+node creates only a pending invitation; the node user must accept it locally
+with an independently verified fingerprint, and the subsequent join still goes
+through the orchestrator's PIN check. A join with a wrong or expired PIN does
 not add a trust pin.
 
 ## Optional request-view fencing
@@ -126,4 +128,6 @@ Quorum consensus is being introduced in stages; the current status and the
 coordinated-upgrade requirement are documented in
 [`consensus-migration.md`](./consensus-migration.md). Until consensus is wired
 to startup and all mutation paths, the runtime does not guarantee one global
-coordinator across partitions.
+coordinator across partitions. The guarantees that do and do not hold across
+tasks, capacity, synchronization, and shard groups are summarized in
+[Distributed-system guarantees and limits](./distributed-guarantees.md).

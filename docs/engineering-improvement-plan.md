@@ -11,6 +11,21 @@ replacement for review or CI.
 
 ## Assessment boundaries
 
+Phase 9 [quality gates](./ci-quality-gates.md) separate consistent fast PR checks
+from full qualification, independently validate packages, pin actions and limit
+permissions, and enforce approved same-run timing/allocation comparisons.
+Required aggregate jobs fail on failed/skipped prerequisites. GitHub `main`
+was unprotected at inspection; enabling the documented required-check ruleset
+after publication remains a repository-administrator action, not a local pass.
+
+Phase 8 now adds [end-to-end measurement and release acceptance](./end-to-end-benchmarks.md):
+54 recorded synthetic direct/single/multi-router results, opt-in real-engine
+HTTP tooling, correlated privacy-safe router lifecycle diagnostics, explicit
+dashboard availability/freshness, and reusable CI gating both tag formats.
+The checked-in measurements are synthetic, not hardware qualification. Native
+package replacement tests use the same-source second build, not a historical
+release. Local evidence does not establish remote CI or publication success.
+
 - The repository uses Go 1.27.3 and an embedded static dashboard. The dashboard
   has an esbuild package manifest, modular source, generated bundles, and Node tests.
 - Repository-wide agent guidance and contributor workflow are in
@@ -79,6 +94,23 @@ Local implementation validation on 2026-10-25:
 
 The new scheduled workflow has been added but has not been run in GitHub Actions
 as part of this local implementation.
+
+## Responsibility-based follow-up
+
+The current Phase 7 follow-up moves node execution accounting and runtime model
+selection out of shared agent state into their existing owners. It removes the
+executor's general-state dependency and inventory's selection-state interface,
+unifies cached flag calculation, and adds domain-only characterization and race
+coverage. Two reproduced cache-consistency defects are fixed without changing
+API/configuration/storage contracts or admission scope.
+
+The [architecture assessment](./architecture.md#node-ownership-boundaries)
+documents ownership, retained cohesive harness/shard boundaries, and why no new
+package/interface split was warranted. The
+[ownership comparison](./concurrency-ownership.md#phase-7-ownership-comparison)
+records dependencies, lock invariants, testability, duplication, and repeated
+before/after allocation measurements. This follow-up is distinct from the
+historical prompt-pack phase numbering below.
 
 ## Status of items in `improvements.md`
 
@@ -167,6 +199,15 @@ as part of this local implementation.
 - Maintain mTLS certificate pinning, pairing PIN expiry/single-use behavior, and loopback-only local administrative routes.
 - For each implementation phase, identify the relevant tests first; run `go test ./...`, `go vet ./...`, and `node --test web/app_test.js` as applicable. Run `go test -race` where supported and report any environment limitation rather than treating it as a pass.
 - Keep release/package generation separate from ordinary validation when it would overwrite existing artifacts under `dist/`.
+
+## Focused security follow-up
+
+The locally implemented [security review and hardening](./security-review.md)
+records authenticated first-contact enrollment, opt-in peer executable updates,
+credential/log privacy, certificate binding, and permission regression coverage.
+See its verification results and the
+[intentional compatibility migration](./pairing-and-security.md#migration).
+These working-tree changes have not been committed or merged.
 
 ## Phase dependencies
 

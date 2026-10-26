@@ -11,7 +11,3 @@ func NewLMStudio(baseURL string) *LMStudio {
 }
 
 func (l *LMStudio) Name() string { return "lmstudio" }
-
-func (l *LMStudio) ListModels() ([]Model, error) {
-	return l.VLLM.ListModels()
-}

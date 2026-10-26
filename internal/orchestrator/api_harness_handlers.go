@@ -29,7 +29,7 @@ type agentMessageRequest struct {
 }
 
 func writeAgentStreamError(stream *httpx.StreamWriter, sessionID string, err error) {
-	event := agent.StreamEvent{Type: agent.EventError, SessionID: sessionID, Error: "could not persist agent session: " + err.Error()}
+	event := agent.StreamEvent{Type: agent.EventError, SessionID: sessionID, Error: err.Error()}
 	data, marshalErr := json.Marshal(event)
 	if marshalErr != nil {
 		logging.Errorf("orchestrator", "orchestrator: encode agent stream error: %v", marshalErr)
@@ -138,11 +138,7 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 	}
 
 	turnCtx, turnCancel := context.WithCancel(r.Context())
-	s.harnessPort().setTurnCancel(id, turnCancel)
-	defer func() {
-		s.harnessPort().clearTurnCancel(id)
-		turnCancel()
-	}()
+	defer s.harnessPort().registerTurnCancel(id, turnCancel)()
 
 	isStream := r.URL.Query().Get("stream") == "true" || strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 
@@ -170,24 +166,39 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 			close(streamChan)
 		}()
 
+		streamFailed := false
 		for ev := range streamChan {
+			if streamFailed {
+				continue
+			}
 			data, err := json.Marshal(ev)
-			if err == nil {
-				if writeErr := stream.WriteSSEData(data); writeErr != nil {
-					logging.Errorf("orchestrator", "orchestrator: write agent stream event: %v", writeErr)
-				}
+			if err != nil {
+				logging.Errorf("orchestrator", "orchestrator: encode agent stream event: %v", err)
+				writeAgentStreamError(stream, id, errors.New("could not encode agent stream event"))
+				streamFailed = true
+				turnCancel()
+				continue
+			}
+			if writeErr := stream.WriteSSEData(data); writeErr != nil {
+				logging.Errorf("orchestrator", "orchestrator: write agent stream event: %v", writeErr)
+				streamFailed = true
+				turnCancel()
 			}
 		}
 		session, ok := backend.GetSession(id)
 		if !ok {
 			err := errors.New("agent session disappeared while processing the message")
 			logging.Errorf("orchestrator", "orchestrator: persist streamed agent session %s: %v", id, err)
-			writeAgentStreamError(stream, id, err)
+			if !streamFailed {
+				writeAgentStreamError(stream, id, fmt.Errorf("could not persist agent session: %w", err))
+			}
 		} else {
 			session.Harness = harness
 			if err := s.persistAgentSession(session); err != nil {
 				logging.Errorf("orchestrator", "orchestrator: persist streamed agent session %s: %v", id, err)
-				writeAgentStreamError(stream, id, err)
+				if !streamFailed {
+					writeAgentStreamError(stream, id, fmt.Errorf("could not persist agent session: %w", err))
+				}
 			}
 		}
 		s.publishSnapshot()

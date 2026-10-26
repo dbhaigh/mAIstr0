@@ -15,8 +15,8 @@ function sortNodesByCapability(nodes) {
 function gpuGaugeMarkup(node, size = 40) {
   const hardware = node.hardware || {};
   if (!hardware.has_gpu) return "";
-  const utilization = Number(hardware.gpu_utilization_percent);
-  if (!hardware.gpu_stats_available || !Number.isFinite(utilization)) {
+  const utilization = hardware.gpu_utilization_percent;
+  if (!hardware.gpu_stats_available || typeof utilization !== "number" || !Number.isFinite(utilization)) {
     return `<span class="gpu-gauge-unavailable" role="img" aria-label="GPU utilization unavailable">GPU n/a</span>`;
   }
   const value = Math.max(0, Math.min(100, utilization));
@@ -37,8 +37,8 @@ function gpuGaugeMarkup(node, size = 40) {
 function npuGaugeMarkup(node, size = 40) {
   const hardware = node.hardware || {};
   if (!hardware.has_npu) return "";
-  const utilization = Number(hardware.npu_utilization_percent);
-  if (!hardware.npu_stats_available || !Number.isFinite(utilization)) {
+  const utilization = hardware.npu_utilization_percent;
+  if (!hardware.npu_stats_available || typeof utilization !== "number" || !Number.isFinite(utilization)) {
     return `<span class="npu-gauge-unavailable" role="img" aria-label="NPU utilization unavailable">NPU n/a</span>`;
   }
   const value = Math.max(0, Math.min(100, utilization));
@@ -66,6 +66,16 @@ function nodeAcceleratorMarkup(node, size = 46) {
   return `${gauges}
     ${hardware.has_gpu ? `<div class="row"><span>GPU</span><span>${escapeHtml(hardware.gpu_vendor || "enabled")}</span></div>` : ""}
     ${hardware.has_npu ? `<div class="row"><span>NPU</span><span>${escapeHtml(hardware.npu_vendor || "enabled")}</span></div>` : ""}`;
+}
+
+function resourceTelemetryLabel(node, now = Date.now()) {
+  const capacity = typeof dashboardState === "undefined" ? null : dashboardState.capacity;
+  const state = capacity?.nodes?.find((item) => item.node_id === node.id)?.telemetry_state;
+  const timestamp = Date.parse(node.telemetry_at || "");
+  if (state === "unavailable" || !Number.isFinite(timestamp) || timestamp <= 0) return "Resource telemetry unavailable";
+  const age = now - timestamp;
+  const window = capacity?.telemetry_freshness?.freshness_window_ms ?? 30000;
+  return state === "stale" || age < 0 || age > window ? "Stale resource telemetry" : "Fresh resource telemetry";
 }
 
 function resourceHistoryMarkup(node) {
@@ -121,8 +131,8 @@ function resourceHistoryMarkup(node) {
     const segments = [];
     let segment = [];
     item.samples.forEach((sample, index) => {
-      const value = Number(sample[item.valueKey]);
-      if (!sample[item.availableKey] || !Number.isFinite(value)) {
+      const value = sample[item.valueKey];
+      if (!sample[item.availableKey] || typeof value !== "number" || !Number.isFinite(value)) {
         if (segment.length) segments.push(segment);
         segment = [];
         return;
@@ -136,8 +146,8 @@ function resourceHistoryMarkup(node) {
       .join("");
   }).join("");
   const legend = series.map((item) => {
-    const value = Number(item.currentValue);
-    const current = item.currentAvailable && Number.isFinite(value)
+    const value = item.currentValue;
+    const current = item.currentAvailable && typeof value === "number" && Number.isFinite(value)
       ? `${Math.round(Math.max(0, Math.min(100, value)))}%`
       : "n/a";
     return `<span class="resource-history-item"><i class="resource-history-swatch resource-history-${item.key}"></i>${item.label} ${current}</span>`;
@@ -147,10 +157,10 @@ function resourceHistoryMarkup(node) {
     ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`
     : labels[0];
   const hasSamples = series.some((item) => item.samples.some((sample) =>
-    sample[item.availableKey] && Number.isFinite(Number(sample[item.valueKey]))
+    sample[item.availableKey] && typeof sample[item.valueKey] === "number" && Number.isFinite(sample[item.valueKey])
   ));
   return `<div class="resource-history">
-    <div class="resource-history-heading"><strong>Resource utilization</strong><span>Recent · up to 5 minutes</span></div>
+    <div class="resource-history-heading"><strong>Resource utilization</strong><span>${resourceTelemetryLabel(node)}</span></div>
     <div class="resource-history-legend">${legend}</div>
     <svg viewBox="0 0 180 48" role="img" aria-label="${historyLabel} utilization history for ${escapeHtml(node.id)}">
       <path class="resource-history-grid" d="M${left},${top}H${right} M${left},${(top + bottom) / 2}H${right} M${left},${bottom}H${right}"></path>

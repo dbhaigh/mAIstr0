@@ -21,14 +21,11 @@ import (
 )
 
 type agentState struct {
-	// mu protects config, model selection, active-task count, and peer membership.
+	// mu protects config and peer membership. Runtime model selection belongs to engineComponent.
 	// It is a leaf lock: copy state under it, then release before touching other components or doing I/O.
-	mu             sync.Mutex
-	cfg            config.NodeConfig
-	disabledModels map[string]bool
-	defaultModel   string
-	activeTasks    int
-	peers          []cluster.NodeStatus
+	mu    sync.Mutex
+	cfg   config.NodeConfig
+	peers []cluster.NodeStatus
 }
 
 type engineComponent struct {
@@ -54,18 +51,15 @@ type engineComponent struct {
 		hardwareSnapshot() hardware.Info
 		hardwareSnapshotVersioned() (hardware.Info, uint64)
 	}
-	state interface {
-		disabledModelSnapshot() map[string]bool
-		defaultModelName() string
-		setModelConfig(map[string]bool, string)
-	}
-
 	// refreshMu protects refresh coordination and generation; it is never held during engine calls.
 	refreshMu                sync.Mutex
 	refreshDone              chan struct{}
 	modelInventoryGeneration uint64
-	// modelMu protects reported inventory; refresh coordination may acquire it after refreshMu.
+	// modelMu protects runtime selection and reported inventory, including derived selection flags.
+	// Lock order is refreshMu -> modelMu; neither is held during engine calls.
 	modelMu         sync.Mutex
+	disabledModels  map[string]bool
+	defaultModel    string
 	reportedModels  []ModelState
 	reportedEngines []engine.Status
 	reportedAt      time.Time
@@ -106,7 +100,9 @@ type orchestratorLink struct {
 		CertificatePEM() string
 		BootstrapTransport() *http.Transport
 		BootstrapTransportForID(string) *http.Transport
+		BootstrapTransportForFingerprint(string, string) *http.Transport
 		TrustPeer(string, string) error
+		ValidatePeer(string, string) error
 		TrustPeerDetails(string, string, string, string) error
 		TrustedIDs() []string
 		TrustedPeers() map[string]string
@@ -147,7 +143,10 @@ type orchestratorLink struct {
 
 type executorComponent struct {
 	executionSlots chan struct{}
-	state          *agentState
+	// activeMu protects activeTasks, including intentionally ungated work. It is a
+	// leaf lock; never hold it while acquiring a slot or calling another component.
+	activeMu    sync.Mutex
+	activeTasks int
 }
 
 type peerComponent struct {
@@ -168,7 +167,7 @@ type dialogueComponent struct {
 	dialogues map[string]*Dialogue
 	// dialoguesMu protects dialogue state; release it before inference, persistence, or cancellation callbacks.
 	dialoguesMu     sync.RWMutex
-	dialogueCancels map[string]context.CancelFunc
+	dialogueCancels map[string]map[*dialogueTurnHandle]struct{}
 	// dialogueCancelsMu protects cancellation handles; never nest it with dialoguesMu and invoke cancels after unlock.
 	dialogueCancelsMu sync.Mutex
 	nodeID            string
@@ -183,27 +182,7 @@ type dialogueComponent struct {
 }
 
 func newAgentState(cfg config.NodeConfig) *agentState {
-	disabled := make(map[string]bool, len(cfg.DisabledModels))
-	for _, model := range cfg.DisabledModels {
-		disabled[model] = true
-	}
-	return &agentState{cfg: cfg, disabledModels: disabled, defaultModel: cfg.DefaultModel}
-}
-
-func (s *agentState) disabledModelSnapshot() map[string]bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	disabled := make(map[string]bool, len(s.disabledModels))
-	for name, isDisabled := range s.disabledModels {
-		disabled[name] = isDisabled
-	}
-	return disabled
-}
-
-func (s *agentState) defaultModelName() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.defaultModel
+	return &agentState{cfg: cfg}
 }
 
 func (s *agentState) configSnapshot() config.NodeConfig {
@@ -218,15 +197,6 @@ func (s *agentState) clearPairingPIN() {
 	s.mu.Unlock()
 }
 
-func (s *agentState) setModelConfig(disabled map[string]bool, defaultModel string) {
-	s.mu.Lock()
-	s.disabledModels = disabled
-	if defaultModel != "" {
-		s.defaultModel = defaultModel
-	}
-	s.mu.Unlock()
-}
-
 func newEngineComponent(
 	engines []engine.Engine,
 	detector func() []engine.Engine,
@@ -234,17 +204,19 @@ func newEngineComponent(
 		hardwareSnapshot() hardware.Info
 		hardwareSnapshotVersioned() (hardware.Info, uint64)
 	},
-	state interface {
-		disabledModelSnapshot() map[string]bool
-		defaultModelName() string
-		setModelConfig(map[string]bool, string)
-	},
+	disabledModels []string,
+	defaultModel string,
 ) *engineComponent {
 	if detector == nil {
 		detector = engine.DetectAll
 	}
+	disabled := make(map[string]bool, len(disabledModels))
+	for _, model := range disabledModels {
+		disabled[model] = true
+	}
 	return &engineComponent{
-		engines: engines, engineDetector: detector, telemetry: telemetry, state: state,
+		engines: engines, engineDetector: detector, telemetry: telemetry,
+		disabledModels: disabled, defaultModel: defaultModel,
 	}
 }
 
@@ -263,7 +235,9 @@ func newOrchestratorLink(
 		CertificatePEM() string
 		BootstrapTransport() *http.Transport
 		BootstrapTransportForID(string) *http.Transport
+		BootstrapTransportForFingerprint(string, string) *http.Transport
 		TrustPeer(string, string) error
+		ValidatePeer(string, string) error
 		TrustPeerDetails(string, string, string, string) error
 		TrustedIDs() []string
 		TrustedPeers() map[string]string
@@ -310,8 +284,8 @@ func newOrchestratorLink(
 	return link
 }
 
-func newExecutorComponent(maxConcurrentTasks int, state *agentState) *executorComponent {
-	return &executorComponent{executionSlots: make(chan struct{}, maxConcurrentTasks), state: state}
+func newExecutorComponent(maxConcurrentTasks int) *executorComponent {
+	return &executorComponent{executionSlots: make(chan struct{}, maxConcurrentTasks)}
 }
 
 func newPeerComponent(
@@ -354,7 +328,7 @@ func newDialogueComponent(
 ) *dialogueComponent {
 	return &dialogueComponent{
 		dialogues:       make(map[string]*Dialogue),
-		dialogueCancels: make(map[string]context.CancelFunc),
+		dialogueCancels: make(map[string]map[*dialogueTurnHandle]struct{}),
 		nodeID:          nodeID,
 		mem:             mem,
 		models:          models,

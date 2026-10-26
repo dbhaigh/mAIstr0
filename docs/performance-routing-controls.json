@@ -1,0 +1,558 @@
+{
+  "SchemaVersion": 1,
+  "FixtureVersion": "synthetic-profile-v1",
+  "GeneratedUTC": "2026-10-26T03:48:55.6707831Z",
+  "BeforeUTC": "2026-10-26T03:46:46.8475137Z",
+  "AfterUTC": "2026-10-26T03:46:46.8608187Z",
+  "Environment": {
+    "WslDistribution": "Ubuntu",
+    "Go": "go version go1.27.3 linux/amd64",
+    "HardwareInference": false,
+    "BenchmarkCPU": 2
+  },
+  "Method": {
+    "ChangePercent": "100 * (after median / before median - 1); null when baseline is zero",
+    "Quantiles": "Nearest rank within each trial; median/min/max across trials, not pooled quantiles",
+    "LatencyWindow": 8192,
+    "BenchTime": "1s",
+    "ProfileTime": "3s",
+    "Repetitions": 5,
+    "ProfileTimings": "Excluded from benchmark comparisons"
+  },
+  "Workloads": [
+    {
+      "Pattern": "^BenchmarkProfileRouting$/^Direct$",
+      "Name": "direct",
+      "Package": "orchestrator"
+    },
+    {
+      "Pattern": "^BenchmarkProfileRouting$/^Transparent$",
+      "Name": "transparent",
+      "Package": "orchestrator"
+    }
+  ],
+  "Results": [
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Metrics": {
+        "ns/op": {
+          "After": {
+            "Min": 470378.0,
+            "Median": 513149.0,
+            "Max": 524888.0
+          },
+          "Before": {
+            "Min": 457053.0,
+            "Median": 503846.0,
+            "Max": 531804.0
+          },
+          "ChangePercent": 1.8463975103503838
+        },
+        "latency-samples": {
+          "After": {
+            "Min": 2072.0,
+            "Median": 2148.0,
+            "Max": 2268.0
+          },
+          "Before": {
+            "Min": 2257.0,
+            "Median": 2281.0,
+            "Max": 2552.0
+          },
+          "ChangePercent": -5.830775975449365
+        },
+        "p50-us": {
+          "After": {
+            "Min": 440.9,
+            "Median": 486.7,
+            "Max": 506.2
+          },
+          "Before": {
+            "Min": 437.3,
+            "Median": 480.5,
+            "Max": 509.0
+          },
+          "ChangePercent": 1.2903225806451646
+        },
+        "p95-us": {
+          "After": {
+            "Min": 629.1,
+            "Median": 632.1,
+            "Max": 676.4
+          },
+          "Before": {
+            "Min": 595.6,
+            "Median": 645.2,
+            "Max": 668.8
+          },
+          "ChangePercent": -2.0303781773093665
+        },
+        "p99-us": {
+          "After": {
+            "Min": 800.2,
+            "Median": 823.1,
+            "Max": 919.2
+          },
+          "Before": {
+            "Min": 708.9,
+            "Median": 842.7,
+            "Max": 894.7
+          },
+          "ChangePercent": -2.325857363237216
+        },
+        "requests/s": {
+          "After": {
+            "Min": 1905.0,
+            "Median": 1949.0,
+            "Max": 2126.0
+          },
+          "Before": {
+            "Min": 1880.0,
+            "Median": 1985.0,
+            "Max": 2188.0
+          },
+          "ChangePercent": -1.813602015113347
+        },
+        "B/op": {
+          "After": {
+            "Min": 26010.0,
+            "Median": 26012.0,
+            "Max": 26014.0
+          },
+          "Before": {
+            "Min": 26004.0,
+            "Median": 26012.0,
+            "Max": 26015.0
+          },
+          "ChangePercent": 0.0
+        },
+        "allocs/op": {
+          "After": {
+            "Min": 233.0,
+            "Median": 233.0,
+            "Max": 233.0
+          },
+          "Before": {
+            "Min": 233.0,
+            "Median": 233.0,
+            "Max": 233.0
+          },
+          "ChangePercent": 0.0
+        }
+      }
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Metrics": {
+        "ns/op": {
+          "After": {
+            "Min": 484455.0,
+            "Median": 530704.0,
+            "Max": 552044.0
+          },
+          "Before": {
+            "Min": 509720.0,
+            "Median": 533224.0,
+            "Max": 557433.0
+          },
+          "ChangePercent": -0.47259688236088726
+        },
+        "latency-samples": {
+          "After": {
+            "Min": 2169.0,
+            "Median": 2280.0,
+            "Max": 2379.0
+          },
+          "Before": {
+            "Min": 2166.0,
+            "Median": 2236.0,
+            "Max": 2330.0
+          },
+          "ChangePercent": 1.9677996422182487
+        },
+        "p50-us": {
+          "After": {
+            "Min": 460.9,
+            "Median": 499.1,
+            "Max": 531.1
+          },
+          "Before": {
+            "Min": 485.7,
+            "Median": 509.0,
+            "Max": 535.4
+          },
+          "ChangePercent": -1.944990176817285
+        },
+        "p95-us": {
+          "After": {
+            "Min": 635.7,
+            "Median": 695.3,
+            "Max": 733.1
+          },
+          "Before": {
+            "Min": 665.9,
+            "Median": 683.3,
+            "Max": 731.5
+          },
+          "ChangePercent": 1.75618322845017
+        },
+        "p99-us": {
+          "After": {
+            "Min": 830.9,
+            "Median": 892.6,
+            "Max": 963.0
+          },
+          "Before": {
+            "Min": 855.7,
+            "Median": 866.5,
+            "Max": 942.9
+          },
+          "ChangePercent": 3.012117714945184
+        },
+        "requests/s": {
+          "After": {
+            "Min": 1811.0,
+            "Median": 1884.0,
+            "Max": 2064.0
+          },
+          "Before": {
+            "Min": 1794.0,
+            "Median": 1875.0,
+            "Max": 1962.0
+          },
+          "ChangePercent": 0.47999999999999154
+        },
+        "B/op": {
+          "After": {
+            "Min": 28661.0,
+            "Median": 28688.0,
+            "Max": 28748.0
+          },
+          "Before": {
+            "Min": 28679.0,
+            "Median": 28700.0,
+            "Max": 28769.0
+          },
+          "ChangePercent": -0.04181184668989868
+        },
+        "allocs/op": {
+          "After": {
+            "Min": 247.0,
+            "Median": 247.0,
+            "Max": 247.0
+          },
+          "Before": {
+            "Min": 247.0,
+            "Median": 247.0,
+            "Max": 247.0
+          },
+          "ChangePercent": 0.0
+        }
+      }
+    }
+  ],
+  "BeforeSamples": [
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2552,
+      "Metrics": {
+        "ns/op": 457053.0,
+        "latency-samples": 2552.0,
+        "p50-us": 437.3,
+        "p95-us": 595.6,
+        "p99-us": 708.9,
+        "requests/s": 2188.0,
+        "B/op": 26004.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-0-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2281,
+      "Metrics": {
+        "ns/op": 503846.0,
+        "latency-samples": 2281.0,
+        "p50-us": 480.5,
+        "p95-us": 657.7,
+        "p99-us": 891.8,
+        "requests/s": 1985.0,
+        "B/op": 26007.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-1-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2287,
+      "Metrics": {
+        "ns/op": 502573.0,
+        "latency-samples": 2287.0,
+        "p50-us": 478.4,
+        "p95-us": 645.2,
+        "p99-us": 842.7,
+        "requests/s": 1990.0,
+        "B/op": 26012.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-2-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2257,
+      "Metrics": {
+        "ns/op": 508035.0,
+        "latency-samples": 2257.0,
+        "p50-us": 489.3,
+        "p95-us": 644.0,
+        "p99-us": 805.5,
+        "requests/s": 1968.0,
+        "B/op": 26012.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-3-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2263,
+      "Metrics": {
+        "ns/op": 531804.0,
+        "latency-samples": 2263.0,
+        "p50-us": 509.0,
+        "p95-us": 668.8,
+        "p99-us": 894.7,
+        "requests/s": 1880.0,
+        "B/op": 26015.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-4-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2166,
+      "Metrics": {
+        "ns/op": 557433.0,
+        "latency-samples": 2166.0,
+        "p50-us": 535.4,
+        "p95-us": 691.0,
+        "p99-us": 866.5,
+        "requests/s": 1794.0,
+        "B/op": 28769.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-0-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2330,
+      "Metrics": {
+        "ns/op": 509720.0,
+        "latency-samples": 2330.0,
+        "p50-us": 485.7,
+        "p95-us": 665.9,
+        "p99-us": 857.8,
+        "requests/s": 1962.0,
+        "B/op": 28745.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-1-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2283,
+      "Metrics": {
+        "ns/op": 529361.0,
+        "latency-samples": 2283.0,
+        "p50-us": 509.0,
+        "p95-us": 673.6,
+        "p99-us": 879.7,
+        "requests/s": 1889.0,
+        "B/op": 28700.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-2-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2236,
+      "Metrics": {
+        "ns/op": 552153.0,
+        "latency-samples": 2236.0,
+        "p50-us": 535.2,
+        "p95-us": 683.3,
+        "p99-us": 855.7,
+        "requests/s": 1811.0,
+        "B/op": 28679.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-3-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2179,
+      "Metrics": {
+        "ns/op": 533224.0,
+        "latency-samples": 2179.0,
+        "p50-us": 496.5,
+        "p95-us": 731.5,
+        "p99-us": 942.9,
+        "requests/s": 1875.0,
+        "B/op": 28679.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-4-bench.jsonl"
+    }
+  ],
+  "AfterSamples": [
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2145,
+      "Metrics": {
+        "ns/op": 513149.0,
+        "latency-samples": 2145.0,
+        "p50-us": 496.0,
+        "p95-us": 631.0,
+        "p99-us": 830.5,
+        "requests/s": 1949.0,
+        "B/op": 26012.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-0-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2268,
+      "Metrics": {
+        "ns/op": 470378.0,
+        "latency-samples": 2268.0,
+        "p50-us": 440.9,
+        "p95-us": 629.1,
+        "p99-us": 823.1,
+        "requests/s": 2126.0,
+        "B/op": 26010.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-1-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2072,
+      "Metrics": {
+        "ns/op": 483185.0,
+        "latency-samples": 2072.0,
+        "p50-us": 456.7,
+        "p95-us": 632.1,
+        "p99-us": 800.2,
+        "requests/s": 2070.0,
+        "B/op": 26013.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-2-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2148,
+      "Metrics": {
+        "ns/op": 514707.0,
+        "latency-samples": 2148.0,
+        "p50-us": 486.7,
+        "p95-us": 676.4,
+        "p99-us": 919.2,
+        "requests/s": 1943.0,
+        "B/op": 26014.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-3-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Direct-2",
+      "Iterations": 2149,
+      "Metrics": {
+        "ns/op": 524888.0,
+        "latency-samples": 2149.0,
+        "p50-us": 506.2,
+        "p95-us": 652.7,
+        "p99-us": 810.8,
+        "requests/s": 1905.0,
+        "B/op": 26011.0,
+        "allocs/op": 233.0
+      },
+      "Source": "direct-4-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2169,
+      "Metrics": {
+        "ns/op": 537569.0,
+        "latency-samples": 2169.0,
+        "p50-us": 512.4,
+        "p95-us": 695.3,
+        "p99-us": 926.0,
+        "requests/s": 1860.0,
+        "B/op": 28661.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-0-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2280,
+      "Metrics": {
+        "ns/op": 509692.0,
+        "latency-samples": 2280.0,
+        "p50-us": 482.2,
+        "p95-us": 666.2,
+        "p99-us": 865.2,
+        "requests/s": 1962.0,
+        "B/op": 28688.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-1-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2319,
+      "Metrics": {
+        "ns/op": 552044.0,
+        "latency-samples": 2319.0,
+        "p50-us": 531.1,
+        "p95-us": 708.4,
+        "p99-us": 892.6,
+        "requests/s": 1811.0,
+        "B/op": 28678.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-2-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2379,
+      "Metrics": {
+        "ns/op": 484455.0,
+        "latency-samples": 2379.0,
+        "p50-us": 460.9,
+        "p95-us": 635.7,
+        "p99-us": 830.9,
+        "requests/s": 2064.0,
+        "B/op": 28716.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-3-bench.jsonl"
+    },
+    {
+      "Name": "BenchmarkProfileRouting/Transparent-2",
+      "Iterations": 2172,
+      "Metrics": {
+        "ns/op": 530704.0,
+        "latency-samples": 2172.0,
+        "p50-us": 499.1,
+        "p95-us": 733.1,
+        "p99-us": 963.0,
+        "requests/s": 1884.0,
+        "B/op": 28748.0,
+        "allocs/op": 247.0
+      },
+      "Source": "transparent-4-bench.jsonl"
+    }
+  ]
+}

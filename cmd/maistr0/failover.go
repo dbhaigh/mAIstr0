@@ -38,7 +38,13 @@ type failoverCoordinator struct {
 	retired     *orchestrator.Server
 	stopWatch   context.CancelFunc
 	watchPeriod time.Duration
+	// closed is set by Close; no election, promotion, or watch starts after
+	// it. closing is closed with it to end an in-progress election window.
+	closed  bool
+	closing chan struct{}
 }
+
+var errFailoverClosed = errors.New("failover coordinator is closed")
 
 func newFailoverCoordinator(
 	agent *nodeagent.Agent,
@@ -51,6 +57,7 @@ func newFailoverCoordinator(
 		listener:       listener,
 		orchestrator:   orchestratorConfig,
 		nodeListenAddr: nodeListenAddr,
+		closing:        make(chan struct{}),
 	}
 }
 
@@ -72,7 +79,7 @@ func (f *failoverCoordinator) StartElection(failedOrchestratorID string) {
 	}
 	defer release()
 	f.mu.Lock()
-	if f.running || f.promoted != nil {
+	if f.closed || f.running || f.promoted != nil {
 		f.mu.Unlock()
 		return
 	}
@@ -119,7 +126,10 @@ func (f *failoverCoordinator) StartElection(failedOrchestratorID string) {
 	}
 	f.agent.BeginElection(candidate.PeerAddr)
 	logging.Infof("main", "failover: node %s is checking candidates for %s", candidate.ID, startupElectionWindow)
-	time.Sleep(startupElectionWindow)
+	if !f.waitElectionWindow(startupElectionWindow) {
+		logging.Infof("main", "failover: election for node %s stopped because the coordinator is shutting down", candidate.ID)
+		return
+	}
 
 	winner := failoverElectionWinner(candidate, f.listener.Snapshot(), failedOrchestratorID, identity.IsTrustedID)
 	if winner.ID != candidate.ID {
@@ -133,6 +143,25 @@ func (f *failoverCoordinator) StartElection(failedOrchestratorID string) {
 	}
 	promoted = true
 	logging.Infof("main", "failover: node %s is now the cluster orchestrator", candidate.ID)
+}
+
+// waitElectionWindow waits for the election window and reports false when
+// the coordinator was closed before it elapsed.
+func (f *failoverCoordinator) waitElectionWindow(window time.Duration) bool {
+	f.mu.Lock()
+	closed, closing := f.closed, f.closing
+	f.mu.Unlock()
+	if closed {
+		return false
+	}
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-closing:
+		return false
+	}
 }
 
 func failoverElectionWinner(
@@ -167,8 +196,11 @@ type promotionIdentity interface {
 
 func (f *failoverCoordinator) promote(address string, identity promotionIdentity, replacedID string) error {
 	f.mu.Lock()
-	retired := f.retired
+	retired, closed := f.retired, f.closed
 	f.mu.Unlock()
+	if closed {
+		return errFailoverClosed
+	}
 	if retired != nil {
 		return f.reinstate(retired, address, identity, replacedID)
 	}
@@ -196,6 +228,11 @@ func (f *failoverCoordinator) promote(address string, identity promotionIdentity
 	server.SetDiscovery(f.listener)
 
 	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		_ = server.Close()
+		return errFailoverClosed
+	}
 	f.promoted = server
 	f.mu.Unlock()
 	runDone := make(chan error, 1)
@@ -268,6 +305,11 @@ const defaultStepDownWatchPeriod = 5 * time.Second
 func (f *failoverCoordinator) startWatch(server *orchestrator.Server, identity promotionIdentity, replacedID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		cancel()
+		return
+	}
 	f.stopWatchLocked()
 	f.stopWatch = cancel
 	period := f.watchPeriod
@@ -434,6 +476,12 @@ func waitForStatusEndpoint(ctx context.Context, client *http.Client, address str
 
 func (f *failoverCoordinator) Close() error {
 	f.mu.Lock()
+	if !f.closed {
+		f.closed = true
+		if f.closing != nil {
+			close(f.closing)
+		}
+	}
 	f.stopWatchLocked()
 	servers := []*orchestrator.Server{f.promoted, f.retired}
 	f.promoted, f.retired = nil, nil

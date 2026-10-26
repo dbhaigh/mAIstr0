@@ -27,10 +27,10 @@
     if (hardware.cpu_cores) parts.push(`${hardware.cpu_cores} CPU cores`);
     if (hardware.total_ram_mb) parts.push(`${(hardware.total_ram_mb / 1024).toFixed(1)} GB RAM`);
     if (hardware.has_gpu) {
-      parts.push(`${hardware.gpu_vendor || "GPU"}${hardware.gpu_stats_available ? ` · ${hardware.gpu_utilization_percent}% busy` : ""}`);
+      parts.push(`${hardware.gpu_vendor || "GPU"}${hardware.gpu_stats_available && Number.isFinite(hardware.gpu_utilization_percent) ? ` · ${hardware.gpu_utilization_percent}% busy` : ""}`);
     }
     if (hardware.has_npu) {
-      parts.push(`${hardware.npu_vendor || "NPU"}${hardware.npu_stats_available ? ` · ${hardware.npu_utilization_percent}% busy` : ""}`);
+      parts.push(`${hardware.npu_vendor || "NPU"}${hardware.npu_stats_available && Number.isFinite(hardware.npu_utilization_percent) ? ` · ${hardware.npu_utilization_percent}% busy` : ""}`);
     }
     return parts.length ? parts.join(" · ") : "Hardware details unavailable";
   }

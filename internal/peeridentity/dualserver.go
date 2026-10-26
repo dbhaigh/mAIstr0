@@ -5,17 +5,12 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 )
-
-// ServeDual dispatches TLS connections to secureHandler and plaintext
-// connections to localHandler on the same port.
-func ServeDual(addr string, localHandler, secureHandler http.Handler, tlsConfig *tls.Config) error {
-	return ServeDualContext(context.Background(), addr, localHandler, secureHandler, tlsConfig)
-}
 
 // ServeDualContext closes both listeners and cancels requests when ctx ends.
 func ServeDualContext(ctx context.Context, addr string, localHandler, secureHandler http.Handler, tlsConfig *tls.Config) error {
@@ -59,9 +54,16 @@ func ServeDualListenerContext(ctx context.Context, raw net.Listener, localHandle
 	}
 	cancel()
 	_ = split.Close()
+	err = ignoreServerShutdown(err)
+	shutdownCtx, stopShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopShutdown()
+	for _, server := range []*http.Server{plainServer, secureServer} {
+		if shutdownErr := server.Shutdown(shutdownCtx); shutdownErr != nil && err == nil {
+			err = fmt.Errorf("shut down active HTTP requests: %w", shutdownErr)
+		}
+	}
 	_ = plainServer.Close()
 	_ = secureServer.Close()
-	err = ignoreServerShutdown(err)
 	// Closed servers report shutdown errors; keep the first real failure.
 	for range remaining {
 		if serveErr := ignoreServerShutdown(<-results); err == nil {
@@ -69,6 +71,7 @@ func ServeDualListenerContext(ctx context.Context, raw net.Listener, localHandle
 		}
 	}
 	<-splitDone
+	split.routes.Wait()
 	return err
 }
 
@@ -95,12 +98,17 @@ type splitListener struct {
 	done   chan struct{}
 	// once closes done exactly once; it is independent of listener channels.
 	once sync.Once
+	// pending owns sockets until protocol classification hands them to HTTP.
+	routeMu sync.Mutex
+	pending map[net.Conn]struct{}
+	routes  sync.WaitGroup
 }
 
 func newSplitListener(raw net.Listener) *splitListener {
 	return &splitListener{
 		raw: raw, plain: make(chan net.Conn), secure: make(chan net.Conn),
-		done: make(chan struct{}),
+		done:    make(chan struct{}),
+		pending: make(map[net.Conn]struct{}),
 	}
 }
 
@@ -111,11 +119,35 @@ func (s *splitListener) run() {
 			_ = s.Close()
 			return
 		}
-		go s.route(conn)
+		if !s.startRoute(conn) {
+			return
+		}
 	}
 }
 
+func (s *splitListener) startRoute(conn net.Conn) bool {
+	s.routeMu.Lock()
+	select {
+	case <-s.done:
+		s.routeMu.Unlock()
+		_ = conn.Close()
+		return false
+	default:
+	}
+	s.pending[conn] = struct{}{}
+	s.routes.Add(1)
+	s.routeMu.Unlock()
+	go s.route(conn)
+	return true
+}
+
 func (s *splitListener) route(conn net.Conn) {
+	defer func() {
+		s.routeMu.Lock()
+		delete(s.pending, conn)
+		s.routeMu.Unlock()
+		s.routes.Done()
+	}()
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	reader := bufio.NewReader(conn)
 	first, err := reader.Peek(1)
@@ -148,6 +180,15 @@ func (s *splitListener) Close() error {
 	s.once.Do(func() {
 		close(s.done)
 		err = s.raw.Close()
+		s.routeMu.Lock()
+		pending := make([]net.Conn, 0, len(s.pending))
+		for conn := range s.pending {
+			pending = append(pending, conn)
+		}
+		s.routeMu.Unlock()
+		for _, conn := range pending {
+			_ = conn.Close()
+		}
 	})
 	return err
 }

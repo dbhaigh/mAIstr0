@@ -1,0 +1,19 @@
+{
+  "name": "invitation-requires-fingerprint",
+  "request": {
+    "method": "POST",
+    "path": "/api/discovery/unpaired-node/pairing/invite",
+    "body": {"pin": "123456"}
+  },
+  "precondition": "The local coordinator is initialized and the destination is not already paired.",
+  "expected_response": {
+    "status": 400,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "the out-of-band verified destination fingerprint is required\n"
+  },
+  "normalization_rules": [],
+  "side_effects": [
+    "No outbound connection or invitation is attempted.",
+    "The active PIN is not consumed and the trust roster is unchanged."
+  ]
+}
