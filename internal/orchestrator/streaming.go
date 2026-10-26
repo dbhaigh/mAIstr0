@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/httpx"
@@ -57,7 +56,7 @@ type openAIStreamWriter struct {
 	header http.Header
 	model  string
 	status int
-	buffer strings.Builder
+	parser compatStreamParser
 	stream *httpx.StreamWriter
 }
 
@@ -95,45 +94,34 @@ func (w *openAIStreamWriter) Write(data []byte) (int, error) {
 	if w.status >= 400 {
 		return w.target.Write(data)
 	}
-	w.buffer.Write(data)
-	for {
-		buffer := w.buffer.String()
-		newline := strings.IndexByte(buffer, '\n')
-		if newline < 0 {
-			break
-		}
-		line := buffer[:newline]
-		w.buffer.Reset()
-		w.buffer.WriteString(buffer[newline+1:])
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		var event struct {
-			Output string `json:"output"`
-			Error  string `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			return len(data), err
-		}
-		if event.Error != "" {
-			if err := w.writeChunk(map[string]any{"error": map[string]string{"message": event.Error, "type": "server_error"}}); err != nil {
-				return len(data), err
-			}
-		}
-		if event.Output != "" {
-			chunk := map[string]any{
-				"id": "chatcmpl-maistr0", "object": "chat.completion.chunk",
-				"created": time.Now().Unix(), "model": w.model,
-				"choices": []map[string]any{{"index": 0, "delta": map[string]string{"content": event.Output}, "finish_reason": nil}},
-			}
-			if err := w.writeChunk(chunk); err != nil {
-				return len(data), err
-			}
-		}
+	if err := w.parser.write(data, w.consume); err != nil {
+		return len(data), err
 	}
 	return len(data), nil
+}
+
+func (w *openAIStreamWriter) consume(payload []byte) error {
+	var event struct {
+		Output string `json:"output"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return err
+	}
+	if event.Error != "" {
+		if err := w.writeChunk(map[string]any{"error": map[string]string{"message": event.Error, "type": "server_error"}}); err != nil {
+			return err
+		}
+	}
+	if event.Output != "" {
+		chunk := map[string]any{
+			"id": "chatcmpl-maistr0", "object": "chat.completion.chunk",
+			"created": time.Now().Unix(), "model": w.model,
+			"choices": []map[string]any{{"index": 0, "delta": map[string]string{"content": event.Output}, "finish_reason": nil}},
+		}
+		return w.writeChunk(chunk)
+	}
+	return nil
 }
 
 func (w *openAIStreamWriter) writeChunk(chunk any) error {

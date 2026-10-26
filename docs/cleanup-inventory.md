@@ -163,6 +163,20 @@ defensive result cloning are unchanged. `TestRecentAndPageRecentShareCacheOrderi
 warms the cache through either API and checks ordering before and after mutation.
 This is shared maintenance logic, not a claimed performance optimization.
 
+### Compatibility stream line parsing
+
+The OpenAI SSE, Ollama NDJSON, and Anthropic SSE writers now share
+`compatStreamParser` for newline framing and `data:` extraction. Each writer
+still owns its protocol headers, error/output events, and terminal frames.
+Characterization tests cover mid-line and mid-UTF-8 chunk splits, empty chunks,
+an upstream error followed by more output, and client disconnect propagation.
+
+`BenchmarkCompatStreamWriters` ran with `-benchmem -count=10 -benchtime=200ms`
+on Windows/amd64, Go 1.27.3. Benchstat reported allocations per stream of
+OpenAI 87→86, Ollama 51→50, and Anthropic 113→112; bytes/op fell by 1.15%,
+2.03%, and 0.70%, respectively. It found no statistically significant
+time/op change for any writer.
+
 ## Retained indirect uses and compatibility paths
 
 - `OpenAICompatibleProvider.Model` in
@@ -231,10 +245,6 @@ These are not claimed to be semantically impossible to consolidate:
 - Node/orchestrator counting reader/writer wrappers are identical small
   instrumentation primitives. Moving them introduces another shared surface
   without simplifying their caller-specific logging and error handling.
-- Compatibility streaming writers share line parsing, but own different
-  headers, events, start/finish behavior, and terminal output. Extracting the
-  parser deserves dedicated chunk-boundary/error tests and allocation
-  measurements rather than adding callbacks during this cleanup.
 - Small session/shard bucket-enumeration and in-memory copy loops have different
   typed owners, buckets, and results. Generic storage plumbing is not warranted.
 - Similar local/remote model handlers, managed-operation auth/decode sequences,

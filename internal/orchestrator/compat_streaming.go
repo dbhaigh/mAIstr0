@@ -1,9 +1,9 @@
 package orchestrator
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/httpx"
@@ -14,7 +14,7 @@ type ollamaStreamWriter struct {
 	model  string
 	chat   bool
 	status int
-	buffer strings.Builder
+	parser compatStreamParser
 	stream *httpx.StreamWriter
 }
 
@@ -45,31 +45,18 @@ func (w *ollamaStreamWriter) Write(data []byte) (int, error) {
 	if w.status >= 400 {
 		return w.target.Write(data)
 	}
-	w.buffer.Write(data)
-	for {
-		chunk := w.buffer.String()
-		newline := strings.IndexByte(chunk, '\n')
-		if newline < 0 {
-			break
-		}
-		line := strings.TrimSpace(chunk[:newline])
-		w.buffer.Reset()
-		w.buffer.WriteString(chunk[newline+1:])
-		if strings.HasPrefix(line, "data:") {
-			if err := w.consume(strings.TrimSpace(strings.TrimPrefix(line, "data:"))); err != nil {
-				return len(data), err
-			}
-		}
+	if err := w.parser.write(data, w.consume); err != nil {
+		return len(data), err
 	}
 	return len(data), nil
 }
 
-func (w *ollamaStreamWriter) consume(payload string) error {
+func (w *ollamaStreamWriter) consume(payload []byte) error {
 	var event struct {
 		Output string `json:"output"`
 		Error  string `json:"error"`
 	}
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+	if err := json.Unmarshal(payload, &event); err != nil {
 		return err
 	}
 	if event.Error != "" {
@@ -97,8 +84,8 @@ func (w *ollamaStreamWriter) finish() {
 	if w.status >= 400 {
 		return
 	}
-	if rest := strings.TrimSpace(w.buffer.String()); strings.HasPrefix(rest, "data:") {
-		_ = w.consume(strings.TrimSpace(strings.TrimPrefix(rest, "data:")))
+	if rest := bytes.TrimSpace(w.parser.buffer); bytes.HasPrefix(rest, []byte("data:")) {
+		_ = w.consume(bytes.TrimSpace(bytes.TrimPrefix(rest, []byte("data:"))))
 	}
 	value := map[string]any{"model": w.model, "created_at": time.Now().UTC(), "done": true, "done_reason": "stop"}
 	if w.chat {
@@ -113,7 +100,7 @@ type anthropicStreamWriter struct {
 	target  http.ResponseWriter
 	model   string
 	status  int
-	buffer  strings.Builder
+	parser  compatStreamParser
 	stream  *httpx.StreamWriter
 	started bool
 }
@@ -145,31 +132,18 @@ func (w *anthropicStreamWriter) Write(data []byte) (int, error) {
 	if w.status >= 400 {
 		return w.target.Write(data)
 	}
-	w.buffer.Write(data)
-	for {
-		chunk := w.buffer.String()
-		newline := strings.IndexByte(chunk, '\n')
-		if newline < 0 {
-			break
-		}
-		line := strings.TrimSpace(chunk[:newline])
-		w.buffer.Reset()
-		w.buffer.WriteString(chunk[newline+1:])
-		if strings.HasPrefix(line, "data:") {
-			if err := w.consume(strings.TrimSpace(strings.TrimPrefix(line, "data:"))); err != nil {
-				return len(data), err
-			}
-		}
+	if err := w.parser.write(data, w.consume); err != nil {
+		return len(data), err
 	}
 	return len(data), nil
 }
 
-func (w *anthropicStreamWriter) consume(payload string) error {
+func (w *anthropicStreamWriter) consume(payload []byte) error {
 	var event struct {
 		Output string `json:"output"`
 		Error  string `json:"error"`
 	}
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+	if err := json.Unmarshal(payload, &event); err != nil {
 		return err
 	}
 	if event.Error != "" {
@@ -215,8 +189,8 @@ func (w *anthropicStreamWriter) finish() {
 	if w.status >= 400 {
 		return
 	}
-	if rest := strings.TrimSpace(w.buffer.String()); strings.HasPrefix(rest, "data:") {
-		_ = w.consume(strings.TrimSpace(strings.TrimPrefix(rest, "data:")))
+	if rest := bytes.TrimSpace(w.parser.buffer); bytes.HasPrefix(rest, []byte("data:")) {
+		_ = w.consume(bytes.TrimSpace(bytes.TrimPrefix(rest, []byte("data:"))))
 	}
 	if !w.started {
 		w.started = true
