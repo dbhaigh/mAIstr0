@@ -11,6 +11,9 @@ Released: 2026-10-25.
 - Fixed the flaky `TestDynamicVoterMembershipAndLastVoterProtection`
   consensus test: it now removes a follower and tolerates a leader change
   while committing the removal.
+- Fixed the flaky `TestPairWithAddressContextCancelsInFlightRequest` test:
+  its server now aborts the connection when a request is cancelled, instead
+  of sending an implicit empty `200` that could race the cancellation.
 - The dual HTTP/HTTPS peer server now reports a real serve failure from either
   listener instead of discarding the second server's result; normal shutdown
   still returns no error.

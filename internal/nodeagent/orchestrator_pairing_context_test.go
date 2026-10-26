@@ -21,6 +21,9 @@ func TestPairWithAddressContextCancelsInFlightRequest(t *testing.T) {
 		close(started)
 		select {
 		case <-r.Context().Done():
+			// Returning normally would send an implicit empty 200 that can race
+			// the client's cancellation and be decoded as a reply.
+			panic(http.ErrAbortHandler)
 		case <-release:
 		}
 	}))
