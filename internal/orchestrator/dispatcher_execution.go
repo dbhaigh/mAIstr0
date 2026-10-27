@@ -28,7 +28,7 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 	}
 	dispatchCtx, cancel := context.WithCancelCause(ctx)
 	stopParent := context.AfterFunc(parent, func() {
-		cancel(parent.Err())
+		cancel(context.Cause(parent))
 	})
 	defer func() {
 		stopParent()

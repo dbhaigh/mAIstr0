@@ -20,9 +20,9 @@ var Admission Gate
 type Peer struct{ ID, Address string }
 
 type Source struct {
-	Identity             *peeridentity.Identity
-	Peers                []Peer
-	PublisherPublicKey   ed25519.PublicKey
+	Identity           *peeridentity.Identity
+	Peers              []Peer
+	PublisherPublicKey ed25519.PublicKey
 }
 
 // Run stages at most one newer image at a time. Idle is checked only after

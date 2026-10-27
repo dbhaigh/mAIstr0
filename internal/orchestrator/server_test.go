@@ -2097,8 +2097,8 @@ func TestDispatchDeadlineDuringRetryStopsFurtherAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	parent, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	parent, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
 	done := make(chan struct{})
 	go func() {
 		srv.dispatcher.dispatchWithContext(parent, task.ID, task.Subtasks[0].Assignment)
@@ -2106,12 +2106,13 @@ func TestDispatchDeadlineDuringRetryStopsFurtherAttempts(t *testing.T) {
 	}()
 	select {
 	case <-retryStarted:
-	case <-time.After(time.Second):
+		cancel(context.DeadlineExceeded)
+	case <-time.After(5 * time.Second):
 		t.Fatal("retry did not reach the second worker")
 	}
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("dispatch did not stop after the parent deadline")
 	}
 
