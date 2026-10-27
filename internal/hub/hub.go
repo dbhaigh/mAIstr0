@@ -6,6 +6,7 @@ package hub
 import (
 	"compress/gzip"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -98,7 +99,11 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
 		w.Header().Set("Content-Encoding", "gzip")
 		compressed = gzip.NewWriter(w)
-		defer compressed.Close()
+		defer func() {
+			if err := compressed.Close(); err != nil {
+				slog.Error("failed to close compressed SSE stream", "component", "hub", "error", err)
+			}
+		}()
 	}
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()

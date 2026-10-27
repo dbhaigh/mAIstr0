@@ -148,7 +148,11 @@ func TestListenerWaitReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sender.Close()
+	defer func() {
+		if err := sender.Close(); err != nil {
+			t.Errorf("close UDP sender: %v", err)
+		}
+	}()
 	if _, err := sender.Write([]byte(`{"role":"node","id":"ephemeral-peer"}`)); err != nil {
 		t.Fatal(err)
 	}

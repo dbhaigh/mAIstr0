@@ -104,7 +104,11 @@ func TestHubGzipPreservesSSEFraming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer compressed.Close()
+	defer func() {
+		if err := compressed.Close(); err != nil {
+			t.Errorf("close compressed SSE reader: %v", err)
+		}
+	}()
 	reader := bufio.NewReader(compressed)
 	line, err := reader.ReadString('\n')
 	if err != nil {

@@ -328,6 +328,10 @@ func ephemeralUDPPort(t *testing.T) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close ephemeral UDP listener: %v", err)
+		}
+	}()
 	return conn.LocalAddr().(*net.UDPAddr).Port
 }

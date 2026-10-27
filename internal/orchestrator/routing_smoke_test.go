@@ -90,7 +90,11 @@ func TestTaskHTTPAPIReturnsOrderedSimulatedSynthesis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close task submission response: %v", err)
+		}
+	}()
 	if response.StatusCode != http.StatusAccepted {
 		t.Fatalf("POST /api/tasks returned %d", response.StatusCode)
 	}
