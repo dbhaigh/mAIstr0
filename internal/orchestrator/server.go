@@ -125,6 +125,7 @@ func (s *Server) configureRouter(cfg config.OrchestratorConfig) {
 	s.routerTTFBTimeout = time.Duration(cfg.RouterTimeToFirstByteTimeoutSeconds) * time.Second
 	s.routerIdleTimeout = time.Duration(cfg.RouterIdleStreamTimeoutSeconds) * time.Second
 	s.routerClients = newRouterClientLimiter(cfg.RouterRequestsPerMinute, cfg.RouterMaxConcurrentPerClient)
+	s.election.setDiscoveryHMACKey(cfg.DiscoveryHMACKey())
 }
 
 func newWithMemoryHarnessAndConcurrency(
@@ -322,6 +323,7 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/cluster/health", s.handleClusterHealth)
+	mux.HandleFunc("GET /api/security/status", s.handleSecurityStatus)
 	mux.Handle("POST /api/pairing/pin", peeridentity.LoopbackOnly(http.HandlerFunc(s.handlePairingPINRegenerate)))
 	mux.HandleFunc("POST /api/pairing/connect", s.handlePairingConnect)
 	mux.HandleFunc("GET /api/pairing/roster", s.handlePairingRoster)

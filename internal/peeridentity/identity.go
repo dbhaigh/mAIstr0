@@ -55,6 +55,8 @@ type Identity struct {
 	pairingPIN      string
 	pairingExpires  time.Time
 	pairingAttempts int
+	// now overrides the clock for deterministic pairing-window tests; nil uses time.Now.
+	now             func() time.Time
 	clientTransport *http.Transport
 	activeConns     map[*identityConn]struct{}
 }
@@ -194,6 +196,9 @@ func (i *Identity) createCertificate() error {
 
 // ID returns the stable identity represented by this certificate.
 func (i *Identity) ID() string { return i.id }
+
+// Path returns the persistent file containing this identity and its trust roster.
+func (i *Identity) Path() string { return i.path }
 
 // CertificatePEM returns the public certificate for PIN-authenticated
 // bootstrap pairing.
@@ -538,7 +543,7 @@ func (i *Identity) NewPairingPIN() (string, error) {
 	pin := fmt.Sprintf("%06d", value%900000+100000)
 	i.mu.Lock()
 	i.pairingPIN = pin
-	i.pairingExpires = time.Now().Add(30 * time.Minute)
+	i.pairingExpires = i.pairingNow().Add(30 * time.Minute)
 	i.pairingAttempts = 0
 	i.mu.Unlock()
 	return pin, nil
@@ -548,7 +553,7 @@ func (i *Identity) NewPairingPIN() (string, error) {
 func (i *Identity) VerifyPairingPIN(pin string) bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.pairingPINActiveLocked(time.Now()) &&
+	return i.pairingPINActiveLocked(i.pairingNow()) &&
 		len(pin) == len(i.pairingPIN) &&
 		subtle.ConstantTimeCompare([]byte(pin), []byte(i.pairingPIN)) == 1
 }
@@ -558,7 +563,7 @@ func (i *Identity) VerifyPairingPIN(pin string) bool {
 func (i *Identity) ActivePairingPIN() (string, time.Time, bool) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	if !i.pairingPINActiveLocked(time.Now()) {
+	if !i.pairingPINActiveLocked(i.pairingNow()) {
 		return "", time.Time{}, false
 	}
 	return i.pairingPIN, i.pairingExpires, true
@@ -568,11 +573,18 @@ func (i *Identity) pairingPINActiveLocked(now time.Time) bool {
 	return i.pairingPIN != "" && i.pairingAttempts < 20 && now.Before(i.pairingExpires)
 }
 
+func (i *Identity) pairingNow() time.Time {
+	if i.now != nil {
+		return i.now()
+	}
+	return time.Now()
+}
+
 // ConsumePairingPIN atomically accepts a valid code once.
 func (i *Identity) ConsumePairingPIN(pin string) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if !i.pairingPINActiveLocked(time.Now()) {
+	if !i.pairingPINActiveLocked(i.pairingNow()) {
 		return false
 	}
 	if len(pin) != len(i.pairingPIN) || subtle.ConstantTimeCompare([]byte(pin), []byte(i.pairingPIN)) != 1 {

@@ -1,8 +1,4 @@
-(function (root, factory) {
-  const dom = factory(root);
-  if (typeof module === "object" && module.exports) module.exports = dom;
-  root.dashboardDOM = dom;
-})(globalThis, (root) => {
+export const dashboardDOM = ((root) => {
   const keyedState = new WeakMap();
   const virtualState = new WeakMap();
 
@@ -237,4 +233,4 @@
     renderVirtualList,
     resetVirtualList,
   });
-});
+})(globalThis);

@@ -1,4 +1,8 @@
-async function fetchJSON(url, opts) {
+import { activeChatMode, agentTabs, persistenceWarning } from "./state.js";
+import { activateDirectChat } from "../views/orchestrator-controls.js";
+import { loadAgentBackend, loadAgentTools, loadSessions } from "../views/orchestrator-sessions.js";
+
+export async function fetchJSON(url, opts) {
   const resp = await fetch(url, opts);
   if (!resp.ok) {
     throw new Error(await resp.text());
@@ -31,7 +35,7 @@ function initializeOptionalFeatures(enabled) {
   loadAgentBackend().then(loadSessions);
 }
 
-async function refreshPersistenceStatus() {
+export async function refreshPersistenceStatus() {
   if (!persistenceWarning) return;
   try {
     const status = await fetchJSON("/api/status");
@@ -45,7 +49,7 @@ async function refreshPersistenceStatus() {
   }
 }
 
-function updateClusterTitle(count) {
+export function updateClusterTitle(count) {
   const title = document.querySelector("header h1");
   if (title) title.textContent = `mAIstr0 · ${count} ${count === 1 ? "Node" : "Nodes"}`;
 }

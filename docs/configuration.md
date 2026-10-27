@@ -9,7 +9,7 @@ inspect normalized JSON without starting services.
 
 The main options include:
 
-- `--role auto|node|orchestrator|both`
+- `--role auto|node|both`
 - `--node-config <path>` and `--orchestrator-config <path>`
 - `--node-listen-addr <address>` and `--orchestrator-listen-addr <address>`
 - `--orchestrator-addr <https-url>` for a node
@@ -26,6 +26,12 @@ The main options include:
 - `--diagnostics` to print a prompt-free local health summary
 - `--allow-peer-updates` to opt in to executable updates from paired peers
 - `--no-peer-updates` to prohibit those updates, overriding the allow flag
+
+Use `auto` for normal LAN election: the process joins an active orchestrator or
+starts the orchestrator and its local worker if elected. Use `node` to join a
+cluster as a node. `both` runs the orchestrator and local worker when this
+instance is elected. In this release, startup does not implement a standalone
+`orchestrator` role, despite the CLI help text listing it.
 
 Run `maistr0 --help` for the complete option list. Orchestrator election
 requires LAN discovery; disabling discovery is supported only for
@@ -78,15 +84,35 @@ this is not a post-start health supervisor. For a later startup failure,
 close the process, restore the `.previous` executable, then restart manually
 with `--no-peer-updates` until the faulty release is withdrawn.
 
-**Opt-in security risk / deferred security work:** enabling peer updates grants
-paired publishers the ability to supply executable code that runs as the local
-application account. A compromised paired node can supply a malicious binary and matching
-checksum/version. Mutual TLS authenticates the publisher and SHA-256 detects
-transfer corruption; neither is an independent release signature. Signed
-releases, publisher authorization and revocation policy remain future work.
-Use `--no-peer-updates` on every receiving process to disable this behavior.
-Never pair an untrusted machine. Existing pairing and current-coordinator
-write checks are not bypassed by the updater.
+To require independent publisher verification, configure
+`peer_update_publisher_key` on each receiving node with the standard-base64
+32-byte Ed25519 public key. When configured, a valid signature is required
+before the executable can be staged; unsigned manifests, wrong keys, and
+tampered metadata are rejected. Without the key, the legacy checksum-only
+behavior is retained. The updates still require `--allow-peer-updates`.
+
+The private signing key must be kept offline. `cmd/updatebundle` creates a
+`.peer.json` manifest beside each executable. Sign each manifest with the
+un-encrypted PKCS#8 Ed25519 PEM key:
+
+```text
+maistr0 sign-release --manifest path/to/maistr0.peer.json --key path/to/release-private.pem
+```
+
+The command signs the manifest in place and prints the public-key configuration
+value. Install that public value only on receiving nodes. The signature covers
+version, platform, executable size, and SHA-256 metadata, excluding the
+signature field; the digest binds the signed metadata to the downloaded image.
+Signing does not replace the paired-peer authorization or
+`--allow-peer-updates` gate. Rotate the public key only after publishing
+manifests signed by its matching private key.
+
+**Opt-in security risk:** enabling peer updates grants paired publishers
+authority to supply executable code that runs as the local application
+account. A compromised publisher key or paired node can still distribute
+malicious code. Use `--no-peer-updates` on every receiving process to disable
+updates, and never pair an untrusted machine. Existing pairing and
+current-coordinator write checks are not bypassed by the updater.
 
 ### Cross-platform bundles
 
@@ -142,6 +168,16 @@ PINs are optional for manual setup and should be supplied out of band.
 `lmstudio`, and `fastflowlm` adapters. It is never logged or returned by node
 or orchestrator APIs, and `--print-config` redacts it.
 
+LAN announcements are unauthenticated by default. To enable optional
+discovery authentication, set `discovery_hmac_secret` to the same locally
+generated, standard-base64 32-byte value in every node and orchestrator
+configuration. For example, generate a fresh value locally with
+`openssl rand -base64 32`; do not commit or log it. `auto` and `both` startup
+require the node and orchestrator values to match. The Local Network panel
+displays whether discovery is **HMAC-SHA256 enabled** or
+**Unauthenticated (default)**. This protects announcement authenticity only;
+pairing still requires the verified orchestrator fingerprint and one-use PIN.
+
 For `llamacpp-rpc` shard groups, the node's `rpc_relay_listen_addr` defaults
 to `:7452`. Permit this port only between cluster nodes in the host firewall.
 The worker's `ggml-rpc-server` remains bound to loopback; remote traffic is
@@ -183,6 +219,9 @@ and persistent learning; minimal mode omits those endpoints and storage while
 retaining cluster task history and inference routing. Harness names are `pi`
 and `deepseek`. A process running both node and orchestrator roles uses the
 orchestrator's `log_level`.
+
+The optional `discovery_hmac_secret` setting must match the value on every
+node. If omitted, discovery remains unauthenticated for compatibility.
 
 ### Capacity, timeouts, and synchronization
 
@@ -608,3 +647,22 @@ and [porting guide](../contracts/PORTING.md) before changing them.
 
 For pipeline/sharded-model configuration and its current runtime limitations,
 see [Distributed models](./api.md#distributed-models).
+
+
+## Updating nodes and editing shard members
+
+Nodes can opt into downloading strictly newer versions directly from paired
+peers with `--allow-peer-updates` (off by default), then restart **only when
+idle**. Stop active shard groups to allow replacement;
+the updater never force-stops a running group. See
+[peer updates and their accepted executable-trust risk](./configuration.md#automatic-peer-executable-updates)
+before enabling this on machines you do not fully trust.
+
+On a shard-group card, select **Edit members**, check healthy nodes to add or
+uncheck workers to remove, then choose **Apply and reload**. Missing RPC
+runtimes install automatically. The current model head remains selected.
+mAIstr0 drains current inference, unloads the group, recomputes comfortable
+memory placement, then reloads workers and head using the **same group ID and
+model**. There is a brief inference outage, not live migration; insufficient
+remaining memory or runtime failures remain visible on the group. Correct the
+selection and retry, or use **Start** after fixing the reported cause.

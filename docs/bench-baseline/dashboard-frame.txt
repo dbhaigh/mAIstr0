@@ -1,0 +1,27 @@
+Command:
+  go test ./internal/orchestrator -run '^$' -bench '^BenchmarkBuildSnapshot$' -benchmem -count=10
+
+Environment:
+  go version go1.27.3 windows/amd64
+  goos: windows
+  goarch: amd64
+  cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+
+Fixture: 100 nodes, four models per node, 50 tasks.
+frame-B/op includes the `data: ` prefix and `\n\n` terminator.
+gzip-frame-B/op records one SSE frame flushed through a fresh gzip stream.
+builds/s is snapshot serialization throughput, not observed SSE event rate.
+
+BenchmarkBuildSnapshot-24    	    1622	    654644 ns/op	      1528 builds/s	    169079 frame-B/op	      4254 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  707009 B/op	    1629 allocs/op
+BenchmarkBuildSnapshot-24    	    1897	    692760 ns/op	      1444 builds/s	    169079 frame-B/op	      4255 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  657360 B/op	    1626 allocs/op
+BenchmarkBuildSnapshot-24    	    1891	    648130 ns/op	      1543 builds/s	    169079 frame-B/op	      4255 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  654030 B/op	    1626 allocs/op
+BenchmarkBuildSnapshot-24    	    1710	    689669 ns/op	      1450 builds/s	    169129 frame-B/op	      4252 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  653777 B/op	    1626 allocs/op
+BenchmarkBuildSnapshot-24    	    2000	    684365 ns/op	      1461 builds/s	    169129 frame-B/op	      4254 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  649641 B/op	    1626 allocs/op
+BenchmarkBuildSnapshot-24    	    1905	    733796 ns/op	      1363 builds/s	    169009 frame-B/op	      4273 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  651889 B/op	    1626 allocs/op
+BenchmarkBuildSnapshot-24    	    1647	    703550 ns/op	      1421 builds/s	    169129 frame-B/op	      4253 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  656480 B/op	    1626 allocs/op
+BenchmarkBuildSnapshot-24    	    1791	    703246 ns/op	      1422 builds/s	    169129 frame-B/op	      4251 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  651890 B/op	    1626 allocs/op
+BenchmarkBuildSnapshot-24    	    1718	    672461 ns/op	      1487 builds/s	    168929 frame-B/op	      4260 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  648527 B/op	    1626 allocs/op
+BenchmarkBuildSnapshot-24    	    1783	    753050 ns/op	      1328 builds/s	    169129 frame-B/op	      4252 gzip-frame-B/op	       100.0 nodes/op	        50.00 tasks/op	  646508 B/op	    1626 allocs/op
+
+PASS
+ok  	github.com/maistr0/maistr0/internal/orchestrator	14.749s

@@ -49,11 +49,17 @@ func (s Subtask) Clone() Subtask {
 
 var listItemPattern = regexp.MustCompile(`(?m)^\s*(?:[-*]|\d+[.)])\s+`)
 var dependencyPrefix = regexp.MustCompile(`(?i)^(?:then\b|after(?:wards| that)?\b|once\b|using (?:the )?(?:previous|prior|above|result)\b|based on (?:the )?(?:previous|prior|above|result)\b)`)
+var sequentialDependencyPrefix = regexp.MustCompile(`(?i)^(?:then\b|next\b|after(?:wards| that)?\b|once\b|subsequently\b|thereafter\b|finally\b|lastly\b|using (?:the )?(?:previous|prior|above|result)\b|based on (?:the )?(?:previous|prior|above|result)\b)`)
 var comparisonPattern = regexp.MustCompile(`(?i)^\s*compare\s+(.+?)\s+and\s+(.+?)[.!?;]*\s*$`)
 var forEachPattern = regexp.MustCompile(`(?is)\bfor each(?: of)?\s+(.+?)\s*[,;:]\s*((?:analy[sz]e|assess|check|compare|contrast|evaluate|explain|inspect|measure|review|run|summari[sz]e|test|translate|verify|write|do)\b.*)$`)
-var enumerationIntroPattern = regexp.MustCompile(`(?i)\b(?:these|following|items|options|models|nodes|tasks|steps|cases|files|engines|approaches|alternatives|points|issues|questions)\s*:\s*`)
+var conjunctionSeparatorPattern = regexp.MustCompile(`(?i)\s+and\s+`)
+var imperativeActionPattern = regexp.MustCompile(`(?i)^(?:analy[sz]e|audit|calculate|compare|compute|create|explain|implement|inspect|investigate|review|search|solve|summari[sz]e|test|translate|verify|write)\b`)
+var enumerationIntroPattern = regexp.MustCompile(`(?i)\b(?:these|following|items|options|models|nodes|tasks|steps|cases|files|engines|approaches|alternatives|points|issues|questions|topics)\s*:\s*`)
 var listConjunctionPattern = regexp.MustCompile(`(?i)\s*,?\s+(?:and|or)\s+`)
 var finalPunctuationPattern = regexp.MustCompile(`[.!?;:]+\s*$`)
+var roleCuePrefix = regexp.MustCompile(`(?i)^(?:then|next|after(?:wards| that)?|once|subsequently|thereafter|finally|lastly)\b[,:\s]+`)
+var researcherActionPattern = regexp.MustCompile(`(?i)^(?:research|investigate|gather evidence|find evidence|collect sources)\b`)
+var reviewerActionPattern = regexp.MustCompile(`(?i)^(?:audit|critique)\b|^review (?:it\b|(?:the|this) (?:api )?(?:design|patch|code|implementation|proposal|work|output|results?|document|report|changes)\b)`)
 
 // Decompose creates an improved heuristic plan. Fan-out work receives a final
 // synthesis subtask that depends on every leaf in the generated graph.
@@ -72,8 +78,13 @@ func Decompose(description string) []Subtask {
 	if subtasks := decomposeEnumeration(description); len(subtasks) > 0 {
 		return subtasks
 	}
+	if subtasks := decomposeConjunction(description); len(subtasks) > 0 {
+		return subtasks
+	}
 
 	subtasks := DecomposeV1(description)
+	applySequentialDependencies(subtasks)
+	applyDescriptionRoles(subtasks)
 	if len(subtasks) > 1 {
 		subtasks = compactPlanForSynthesis(subtasks)
 		return addSynthesisSubtask(subtasks, description)
@@ -162,6 +173,20 @@ func decomposeComparison(description string) []Subtask {
 	}, description)
 }
 
+func decomposeConjunction(description string) []Subtask {
+	for _, separator := range conjunctionSeparatorPattern.FindAllStringIndex(description, -1) {
+		first := strings.TrimSpace(description[:separator[0]])
+		second := strings.TrimSpace(description[separator[1]:])
+		if !imperativeActionPattern.MatchString(first) || !imperativeActionPattern.MatchString(second) {
+			continue
+		}
+		first = strings.TrimSpace(finalPunctuationPattern.ReplaceAllString(first, ""))
+		second = strings.TrimSpace(finalPunctuationPattern.ReplaceAllString(second, ""))
+		return fanOutPlan([]string{first, second}, description)
+	}
+	return nil
+}
+
 func decomposeEnumeration(description string) []Subtask {
 	if match := listItemPattern.FindStringIndex(description); match != nil {
 		matches := listItemPattern.FindAllStringIndex(description, -1)
@@ -208,6 +233,7 @@ func enumerationPlan(prefix string, items []string, original string) []Subtask {
 
 func splitEnumerationItems(value string) []string {
 	value = strings.TrimSpace(finalPunctuationPattern.ReplaceAllString(value, ""))
+	value = strings.ReplaceAll(value, ";", ",")
 	value = listConjunctionPattern.ReplaceAllString(value, ",")
 	parts := strings.Split(value, ",")
 	items := make([]string, 0, len(parts))
@@ -225,7 +251,7 @@ func fanOutPlan(parts []string, description string) []Subtask {
 	for i, part := range parts {
 		taskType := classify(part)
 		subtasks = append(subtasks, Subtask{
-			ID: idFor(i), Description: part, Role: roleForTaskType(taskType),
+			ID: idFor(i), Description: part, Role: roleForDescription(part, taskType),
 			TaskType: taskType, Tags: tagsFor(taskType),
 		})
 	}
@@ -257,7 +283,7 @@ func compactPlanForSynthesis(subtasks []Subtask) []Subtask {
 	description := "Complete these remaining steps in order:\n- " + strings.Join(descriptions, "\n- ")
 	taskType := classify(description)
 	merged := Subtask{
-		ID: subtasks[keepCount].ID, Description: description, Role: roleForTaskType(taskType),
+		ID: subtasks[keepCount].ID, Description: description, Role: roleForDescription(description, taskType),
 		TaskType: taskType, Tags: tagsFor(taskType), DependsOn: dependencies,
 	}
 	compacted := make([]Subtask, 0, maxHeuristicPlanSubtasks-1)
@@ -380,6 +406,32 @@ func ValidatePlan(subtasks []Subtask) ([]Subtask, error) {
 		}
 	}
 	return out, nil
+}
+
+func applySequentialDependencies(subtasks []Subtask) {
+	for i := 1; i < len(subtasks); i++ {
+		if sequentialDependencyPrefix.MatchString(subtasks[i].Description) {
+			subtasks[i].DependsOn = []string{subtasks[i-1].ID}
+		}
+	}
+}
+
+func applyDescriptionRoles(subtasks []Subtask) {
+	for i := range subtasks {
+		subtasks[i].Role = roleForDescription(subtasks[i].Description, subtasks[i].TaskType)
+	}
+}
+
+func roleForDescription(description, taskType string) string {
+	description = roleCuePrefix.ReplaceAllString(strings.TrimSpace(description), "")
+	switch {
+	case researcherActionPattern.MatchString(description):
+		return "researcher"
+	case reviewerActionPattern.MatchString(description):
+		return "reviewer"
+	default:
+		return roleForTaskType(taskType)
+	}
 }
 
 func uniqueStrings(values []string) []string {

@@ -23,6 +23,10 @@ type broadcastRoute struct {
 // interface for every subnet broadcast, which may not be the one peers can
 // hear. Binding the source address keeps each copy on its own interface.
 func Beacon(get func() Announcement, interval time.Duration, stop <-chan struct{}) {
+	BeaconWithSecret(get, interval, stop, nil)
+}
+
+func BeaconWithSecret(get func() Announcement, interval time.Duration, stop <-chan struct{}, secret []byte) {
 	fallback, err := listenUDP("udp4", ":0", true)
 	if err != nil {
 		logging.Errorf("discovery", "discovery: beacon disabled, could not open UDP socket: %v", err)
@@ -37,6 +41,13 @@ func Beacon(get func() Announcement, interval time.Duration, stop <-chan struct{
 		ann := get()
 		if ann.ID == "" { // empty announcement = skip this tick (e.g. yielded orchestrator)
 			return
+		}
+		if len(secret) != 0 {
+			ann, err = signAnnouncement(ann, secret, time.Now())
+			if err != nil {
+				logging.Errorf("discovery", "discovery: could not authenticate LAN announcement: %v", err)
+				return
+			}
 		}
 		buf, err := json.Marshal(ann)
 		if err != nil {
@@ -67,14 +78,20 @@ func Beacon(get func() Announcement, interval time.Duration, stop <-chan struct{
 type beaconSender struct {
 	fallback   net.PacketConn
 	open       func(local net.IP) (net.PacketConn, error)
+	port       int
 	conns      map[string]net.PacketConn
 	bindFailed map[string]bool
 }
 
 func newBeaconSender(fallback net.PacketConn, open func(net.IP) (net.PacketConn, error)) *beaconSender {
+	return newBeaconSenderWithPort(fallback, open, Port)
+}
+
+func newBeaconSenderWithPort(fallback net.PacketConn, open func(net.IP) (net.PacketConn, error), port int) *beaconSender {
 	return &beaconSender{
 		fallback:   fallback,
 		open:       open,
+		port:       port,
 		conns:      make(map[string]net.PacketConn),
 		bindFailed: make(map[string]bool),
 	}
@@ -89,7 +106,7 @@ func (s *beaconSender) send(buf []byte, routes []broadcastRoute) {
 		key := route.Local.String()
 		current[key] = true
 		conn := s.connFor(route.Local)
-		target := &net.UDPAddr{IP: route.Broadcast, Port: Port}
+		target := &net.UDPAddr{IP: route.Broadcast, Port: s.port}
 		if _, err := conn.WriteTo(buf, target); err != nil {
 			logging.Errorf("discovery", "discovery: broadcast from %s to %s failed: %v", key, route.Broadcast, err)
 			if conn != s.fallback {
@@ -141,8 +158,12 @@ func (s *beaconSender) close() {
 // link-local excluded) with its subnet broadcast address, so announcements
 // only go out on the local network, never to 127.0.0.1.
 func broadcastRoutes() []broadcastRoute {
+	return broadcastRoutesFrom(net.InterfaceAddrs)
+}
+
+func broadcastRoutesFrom(getAddrs func() ([]net.Addr, error)) []broadcastRoute {
 	var out []broadcastRoute
-	addrs, err := interfaceAddrs()
+	addrs, err := getAddrs()
 	if err != nil {
 		return out
 	}

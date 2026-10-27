@@ -296,6 +296,11 @@ func (a *Agent) IdentityCertificate() (string, error) {
 	return a.identityComponent.certificate()
 }
 
+// IdentityPath returns the configured persistent identity file path.
+func (a *Agent) IdentityPath() string {
+	return a.identityComponent.path(a.cfg.NodeID, a.cfg.MemoryPath)
+}
+
 // PairLocalOrchestrator establishes mutual certificate pins for a combined
 // orchestrator and worker running in one process.
 func (a *Agent) PairLocalOrchestrator(orchestratorID, certificatePEM, address string) error {

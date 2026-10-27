@@ -3,10 +3,12 @@ package syncinterval
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 func TestBackoffAdvancesAndResetsOnWatermarkProgress(t *testing.T) {
+	t.Parallel()
 	var backoff Backoff
 	want := []time.Duration{
 		5 * time.Second,
@@ -33,6 +35,7 @@ func TestBackoffAdvancesAndResetsOnWatermarkProgress(t *testing.T) {
 }
 
 func TestWatermarksAdvanced(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		previous map[string]uint64
@@ -55,50 +58,46 @@ func TestWatermarksAdvanced(t *testing.T) {
 }
 
 func TestWaitWakesOnSignal(t *testing.T) {
-	var signal Signal
-	changes := signal.Changes()
-	done := make(chan bool, 1)
-	go func() {
-		done <- Wait(time.Minute, changes)
-	}()
-	signal.Notify()
-	select {
-	case woke := <-done:
-		if !woke {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var signal Signal
+		changes := signal.Changes()
+		done := make(chan bool, 1)
+		go func() {
+			done <- Wait(time.Minute, changes)
+		}()
+		synctest.Wait()
+		signal.Notify()
+		if !<-done {
 			t.Fatal("Wait returned for timer instead of change signal")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("change signal did not wake Wait promptly")
-	}
+	})
 }
 
 func TestWaitDebouncedRefreshesSignalChannel(t *testing.T) {
-	var signal Signal
-	changes := signal.Changes()
-	done := make(chan bool, 1)
-	started := time.Now()
-	go func() {
-		done <- WaitDebounced(time.Second, 40*time.Millisecond, changes, signal.Changes)
-	}()
-	signal.Notify()
-	second := time.AfterFunc(20*time.Millisecond, signal.Notify)
-	defer second.Stop()
-
-	select {
-	case changed := <-done:
-		if !changed {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var signal Signal
+		changes := signal.Changes()
+		done := make(chan bool, 1)
+		go func() {
+			done <- WaitDebounced(time.Minute, 40*time.Millisecond, changes, signal.Changes)
+		}()
+		signal.Notify()
+		synctest.Wait()
+		time.Sleep(20 * time.Millisecond)
+		signal.Notify()
+		synctest.Wait()
+		time.Sleep(40 * time.Millisecond)
+		synctest.Wait()
+		if !<-done {
 			t.Fatal("debounced wait returned for the heartbeat")
 		}
-
-		if elapsed := time.Since(started); elapsed < 50*time.Millisecond {
-			t.Fatalf("debounced wait returned too soon after a second signal: %s", elapsed)
-		}
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("debounced wait did not finish after changes settled")
-	}
+	})
 }
 
 func TestWaitDebouncedContextCancellation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		preCancel bool
@@ -148,6 +147,7 @@ func TestWaitDebouncedContextCancellation(t *testing.T) {
 }
 
 func TestWaitDebouncedContextHeartbeatAndChange(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		change bool
@@ -171,7 +171,43 @@ func TestWaitDebouncedContextHeartbeatAndChange(t *testing.T) {
 	}
 }
 
+func TestWaitDebouncedContextHeartbeatBoundsContinuousChanges(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer cancel()
+
+		var signal Signal
+		stop := make(chan struct{})
+		senderDone := make(chan struct{})
+		go func() {
+			defer close(senderDone)
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					signal.Notify()
+				}
+			}
+		}()
+
+		changed := WaitDebouncedContext(ctx, 80*time.Millisecond, 500*time.Millisecond, signal.Changes(), signal.Changes)
+		close(stop)
+		<-senderDone
+		if changed {
+			t.Fatal("continuous changes returned as a settled debounce")
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("wait returned only after cancellation: %v", ctx.Err())
+		}
+	})
+}
+
 func TestJitterStaysWithinTenPercent(t *testing.T) {
+	t.Parallel()
 	const interval = 10 * time.Second
 	for range 100 {
 		got := Jitter(interval)

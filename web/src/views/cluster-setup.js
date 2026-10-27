@@ -1,4 +1,24 @@
-async function checkSetupReadiness() {
+import { refresh } from "../app.js";
+import { fetchJSON } from "../shared/api.js";
+import { escapeHtml } from "../shared/format.js";
+import {
+  catalogEngineSelect,
+  catalogEngines,
+  catalogModels,
+  catalogNodeSelect,
+  catalogResults,
+  catalogSearch,
+  catalogStatus,
+  modelCatalogEntries,
+  setCatalogEngines,
+  setCatalogModels,
+  setModelCatalogEntries,
+  setupCheckBtn,
+  setupResults,
+  setupStatus,
+} from "../shared/state.js";
+
+export async function checkSetupReadiness() {
   if (setupCheckBtn) {
     setupCheckBtn.disabled = true;
     setupCheckBtn.textContent = "Checking…";
@@ -82,13 +102,14 @@ async function checkSetupReadiness() {
   }
 }
 
-async function loadModelCatalog() {
+export async function loadModelCatalog() {
   if (!catalogResults) return;
   try {
-    [modelCatalogEntries] = await Promise.all([
+    const [modelCatalogEntriesValue] = await Promise.all([
       fetchJSON("/api/models/catalog"),
       loadCatalogNodes(),
     ]);
+    setModelCatalogEntries(modelCatalogEntriesValue);
     renderModelCatalog();
   } catch (err) {
     catalogStatus.textContent = `Could not load model catalog: ${err.message}`;
@@ -106,7 +127,7 @@ async function loadCatalogNodes() {
   if (online.some((node) => node.id === selected)) catalogNodeSelect.value = selected;
   if (!online.length) {
     catalogEngineSelect.innerHTML = "";
-    catalogModels = [];
+    setCatalogModels([]);
     catalogStatus.textContent = "An online node is required to inspect installed models or install a catalog model.";
     catalogResults.innerHTML = '<p class="setup-empty">No online target nodes.</p>';
     return;
@@ -114,7 +135,7 @@ async function loadCatalogNodes() {
   await loadCatalogTarget();
 }
 
-async function loadCatalogTarget() {
+export async function loadCatalogTarget() {
   const nodeId = catalogNodeSelect?.value;
   if (!nodeId) return;
   catalogStatus.textContent = `Loading engines and installed models for ${nodeId}…`;
@@ -123,8 +144,8 @@ async function loadCatalogTarget() {
       fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/engines`),
       fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models`),
     ]);
-    catalogEngines = allEngines.filter((item) => item.can_pull);
-    catalogModels = models;
+    setCatalogEngines(allEngines.filter((item) => item.can_pull));
+    setCatalogModels(models);
     const currentEngine = catalogEngineSelect.value;
     catalogEngineSelect.innerHTML = catalogEngines
       .map((item) => `<option value="${escapeHtml(item.name)}">${escapeHtml(item.name)} · ${escapeHtml(item.url || "configured engine")}</option>`)
@@ -140,7 +161,7 @@ async function loadCatalogTarget() {
   }
 }
 
-function renderModelCatalog() {
+export function renderModelCatalog() {
   if (!catalogResults) return;
   const engineName = catalogEngineSelect?.value || "";
   const query = (catalogSearch?.value || "").trim().toLowerCase();
@@ -187,7 +208,7 @@ async function installCatalogModel(model, button) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, engine: engineName }),
     });
-    catalogModels = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/refresh`, { method: "POST" });
+    setCatalogModels(await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/refresh`, { method: "POST" }));
     catalogStatus.textContent = `Installed ${model} on ${nodeId} using ${engineName}.`;
     renderModelCatalog();
     await refresh();

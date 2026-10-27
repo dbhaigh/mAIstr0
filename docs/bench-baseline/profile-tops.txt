@@ -1,0 +1,129 @@
+## routing CPU
+File: routing.test.exe
+Build ID: C:\Users\ahaigh\AppData\Local\Temp\go-build325729556\b001\orchestrator.test.exe2026-10-26 14:29:14.3269455 -0600 MDT
+Type: cpu
+Time: 2026-10-26 14:29:15 MDT
+Duration: 13.78s, Total samples = 12.95s (93.95%)
+Showing nodes accounting for 6.10s, 47.10% of 12.95s total
+Dropped 663 nodes (cum <= 0.06s)
+Showing top 12 nodes out of 263
+      flat  flat%   sum%        cum   cum%
+     2.92s 22.55% 22.55%      2.94s 22.70%  runtime.cgocall
+     0.96s  7.41% 29.96%      0.96s  7.41%  runtime.semawakeup
+     0.47s  3.63% 33.59%      0.47s  3.63%  runtime.semasleep
+     0.32s  2.47% 36.06%      0.33s  2.55%  runtime.netpollQueueTimer
+     0.27s  2.08% 38.15%      0.29s  2.24%  runtime.unlock2
+     0.26s  2.01% 40.15%      0.77s  5.95%  runtime.lock2
+     0.20s  1.54% 41.70%      0.53s  4.09%  runtime.netpoll
+     0.18s  1.39% 43.09%      0.18s  1.39%  runtime.memmove
+     0.18s  1.39% 44.48%      0.29s  2.24%  runtime.preemptM
+     0.12s  0.93% 45.41%      0.12s  0.93%  internal/runtime/maps.memHashAES
+     0.11s  0.85% 46.25%      0.11s  0.85%  log/slog.appendEscapedJSONString
+     0.11s  0.85% 47.10%      0.24s  1.85%  runtime.scanObject
+## routing heap allocations
+File: routing.test.exe
+Build ID: C:\Users\ahaigh\AppData\Local\Temp\go-build325729556\b001\orchestrator.test.exe2026-10-26 14:29:14.3269455 -0600 MDT
+Type: alloc_space
+Time: 2026-10-26 14:29:29 MDT
+Showing nodes accounting for 1543.96MB, 54.84% of 2815.43MB total
+Dropped 214 nodes (cum <= 14.08MB)
+Showing top 12 nodes out of 148
+      flat  flat%   sum%        cum   cum%
+  404.04MB 14.35% 14.35%   404.04MB 14.35%  bufio.NewReaderSize
+  153.06MB  5.44% 19.79%   153.06MB  5.44%  github.com/maistr0/maistr0/internal/cluster.cloneSlice[go.shape.651b6f490ca544a489254bb96709c00ddf94273362bfe302b1fecdccf84c356c] (inline)
+  133.54MB  4.74% 24.53%   137.54MB  4.89%  net/textproto.MIMEHeader.Set
+  125.07MB  4.44% 28.97%   294.27MB 10.45%  github.com/maistr0/maistr0/internal/scheduler.assignSubtaskList
+  120.66MB  4.29% 33.26%   120.66MB  4.29%  slices.Grow[go.shape.[]log/slog.Attr,go.shape.struct { Key string; Value log/slog.Value }] (inline)
+  111.53MB  3.96% 37.22%   111.53MB  3.96%  net/http.Header.Clone
+  111.41MB  3.96% 41.18%   111.41MB  3.96%  net/http.init.func2
+  110.52MB  3.93% 45.10%   115.52MB  4.10%  net/textproto.readMIMEHeader
+   74.55MB  2.65% 47.75%   134.56MB  4.78%  github.com/maistr0/maistr0/internal/cluster.(*Registry).buildSnapshotLocked
+   67.04MB  2.38% 50.13%   133.56MB  4.74%  github.com/maistr0/maistr0/internal/cluster.cloneNodeStatuses
+   67.01MB  2.38% 52.51%    67.01MB  2.38%  github.com/maistr0/maistr0/internal/cluster.cloneSlice[go.shape.struct { Name string "json:\"name\""; Engine string "json:\"engine\""; Tags []string "json:\"tags\""; Protocols []string "json:\"protocols,omitempty\""; SizeGB float64 "json:\"size_gb,omitempty\""; ContextLength int "json:\"context_length,omitempty\""; Device string "json:\"device,omitempty\""; Quantization string "json:\"quantization,omitempty\""; Members []string "json:\"members,omitempty\"" }] (inline)
+   65.52MB  2.33% 54.84%   175.54MB  6.24%  net/http.readRequestLimit
+## snapshot-publication CPU
+File: snapshot.test.exe
+Build ID: C:\Users\ahaigh\AppData\Local\Temp\go-build2687522033\b001\orchestrator.test.exe2026-10-26 14:29:32.1852972 -0600 MDT
+Type: cpu
+Time: 2026-10-26 14:29:34 MDT
+Duration: 9s, Total samples = 14620ms (162.49%)
+Showing nodes accounting for 9360ms, 64.02% of 14620ms total
+Dropped 284 nodes (cum <= 73.10ms)
+Showing top 12 nodes out of 149
+      flat  flat%   sum%        cum   cum%
+    2290ms 15.66% 15.66%     2290ms 15.66%  runtime.cgocall
+    1420ms  9.71% 25.38%     1420ms  9.71%  github.com/maistr0/maistr0/internal/hub.(*Hub).HasSubscribers (inline)
+    1000ms  6.84% 32.22%     1000ms  6.84%  runtime.semasleep
+     810ms  5.54% 37.76%     1260ms  8.62%  runtime.selectnbsend
+     770ms  5.27% 43.02%     1570ms 10.74%  runtime.preemptM
+     580ms  3.97% 46.99%     3570ms 24.42%  github.com/maistr0/maistr0/internal/orchestrator.(*Server).publishSnapshot
+     520ms  3.56% 50.55%     2340ms 16.01%  encoding/json/v2.makeStructArshaler.func2
+     430ms  2.94% 53.49%     7030ms 48.08%  github.com/maistr0/maistr0/internal/orchestrator.BenchmarkPublishSnapshotRequests.func2.4
+     420ms  2.87% 56.36%      420ms  2.87%  net/http/httptest.(*ResponseRecorder).WriteHeader
+     410ms  2.80% 59.17%      450ms  3.08%  runtime.chansend
+     360ms  2.46% 61.63%     6600ms 45.14%  github.com/maistr0/maistr0/internal/orchestrator.BenchmarkPublishSnapshotRequests.func2.4.1 (inline)
+     350ms  2.39% 64.02%      350ms  2.39%  runtime.semawakeup
+## snapshot-publication heap allocations
+File: snapshot.test.exe
+Build ID: C:\Users\ahaigh\AppData\Local\Temp\go-build2687522033\b001\orchestrator.test.exe2026-10-26 14:29:32.1852972 -0600 MDT
+Type: alloc_space
+Time: 2026-10-26 14:29:43 MDT
+Showing nodes accounting for 4406.31MB, 91.84% of 4797.83MB total
+Dropped 118 nodes (cum <= 23.99MB)
+Showing top 12 nodes out of 62
+      flat  flat%   sum%        cum   cum%
+  981.82MB 20.46% 20.46%   981.82MB 20.46%  bytes.Clone
+  930.79MB 19.40% 39.86%   930.79MB 19.40%  fmt.(*buffer).write
+  398.82MB  8.31% 48.18%   398.82MB  8.31%  github.com/maistr0/maistr0/internal/orchestrator.(*Server).dashboardPipelinePlans
+  386.74MB  8.06% 56.24%   386.74MB  8.06%  github.com/maistr0/maistr0/internal/cluster.cloneSlice[go.shape.struct { Name string "json:\"name\""; Engine string "json:\"engine\""; Tags []string "json:\"tags\""; Protocols []string "json:\"protocols,omitempty\""; SizeGB float64 "json:\"size_gb,omitempty\""; ContextLength int "json:\"context_length,omitempty\""; Device string "json:\"device,omitempty\""; Quantization string "json:\"quantization,omitempty\""; Members []string "json:\"members,omitempty\"" }] (inline)
+  362.22MB  7.55% 63.79%  1042.05MB 21.72%  github.com/maistr0/maistr0/internal/cluster.cloneNodeStatuses
+  264.63MB  5.52% 69.30%   443.17MB  9.24%  github.com/maistr0/maistr0/internal/taskmgr.cloneTask
+  236.99MB  4.94% 74.24%   738.93MB 15.40%  encoding/json/v2.makeStructArshaler.func2
+  225.09MB  4.69% 78.93%   225.09MB  4.69%  github.com/maistr0/maistr0/internal/cluster.cloneSlice[go.shape.651b6f490ca544a489254bb96709c00ddf94273362bfe302b1fecdccf84c356c] (inline)
+  182.37MB  3.80% 82.73%   183.37MB  3.82%  github.com/maistr0/maistr0/internal/orchestrator.(*Server).dashboardModelInventory
+  173.54MB  3.62% 86.35%   178.54MB  3.72%  github.com/maistr0/maistr0/internal/scheduler.(*TaskGraph).Clone
+  157.77MB  3.29% 89.64%   157.77MB  3.29%  internal/strconv.fmtEFG
+  105.53MB  2.20% 91.84%   105.53MB  2.20%  reflect.unsafe_New
+## memory-sync CPU
+File: memory-sync.test.exe
+Build ID: C:\Users\ahaigh\AppData\Local\Temp\go-build3334144931\b001\orchestrator.test.exe2026-10-26 14:29:45.4733462 -0600 MDT
+Type: cpu
+Time: 2026-10-26 14:29:46 MDT
+Duration: 13.36s, Total samples = 23730ms (177.61%)
+Showing nodes accounting for 12700ms, 53.52% of 23730ms total
+Dropped 432 nodes (cum <= 118.65ms)
+Showing top 12 nodes out of 141
+      flat  flat%   sum%        cum   cum%
+    1820ms  7.67%  7.67%     6010ms 25.33%  runtime.scanObject
+    1670ms  7.04% 14.71%     2840ms 11.97%  runtime.tryDeferToSpanScan
+    1230ms  5.18% 19.89%     2150ms  9.06%  runtime.lock2
+    1160ms  4.89% 24.78%     1350ms  5.69%  runtime.unlock2
+    1080ms  4.55% 29.33%     1490ms  6.28%  runtime.preemptM
+    1000ms  4.21% 33.54%     1000ms  4.21%  runtime.memclrNoHeapPointers
+     970ms  4.09% 37.63%      970ms  4.09%  runtime.memmove
+     940ms  3.96% 41.59%      940ms  3.96%  runtime.typePointers.nextFast (inline)
+     860ms  3.62% 45.22%     1110ms  4.68%  runtime.typePointers.next
+     810ms  3.41% 48.63%      810ms  3.41%  runtime.semasleep
+     610ms  2.57% 51.20%      610ms  2.57%  runtime.spanClass.sizeclass (inline)
+     550ms  2.32% 53.52%     1890ms  7.96%  encoding/json/v2.makeStructArshaler.func2
+## memory-sync heap allocations
+File: memory-sync.test.exe
+Build ID: C:\Users\ahaigh\AppData\Local\Temp\go-build3334144931\b001\orchestrator.test.exe2026-10-26 14:29:45.4733462 -0600 MDT
+Type: alloc_space
+Time: 2026-10-26 14:30:00 MDT
+Showing nodes accounting for 47154.21MB, 97.94% of 48145.93MB total
+Dropped 147 nodes (cum <= 240.73MB)
+Showing top 12 nodes out of 38
+      flat  flat%   sum%        cum   cum%
+29259.37MB 60.77% 60.77% 29259.87MB 60.77%  github.com/maistr0/maistr0/internal/memory.snapshotSince
+ 5701.78MB 11.84% 72.61%  5702.28MB 11.84%  github.com/maistr0/maistr0/internal/memory.(*memoryStore).Snapshot
+ 3644.22MB  7.57% 80.18%  6304.24MB 13.09%  github.com/maistr0/maistr0/internal/memory.PageSnapshot
+ 2232.28MB  4.64% 84.82%  2232.28MB  4.64%  reflect.growslice
+ 1535.22MB  3.19% 88.01%  2801.05MB  5.82%  encoding/json/v2.makeStructArshaler.func2
+ 1364.33MB  2.83% 90.84%  1961.97MB  4.08%  github.com/maistr0/maistr0/internal/syncpage.Next[go.shape.interface {}]
+ 1186.96MB  2.47% 93.31%  1186.96MB  2.47%  bytes.Clone (inline)
+  857.26MB  1.78% 95.09%   857.26MB  1.78%  slices.Grow[go.shape.[]uint8,go.shape.uint8] (inline)
+  688.02MB  1.43% 96.52%   699.05MB  1.45%  fmt.Sprintf
+  554.61MB  1.15% 97.67%   554.61MB  1.15%  bytes.growSlice
+  128.65MB  0.27% 97.94% 48136.18MB   100%  github.com/maistr0/maistr0/internal/orchestrator.BenchmarkProfileMemorySyncHTTP.func1
+    1.50MB 0.0031% 97.94% 45316.60MB 94.12%  github.com/maistr0/maistr0/internal/orchestrator.(*Server).handleMemorySyncGet

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,6 +46,68 @@ func BenchmarkMemoryHistorySnapshotGeneration(b *testing.B) {
 				_ = store.Snapshot()
 			}
 		})
+	}
+}
+
+func BenchmarkBboltSnapshotScanSort(b *testing.B) {
+	store, err := Open(filepath.Join(b.TempDir(), "snapshot.db"), "benchmark")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			b.Error(err)
+		}
+	})
+
+	const (
+		experienceCount = 10_000
+		otherCount      = 1_000
+	)
+	snapshot := benchmarkHistorySnapshot(experienceCount)
+	at := time.Unix(1_700_000_000, 0).UTC()
+	snapshot.Facts = make([]Fact, otherCount)
+	snapshot.Performances = make([]Performance, otherCount)
+	snapshot.Dialogues = make([]DialogueRecord, otherCount)
+	for i := range otherCount {
+		sequence := uint64(experienceCount + i + 1)
+		updatedAt := at.Add(time.Duration(i) * time.Second)
+		snapshot.Facts[i] = Fact{
+			Key: strconv.Itoa(i), Origin: "benchmark", Sequence: sequence,
+			Value: "synthetic fact", Scope: "benchmark", CreatedAt: at, UpdatedAt: updatedAt,
+		}
+		snapshot.Performances[i] = Performance{
+			NodeID: strconv.Itoa(i), Origin: "benchmark", Sequence: sequence,
+			Model: "synthetic-model", TaskType: "general", AvgDurationMs: int64(otherCount - i),
+			SuccessRate: float64(i) / otherCount, LastUsed: updatedAt,
+		}
+		snapshot.Dialogues[i] = DialogueRecord{
+			ID: strconv.Itoa(i), Origin: "benchmark", Sequence: sequence,
+			Participants: []string{"benchmark"}, Topic: "synthetic",
+			Turns:     []Turn{{Speaker: "benchmark", Content: "synthetic dialogue", At: updatedAt}},
+			CreatedAt: at, UpdatedAt: updatedAt,
+		}
+	}
+	snapshot.Watermarks["benchmark"] = uint64(experienceCount + otherCount)
+	if err := store.MergeSnapshotFrom(snapshot, "benchmark"); err != nil {
+		b.Fatal(err)
+	}
+	boltStore := store.(*boltStore)
+
+	b.ReportAllocs()
+	b.ReportMetric(experienceCount+3*otherCount, "records/op")
+	b.ResetTimer()
+	for range b.N {
+		boltStore.invalidateSnapshotCache()
+		got, err := boltStore.loadSnapshot()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(got.Experiences) != experienceCount || len(got.Facts) != otherCount ||
+			len(got.Performances) != otherCount || len(got.Dialogues) != otherCount {
+			b.Fatalf("snapshot record counts = %d/%d/%d/%d",
+				len(got.Experiences), len(got.Facts), len(got.Performances), len(got.Dialogues))
+		}
 	}
 }
 

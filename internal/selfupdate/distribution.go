@@ -24,11 +24,12 @@ const MaxBinaryBytes int64 = 128 << 20
 var releaseVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$`)
 
 type Manifest struct {
-	Version string `json:"version"`
-	OS      string `json:"os"`
-	Arch    string `json:"arch"`
-	SHA256  string `json:"sha256"`
-	Size    int64  `json:"size"`
+	Version   string `json:"version"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+	SHA256    string `json:"sha256"`
+	Size      int64  `json:"size"`
+	Signature string `json:"signature,omitempty"`
 }
 
 func (m Manifest) Validate() error {
@@ -84,6 +85,10 @@ func (d Distribution) artifact(goos, arch string) (string, Manifest, error) {
 	}
 	if goos == runtime.GOOS && arch == runtime.GOARCH {
 		manifest, err := Inspect(d.Executable, d.Version)
+		if err != nil {
+			return "", Manifest{}, err
+		}
+		manifest, err = readArtifactManifest(d.Executable, manifest)
 		return d.Executable, manifest, err
 	}
 	name := "maistr0"
@@ -97,13 +102,13 @@ func (d Distribution) artifact(goos, arch string) (string, Manifest, error) {
 	}
 	var result error
 	for _, path := range paths {
-		data, err := os.ReadFile(path + ".peer.json")
+		actual, err := Inspect(path, d.Version)
 		if err != nil {
 			result = errors.Join(result, err)
 			continue
 		}
-		var manifest Manifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
+		manifest, err := readArtifactManifest(path, actual)
+		if err != nil {
 			result = errors.Join(result, err)
 			continue
 		}
@@ -111,14 +116,30 @@ func (d Distribution) artifact(goos, arch string) (string, Manifest, error) {
 			result = errors.Join(result, errors.New("target bundle does not match running release"))
 			continue
 		}
-		actual, err := Inspect(path, d.Version)
-		if err != nil || actual != manifest {
-			result = errors.Join(result, errors.New("target bundle checksum/build metadata mismatch"), err)
-			continue
-		}
 		return path, manifest, nil
 	}
 	return "", Manifest{}, fmt.Errorf("target binary bundle is unavailable: %w", result)
+}
+
+func readArtifactManifest(path string, actual Manifest) (Manifest, error) {
+	data, err := os.ReadFile(path + ".peer.json")
+	if errors.Is(err, os.ErrNotExist) {
+		return actual, nil
+	}
+	if err != nil {
+		return Manifest{}, fmt.Errorf("read peer update manifest: %w", err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return Manifest{}, fmt.Errorf("decode peer update manifest: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return Manifest{}, err
+	}
+	if !sameArtifact(actual, manifest) {
+		return Manifest{}, errors.New("peer update manifest does not match executable")
+	}
+	return manifest, nil
 }
 
 func (d Distribution) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,19 @@
+# revision: 2f77419
+# command: go test ./internal/orchestrator -run ^$ -bench ^BenchmarkCompatAPIStreamingSimulated$ -benchmem -count=10 -benchtime=1x
+# one benchmark iteration per sample; not comparable to 200ms samples
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkCompatAPIStreamingSimulated-24    	       1	   1887000 ns/op	  220848 B/op	     800 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    865600 ns/op	  102576 B/op	     472 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    505000 ns/op	  137920 B/op	     450 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    479000 ns/op	  144688 B/op	     468 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    487700 ns/op	  131760 B/op	     462 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    570900 ns/op	  139488 B/op	     466 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    470200 ns/op	  128768 B/op	     439 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    771900 ns/op	  102672 B/op	     458 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    485000 ns/op	   97384 B/op	     460 allocs/op
+BenchmarkCompatAPIStreamingSimulated-24    	       1	    457400 ns/op	  130128 B/op	     462 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/orchestrator	1.477s

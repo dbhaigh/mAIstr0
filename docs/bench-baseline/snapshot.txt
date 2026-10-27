@@ -1,0 +1,121 @@
+# revision: 2f77419
+# command: go test ./internal/orchestrator ./internal/hub ./internal/memory -run ^$ -bench ^Benchmark(BuildSnapshot|PublishSnapshotRequests|ProfilePublication|MemoryHistorySnapshotGeneration|SnapshotPayloadSizes10KExperiences)$ -benchmem -count=10 -benchtime=200ms
+# benchtime: 200ms; count: 10; benchmem: enabled
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkBuildSnapshot-24              	     362	    717070 ns/op	  708387 B/op	    1631 allocs/op
+BenchmarkBuildSnapshot-24              	     308	    820576 ns/op	  644544 B/op	    1629 allocs/op
+BenchmarkBuildSnapshot-24              	     408	    635276 ns/op	  657816 B/op	    1629 allocs/op
+BenchmarkBuildSnapshot-24              	     394	    604620 ns/op	  654299 B/op	    1629 allocs/op
+BenchmarkBuildSnapshot-24              	     403	    665671 ns/op	  657321 B/op	    1629 allocs/op
+BenchmarkBuildSnapshot-24              	     392	    596105 ns/op	  661756 B/op	    1629 allocs/op
+BenchmarkBuildSnapshot-24              	     396	    660272 ns/op	  641631 B/op	    1628 allocs/op
+BenchmarkBuildSnapshot-24              	     331	    626755 ns/op	  653262 B/op	    1629 allocs/op
+BenchmarkBuildSnapshot-24              	     361	    659996 ns/op	  657056 B/op	    1629 allocs/op
+BenchmarkBuildSnapshot-24              	     420	    647176 ns/op	  656695 B/op	    1629 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	279618600	         0.8818 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	274422768	         0.8699 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	277224931	         0.8818 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	274803200	         0.8919 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	261912660	         0.9245 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	253303232	         0.8611 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	281593632	         0.8347 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	277931862	         0.8864 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	263846731	         0.8736 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/NoSubscribers-24         	270216409	         0.8931 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     346	    820858 ns/op	  872341 B/op	    1636 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     362	    839841 ns/op	  872458 B/op	    1636 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     332	   1024389 ns/op	  897082 B/op	    1638 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     326	    847748 ns/op	  887377 B/op	    1638 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     282	    755456 ns/op	  898819 B/op	    1639 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     327	    809589 ns/op	  914360 B/op	    1639 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     330	    767327 ns/op	  906980 B/op	    1639 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     325	    671434 ns/op	  892132 B/op	    1638 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     254	    826957 ns/op	  895051 B/op	    1638 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24         	     332	    817055 ns/op	  905415 B/op	    1639 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	43419266	         5.495 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	45763099	         5.421 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	44979196	         5.433 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	44313145	         5.521 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	44882463	         5.453 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	44413190	         5.452 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	44198080	         5.476 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	42292983	         5.511 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	45460572	         5.486 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24           	42545647	         5.511 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/orchestrator	14.458s
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/hub
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkProfilePublication/0-24  	15515120	        22.24 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  44972979 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	15068716	        21.30 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  46946053 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	14180792	        16.69 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  59921616 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	14630398	        17.04 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  58696508 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	15128878	        16.46 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  60761279 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	13230064	        20.65 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  48428476 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	14949916	        17.00 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  58816696 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	13502641	        21.08 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  47433643 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	14448169	        16.40 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  60992823 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/0-24  	13001576	        16.16 ns/op	      8192 latency-samples	         0 p50-us	         0 p95-us	         0 p99-us	  61878999 requests/s	       0 B/op	       0 allocs/op
+BenchmarkProfilePublication/1-24  	    5672	     42314 ns/op	      5672 latency-samples	         0 p50-us	         0 p95-us	      1003 p99-us	     23633 requests/s	  150995 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    6177	     39683 ns/op	      6177 latency-samples	         0 p50-us	         0 p95-us	      1002 p99-us	     25200 requests/s	  150508 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    6128	     40304 ns/op	      6128 latency-samples	         0 p50-us	         0 p95-us	      1004 p99-us	     24812 requests/s	  150873 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    6559	     42648 ns/op	      6559 latency-samples	         0 p50-us	         0 p95-us	      1003 p99-us	     23448 requests/s	  150565 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    6438	     40486 ns/op	      6438 latency-samples	         0 p50-us	       516.5 p95-us	       999.1 p99-us	     24700 requests/s	  150524 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    5400	     42505 ns/op	      5400 latency-samples	         0 p50-us	       516.0 p95-us	       947.5 p99-us	     23527 requests/s	  150790 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    6201	     40270 ns/op	      6201 latency-samples	         0 p50-us	       514.2 p95-us	       629.6 p99-us	     24832 requests/s	  150849 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    6416	     40637 ns/op	      6416 latency-samples	         0 p50-us	       508.3 p95-us	      1000 p99-us	     24608 requests/s	  151057 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    6392	     43047 ns/op	      6392 latency-samples	         0 p50-us	       513.7 p95-us	       807.6 p99-us	     23230 requests/s	  151269 B/op	       7 allocs/op
+BenchmarkProfilePublication/1-24  	    6249	     43785 ns/op	      6249 latency-samples	         0 p50-us	       511.0 p95-us	      1000 p99-us	     22839 requests/s	  151070 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    4650	     45025 ns/op	      4650 latency-samples	         0 p50-us	       514.1 p95-us	       999.8 p99-us	     22210 requests/s	  152932 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    5805	     45150 ns/op	      5805 latency-samples	         0 p50-us	         0 p95-us	      1004 p99-us	     22149 requests/s	  152974 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    5619	     47953 ns/op	      5619 latency-samples	         0 p50-us	       514.9 p95-us	       576.5 p99-us	     20854 requests/s	  152927 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    5769	     49974 ns/op	      5769 latency-samples	         0 p50-us	       516.6 p95-us	       547.0 p99-us	     20010 requests/s	  153290 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    4344	     48679 ns/op	      4344 latency-samples	         0 p50-us	       512.6 p95-us	      1002 p99-us	     20543 requests/s	  153028 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    5102	     44593 ns/op	      5102 latency-samples	         0 p50-us	         0 p95-us	      1004 p99-us	     22425 requests/s	  152811 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    5094	     49916 ns/op	      5094 latency-samples	         0 p50-us	       509.0 p95-us	      1002 p99-us	     20034 requests/s	  152747 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    5804	     52677 ns/op	      5804 latency-samples	         0 p50-us	       512.1 p95-us	      1001 p99-us	     18983 requests/s	  153002 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    5509	     46308 ns/op	      5509 latency-samples	         0 p50-us	       513.1 p95-us	       998.9 p99-us	     21595 requests/s	  152880 B/op	       7 allocs/op
+BenchmarkProfilePublication/64-24 	    5283	     48955 ns/op	      5283 latency-samples	         0 p50-us	       513.4 p95-us	      1000 p99-us	     20427 requests/s	  153206 B/op	       7 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/hub	8.902s
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/memory
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      61	   3932259 ns/op	   2484975 full-bytes	      2614 incremental-bytes	 2494085 B/op	      10 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      63	   4064733 ns/op	   2485891 full-bytes	      2614 incremental-bytes	 2705977 B/op	      11 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      64	   3963241 ns/op	   2485103 full-bytes	      2614 incremental-bytes	 2702815 B/op	      11 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      66	   4009583 ns/op	   2485046 full-bytes	      2614 incremental-bytes	 2494137 B/op	      10 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      66	   4038626 ns/op	   2494773 full-bytes	      2625 incremental-bytes	 2906738 B/op	      11 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      62	   4080902 ns/op	   2495892 full-bytes	      2625 incremental-bytes	 2932814 B/op	      11 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      61	   4039182 ns/op	   2495445 full-bytes	      2625 incremental-bytes	 2721080 B/op	      11 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      50	   4013808 ns/op	   2494299 full-bytes	      2625 incremental-bytes	 2769266 B/op	      11 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      58	   4000150 ns/op	   2494411 full-bytes	      2625 incremental-bytes	 2732423 B/op	      11 allocs/op
+BenchmarkSnapshotPayloadSizes10KExperiences-24    	      60	   3992302 ns/op	   2495892 full-bytes	      2625 incremental-bytes	 2724677 B/op	      11 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     458	    754073 ns/op	 2646358 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     306	    873089 ns/op	 2646345 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     356	    620062 ns/op	 2646349 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     482	    654269 ns/op	 2646347 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     361	    649636 ns/op	 2646345 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     555	    719848 ns/op	 2646348 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     451	    574149 ns/op	 2646347 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     706	    650314 ns/op	 2646345 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     409	    736741 ns/op	 2646359 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/10K-24   	     366	    625223 ns/op	 2646347 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	      58	   3746376 ns/op	26403325 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	      94	   3418079 ns/op	26403145 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	     100	   3495288 ns/op	26403202 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	     100	   3267529 ns/op	26403145 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	     100	   3378989 ns/op	26403145 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	      61	   3314325 ns/op	26403151 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	     100	   3600324 ns/op	26403149 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	      68	   3433472 ns/op	26403145 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	     100	   3322928 ns/op	26403147 B/op	       6 allocs/op
+BenchmarkMemoryHistorySnapshotGeneration/100K-24  	     100	   3566272 ns/op	26403146 B/op	       6 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/memory	13.800s

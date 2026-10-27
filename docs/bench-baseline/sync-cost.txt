@@ -1,0 +1,46 @@
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/nodeagent
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     65410 ns/op	        22.47 bytes/s-at-60s-backstop	         0.06541 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   30644 B/op	     393 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     56590 ns/op	        22.47 bytes/s-at-60s-backstop	         0.05659 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   26710 B/op	     391 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     53070 ns/op	        22.47 bytes/s-at-60s-backstop	         0.05307 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   30653 B/op	     392 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     55260 ns/op	        22.47 bytes/s-at-60s-backstop	         0.05526 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   30656 B/op	     393 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     49350 ns/op	        22.47 bytes/s-at-60s-backstop	         0.04935 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   26723 B/op	     392 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     55060 ns/op	        22.47 bytes/s-at-60s-backstop	         0.05506 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   30669 B/op	     394 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     50540 ns/op	        22.47 bytes/s-at-60s-backstop	         0.05054 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   30669 B/op	     394 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     58960 ns/op	        22.47 bytes/s-at-60s-backstop	         0.05896 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   26729 B/op	     393 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     56970 ns/op	        22.47 bytes/s-at-60s-backstop	         0.05697 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   30669 B/op	     394 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v2-24         	      10	     52190 ns/op	        22.47 bytes/s-at-60s-backstop	         0.05219 cpu-ms/min-at-60s-backstop	       758.0 memory-bytes/cycle	       590.0 task-bytes/cycle	   30669 B/op	     394 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     72030 ns/op	        16.87 bytes/s-at-60s-backstop	         0.07203 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   23513 B/op	     363 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     58520 ns/op	        16.87 bytes/s-at-60s-backstop	         0.05852 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   23513 B/op	     363 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     52260 ns/op	        16.87 bytes/s-at-60s-backstop	         0.05226 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   23508 B/op	     363 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     47610 ns/op	        16.87 bytes/s-at-60s-backstop	         0.04761 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   27437 B/op	     364 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     50570 ns/op	        16.87 bytes/s-at-60s-backstop	         0.05057 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   27437 B/op	     364 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     47650 ns/op	        16.87 bytes/s-at-60s-backstop	         0.04765 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   27437 B/op	     364 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     51330 ns/op	        16.87 bytes/s-at-60s-backstop	         0.05133 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   27440 B/op	     364 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     86630 ns/op	        16.87 bytes/s-at-60s-backstop	         0.08663 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   27440 B/op	     364 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     50120 ns/op	        16.87 bytes/s-at-60s-backstop	         0.05012 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   27442 B/op	     364 allocs/op
+BenchmarkIdleSyncTraffic3Node/peer-v3-24         	      10	     47980 ns/op	        16.87 bytes/s-at-60s-backstop	         0.04798 cpu-ms/min-at-60s-backstop	       512.0 memory-bytes/cycle	       500.0 task-bytes/cycle	   23505 B/op	     363 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  17896400 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24958015 B/op	   10197 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  17885640 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24956554 B/op	   10196 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  16217210 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24953144 B/op	   10197 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  16082390 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24956112 B/op	   10197 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  16452060 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24956455 B/op	   10196 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  15810660 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24956255 B/op	   10194 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  15669740 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24955183 B/op	   10193 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  16575970 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24956728 B/op	   10196 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  17350970 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24955818 B/op	   10194 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v2-24       	      10	  14831110 ns/op	   3248895 body-bytes/op	   3248895 json-bytes	   3249174 request-bytes/op	24956220 B/op	   10195 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  12407230 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26033024 B/op	   10226 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  12832770 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26032876 B/op	   10222 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  12259930 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26032420 B/op	   10225 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  14377520 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26032001 B/op	   10225 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  14243990 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26032644 B/op	   10222 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  19445880 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26033106 B/op	   10224 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  17821500 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26031269 B/op	   10223 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  17510190 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26031793 B/op	   10225 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  15030720 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26032548 B/op	   10226 allocs/op
+BenchmarkTaskHistoryTransfer10K/peer-v3-24       	      10	  15214100 ns/op	     86490 body-bytes/op	   3248895 json-bytes	     86789 request-bytes/op	26033732 B/op	   10226 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/nodeagent	5.001s

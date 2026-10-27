@@ -1,3 +1,18 @@
+import { loadPairingStatus } from "./components/pairing-dialog.js";
+import { copyText, renderTasks, taskText } from "./components/task-list.js";
+import { fetchJSON, refreshPersistenceStatus, updateClusterTitle } from "./shared/api.js";
+import { formatRelativeTime } from "./shared/format.js";
+import { dashboardSnapshot } from "./shared/snapshot.js";
+import { clusterWorkspaceTabs, connectionStatus, copyTasksBtn, dashboardState, overviewNodes, statLoad, statMemory, statModels, statNodes, statVersion, submitBtn, submitStatus, taskAutoPlan, taskHistoryPage, taskHistorySearch, taskHistoryStatus, taskInput, taskRequireApproval, taskRequireReview } from "./shared/state.js";
+import { dashboardViewModel } from "./shared/view-model.js";
+import { checkSetupReadiness, loadModelCatalog } from "./views/cluster-setup.js";
+import { renderOverview } from "./views/cluster.js";
+import { refreshMemory } from "./views/memory.js";
+import { renderNodes, renderSetupNodes } from "./views/nodes.js";
+import { renderPipelineDashboard } from "./views/pipelines.js";
+import { renderDiscovery, renderRouting } from "./views/routing.js";
+import { refreshShardGroups } from "./views/shards.js";
+
 function updateConnectionStatus() {
   if (!connectionStatus) return;
   const state = dashboardState.connection;
@@ -10,12 +25,16 @@ function updateConnectionStatus() {
 
 const loadedDashboardPanels = new Set(["agent-tab"]);
 
-function markDashboardSynced() {
+export function resetDashboardSignatures() {
+  dashboardState.renderSignatures = {};
+}
+
+export function markDashboardSynced() {
   dashboardState.connection.lastSyncAt = Date.now();
   updateConnectionStatus();
 }
 
-async function refresh() {
+export async function refresh() {
   if (!document.getElementById("cluster-tab")?.classList.contains("active")) return;
   try {
     const [nodes, peers, build] = await Promise.all([
@@ -56,7 +75,7 @@ function sortTaskHistory(items) {
   );
 }
 
-async function refreshTaskHistory(reset = false) {
+export async function refreshTaskHistory(reset = false) {
   const query = (taskHistorySearch?.value || "").trim();
   const status = taskHistoryStatus?.value || "all";
   const filterKey = JSON.stringify([query, status]);
@@ -98,7 +117,7 @@ async function refreshTaskHistory(reset = false) {
   }
 }
 
-async function loadMoreTaskHistory() {
+export async function loadMoreTaskHistory() {
   const filterKey = JSON.stringify([
     (taskHistorySearch?.value || "").trim(),
     taskHistoryStatus?.value || "all",
@@ -129,7 +148,7 @@ async function loadMoreTaskHistory() {
   }
 }
 
-async function copyAllTaskResults() {
+export async function copyAllTaskResults() {
   try {
     const tasks = [];
     let cursor = "";
@@ -154,13 +173,25 @@ function mergeLiveTaskHistory(tasks) {
   taskHistoryPage.items = sortTaskHistory(taskHistoryPage.items.map((task) => updates.get(task.id) || task));
 }
 
-async function refreshDiscovery() {
+export async function refreshDiscovery() {
   try {
     const discovery = await fetchJSON("/api/discovery");
+    let discoveryAuthentication = "unavailable";
+    try {
+      const status = await fetchJSON("/api/security/status");
+      if (["unauthenticated", "hmac-sha256"].includes(status.discovery_authentication)) {
+        discoveryAuthentication = status.discovery_authentication;
+      } else {
+        throw new Error("security status response omitted a recognized discovery authentication mode");
+      }
+    } catch (err) {
+      console.error("local network security status refresh failed", err);
+    }
     applySnapshot({
       nodes: dashboardState.nodes || [],
       tasks: dashboardState.tasks || [],
       discovery,
+      discovery_authentication: discoveryAuthentication,
     });
   } catch (err) {
     console.error("local network refresh failed", err);
@@ -176,6 +207,7 @@ setInterval(() => {
 }, 5000);
 
 function applySnapshot(snap) {
+  const signatures = dashboardState.renderSignatures || (dashboardState.renderSignatures = {});
   const taskSnapshot = dashboardSnapshot.mergeTaskSnapshot(
     dashboardState.tasks, snap.tasks, snap.complete_tasks, dashboardState.fullTaskHistoryLoaded,
   );
@@ -184,6 +216,9 @@ function applySnapshot(snap) {
   mergeLiveTaskHistory(snap.tasks || []);
   dashboardState.nodes = snap.nodes || [];
   if (Array.isArray(snap.discovery)) dashboardState.discovery = snap.discovery;
+  if (typeof snap.discovery_authentication === "string") {
+    dashboardState.discoveryAuthentication = snap.discovery_authentication;
+  }
   if (snap.build_version) dashboardState.buildVersion = snap.build_version;
   if (Array.isArray(snap.model_inventory)) dashboardState.modelInventory = snap.model_inventory;
   if (Array.isArray(snap.pipeline_plans)) dashboardState.pipelinePlans = snap.pipeline_plans;
@@ -192,14 +227,16 @@ function applySnapshot(snap) {
     (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node]),
   );
   const status = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState.nodes, dashboardState.capacity);
-  updateClusterTitle(status.nodeCount);
-
-  // Update header stats pills
-  if (statNodes) statNodes.textContent = `Nodes: ${status.nodeCount}`;
-  if (statModels) statModels.textContent = `Models: ${status.modelCount}`;
-  if (statLoad) statLoad.textContent = status.loadLabel;
-  if (statMemory && status.memoryLabel) statMemory.textContent = status.memoryLabel;
-  if (statVersion && status.buildVersion) statVersion.textContent = status.buildVersion;
+  const statusSignature = JSON.stringify(status);
+  if (statusSignature !== signatures.status) {
+    updateClusterTitle(status.nodeCount);
+    if (statNodes) statNodes.textContent = `Nodes: ${status.nodeCount}`;
+    if (statModels) statModels.textContent = `Models: ${status.modelCount}`;
+    if (statLoad) statLoad.textContent = status.loadLabel;
+    if (statMemory && status.memoryLabel) statMemory.textContent = status.memoryLabel;
+    if (statVersion && status.buildVersion) statVersion.textContent = status.buildVersion;
+    signatures.status = statusSignature;
+  }
 
   const nodeState = dashboardState.nodes.map((node) => ({
     id: node.id, version: node.version, address: node.address, hardware: node.hardware,
@@ -276,7 +313,7 @@ function applySnapshot(snap) {
     id: peer.id, role: peer.role, address: peer.http_addr, peer_addr: peer.peer_addr, last_seen: peer.last_seen,
     orchestrator_id: peer.orchestrator_id,
   }));
-  const peerSignature = JSON.stringify({ peers: peerState, nodes: nodeState.map((node) => ({
+  const peerSignature = JSON.stringify({ peers: peerState, discoveryAuthentication: dashboardState.discoveryAuthentication, nodes: nodeState.map((node) => ({
     id: node.id, address: node.address, healthy: node.healthy, last_seen: node.last_seen,
   })), pairing: dashboardState.pairing.status });
   const discoveredNodeState = (snap.discovery || [])
@@ -285,25 +322,25 @@ function applySnapshot(snap) {
   const overviewNodeSignature = JSON.stringify({ members: overviewNodeState, discovered: discoveredNodeState });
   let overviewChanged = false;
   const overviewParts = {
-    activity: activitySignature !== window.lastActivitySignature,
-    nodes: overviewNodeSignature !== window.lastOverviewNodeSignature,
-    peers: peerSignature !== window.lastOverviewPeerSignature,
+    activity: activitySignature !== signatures.activity,
+    nodes: overviewNodeSignature !== signatures.overviewNodes,
+    peers: peerSignature !== signatures.overviewPeers,
   };
   if (loadedDashboardPanels.has("cluster-overview-panel") &&
       (overviewParts.activity || overviewParts.nodes || overviewParts.peers)) {
     renderOverview(dashboardState.nodes, dashboardState.tasks, snap.discovery || [], overviewParts);
-    window.lastActivitySignature = activitySignature;
-    window.lastOverviewNodeSignature = overviewNodeSignature;
-    window.lastOverviewPeerSignature = peerSignature;
+    signatures.activity = activitySignature;
+    signatures.overviewNodes = overviewNodeSignature;
+    signatures.overviewPeers = peerSignature;
     overviewChanged = true;
   }
-  if (loadedDashboardPanels.has("nodes-panel") && nodeSignature !== window.lastNodeSignature) {
+  if (loadedDashboardPanels.has("nodes-panel") && nodeSignature !== signatures.nodes) {
     renderNodes(dashboardState.nodes);
-    window.lastNodeSignature = nodeSignature;
+    signatures.nodes = nodeSignature;
   }
-  if (loadedDashboardPanels.has("setup-nodes-panel") && nodeSignature !== window.lastSetupNodeSignature) {
+  if (loadedDashboardPanels.has("setup-nodes-panel") && nodeSignature !== signatures.setupNodes) {
     renderSetupNodes(dashboardState.nodes);
-    window.lastSetupNodeSignature = nodeSignature;
+    signatures.setupNodes = nodeSignature;
   }
   const routingSignature = JSON.stringify({
     nodes: nodeState.map((node) => ({ id: node.id, healthy: node.healthy, active_tasks: node.active_tasks })),
@@ -312,30 +349,30 @@ function applySnapshot(snap) {
       subtasks: task.subtasks,
     })),
   });
-  if (loadedDashboardPanels.has("routing-panel") && routingSignature !== window.lastRoutingSignature) {
+  if (loadedDashboardPanels.has("routing-panel") && routingSignature !== signatures.routing) {
     renderRouting(dashboardState.nodes, dashboardState.tasks);
-    window.lastRoutingSignature = routingSignature;
+    signatures.routing = routingSignature;
   }
   const pipelineSignature = JSON.stringify({
     models: dashboardState.modelInventory,
     plans: dashboardState.pipelinePlans,
   });
-  if (loadedDashboardPanels.has("routing-panel") && pipelineSignature !== window.lastPipelineSignature) {
+  if (loadedDashboardPanels.has("routing-panel") && pipelineSignature !== signatures.pipeline) {
     renderPipelineDashboard(dashboardState.modelInventory, dashboardState.pipelinePlans);
-    window.lastPipelineSignature = pipelineSignature;
+    signatures.pipeline = pipelineSignature;
   }
-  if (loadedDashboardPanels.has("discovery-panel") && peerSignature !== window.lastPeerSignature) {
-    renderDiscovery(snap.discovery || []);
-    window.lastPeerSignature = peerSignature;
+  if (loadedDashboardPanels.has("discovery-panel") && peerSignature !== signatures.discovery) {
+    renderDiscovery(snap.discovery || [], dashboardState.discoveryAuthentication);
+    signatures.discovery = peerSignature;
   }
-  if (loadedDashboardPanels.has("tasks-panel") && taskSignature !== window.lastTaskSignature) {
+  if (loadedDashboardPanels.has("tasks-panel") && taskSignature !== signatures.tasks) {
     renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, taskHistoryPage.loading);
-    window.lastTaskSignature = taskSignature;
+    signatures.tasks = taskSignature;
   }
   if (overviewChanged) refreshOverviewTimes();
 }
 
-function activateDashboardTab(tabID) {
+export function activateDashboardTab(tabID) {
   if (tabID === "memory-tab") {
     loadedDashboardPanels.add(tabID);
     void refreshMemory();
@@ -348,7 +385,7 @@ function activateDashboardTab(tabID) {
   void refresh();
 }
 
-function activateWorkspacePanel(panelID) {
+export function activateWorkspacePanel(panelID) {
   if (panelID.startsWith("overview-")) loadedDashboardPanels.add("cluster-overview-panel");
   if (panelID.startsWith("setup-")) loadedDashboardPanels.add("setup-panel");
   loadedDashboardPanels.add(panelID);
@@ -356,6 +393,7 @@ function activateWorkspacePanel(panelID) {
     nodes: dashboardState.nodes,
     tasks: dashboardState.tasks,
     discovery: dashboardState.discovery,
+    discovery_authentication: dashboardState.discoveryAuthentication,
     model_inventory: dashboardState.modelInventory,
     pipeline_plans: dashboardState.pipelinePlans,
     cluster_health: dashboardState.capacity,

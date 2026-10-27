@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,8 +20,9 @@ var Admission Gate
 type Peer struct{ ID, Address string }
 
 type Source struct {
-	Identity *peeridentity.Identity
-	Peers    []Peer
+	Identity             *peeridentity.Identity
+	Peers                []Peer
+	PublisherPublicKey   ed25519.PublicKey
 }
 
 // Run stages at most one newer image at a time. Idle is checked only after
@@ -56,7 +58,14 @@ func Run(ctx context.Context, source func() Source, idle func() bool, shutdown f
 				transport := &http.Transport{TLSClientConfig: current.Identity.PinnedClientTLSConfig(peer.ID)}
 				client := httpx.NewClient(httpx.ClientOptions{Transport: transport})
 				offeredCertificate := current.Identity.TrustedPeers()[peer.ID]
-				path, offered, downloadErr := Download(ctx, client, peer.Address, distribution.Executable)
+				var path string
+				var offered Manifest
+				var downloadErr error
+				if len(current.PublisherPublicKey) == 0 {
+					path, offered, downloadErr = Download(ctx, client, peer.Address, distribution.Executable)
+				} else {
+					path, offered, downloadErr = Download(ctx, client, peer.Address, distribution.Executable, current.PublisherPublicKey)
+				}
 				transport.CloseIdleConnections()
 				if downloadErr != nil {
 					if !errors.Is(downloadErr, ErrNoUpdate) && lastErrors[peer.ID] != downloadErr.Error() {

@@ -164,6 +164,7 @@ func TestMinimalModeOmitsOptionalRoutesAndKeepsClusterRouting(t *testing.T) {
 		{http.MethodGet, "/api/metrics", "GET /api/metrics"},
 		{http.MethodGet, "/metrics", "GET /metrics"},
 		{http.MethodGet, "/api/cluster/health", "GET /api/cluster/health"},
+		{http.MethodGet, "/api/security/status", "GET /api/security/status"},
 		{http.MethodPost, "/router/v1/chat/completions", "POST /router/{path...}"},
 		{http.MethodGet, "/v1/models", "GET /v1/models"},
 	} {

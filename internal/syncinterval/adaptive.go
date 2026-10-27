@@ -114,10 +114,7 @@ func WaitDebouncedContext(ctx context.Context, interval, debounce time.Duration,
 		case <-debounceC:
 			return true
 		case <-heartbeatC:
-			if debounceTimer == nil {
-				return false
-			}
-			heartbeatC = nil
+			return false
 		}
 	}
 }

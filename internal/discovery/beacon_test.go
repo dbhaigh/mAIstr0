@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -15,11 +15,12 @@ type sentPacket struct {
 	to      string
 }
 
-// fakePacketConn records writes and serves queued reads; an empty read queue
-// reports a deadline timeout so listener loops keep polling.
+// fakePacketConn records writes and serves queued reads until it is closed.
 type fakePacketConn struct {
 	name     string
 	mu       sync.Mutex
+	readWake chan struct{}
+	closedCh chan struct{}
 	sent     *[]sentPacket
 	reads    []fakeRead
 	writeErr error
@@ -32,23 +33,28 @@ type fakeRead struct {
 }
 
 func (c *fakePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	c.mu.Lock()
-	if c.closed {
+	for {
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return 0, nil, net.ErrClosed
+		}
+		if len(c.reads) > 0 {
+			next := c.reads[0]
+			c.reads = c.reads[1:]
+			c.mu.Unlock()
+			if next.err != nil {
+				return 0, nil, next.err
+			}
+			return copy(p, next.payload), &net.UDPAddr{}, nil
+		}
+		if c.readWake == nil {
+			c.readWake = make(chan struct{})
+		}
+		wake := c.readWake
 		c.mu.Unlock()
-		return 0, nil, net.ErrClosed
+		<-wake
 	}
-	if len(c.reads) == 0 {
-		c.mu.Unlock()
-		time.Sleep(5 * time.Millisecond)
-		return 0, nil, os.ErrDeadlineExceeded
-	}
-	next := c.reads[0]
-	c.reads = c.reads[1:]
-	c.mu.Unlock()
-	if next.err != nil {
-		return 0, nil, next.err
-	}
-	return copy(p, next.payload), &net.UDPAddr{}, nil
 }
 
 func (c *fakePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
@@ -62,8 +68,30 @@ func (c *fakePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 func (c *fakePacketConn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.closed = true
+	if !c.closed {
+		c.closed = true
+		if c.readWake != nil {
+			close(c.readWake)
+			c.readWake = nil
+		}
+		if c.closedCh == nil {
+			c.closedCh = make(chan struct{})
+		}
+		close(c.closedCh)
+	}
 	return nil
+}
+
+func (c *fakePacketConn) closedSignal() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closedCh == nil {
+		c.closedCh = make(chan struct{})
+		if c.closed {
+			close(c.closedCh)
+		}
+	}
+	return c.closedCh
 }
 
 func (c *fakePacketConn) isClosed() bool {
@@ -82,6 +110,7 @@ func ipNet(cidrIP string, prefix int) *net.IPNet {
 }
 
 func TestBroadcastRoutes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		addrs []net.Addr
@@ -115,12 +144,8 @@ func TestBroadcastRoutes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			orig := interfaceAddrs
-			defer func() { interfaceAddrs = orig }()
-			interfaceAddrs = func() ([]net.Addr, error) { return tt.addrs, nil }
-
 			var got []string
-			for _, r := range broadcastRoutes() {
+			for _, r := range broadcastRoutesFrom(func() ([]net.Addr, error) { return tt.addrs, nil }) {
 				got = append(got, r.Local.String()+"->"+r.Broadcast.String())
 			}
 			if len(got) != len(tt.want) {
@@ -136,8 +161,11 @@ func TestBroadcastRoutes(t *testing.T) {
 }
 
 func TestBeaconSenderBindsEachInterface(t *testing.T) {
+	t.Parallel()
+	port := ephemeralUDPPort(t)
 	routeA := broadcastRoute{Local: net.ParseIP("192.168.1.200").To4(), Broadcast: net.ParseIP("192.168.1.255").To4()}
 	routeB := broadcastRoute{Local: net.ParseIP("192.168.1.189").To4(), Broadcast: net.ParseIP("192.168.1.255").To4()}
+	destination := func(ip string) string { return net.JoinHostPort(ip, strconv.Itoa(port)) }
 
 	tests := []struct {
 		name        string
@@ -151,8 +179,8 @@ func TestBeaconSenderBindsEachInterface(t *testing.T) {
 			name:   "each route uses a socket bound to its local address",
 			routes: [][]broadcastRoute{{routeA, routeB}, {routeA, routeB}},
 			wantSent: []sentPacket{
-				{"192.168.1.200", "192.168.1.255:7999"}, {"192.168.1.189", "192.168.1.255:7999"},
-				{"192.168.1.200", "192.168.1.255:7999"}, {"192.168.1.189", "192.168.1.255:7999"},
+				{"192.168.1.200", destination("192.168.1.255")}, {"192.168.1.189", destination("192.168.1.255")},
+				{"192.168.1.200", destination("192.168.1.255")}, {"192.168.1.189", destination("192.168.1.255")},
 			},
 			wantOpens: 2,
 		},
@@ -161,15 +189,15 @@ func TestBeaconSenderBindsEachInterface(t *testing.T) {
 			bindFail: map[string]bool{"192.168.1.189": true},
 			routes:   [][]broadcastRoute{{routeA, routeB}, {routeA, routeB}},
 			wantSent: []sentPacket{
-				{"192.168.1.200", "192.168.1.255:7999"}, {"fallback", "192.168.1.255:7999"},
-				{"192.168.1.200", "192.168.1.255:7999"}, {"fallback", "192.168.1.255:7999"},
+				{"192.168.1.200", destination("192.168.1.255")}, {"fallback", destination("192.168.1.255")},
+				{"192.168.1.200", destination("192.168.1.255")}, {"fallback", destination("192.168.1.255")},
 			},
 			wantOpens: 2,
 		},
 		{
 			name:        "sockets for vanished interfaces are closed",
 			routes:      [][]broadcastRoute{{routeA, routeB}, {routeB}},
-			wantSent:    []sentPacket{{"192.168.1.200", "192.168.1.255:7999"}, {"192.168.1.189", "192.168.1.255:7999"}, {"192.168.1.189", "192.168.1.255:7999"}},
+			wantSent:    []sentPacket{{"192.168.1.200", destination("192.168.1.255")}, {"192.168.1.189", destination("192.168.1.255")}, {"192.168.1.189", destination("192.168.1.255")}},
 			wantOpens:   2,
 			wantClosedA: true,
 		},
@@ -180,7 +208,7 @@ func TestBeaconSenderBindsEachInterface(t *testing.T) {
 			opened := map[string]*fakePacketConn{}
 			opens := 0
 			fallback := &fakePacketConn{name: "fallback", sent: &sent}
-			sender := newBeaconSender(fallback, func(local net.IP) (net.PacketConn, error) {
+			sender := newBeaconSenderWithPort(fallback, func(local net.IP) (net.PacketConn, error) {
 				opens++
 				if tt.bindFail[local.String()] {
 					return nil, errors.New("bind refused")
@@ -188,7 +216,7 @@ func TestBeaconSenderBindsEachInterface(t *testing.T) {
 				conn := &fakePacketConn{name: local.String(), sent: &sent}
 				opened[local.String()] = conn
 				return conn, nil
-			})
+			}, port)
 			for _, routes := range tt.routes {
 				sender.send([]byte("{}"), routes)
 			}
@@ -220,6 +248,7 @@ func TestBeaconSenderBindsEachInterface(t *testing.T) {
 }
 
 func TestBeaconSenderReopensAfterWriteError(t *testing.T) {
+	t.Parallel()
 	var sent []sentPacket
 	route := broadcastRoute{Local: net.ParseIP("10.0.0.5").To4(), Broadcast: net.ParseIP("10.255.255.255").To4()}
 	var conns []*fakePacketConn
@@ -244,6 +273,7 @@ func TestBeaconSenderReopensAfterWriteError(t *testing.T) {
 }
 
 func TestListenerRebindsAfterReadError(t *testing.T) {
+	t.Parallel()
 	ann, err := json.Marshal(Announcement{Role: "node", ID: "peer-after-rebind"})
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +291,7 @@ func TestListenerRebindsAfterReadError(t *testing.T) {
 			binds := 0
 			first := &fakePacketConn{reads: []fakeRead{{err: errors.New("wsarecvfrom: connection reset")}}}
 			second := &fakePacketConn{reads: []fakeRead{{payload: ann}}}
-			listener := listenWith(func() (net.PacketConn, error) {
+			listener := listenWithOptions(0, time.Millisecond, time.Millisecond, func() (net.PacketConn, error) {
 				mu.Lock()
 				defer mu.Unlock()
 				binds++
@@ -278,24 +308,26 @@ func TestListenerRebindsAfterReadError(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			deadline := time.Now().Add(3 * time.Second)
-			for len(listener.Snapshot()) == 0 {
-				if time.Now().After(deadline) {
-					t.Fatal("listener did not recover after a read error")
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+			waitForPeer(t, listener, "peer-after-rebind")
 			if !first.isClosed() {
 				t.Fatal("failed socket was not closed")
 			}
 			listener.Close()
-			deadline = time.Now().Add(2 * time.Second)
-			for !second.isClosed() {
-				if time.Now().After(deadline) {
-					t.Fatal("rebound socket was not closed by Close")
-				}
-				time.Sleep(10 * time.Millisecond)
+			select {
+			case <-second.closedSignal():
+			case <-time.After(time.Second):
+				t.Fatal("rebound socket was not closed by Close")
 			}
 		})
 	}
+}
+
+func ephemeralUDPPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).Port
 }

@@ -591,7 +591,7 @@ func TestSchemaSetIsComplete(t *testing.T) {
 		"pipeline-stage-capabilities.schema.json", "pipeline-stage-control.schema.json", "pipeline-stage-message.schema.json",
 		"pipeline-stage-output.schema.json", "pipeline-stage-request.schema.json",
 		"router-circuit-breaker.schema.json", "router-request-event.schema.json", "router-requests.schema.json",
-		"score-factors.schema.json", "snapshot.schema.json",
+		"score-factors.schema.json", "security-status.schema.json", "snapshot.schema.json",
 		"shard-group-list.schema.json", "shard-group.schema.json", "shard-model-profile.schema.json", "shard-plan.schema.json",
 		"peer-update.schema.json", "shard-membership.schema.json",
 		"stage-assignment.schema.json", "stage-forward-frame.schema.json",

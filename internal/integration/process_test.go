@@ -281,6 +281,8 @@ func startOrchestratorProcess(t *testing.T, address, memoryPath string) *orchest
 	})
 
 	deadline := time.Now().Add(15 * time.Second)
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
 	client := &http.Client{Timeout: 250 * time.Millisecond}
 	for time.Now().Before(deadline) {
 		select {
@@ -295,7 +297,7 @@ func startOrchestratorProcess(t *testing.T, address, memoryPath string) *orchest
 				return process
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		<-poll.C
 	}
 	_ = command.Process.Kill()
 	<-process.done

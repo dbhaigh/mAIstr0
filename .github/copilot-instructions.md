@@ -1,83 +1,38 @@
-## mAIstr0 Engineering Rules for GitHub Copilot
+# mAIstr0 Copilot Instructions
 
-You are modifying the existing mAIstr0 repository, a Go-based local-first distributed AI orchestration platform.
+These rules apply to repository work. See [README.md](../README.md), [improvements.md](../improvements.md), and the relevant architecture and development docs for detail.
 
-## Non-negotiable rules
+## Workflow
 
-1. Inspect the current code before proposing or implementing changes. Treat the current repository as authoritative; historical plans and previous reviews are evidence, not proof that a task remains unfinished.
-2. Read `AGENTS.md`, `improvements.md`, the relevant architecture documentation, and applicable tests before modifying a subsystem.
-3. Preserve existing HTTP endpoints, JSON schemas, configuration keys, command-line behavior, and bbolt on-disk formats unless a specific task explicitly authorizes a compatibility change.
-4. Do not rewrite working components merely to make them shorter, more fashionable, or architecturally different.
-5. Do not introduce abstractions, dependencies, caching, goroutines, or parallelism without a concrete justification.
-6. Before removing code, prove that it is unused across production code, tests, generated code, build scripts, configuration, runtime registration, reflection, and external contracts.
-7. Prefer standard-library functionality and existing project dependencies.
-8. Make concurrency, cancellation, resource ownership, timeouts, retries, and cleanup behavior explicit.
-9. Add regression tests for every bug fix and characterization tests before behavior-preserving refactors.
-10. Measure performance before and after performance changes using repeatable workloads and representative cluster configurations.
-11. Never claim an optimization is faster without measured evidence. Report regressions as well as improvements.
-12. Run the applicable formatting, static analysis, unit tests, race tests where supported, integration tests, frontend tests, and build checks.
-13. Update documentation and changelog entries when externally observable behavior changes.
-14. Never commit, push, delete user work, or overwrite unrelated changes without explicit approval.
+- Inspect the current implementation, relevant documentation, and tests before changing code; the current repository is authoritative.
+- Keep changes focused and behavior-preserving. Add regression tests for bug fixes; do not rewrite working components or change unrelated code.
+- Prefer the standard library and existing dependencies. Ask before adding a dependency.
+- Preserve user work. Do not commit, push, or delete user changes without explicit approval.
+- Wrap errors with `%w`, use `internal/apperr` for domain errors, use `log/slog`, and put `context.Context` first in function parameters.
 
-## Required completion report
+## Compatibility and sensitive data
 
-For every phase, provide:
-- The problem and evidence supporting the change.
-- Files and components changed.
-- Dead code and duplication removed, including how usage was verified.
-- Tests added and commands executed, with actual results.
-- Before/after performance measurements where relevant.
-- Compatibility, security, and concurrency implications.
-- Remaining risks and deferred work.
-- A concise proposed commit message.
+- Keep API routes, JSON field names, configuration keys, and bbolt bucket names/key formats unchanged unless the task explicitly says otherwise. Make compatibility-surface changes additive only.
+- For an explicitly authorized contract change, include a migration and changelog entry; update the OpenAPI spec, schemas, fixtures, and tests as applicable.
+- Never put raw prompts, secrets, pairing PINs, API keys, or private keys in logs or examples.
 
-Stop and report blockers rather than weakening tests or inventing successful results.
+## Evidence before changes
 
-## Architecture map
-- `cmd/maistr0`: CLI composition root; loads configuration and starts node and/or orchestrator roles.
-- `internal/agent`: cluster-aware interactive agent orchestration.
-- `internal/apperr`: typed domain error categories shared by services and HTTP adapters.
-- `internal/closeutil`: best-effort deferred close helper for read-only resources.
-- `internal/cluster`: in-memory registry of registered nodes.
-- `internal/config`: JSON configuration loading, normalization, validation, and sharded-model settings.
-- `internal/consensus`: Raft consensus and persistent consensus state.
-- `internal/deepseek`: native DeepSeek interactive harness and tools.
-- `internal/discovery`: LAN peer discovery and announcements.
-- `internal/engine`: LLM engine interfaces, adapters, catalog, and pipeline stages.
-- `internal/hardware`: host capability and hardware-usage detection.
-- `internal/hub`: Server-Sent Events fan-out.
-- `internal/inferroute`: protocol-aware inference routing helpers.
-- `internal/integration`: process-level integration tests.
-- `internal/logging`: console filtering and daily log files.
-- `internal/memory`: knowledge-store interfaces, persistence, and peer synchronization.
-- `internal/nodeagent`: worker service, APIs, engine execution, identity, and telemetry.
-- `internal/orchestrator`: control-plane APIs, election, task planning, dispatch, and routing.
-- `internal/peeridentity`: cluster certificates, trust pins, and pairing identity.
-- `internal/piagent`: Pi interactive harness backed by shared mAIstr0 tools.
-- `internal/scheduler`: task decomposition, dependency graphs, and worker assignment.
-- `internal/scheduler/score`: deterministic, lock-free scheduler scoring.
-- `internal/scheduler/cmd/contractfixture`: scheduler contract-fixture generator.
-- `internal/syncinterval`: adaptive synchronization intervals.
-- `internal/syncpage`: cursor- and watermark-based synchronization pagination.
-- `internal/taskmgr`: task lifecycle, dependencies, recovery, persistence, and synchronization.
-- `internal/trayapp`: platform-specific system-tray integration.
-- `internal/version`: shared build-version metadata.
-- `internal/workpool`: bounded concurrent work execution and capacity reservations.
+- Before optimizing, collect representative baseline and after measurements with benchmarks or pprof; include the `benchstat` comparison in the report. Do not claim gains without evidence.
+- Before removing code, use `deadcode` and repository-wide reference evidence. Check interface dispatch, reflection, generated code, build tags, runtime registration, and external contracts before concluding code is unused.
 
-## Compatibility
-- Do not change JSON wire formats, API routes or methods, bbolt bucket names or key encodings, or configuration keys/defaults without an explicit migration and a changelog entry.
-- For intentional wire-contract changes, update the OpenAPI spec, schemas, fixtures, and related tests.
+## Concurrency and ownership
 
-## Style and implementation
-- Prefer the standard library; ask before adding any dependency.
-- Put `context.Context` first in parameters whenever a function accepts a context.
-- Wrap errors with context using `%w`; represent domain errors with `internal/apperr`, not HTTP status codes.
-- Use `log/slog` for application logging.
-- Use table-driven tests; avoid sleeps longer than 100 ms in tests.
-- Before adding a helper, search for an existing one; put shared code in an `internal/` package instead of copying it.
-- Do not add allocations or locks to hot paths without a benchmark that measures their impact.
+- Document which state each mutex protects and its lock order near the owner. Keep locks out of network, disk, and engine calls.
+- Give goroutines a clear owner and cancellation path; cancel and join owned goroutines during shutdown. Document unavoidable exceptions and preserve established lifecycle behavior; see [docs/concurrency-ownership.md](../docs/concurrency-ownership.md).
 
-## Done criteria
-- Run `go build ./...`, `go vet ./...`, and `go test ./...`.
-- Run `go test -race ./...` where supported; report platform limitations rather than treating them as a pass.
-- Run `node --test web/app_test.js`.
+## Documentation and validation
+
+- For user-visible behavior or configuration changes, update `README.md` or the relevant docs and `changelog.md`.
+- Run these from the repository root and report exact results:
+  - `go build ./...`
+  - `go vet ./...`
+  - `go test ./...`
+  - `node --test web/app_test.js`
+  - `go test -race ./...` on Linux where available; report platform limitations instead of treating an unavailable run as a pass.
+- Report changed files, checks and results, performance evidence where relevant, compatibility/concurrency implications, and remaining risks.

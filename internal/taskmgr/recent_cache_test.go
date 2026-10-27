@@ -9,6 +9,7 @@ import (
 )
 
 func TestRecentAndPageRecentShareCacheOrdering(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		pageFirst bool
@@ -59,7 +60,9 @@ func TestRecentAndPageRecentShareCacheOrdering(t *testing.T) {
 }
 
 func TestRecentCacheInvalidatesAfterTaskWrite(t *testing.T) {
+	t.Parallel()
 	manager := NewManager()
+	defer closeutil.Discard(manager)
 	makeTask := func(description string) *Task {
 		t.Helper()
 		task, err := manager.CreateChecked(description, []scheduler.Assignment{{
@@ -73,6 +76,11 @@ func TestRecentCacheInvalidatesAfterTaskWrite(t *testing.T) {
 
 	first := makeTask("first")
 	second := makeTask("second")
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	manager.mu.Lock()
+	manager.tasks[first.ID].UpdatedAt = base
+	manager.tasks[second.ID].UpdatedAt = base.Add(time.Second)
+	manager.mu.Unlock()
 	if recent := manager.Recent(1); len(recent) != 1 || recent[0].ID != second.ID {
 		t.Fatalf("initial recent task = %#v, want %s", recent, second.ID)
 	}
@@ -80,10 +88,12 @@ func TestRecentCacheInvalidatesAfterTaskWrite(t *testing.T) {
 		t.Fatal("Recent did not populate the recent-task cache")
 	}
 
-	time.Sleep(time.Millisecond)
 	if err := manager.StartSubtaskChecked(first.ID, "work"); err != nil {
 		t.Fatal(err)
 	}
+	manager.mu.Lock()
+	manager.tasks[first.ID].UpdatedAt = base.Add(2 * time.Second)
+	manager.mu.Unlock()
 	if manager.recentTasksValid {
 		t.Fatal("task update did not invalidate the recent-task cache")
 	}

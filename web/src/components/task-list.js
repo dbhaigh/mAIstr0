@@ -1,4 +1,11 @@
-function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
+import { copyAllTaskResults, loadMoreTaskHistory, refreshTaskHistory } from "../app.js";
+import { fetchJSON } from "../shared/api.js";
+import { dashboardDOM } from "../shared/dom.js";
+import { escapeHtml, formatTimestamp } from "../shared/format.js";
+import { copyTasksBtn, submitStatus, taskHistoryCount, taskHistorySearch, taskHistoryStatus, tasksList } from "../shared/state.js";
+import { dashboardViewModel } from "../shared/view-model.js";
+
+export function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
   let state = container.__taskTableState;
   if (!state) {
     const table = document.createElement("table");
@@ -213,7 +220,7 @@ function renderTaskHistoryTable(container, tasks, idPrefix, linkNodes = false) {
   });
 }
 
-function renderTasks(tasks, hasMore = false, loading = false) {
+export function renderTasks(tasks, hasMore = false, loading = false) {
   if (!tasksList) return;
   tasksList.querySelector?.(".history-load-more")?.remove();
   tasksList.setAttribute?.("aria-busy", String(loading));
@@ -281,7 +288,7 @@ taskHistorySearch?.addEventListener("input", () => {
 });
 taskHistoryStatus?.addEventListener("change", () => refreshTaskHistory(true));
 
-async function copyText(text, button) {
+export async function copyText(text, button) {
   try {
     await navigator.clipboard.writeText(text);
     const original = button.textContent;
@@ -292,7 +299,7 @@ async function copyText(text, button) {
   }
 }
 
-function taskText(tasks) {
+export function taskText(tasks) {
   return (tasks || []).map((t) => [
     `Task ${t.id}: ${t.description}`,
     ...(t.subtasks || []).map((s) => `${s.subtask.id} (${s.status}) on ${s.node_id}:\n${s.output || s.error || ""}`),

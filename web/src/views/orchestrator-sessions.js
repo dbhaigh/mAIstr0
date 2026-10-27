@@ -1,6 +1,34 @@
+import { fetchJSON } from "../shared/api.js";
+import { dashboardDOM } from "../shared/dom.js";
+import { escapeHtml } from "../shared/format.js";
+import {
+  activeChatMode,
+  activeSessionId,
+  activeSessionIds,
+  agentHarnessSelect,
+  agentHarnessStatus,
+  agentModelSelect,
+  agentSettingsTitle,
+  agentStepsSelect,
+  agentSupportsCoordinatorModel,
+  agentTabs,
+  agentToolsList,
+  chatMessagesEl,
+  currentAgentHarness,
+  dashboardState,
+  isSending,
+  sessionListEl,
+  setActiveChatMode,
+  setActiveSessionId,
+  setAgentSupportsCoordinatorModel,
+  setCurrentAgentHarness,
+} from "../shared/state.js";
+import { appendMessageToChat } from "./orchestrator-chat.js";
+import { activateAgentTab, setAgentConsoleMode } from "./orchestrator-controls.js";
+
 // --- Interactive Orchestrator Functions ---
 
-async function loadAgentTools() {
+export async function loadAgentTools() {
   try {
     const tools = await fetchJSON("/api/agent/tools");
     if (!agentToolsList) return;
@@ -19,7 +47,7 @@ async function loadAgentTools() {
   }
 }
 
-async function loadAgentBackend() {
+export async function loadAgentBackend() {
   try {
     applyAgentBackend(await fetchJSON("/api/agent/backend"));
   } catch (err) {
@@ -28,11 +56,11 @@ async function loadAgentBackend() {
   }
 }
 
-function applyAgentBackend(backend) {
-  currentAgentHarness = backend.name;
-  agentSupportsCoordinatorModel = Boolean(backend.supports_coordinator_model);
+export function applyAgentBackend(backend) {
+  setCurrentAgentHarness(backend.name);
+  setAgentSupportsCoordinatorModel(Boolean(backend.supports_coordinator_model));
   const mode = activeChatMode === "direct" ? "direct" : backend.name;
-  activeChatMode = mode;
+  setActiveChatMode(mode);
   agentTabs.forEach((tab) => {
     const active = tab.dataset.agent === mode;
     tab.classList.toggle("active", active);
@@ -59,7 +87,7 @@ agentHarnessSelect?.addEventListener("change", async () => {
 
 let clusterModelsLoaded = false;
 
-async function loadClusterModels() {
+export async function loadClusterModels() {
   if (clusterModelsLoaded) return;
   try {
     const models = await fetchJSON("/api/agent/models");
@@ -82,7 +110,7 @@ async function loadClusterModels() {
   }
 }
 
-async function loadSessions() {
+export async function loadSessions() {
   try {
     dashboardState.sessions = await fetchJSON("/api/agent/sessions");
     renderSessionList();
@@ -102,11 +130,11 @@ async function loadSessions() {
   }
 }
 
-function sessionsForHarness(harness) {
+export function sessionsForHarness(harness) {
   return dashboardState.sessions.filter((session) => (session.harness || "pi") === harness);
 }
 
-function renderSessionList() {
+export function renderSessionList() {
   if (!sessionListEl) return;
   sessionListEl.innerHTML = "";
   for (const s of sessionsForHarness(currentAgentHarness)) {
@@ -140,8 +168,8 @@ function renderSessionList() {
   }
 }
 
-async function selectSession(id) {
-  activeSessionId = id;
+export async function selectSession(id) {
+  setActiveSessionId(id);
   const sessionInfo = dashboardState.sessions.find((session) => session.id === id);
   if (sessionInfo) activeSessionIds.set(sessionInfo.harness || "pi", id);
   renderSessionList();
@@ -153,7 +181,7 @@ async function selectSession(id) {
   }
 }
 
-async function createNewSession(title = "") {
+export async function createNewSession(title = "") {
   if (isSending) return;
   try {
     const session = await fetchJSON("/api/agent/sessions", {
@@ -179,7 +207,7 @@ async function deleteSession(id) {
     dashboardState.sessions = dashboardState.sessions.filter((s) => s.id !== id);
     if (activeSessionId === id) {
       const sessions = sessionsForHarness(currentAgentHarness);
-      activeSessionId = sessions[0]?.id || null;
+      setActiveSessionId(sessions[0]?.id || null);
       if (activeSessionId) activeSessionIds.set(currentAgentHarness, activeSessionId);
       else activeSessionIds.delete(currentAgentHarness);
       if (activeSessionId) {

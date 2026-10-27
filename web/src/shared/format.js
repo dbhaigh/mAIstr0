@@ -1,14 +1,4 @@
-(function (root, factory) {
-  const format = factory();
-  if (typeof module === "object" && module.exports) module.exports = format;
-  root.dashboardFormat = format;
-  Object.assign(root, {
-    escapeHtml: format.escapeHtml,
-    formatBytes: format.formatBytes,
-    formatRelativeTime: format.formatRelativeTime,
-    formatTimestamp: format.formatTimestamp,
-  });
-})(globalThis, () => {
+const dashboardFormat = (() => {
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (character) => ({
       "&": "&amp;",
@@ -48,4 +38,8 @@
   }
 
   return Object.freeze({ escapeHtml, formatBytes, formatRelativeTime, formatTimestamp });
-});
+})();
+
+const { escapeHtml, formatBytes, formatRelativeTime, formatTimestamp } = dashboardFormat;
+
+export { dashboardFormat, escapeHtml, formatBytes, formatRelativeTime, formatTimestamp };

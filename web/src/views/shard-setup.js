@@ -1,3 +1,8 @@
+import { fetchJSON } from "../shared/api.js";
+import { escapeHtml, formatBytes } from "../shared/format.js";
+import { dashboardState } from "../shared/state.js";
+import { refreshShardGroups, renderShardGroups } from "./shards.js";
+
 const shardSetupDialog = document.getElementById("shard-group-setup-dialog");
 const shardSetupNodes = document.getElementById("shard-group-setup-nodes");
 const shardSetupMode = document.getElementById("shard-group-setup-mode");
@@ -14,7 +19,7 @@ let shardSetupPending = false;
 let shardSetupInventoryLoading = false;
 let shardSetupHeadModels = new Map();
 
-function openShardGroupWizard(nodeID) {
+export function openShardGroupWizard(nodeID) {
   if (!shardSetupDialog) return;
   const node = dashboardState.nodes.find((item) => item.id === nodeID);
   if (!node?.healthy) return;

@@ -287,6 +287,14 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ClusterHealth"}
+  /api/security/status:
+    get:
+      responses:
+        "200":
+          description: Report whether this instance authenticates LAN discovery announcements without disclosing its secret
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SecurityStatus"}
   /api/pairing/join:
     post:
       description: >-
@@ -1469,6 +1477,8 @@ components:
       $ref: "./schemas/snapshot.schema.json"
     ClusterHealth:
       $ref: "./schemas/cluster-health.schema.json"
+    SecurityStatus:
+      $ref: "./schemas/security-status.schema.json"
     DispatchAttempt:
       $ref: "./schemas/dispatch-attempt.schema.json"
     EngineStatus:
@@ -1538,6 +1548,7 @@ x-maistr0-registered-routes:
   - "orchestrator|GET /api/metrics"
   - "orchestrator|GET /metrics"
   - "orchestrator|GET /api/cluster/health"
+  - "orchestrator|GET /api/security/status"
   - "orchestrator|POST /api/pairing/pin"
   - "orchestrator|POST /api/pairing/connect"
   - "orchestrator|GET /api/pairing/roster"
@@ -1574,6 +1585,7 @@ x-maistr0-registered-routes:
   - "orchestrator|POST /api/nodes/{id}/models/pull"
   - "orchestrator|GET /api/discovery"
   - "node|GET /api/cluster/health"
+  - "node|GET /api/security/status"
   - "node|GET /api/shards"
   - "node|POST /api/shards"
   - "node|DELETE /api/shards/{id}"

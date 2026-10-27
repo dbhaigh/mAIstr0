@@ -23,7 +23,8 @@ has completed; intermediate pages do not advance it.
 
 The heartbeat interval adapts through 5, 15, 30, and 60 seconds according to
 watermark progress. Store-change notifications can trigger an earlier pass
-after a 500 ms quiet window. Task-history collection has a short startup wait.
+after a 500 ms quiet window. The heartbeat remains a hard backstop even while
+changes continue arriving. Task-history collection has a short startup wait.
 
 ## Limits and observability
 
@@ -37,7 +38,8 @@ The `/metrics` endpoint exposes bounded sync-page counters and peer watermark
 lag. Task-history and memory-sync diagnostic logs do not print record contents
 to the console.
 
-The [sync traffic note](./sync-traffic.md) records the idle five-node
-benchmark setup and measurements. The
+The [sync traffic note](./sync-traffic.md) records the idle five-node and fresh
+three-node benchmark setups, plus a 10,000-record task-history transfer
+comparison. The
 [porting guide](../contracts/PORTING.md) documents mixed-version wire
 compatibility.

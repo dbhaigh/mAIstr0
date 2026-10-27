@@ -220,6 +220,8 @@ func shardJSON(t *testing.T, client *http.Client, method, endpoint string, body 
 func waitShardState(t *testing.T, client *http.Client, baseURL, id string, want orchestrator.ShardGroupState) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
 	var group orchestrator.ShardGroup
 	for time.Now().Before(deadline) {
 		shardJSON(t, client, http.MethodGet, baseURL+"/api/shards/"+id, nil, http.StatusOK, &group)
@@ -229,7 +231,7 @@ func waitShardState(t *testing.T, client *http.Client, baseURL, id string, want 
 		if group.State == orchestrator.ShardGroupFailed && want != group.State {
 			t.Fatalf("missed state %s: %+v", want, group)
 		}
-		time.Sleep(25 * time.Millisecond)
+		<-poll.C
 	}
 	t.Fatalf("waiting for %s: %+v", want, group)
 }

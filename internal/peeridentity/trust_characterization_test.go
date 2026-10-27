@@ -179,6 +179,8 @@ func TestPairingPINLifecycleCharacterization(t *testing.T) {
 		{
 			name: "rotation clears lockout and restores a fresh window",
 			run: func(t *testing.T, identity *Identity, _ string) {
+				now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+				identity.now = func() time.Time { return now }
 				for range 20 {
 					_ = identity.ConsumePairingPIN(wrongPIN)
 				}
@@ -190,8 +192,8 @@ func TestPairingPINLifecycleCharacterization(t *testing.T) {
 				if !ok || active != next {
 					t.Fatal("replacement PIN is not active after lockout")
 				}
-				if remaining := time.Until(expires); remaining < 29*time.Minute || remaining > 30*time.Minute {
-					t.Fatalf("replacement PIN validity = %s, want about 30m", remaining)
+				if want := now.Add(30 * time.Minute); !expires.Equal(want) {
+					t.Fatalf("replacement PIN expiry = %s, want %s", expires, want)
 				}
 				if !identity.ConsumePairingPIN(next) {
 					t.Fatal("replacement PIN was rejected after lockout")

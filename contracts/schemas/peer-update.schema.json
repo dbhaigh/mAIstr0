@@ -9,7 +9,8 @@
     "os": { "enum": ["windows", "linux"] },
     "arch": { "const": "amd64" },
     "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "size": { "type": "integer", "minimum": 1, "maximum": 134217728 }
+    "size": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Optional base64 Ed25519 signature over the manifest fields other than signature." }
   },
   "additionalProperties": false
 }

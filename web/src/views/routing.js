@@ -1,4 +1,11 @@
-function renderRouting(nodes, tasks) {
+import { openPairingDialog } from "../components/pairing-dialog.js";
+import { dashboardDOM } from "../shared/dom.js";
+import { escapeHtml } from "../shared/format.js";
+import { dashboardState, discoveryList, pairingStatus, routingList } from "../shared/state.js";
+import { SUBTASK_STATES, knownStatus } from "./cluster.js";
+import { attachNodeContextMenu } from "./nodes.js";
+
+export function renderRouting(nodes, tasks) {
   if (!routingList) return;
   if (!nodes || nodes.length === 0) {
     dashboardDOM.patchKeyedChildren(routingList, [{ id: "__empty" }], {
@@ -93,7 +100,17 @@ function visibleNetworkPeers(peers, nodes, pairingStatus) {
   return [...visible.values()].sort((a, b) => (a.id || "").localeCompare(b.id || ""));
 }
 
-function renderDiscovery(peers) {
+export function renderDiscovery(peers, authentication = "unavailable") {
+  const securityStatus = document.getElementById("discovery-security-status");
+  if (securityStatus) {
+    if (authentication === "hmac-sha256") {
+      securityStatus.textContent = "LAN discovery authentication: HMAC-SHA256 enabled on this instance.";
+    } else if (authentication === "unauthenticated") {
+      securityStatus.textContent = "LAN discovery authentication: Unauthenticated (default). Configure the same discovery_hmac_secret on every cluster member to authenticate announcements.";
+    } else {
+      securityStatus.textContent = "LAN discovery authentication status is unavailable.";
+    }
+  }
   if (!discoveryList) return;
   const ordered = visibleNetworkPeers(peers, dashboardState.nodes, dashboardState.pairing.status);
   if (ordered.length === 0) {

@@ -2,46 +2,42 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
-import { transform } from "esbuild";
+import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
+import { build } from "esbuild";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const staticDir = path.join(webRoot, "static");
 await mkdir(staticDir, { recursive: true });
 const sourceRoot = path.join(webRoot, "src");
-const entry = await readFile(path.join(sourceRoot, "entry.js"), "utf8");
-const sourceFiles = [...entry.matchAll(/^import\s+"([^"]+)";$/gm)].map((match) => {
-  const sourcePath = path.resolve(sourceRoot, match[1]);
-  if (!sourcePath.startsWith(`${sourceRoot}${path.sep}`)) {
-    throw new Error(`dashboard entry import escapes source directory: ${match[1]}`);
-  }
-  return sourcePath;
-});
-if (sourceFiles.length === 0) throw new Error("dashboard entry has no source imports");
-const input = (await Promise.all(sourceFiles.map((file) => readFile(file, "utf8")))).join("\n");
-const { code, warnings } = await transform(input, {
+const { outputFiles, warnings } = await build({
+  absWorkingDir: webRoot,
+  bundle: true,
   charset: "utf8",
-  loader: "js",
-  sourcefile: "dashboard.js",
+  entryPoints: ["src/entry.js"],
+  format: "iife",
+  outfile: "dashboard.js",
+  platform: "browser",
   target: "es2022",
+  write: false,
 });
 if (warnings.length > 0) {
   console.warn(warnings.map((warning) => warning.text).join("\n"));
 }
-const bundle = code;
+if (outputFiles.length !== 1) throw new Error(`expected one dashboard bundle, got ${outputFiles.length}`);
+const bundle = outputFiles[0].text;
 const bundleHash = createHash("sha256").update(bundle).digest("hex").slice(0, 12);
-const css = Buffer.from((await readFile(path.join(staticDir, "style.css"), "utf8")).replace(/\r\n/g, "\n"));
+const css = Buffer.from((await readFile(path.join(sourceRoot, "style.css"), "utf8")).replace(/\r\n/g, "\n"));
 const cssHash = createHash("sha256").update(css).digest("hex").slice(0, 12);
 const bundleName = `app.${bundleHash}.js`;
 const cssName = `style.${cssHash}.css`;
 
 for (const name of await readdir(staticDir)) {
-  if (/^(?:app|style)\.[a-f0-9]{12}\.(?:js|css)(?:\.(?:br|gz))?$/.test(name)) {
+  if (/^(?:app(?:\.[a-f0-9]{12})?\.js|style(?:\.[a-f0-9]{12})?\.css)(?:\.(?:br|gz))?$/.test(name) ||
+      /^index\.html\.(?:br|gz)$/.test(name)) {
     await rm(path.join(staticDir, name));
   }
 }
 
-await writeFile(path.join(staticDir, "app.js"), bundle);
 await writeFile(path.join(staticDir, bundleName), bundle);
 await writeFile(path.join(staticDir, cssName), css);
 const indexPath = path.join(staticDir, "index.html");
@@ -57,9 +53,6 @@ for (const name of await readdir(staticDir)) {
     asset = Buffer.from(asset.toString("utf8").replace(/\r\n/g, "\n"));
     await writeFile(path.join(staticDir, name), asset);
   }
-  const gzip = gzipSync(asset, { level: 9 });
-  gzip[9] = 255;
-  await writeFile(path.join(staticDir, `${name}.gz`), gzip);
   await writeFile(
     path.join(staticDir, `${name}.br`),
     brotliCompressSync(asset, {
@@ -68,4 +61,4 @@ for (const name of await readdir(staticDir)) {
   );
 }
 
-console.log(`Built ${bundleName} and ${cssName} with gzip and Brotli sidecars.`);
+console.log(`Built ${bundleName} and ${cssName} with Brotli sidecars and on-demand gzip.`);

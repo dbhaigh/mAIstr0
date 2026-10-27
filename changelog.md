@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.1.1 (2026-10-26)
+
+Patch release adding opt-in update/discovery authentication and consolidating
+measured performance, dashboard, synchronization, and test-hardening work.
+
+- Added opt-in Ed25519 verification for peer-update manifests, optional
+  cluster-secret HMAC authentication for LAN discovery, a privacy-safe
+  dashboard status label, and Windows warnings for broad identity/log-file
+  ACL grants. Existing checksum-only updates and unauthenticated discovery
+  remain the defaults.
+- The dashboard bundles ES modules with esbuild, preserves stable asset URLs
+  without duplicate embedded aliases, and negotiates gzip for SSE streams.
+  Full-snapshot event data and framing remain unchanged.
+- Debounced memory and task-history sync now honors the configured heartbeat
+  backstop during sustained local changes instead of waiting indefinitely for a
+  quiet window.
+- The default task heuristic recognizes additional sequence cues, semicolon
+  lists, supported coordinated actions, and researcher/reviewer roles. The
+  explicit `heuristic_v1` path and existing planner goldens remain unchanged;
+  see [routing evaluation](./docs/routing-evaluation.md).
+
 ## 0.1.0 (2026-10-26)
 
 Minor release consolidating the engineering audit, characterization coverage,

@@ -233,12 +233,11 @@ identical implementations and characterization tests.
 - Platform-specific files, unsupported-platform fallbacks, tray entry points,
   and subprocess test programs remain. Native and cross-platform paths were
   considered before removing declarations.
-- Dashboard source functions are concatenated and referenced through globals,
-  DOM handlers, and CommonJS test exports. The source/test/index name scan found
-  no function name used only at its declaration.
-- Hashed dashboard assets, the unhashed compatibility alias, and gzip/Brotli
-  sidecars have distinct serving/cache roles. Rebuilding reproduced the tracked
-  assets; none were treated as disposable duplicate files.
+- Dashboard source uses ES modules bundled by esbuild into a classic browser
+  script. The embed contains the page, hashed JS/CSS, and Brotli sidecars;
+  stable `/app.js` and `/style.css` URLs resolve through the server, and gzip
+  is generated and cached on demand. Generated files remain committed for
+  `go:embed` and are checked for drift in CI.
 
 ## Duplication retained or deferred
 

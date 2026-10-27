@@ -1,6 +1,13 @@
+import { nodeContextDetailsMarkup } from "../components/node-card.js";
+import { renderTaskHistoryTable } from "../components/task-list.js";
+import { dashboardDOM } from "../shared/dom.js";
+import { escapeHtml, formatRelativeTime } from "../shared/format.js";
+import { clusterOverviewStatus, clusterPeers, dashboardState, overviewActivity, overviewNodes } from "../shared/state.js";
+import { attachNodeContextMenu } from "./nodes.js";
+
 // --- Cluster Overview & Routing ---
 
-function sortNodesByCapability(nodes) {
+export function sortNodesByCapability(nodes) {
   return [...nodes].sort((a, b) => {
     if ((b.active_tasks || 0) !== (a.active_tasks || 0)) return (b.active_tasks || 0) - (a.active_tasks || 0);
     if (Boolean(b.leader) !== Boolean(a.leader)) return Number(b.leader) - Number(a.leader);
@@ -56,7 +63,7 @@ function npuGaugeMarkup(node, size = 40) {
     </span>`;
 }
 
-function nodeAcceleratorMarkup(node, size = 46) {
+export function nodeAcceleratorMarkup(node, size = 46) {
   const hardware = node.hardware || {};
   const gpuGauge = gpuGaugeMarkup(node, size);
   const npuGauge = npuGaugeMarkup(node, size);
@@ -78,7 +85,7 @@ function resourceTelemetryLabel(node, now = Date.now()) {
   return state === "stale" || age < 0 || age > window ? "Stale resource telemetry" : "Fresh resource telemetry";
 }
 
-function resourceHistoryMarkup(node) {
+export function resourceHistoryMarkup(node) {
   const hardware = node.hardware || {};
   const systemHistory = Array.isArray(node.system_history) ? node.system_history.slice(-60) : [];
   const series = [
@@ -172,9 +179,9 @@ function resourceHistoryMarkup(node) {
 
 const TASK_ACTIVE_STATES = new Set(["pending", "running", "synthesizing", "awaiting_approval"]);
 const TASK_STATES = new Set([...TASK_ACTIVE_STATES, "completed", "failed", "cancelled"]);
-const SUBTASK_STATES = new Set(["pending", "running", "completed", "failed", "cancelled"]);
+export const SUBTASK_STATES = new Set(["pending", "running", "completed", "failed", "cancelled"]);
 
-function knownStatus(status, states) {
+export function knownStatus(status, states) {
   return states.has(status) ? status : "unknown";
 }
 
@@ -192,7 +199,7 @@ function nodeAssignments(tasks) {
   return assigned;
 }
 
-function renderOverview(nodes, tasks, peers, parts = {}) {
+export function renderOverview(nodes, tasks, peers, parts = {}) {
   const nodeList = sortNodesByCapability(nodes || []);
   const capacityByNode = new Map(
     (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node]),

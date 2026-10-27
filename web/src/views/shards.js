@@ -1,3 +1,7 @@
+import { fetchJSON } from "../shared/api.js";
+import { escapeHtml } from "../shared/format.js";
+import { dashboardState } from "../shared/state.js";
+
 const shardGroupList = document.getElementById("shard-group-list");
 const shardGroupStatus = document.getElementById("shard-group-status");
 const refreshShardGroupsButton = document.getElementById("refresh-shard-groups");
@@ -6,7 +10,7 @@ const shardGroupActions = new Map();
 let shardMemberEditor = "";
 let shardMemberSelection = null;
 
-function renderShardGroups(groups = dashboardState.shardGroups) {
+export function renderShardGroups(groups = dashboardState.shardGroups) {
   if (!shardGroupList) return;
   shardGroupList.innerHTML = groups.length
     ? groups.map(shardGroupCard).join("")
@@ -198,7 +202,7 @@ shardGroupList?.addEventListener("click", (event) => {
   if (button) void deleteFailedShardGroup(button.dataset.deleteShardGroup);
 });
 
-async function refreshShardGroups() {
+export async function refreshShardGroups() {
   if (!shardGroupList) return;
   if (shardGroupStatus) shardGroupStatus.textContent = "Refreshing shard groups…";
   try {

@@ -121,6 +121,7 @@ func (a *Agent) run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/discovery", a.handleAPIDiscovery)
 	mux.HandleFunc("GET /api/cluster/health", a.handleAPIOrchestratorRead)
+	mux.HandleFunc("GET /api/security/status", a.handleAPISecurityStatus)
 	mux.HandleFunc("GET /api/shards", a.handleAPIOrchestratorRead)
 	mux.HandleFunc("POST /api/shards", a.handleAPIOrchestratorProxy)
 	mux.HandleFunc("DELETE /api/shards/{id}", a.handleAPIOrchestratorProxy)
@@ -166,13 +167,13 @@ func (a *Agent) run(ctx context.Context) error {
 	cfg := a.configSnapshot()
 	if cfg.DiscoveryEnabled {
 		if a.discoveryListener == nil {
-			a.discoveryListener = discovery.Listen(cfg.NodeID)
+			a.discoveryListener = discovery.ListenWithSecret(cfg.DiscoveryHMACKey(), cfg.NodeID)
 			defer a.discoveryListener.Close()
 		}
 		// Announce continuously: before joining this is how the cluster finds
 		// us, and after joining it keeps us visible in every LAN panel.
 		a.orchestratorLink.background.Go(func(ctx context.Context) {
-			discovery.Beacon(func() discovery.Announcement {
+			discovery.BeaconWithSecret(func() discovery.Announcement {
 				if a.orchestratorLink.localOrchestratorIDValue() == cfg.NodeID {
 					return discovery.Announcement{}
 				}
@@ -193,7 +194,7 @@ func (a *Agent) run(ctx context.Context) error {
 					Score:          cluster.SelfScore(a.hardwareSnapshot()),
 					OrchestratorID: orchestratorID,
 				}
-			}, 5*time.Second, ctx.Done())
+			}, 5*time.Second, ctx.Done(), cfg.DiscoveryHMACKey())
 		})
 	}
 	a.orchestratorLink.background.Go(a.telemetryComponent.hardwareUsageLoopContext)

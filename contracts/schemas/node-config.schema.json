@@ -16,6 +16,8 @@
     "sync_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 600},
     "pairing_pin": {"type": "string"},
     "orchestrator_fingerprint": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$", "description": "Out-of-band verified SHA-256 DER certificate fingerprint for first-contact pairing. Existing selected pinned identities use their stored pins; explicitly supply the new fingerprint through the re-pairing UI/API to rotate one."},
+    "discovery_hmac_secret": {"type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$", "description": "Optional base64-encoded 32-byte cluster discovery HMAC key. Use the same value on every cluster member; omitted keeps legacy unauthenticated discovery."},
+    "peer_update_publisher_key": {"type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$", "description": "Optional base64-encoded 32-byte Ed25519 public key used to verify peer update manifests."},
     "disabled_models": {"type": ["array", "null"], "items": {"type": "string"}},
     "default_model": {"type": "string"},
     "engines": {"type": "array", "items": {"type": "object", "required": ["name", "url"], "properties": {    "name": {"type": "string", "description": "Use llamacpp-openvino-npu, llamacpp-hexagon-npu, llamacpp-xdna2-npu, or fastflowlm-xdna2 for the documented NPU profiles."}, "url": {"type": "string"}, "registry_url": {"type": "string"}, "api_key": {"type": "string", "description": "Optional bearer token for supported OpenAI-compatible engines; never returned by APIs or config dumps."}, "validated_rpc": {"type": "boolean", "default": false, "description": "Operator-only opt-in after testing this engine's RPC sharding; engine self-reports do not enable NPU shard membership."}}, "additionalProperties": true}},

@@ -1,8 +1,4 @@
-(function (root, factory) {
-  const viewModel = factory();
-  if (typeof module === "object" && module.exports) module.exports = viewModel;
-  root.dashboardViewModel = viewModel;
-})(globalThis, () => {
+export const dashboardViewModel = (() => {
   function engineInventoryState(engine) {
     const knownStates = ["unknown", "available", "empty", "error"];
     if (knownStates.includes(engine?.inventory_state)) return engine.inventory_state;
@@ -98,4 +94,4 @@
     pairingPINViewModel,
     taskHistoryCountLabel,
   });
-});
+})();

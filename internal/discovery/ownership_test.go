@@ -28,6 +28,7 @@ func (c *joinedPacketConn) Close() error {
 }
 
 func TestConcurrentListenerCloseJoinsReader(t *testing.T) {
+	t.Parallel()
 	conn := &joinedPacketConn{
 		reading: make(chan struct{}), closed: make(chan struct{}), finish: make(chan struct{}),
 	}

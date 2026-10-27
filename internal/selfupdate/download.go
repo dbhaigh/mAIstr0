@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -22,7 +23,10 @@ var ErrNoUpdate = errors.New("peer offers no newer compatible executable")
 
 // Download uses the caller's pinned mutual-TLS transport. Redirects are refused:
 // a trusted peer cannot redirect executable acquisition to an unrelated host.
-func Download(ctx context.Context, client *http.Client, address, target string) (string, Manifest, error) {
+func Download(ctx context.Context, client *http.Client, address, target string, trustedPublisherKey ...ed25519.PublicKey) (string, Manifest, error) {
+	if len(trustedPublisherKey) > 1 {
+		return "", Manifest{}, errors.New("only one trusted peer update publisher key may be configured")
+	}
 	copyClient := *client
 	copyClient.Timeout = 10 * time.Minute
 	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -60,6 +64,11 @@ func Download(ctx context.Context, client *http.Client, address, target string) 
 	if err := manifest.Validate(); err != nil {
 		return "", manifest, err
 	}
+	if len(trustedPublisherKey) == 1 {
+		if err := manifest.VerifySignature(trustedPublisherKey[0]); err != nil {
+			return "", manifest, err
+		}
+	}
 	if manifest.OS != runtime.GOOS || manifest.Arch != runtime.GOARCH {
 		return "", manifest, errors.New("peer executable platform does not match requested target")
 	}
@@ -93,7 +102,7 @@ func Download(ctx context.Context, client *http.Client, address, target string) 
 		return "", manifest, errors.New("peer executable size or SHA256 mismatch")
 	}
 	actual, err := Inspect(path, manifest.Version)
-	if err != nil || actual != manifest {
+	if err != nil || !sameArtifact(actual, manifest) {
 		return "", manifest, errors.New("downloaded executable platform/build metadata mismatch")
 	}
 	if err := os.Chmod(path, 0700); err != nil {

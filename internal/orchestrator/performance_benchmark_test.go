@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -308,13 +309,35 @@ func newSnapshotBenchmarkServer(b *testing.B) *Server {
 func BenchmarkBuildSnapshot(b *testing.B) {
 	server := newSnapshotBenchmarkServer(b)
 	b.ReportAllocs()
-	b.ReportMetric(100, "nodes/op")
-	b.ReportMetric(50, "tasks/op")
+	frame, err := json.Marshal(server.snapshot())
+	if err != nil {
+		b.Fatal(err)
+	}
+	frameSize := float64(len(frame) + len("data: ") + len("\n\n"))
+	var compressedFrame bytes.Buffer
+	writer := gzip.NewWriter(&compressedFrame)
+	if _, err := writer.Write(append(append([]byte("data: "), frame...), '\n', '\n')); err != nil {
+		b.Fatal(err)
+	}
+	if err := writer.Flush(); err != nil {
+		b.Fatal(err)
+	}
+	gzipFrameSize := float64(compressedFrame.Len())
+	if err := writer.Close(); err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	for range b.N {
 		if _, err := json.Marshal(server.snapshot()); err != nil {
 			b.Fatal(err)
 		}
+	}
+	b.ReportMetric(100, "nodes/op")
+	b.ReportMetric(50, "tasks/op")
+	b.ReportMetric(frameSize, "frame-B/op")
+	b.ReportMetric(gzipFrameSize, "gzip-frame-B/op")
+	if elapsed := b.Elapsed(); elapsed > 0 {
+		b.ReportMetric(float64(b.N)/elapsed.Seconds(), "builds/s")
 	}
 }
 

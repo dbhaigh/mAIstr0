@@ -1,8 +1,50 @@
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const test = require("node:test");
-const vm = require("node:vm");
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import test from "node:test";
+import vm from "node:vm";
+import { fileURLToPath } from "node:url";
+import { dashboardDOM } from "./src/shared/dom.js";
+import { dashboardFormat } from "./src/shared/format.js";
+import { dashboardSnapshot } from "./src/shared/snapshot.js";
+import { dashboardViewModel } from "./src/shared/view-model.js";
+
+const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const stripModuleSyntax = (source) =>
+  source
+    .replace(/^\s*import\s*\{[\s\S]*?\}\s*from\s*["'][^"']+["'];?\s*/gm, "")
+    .replace(/^\s*import\s*["'][^"']+["'];?\s*/gm, "")
+    .replace(/^\s*export\s*\{[^}]*\};?\s*$/gm, "")
+    .replace(/^export\s+/gm, "");
+const readModuleSource = (...parts) =>
+  stripModuleSyntax(fs.readFileSync(path.join(__dirname, ...parts), "utf8"));
+const writableStateSetters = [
+  ["modelCatalogEntries", "setModelCatalogEntries"],
+  ["catalogEngines", "setCatalogEngines"],
+  ["catalogModels", "setCatalogModels"],
+  ["activeSessionId", "setActiveSessionId"],
+  ["isSending", "setIsSending"],
+  ["activeAbortController", "setActiveAbortController"],
+  ["terminalAbortController", "setTerminalAbortController"],
+  ["streamingAssistantEl", "setStreamingAssistantEl"],
+  ["currentAgentHarness", "setCurrentAgentHarness"],
+  ["agentSupportsCoordinatorModel", "setAgentSupportsCoordinatorModel"],
+  ["activeChatMode", "setActiveChatMode"],
+  ["directMessages", "setDirectMessages"],
+  ["contextNode", "setContextNode"],
+  ["terminalNode", "setTerminalNode"],
+  ["terminalDialogueId", "setTerminalDialogueId"],
+];
+const createTestContext = (sandbox) => {
+  const context = vm.createContext(sandbox);
+  for (const [name, setter] of writableStateSetters) {
+    context[setter] ??= (value) => { context[name] = value; };
+  }
+  context.resetDashboardSignatures ??= () => {};
+  return context;
+};
 
 const indexSource = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
 const appScriptPaths = [...indexSource.matchAll(/<script\s+src="([^"]+)"\s*><\/script>/g)].map((match) => match[1]);
@@ -10,32 +52,27 @@ const bundlePath = path.join(__dirname, "static", path.basename(appScriptPaths[0
 const bundleSource = fs.readFileSync(bundlePath, "utf8");
 const entrySource = fs.readFileSync(path.join(__dirname, "src", "entry.js"), "utf8");
 const moduleSources = [...entrySource.matchAll(/^import\s+"([^"]+)";$/gm)]
-  .map((match) => fs.readFileSync(path.join(__dirname, "src", match[1]), "utf8"));
+  .map((match) => readModuleSource("src", match[1]));
 const source = moduleSources.join("\n");
-const pipelineViewSource = fs.readFileSync(path.join(__dirname, "src", "views", "pipelines.js"), "utf8");
-const shardViewSource = fs.readFileSync(path.join(__dirname, "src", "views", "shards.js"), "utf8");
-const shardSetupSource = fs.readFileSync(path.join(__dirname, "src", "views", "shard-setup.js"), "utf8");
-const statusQuestionSource = fs.readFileSync(path.join(__dirname, "src", "views", "status-questions.js"), "utf8");
-const directChatSource = fs.readFileSync(path.join(__dirname, "src", "views", "orchestrator-chat.js"), "utf8");
+const pipelineViewSource = readModuleSource("src", "views", "pipelines.js");
+const shardViewSource = readModuleSource("src", "views", "shards.js");
+const shardSetupSource = readModuleSource("src", "views", "shard-setup.js");
+const statusQuestionSource = readModuleSource("src", "views", "status-questions.js");
+const directChatSource = readModuleSource("src", "views", "orchestrator-chat.js");
 const directDispatchSource = directChatSource.slice(directChatSource.indexOf("function formatDirectTaskDispatch("), directChatSource.indexOf("async function sendInteractiveMessage("));
-const sharedSource = fs.readFileSync(path.join(__dirname, "src", "shared", "api.js"), "utf8");
+const sharedSource = readModuleSource("src", "shared", "api.js");
 const applySnapshotStart = source.indexOf("function applySnapshot(snap) {");
 const applySnapshotSource = source.slice(applySnapshotStart, source.indexOf("\nfunction refreshOverviewTimes(", applySnapshotStart));
 const discoverySource = source.slice(source.indexOf("function visibleNetworkPeers("), source.indexOf("function renderTasks("));
 const taskSourceStart = source.lastIndexOf("function renderTaskHistoryTable(");
 const taskSource = source.slice(taskSourceStart, source.indexOf("async function copyText(", taskSourceStart));
 const resourceHistorySource = source.slice(source.indexOf("function gpuGaugeMarkup("), source.indexOf("const TASK_ACTIVE_STATES"));
-const engineStatusSource = fs.readFileSync(path.join(__dirname, "src", "components", "node-card.js"), "utf8");
+const engineStatusSource = readModuleSource("src", "components", "node-card.js");
 const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
 const optionalFeaturesSource = source.slice(source.indexOf("let optionalFeaturesInitialized = false;"), source.indexOf("async function refreshPersistenceStatus()"));
 const sendInteractiveStart = source.indexOf("async function sendInteractiveMessage(text) {");
 const sendInteractiveEnd = source.indexOf("\nfunction handleStreamEvent(", sendInteractiveStart);
 const sendInteractiveSource = source.slice(sendInteractiveStart, sendInteractiveEnd);
-const dashboardViewModel = require("./src/shared/view-model.js");
-const dashboardSnapshot = require("./src/shared/snapshot.js");
-const dashboardDOM = require("./src/shared/dom.js");
-const dashboardFormat = require("./src/shared/format.js");
-
 test("Hardware summaries distinguish unavailable utilization from measured zero", () => {
   const hardware = { has_gpu: true, has_npu: true, gpu_stats_available: true, npu_stats_available: true };
   assert.doesNotMatch(dashboardViewModel.formatNodeHardware({ hardware }), /busy|null|undefined/);
@@ -58,18 +95,15 @@ test("Dashboard loads its generated bundle through the Go embedded static path",
   assert.match(indexSource, /id="shard-group-status"/);
   for (const scriptPath of appScriptPaths) {
     assert.ok(fs.existsSync(path.join(__dirname, "static", path.basename(scriptPath))), `${scriptPath} is missing`);
-    for (const encoding of ["br", "gz"]) {
-      assert.ok(
-        fs.existsSync(path.join(__dirname, "static", `${path.basename(scriptPath)}.${encoding}`)),
-        `${scriptPath}.${encoding} is missing`,
-      );
-    }
+    assert.ok(fs.existsSync(path.join(__dirname, "static", `${path.basename(scriptPath)}.br`)));
+    assert.ok(!fs.existsSync(path.join(__dirname, "static", `${path.basename(scriptPath)}.gz`)));
   }
   const stylePath = indexSource.match(/href="(\/style\.[a-f0-9]{12}\.css)"/)?.[1];
   assert.ok(stylePath);
-  for (const encoding of ["br", "gz"]) {
-    assert.ok(fs.existsSync(path.join(__dirname, "static", `${path.basename(stylePath)}.${encoding}`)));
-  }
+  assert.ok(fs.existsSync(path.join(__dirname, "static", `${path.basename(stylePath)}.br`)));
+  assert.ok(!fs.existsSync(path.join(__dirname, "static", `${path.basename(stylePath)}.gz`)));
+  assert.ok(!fs.existsSync(path.join(__dirname, "static", "app.js")));
+  assert.ok(!fs.existsSync(path.join(__dirname, "static", "style.css")));
   const embedSource = fs.readFileSync(path.join(__dirname, "embed.go"), "utf8");
   assert.match(embedSource, /\/\/go:embed static/);
 });
@@ -78,12 +112,9 @@ test("Dashboard bundle parses as a plain JavaScript browser script", () => {
   assert.doesNotThrow(() => new vm.Script(bundleSource, { filename: bundlePath }));
 });
 
-test("Dashboard compatibility alias and compressed assets match the deployed bundle", () => {
-  const zlib = require("node:zlib");
-  assert.equal(fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8"), bundleSource);
-  for (const filename of [bundlePath, path.join(__dirname, "static", "app.js")]) {
-    assert.equal(zlib.gunzipSync(fs.readFileSync(`${filename}.gz`)).toString("utf8"), bundleSource);
-    assert.equal(zlib.brotliDecompressSync(fs.readFileSync(`${filename}.br`)).toString("utf8"), bundleSource);
+test("Dashboard compatibility aliases do not duplicate generated assets", () => {
+  for (const alias of ["app.js", "style.css"]) {
+    assert.ok(!fs.existsSync(path.join(__dirname, "static", alias)), `${alias} should resolve in the handler`);
   }
 });
 
@@ -96,12 +127,12 @@ test("Dashboard hashed assets and compressed page match their embedded contents"
     const contents = fs.readFileSync(filename);
     const hash = crypto.createHash("sha256").update(contents).digest("hex").slice(0, 12);
     if (assetPath !== "/index.html") assert.ok(assetPath.includes(`.${hash}.`), assetPath);
-    assert.deepEqual(zlib.gunzipSync(fs.readFileSync(`${filename}.gz`)), contents);
     assert.deepEqual(zlib.brotliDecompressSync(fs.readFileSync(`${filename}.br`)), contents);
+    assert.ok(!fs.existsSync(`${filename}.gz`));
   }
   assert.deepEqual(
     fs.readFileSync(path.join(__dirname, "static", path.basename(stylePath))),
-    fs.readFileSync(path.join(__dirname, "static", "style.css")),
+    Buffer.from(fs.readFileSync(path.join(__dirname, "src", "style.css"), "utf8").replace(/\r\n/g, "\n")),
   );
 });
 
@@ -466,6 +497,7 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
   const statVersion = { textContent: "" };
   const pipelineRenderCalls = [];
   let titleCount;
+  let titleCalls = 0;
   const context = vm.createContext({
     dashboardState,
     dashboardSnapshot,
@@ -482,7 +514,7 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
     statLoad,
     statMemory,
     statVersion,
-    updateClusterTitle: (count) => { titleCount = count; },
+    updateClusterTitle: (count) => { titleCount = count; titleCalls += 1; },
     mergeLiveTaskHistory() {},
     renderOverview() {},
     renderNodes() {},
@@ -494,7 +526,7 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
     refreshOverviewTimes() {},
   });
   vm.runInContext(applySnapshotSource, context);
-  context.applySnapshot({
+  const snapshot = {
     member_count: 3,
     build_version: "v1.2.3",
     cluster_health: {
@@ -513,7 +545,8 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
     discovery: [],
     model_inventory: [{ model_id: "logical-model", kind: "sharded" }],
     pipeline_plans: [{ model_id: "logical-model", status: "ready" }],
-  });
+  };
+  context.applySnapshot(snapshot);
 
   assert.equal(titleCount, 3);
   assert.equal(statNodes.textContent, "Nodes: 3");
@@ -529,6 +562,9 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
   }]);
   assert.deepEqual(dashboardState.tasks.map((task) => task.id), ["new", "old"]);
   assert.equal(dashboardState.fullTaskHistoryLoaded, true);
+  context.applySnapshot(snapshot);
+  assert.equal(titleCalls, 1, "unchanged status section should not update the title");
+  assert.equal(pipelineRenderCalls.length, 1, "unchanged pipeline section should not rerender");
 });
 
 test("Pipeline dashboard distinguishes model distribution and renders live stage details", () => {
@@ -1011,7 +1047,7 @@ test("Status reports include health, hardware, shards and task states without fa
 test("Direct cluster status reads live APIs without planning, even with no healthy nodes", async () => {
   const calls = [];
   const messages = [];
-  const context = vm.createContext({
+  const context = createTestContext({
     dashboardViewModel, isSending: false, sendMsgBtn: {}, clearDirectChatBtn: {},
     agentTabs: [], chatStatus: {}, directMessages: [], chatInput: { value: "question" },
     appendMessageToChat: (message) => messages.push(message),
@@ -1040,7 +1076,7 @@ test("Direct cluster status reads live APIs without planning, even with no healt
 
 test("Cluster status API failures are explicit and never fall through to planning", async () => {
   const messages = [];
-  const context = vm.createContext({
+  const context = createTestContext({
     dashboardViewModel, isSending: false, sendMsgBtn: {}, clearDirectChatBtn: {},
     agentTabs: [], chatStatus: {}, directMessages: [], chatInput: {},
     appendMessageToChat: (message) => messages.push(message),
@@ -1095,7 +1131,7 @@ test("Status answers accept unpaged task arrays and label nodes without engines"
 
 test("Non-status work still submits an auto-planned task", async () => {
   const calls = [];
-  const context = vm.createContext({
+  const context = createTestContext({
     isSending: false, sendMsgBtn: {}, clearDirectChatBtn: {}, agentTabs: [],
     chatStatus: {}, directMessages: [], chatInput: {}, appendMessageToChat() {}, refresh: async () => {},
     fetchJSON: async (url, opts) => {
@@ -1275,10 +1311,12 @@ function discoveryContext(nodes = [], pairing = null) {
   };
   const contextMenus = [];
   const openedPairingTargets = [];
+  const securityStatus = { textContent: "" };
   const context = vm.createContext({
     discoveryList: list,
     dashboardState: { nodes, pairing: { status: pairing } },
     document: {
+      getElementById: (id) => id === "discovery-security-status" ? securityStatus : null,
       createElement: () => {
         const joinButton = { addEventListener(_event, handler) { this.handler = handler; } };
         const card = {
@@ -1308,8 +1346,41 @@ function discoveryContext(nodes = [], pairing = null) {
     openPairingDialog: (node) => openedPairingTargets.push(node),
   });
   vm.runInContext(discoverySource, context);
-  return { context, list, contextMenus, openedPairingTargets };
+  return { context, list, contextMenus, openedPairingTargets, securityStatus };
 }
+
+test("Local Network labels whether LAN discovery announcements are authenticated", () => {
+  const { context, securityStatus } = discoveryContext();
+  context.renderDiscovery([], "hmac-sha256");
+  assert.match(securityStatus.textContent, /HMAC-SHA256 enabled/);
+  context.renderDiscovery([], "unauthenticated");
+  assert.match(securityStatus.textContent, /Unauthenticated \(default\)/);
+  assert.match(securityStatus.textContent, /discovery_hmac_secret/);
+});
+
+test("Local Network refresh reads the privacy-safe discovery security status", async () => {
+  const start = source.indexOf("async function refreshDiscovery() {");
+  const end = source.indexOf("\nsetInterval(", start);
+  const refreshSource = source.slice(start, end);
+  const requests = [];
+  let snapshot;
+  const context = vm.createContext({
+    fetchJSON: async (url) => {
+      requests.push(url);
+      return url === "/api/discovery"
+        ? [{ id: "peer-1" }]
+        : { discovery_authentication: "hmac-sha256" };
+    },
+    dashboardState: { nodes: [], tasks: [] },
+    applySnapshot: (value) => { snapshot = value; },
+    console: { error: () => {} },
+  });
+  vm.runInContext(refreshSource, context);
+  await context.refreshDiscovery();
+  assert.deepEqual(requests, ["/api/discovery", "/api/security/status"]);
+  assert.equal(snapshot.discovery_authentication, "hmac-sha256");
+  assert.deepEqual(Array.from(snapshot.discovery, (peer) => peer.id), ["peer-1"]);
+});
 
 test("Local Network merges discovered nonmembers with online members without duplicates", () => {
   const nodes = [
@@ -2021,7 +2092,7 @@ test("Direct chat removes the welcome card before showing the first message", ()
 });
 
 test("Light theme gives chat replies a readable light surface", () => {
-  const css = fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "src", "style.css"), "utf8");
   const light = css.slice(css.indexOf("@media (prefers-color-scheme: light)"));
   const rule = light.match(/\.chat-msg\.assistant \.msg-bubble[^{]*\{([^}]*)\}/);
   assert.ok(rule, "light theme must override the dark assistant bubble");
@@ -2048,7 +2119,7 @@ function viewStateHarness({ stored = {}, chatMode = "direct" } = {}) {
   makeTab("cluster-tasks-tab", "cluster-workspace-tab", false, { attrs: { "aria-controls": "tasks-panel" } });
   const calls = [];
   let pagehide;
-  const context = vm.createContext({
+  const context = createTestContext({
     window: { addEventListener: (name, fn) => { if (name === "pagehide") pagehide = fn; } },
     sessionStorage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) },
     CSS: { escape: (value) => value },
@@ -2080,7 +2151,7 @@ function viewStateHarness({ stored = {}, chatMode = "direct" } = {}) {
     markDashboardSynced: () => {},
     console,
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "src", "views", "view-state.js"), "utf8"), context);
+  vm.runInContext(readModuleSource("src", "views", "view-state.js"), context);
   return { context, storage, tabs, clicks, calls, pagehide: () => pagehide() };
 }
 

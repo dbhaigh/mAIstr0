@@ -12,7 +12,9 @@
     "score": {"type": "number"},
     "members": {"type": "integer"},
     "elected": {"type": "boolean"},
-    "orchestrator_id": {"type": "string"}
+    "orchestrator_id": {"type": "string"},
+    "issued_at_unix_nano": {"type": "integer", "minimum": 1},
+    "hmac_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
   },
   "additionalProperties": true
 }

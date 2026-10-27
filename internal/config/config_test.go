@@ -1,11 +1,54 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestOptionalSecurityKeysAreValidatedAndRemainOptIn(t *testing.T) {
+	secret := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	publisherKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+
+	node := DefaultNodeConfig()
+	if node.DiscoveryHMACSecret != "" || node.PeerUpdatePublisherKey != "" {
+		t.Fatal("optional security keys should be unset by default")
+	}
+	node.DiscoveryHMACSecret = secret
+	node.PeerUpdatePublisherKey = publisherKey
+	if err := node.Validate(); err != nil {
+		t.Fatalf("valid node security keys rejected: %v", err)
+	}
+	if len(node.DiscoveryHMACKey()) != 32 || len(node.TrustedPeerUpdatePublicKey()) != 32 {
+		t.Fatal("configured keys did not decode to 32 bytes")
+	}
+
+	orchestrator := DefaultOrchestratorConfig()
+	orchestrator.DiscoveryHMACSecret = secret
+	if err := orchestrator.Validate(); err != nil {
+		t.Fatalf("valid orchestrator discovery key rejected: %v", err)
+	}
+
+	node.DiscoveryHMACSecret = "not-a-key"
+	err := node.Validate()
+	if err == nil || !strings.Contains(err.Error(), "discovery_hmac_secret") {
+		t.Fatalf("invalid discovery key validation = %v", err)
+	}
+	if strings.Contains(err.Error(), node.DiscoveryHMACSecret) {
+		t.Fatal("validation error exposed the configured discovery secret")
+	}
+	node.DiscoveryHMACSecret = secret
+	node.PeerUpdatePublisherKey = "not-a-key"
+	err = node.Validate()
+	if err == nil || !strings.Contains(err.Error(), "peer_update_publisher_key") {
+		t.Fatalf("invalid publisher key validation = %v", err)
+	}
+	if strings.Contains(err.Error(), node.PeerUpdatePublisherKey) {
+		t.Fatal("validation error exposed the configured publisher key")
+	}
+}
 
 func TestValidPairingPIN(t *testing.T) {
 	tests := []struct {

@@ -337,3 +337,89 @@ the repository helper put MinGW's directory first for that process only. No
 global environment changes or toolchain installation were made. Unlike earlier
 environment limitations, the native Windows race suite actually passed here.
 Windows and WSL networking tests were not run concurrently.
+
+## Hot-path follow-up (2026-10-26)
+
+The existing profiling runner was extended with an isolated cache-invalidated
+bbolt snapshot,
+router candidate-selection, and router-header benchmarks. Captures used the
+runner's existing snapshot, publication, sync-page, full-transfer, and
+transparent-routing workloads. Baseline and after runs each used ten
+`-benchmem` samples (`-benchtime=200ms`, `-cpu=2`) and three-second CPU/heap
+profiles on Windows/amd64, Go 1.27.3, AMD Ryzen AI 9 HX 370. Results below use
+the pinned `benchstat` command
+`go run golang.org/x/perf/cmd/benchstat@v0.0.0-20261009192801-be2c69fb417e`.
+Profiles and raw samples were analyzed outside the checkout; no profiling
+artifacts or temporary binaries are committed.
+
+### Changes retained
+
+- **Memory page keys:** the CPU profile showed `PageSnapshot` and
+  `fmt.Sprintf` in the full-transfer path. Replacing only the fixed-width
+  experience-key formatting with `strconv.AppendUint` preserves its exact
+  `experience:%020d` sort key. `MemoryHistoryPageTransfer/100K` improved
+  **320.9 -> 254.0 ms/op (-20.86%, p<0.001)**; allocations fell
+  **4.696M -> 2.402M/op (-48.85%)** and bytes fell **588.2 -> 570.7 MiB/op
+  (-2.98%)**. Encoded snapshot size remained **23,666,798 bytes**.
+  `ProfileSyncPage` geometric-mean time improved **28.23%** across the 10K
+  and 100K cursor positions. The fixed-width key is compared to the prior
+  format in a unit test; page parity and sync contract tests remain unchanged.
+- **Router candidate filtering:** the allocation profile implicated repeated
+  model-slice clones in `assignRouterRequest`. Filtering the already-cloned
+  scheduler-node model slice in place reduced candidate-selection time
+  **59.35 -> 52.88 us/op (-10.90%, p<0.001)** and bytes
+  **191.8 -> 151.8 KiB/op (-20.86%)**. Allocation count moved
+  **694 -> 662/op (-4.61%)**. A regression test verifies the registry's
+  original model inventory remains intact. The transparent end-to-end route
+  control showed no significant time change (**85.46 -> 84.54 us/op,
+  p=0.631**) and slightly fewer bytes/allocations.
+- **Router header normalization:** the isolated profile attributed most CPU
+  to `copyRouterHeaders`, `CanonicalMIMEHeaderKey`, and `strings.Split`.
+  Parsing connection tokens with `strings.Cut` and stack-backed storage
+  removed the per-call token map and split slices. The typical-header case
+  improved **519.5 -> 443.3 ns/op (-14.68%, p<0.001)**. With connection
+  tokens, it improved **519.0 -> 471.9 ns/op (-9.07%, p<0.001)**,
+  **5 -> 4 allocs/op (-20%)**, and **96 -> 64 B/op (-33.33%)**. Header
+  forwarding tests cover dynamic connection-specific fields and fixed
+  hop-by-hop fields.
+
+### Measured, not changed
+
+- **Dashboard snapshot construction/encoding and publication:** the CPU
+  profile attributed 59% cumulative samples in `BenchmarkBuildSnapshot` to
+  JSON struct encoding; publication profiles also showed frame cloning and
+  encoding. But the before/after control showed no significant change:
+  `BuildSnapshot` **528.8 -> 526.7 us/op (p=0.529)** with unchanged
+  **1,626 allocs/op**; one-subscriber publication was
+  **35.74 -> 36.03 us/op (p=0.481)**. No generation-counter shortcut was
+  added: the snapshot combines independently mutable registry, task,
+  discovery, memory, routing, and pipeline state, and there is no complete
+  shared generation signal to prove that a snapshot can be skipped. Hashing
+  the materialized fields would still walk that state. The browser-side
+  stringify/hash signature is not covered by the Go profiling workload, so
+  it was not changed speculatively.
+- **Full bbolt snapshot scan/sort:** `loadSnapshot` dominated allocation
+  samples, with JSON record decoding prominent in CPU samples. The new
+  13,000-record benchmark measured **14.31 -> 14.40 ms/op (p=0.247)**,
+  **18.18 MiB/op**, and **28,180 allocs/op**, with no significant change.
+  No key-only scan, sort, or cache change was justified by this comparison.
+- No `sync.Pool` was introduced. The measured wins came from avoiding
+  unnecessary temporary formatting and slices; retained-object profiles did
+  not establish a reusable-buffer or retained-heap problem. No statistically
+  significant regression appeared in the snapshot, publication, or
+  transparent-routing controls.
+
+Reproduce the comparison with two fresh output directories and the same
+workload list, then pass each matching `*-bench.txt` pair to the pinned
+`benchstat` command. The runner captures CPU, allocation-space, and
+in-use-heap profiles for each selected workload:
+
+```powershell
+.\build\profile-performance.ps1 -OutputDirectory "$env:TEMP\maistr0-hotpaths-before" `
+  -Mode Both -Workloads @('snapshot', 'publication', 'memory-snapshot', 'sync-page',
+  'sync-transfer', 'transparent', 'router-selection', 'router-headers') `
+  -Repetitions 10 -BenchTime 200ms -ProfileTime 3s
+```
+
+The Linux race run was unavailable: the available Ubuntu WSL distribution has
+no Go executable, and no toolchain was installed for this task.

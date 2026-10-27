@@ -1,4 +1,34 @@
-function renderNodes(nodes) {
+import { refresh } from "../app.js";
+import { engineStatusDetailsMarkup, engineStatusSummaryMarkup } from "../components/node-card.js";
+import { openPairingDialog } from "../components/pairing-dialog.js";
+import { fetchJSON } from "../shared/api.js";
+import { dashboardDOM } from "../shared/dom.js";
+import { escapeHtml, formatRelativeTime } from "../shared/format.js";
+import {
+  contextNode,
+  dashboardState,
+  lastFetchedModels,
+  modelPanelOpen,
+  nodeProperties,
+  nodeTerminalInterruptBtn,
+  nodesList,
+  pendingDefaultModel,
+  pendingModelState,
+  refreshAllModelsBtn,
+  setContextNode,
+  setTerminalAbortController,
+  setTerminalDialogueId,
+  setTerminalNode,
+  setupNodeList,
+  setupNodeSummary,
+  terminalAbortController,
+  terminalDialogueId,
+  terminalNode,
+} from "../shared/state.js";
+import { nodeAcceleratorMarkup, resourceHistoryMarkup, sortNodesByCapability } from "./cluster.js";
+import { openShardGroupWizard } from "./shard-setup.js";
+
+export function renderNodes(nodes) {
   dashboardState.nodes = nodes || [];
   if (!nodesList) return;
   if (!nodes || nodes.length === 0) {
@@ -92,7 +122,7 @@ function renderNodes(nodes) {
   });
 }
 
-function renderSetupNodes(nodes) {
+export function renderSetupNodes(nodes) {
   if (!setupNodeList) return;
   const ordered = sortNodesByCapability(nodes || []);
   if (setupNodeSummary) {
@@ -137,8 +167,8 @@ function renderSetupNodes(nodes) {
 }
 
 async function openNodeTerminal(node) {
-  terminalNode = node;
-  terminalDialogueId = null;
+  setTerminalNode(node);
+  setTerminalDialogueId(null);
   const modal = document.getElementById("node-terminal");
   const title = document.getElementById("node-terminal-title");
   const models = document.getElementById("node-terminal-model");
@@ -160,8 +190,8 @@ async function openNodeTerminal(node) {
 
 function closeNodeTerminal() {
   document.getElementById("node-terminal").hidden = true;
-  terminalNode = null;
-  terminalDialogueId = null;
+  setTerminalNode(null);
+  setTerminalDialogueId(null);
 }
 
 function appendTerminalMessage(role, content) {
@@ -185,12 +215,12 @@ document.getElementById("node-terminal-form")?.addEventListener("submit", async 
   input.value = "";
   appendTerminalMessage("user", content);
   status.textContent = "Generating...";
-  terminalAbortController = new AbortController();
+  setTerminalAbortController(new AbortController());
   if (nodeTerminalInterruptBtn) nodeTerminalInterruptBtn.hidden = false;
   try {
     if (!terminalDialogueId) {
       const dialogue = await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }), signal: terminalAbortController.signal });
-      terminalDialogueId = dialogue.id;
+      setTerminalDialogueId(dialogue.id);
     }
     const response = await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues/${encodeURIComponent(terminalDialogueId)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }), signal: terminalAbortController.signal });
     appendTerminalMessage("assistant", response.reply || response.error || "No response");
@@ -204,7 +234,7 @@ document.getElementById("node-terminal-form")?.addEventListener("submit", async 
       status.textContent = "Request failed";
     }
   } finally {
-    terminalAbortController = null;
+    setTerminalAbortController(null);
     if (nodeTerminalInterruptBtn) nodeTerminalInterruptBtn.hidden = true;
   }
 });
@@ -229,7 +259,7 @@ async function openNodeProperties(node) {
   const form = document.getElementById("node-properties-form");
   const status = document.getElementById("node-properties-status");
   if (!modal || !form) return;
-  contextNode = node;
+  setContextNode(node);
   status.textContent = "Loading properties...";
   modal.hidden = false;
   try {
@@ -342,7 +372,7 @@ function showNodeMenu(x, y) {
   menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
 }
 
-function attachNodeContextMenu(element, node) {
+export function attachNodeContextMenu(element, node) {
   element.addEventListener("click", (event) => {
     if (!event.ctrlKey || !node.healthy || event.target.closest("button, input, select, textarea, a")) return;
     event.preventDefault();
@@ -355,7 +385,7 @@ function attachNodeContextMenu(element, node) {
       return;
     }
     event.preventDefault();
-    contextNode = node;
+    setContextNode(node);
     showNodeMenu(event.clientX, event.clientY);
   });
 }

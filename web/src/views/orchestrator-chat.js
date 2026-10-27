@@ -1,4 +1,33 @@
-function renderDirectMessages() {
+import { refresh } from "../app.js";
+import { fetchJSON } from "../shared/api.js";
+import { dashboardDOM } from "../shared/dom.js";
+import { escapeHtml } from "../shared/format.js";
+import {
+  activeAbortController,
+  activeChatMode,
+  activeSessionId,
+  agentHarnessSelect,
+  agentTabs,
+  chatInput,
+  chatMessagesEl,
+  chatStatus,
+  clearDirectChatBtn,
+  directMessages,
+  interruptMsgBtn,
+  isSending,
+  newSessionBtn,
+  promptChips,
+  sendMsgBtn,
+  setActiveAbortController,
+  setDirectMessages,
+  setIsSending,
+  setStreamingAssistantEl,
+  streamingAssistantEl,
+} from "../shared/state.js";
+import { createNewSession, selectSession } from "./orchestrator-sessions.js";
+import { answerClusterStatusQuestion, isClusterStatusQuestion } from "./status-questions.js";
+
+export function renderDirectMessages() {
   if (!chatMessagesEl) return;
   dashboardDOM.resetVirtualList(chatMessagesEl, { estimateHeight: 140, threshold: 50, overscan: 6 });
   if (!directMessages.length) {
@@ -23,7 +52,7 @@ function appendChatItem(node) {
   dashboardDOM.appendVirtualListItem(chatMessagesEl, node);
 }
 
-function appendMessageToChat(msg) {
+export function appendMessageToChat(msg) {
   if (!chatMessagesEl) return;
   const isUser = msg.role === "user";
   const isTool = msg.role === "tool";
@@ -134,7 +163,7 @@ function formatDirectTaskDispatch(task) {
 async function dispatchDirectTask(description) {
   if (!description || isSending) return;
   const statusQuestion = isClusterStatusQuestion(description);
-  isSending = true;
+  setIsSending(true);
   if (sendMsgBtn) sendMsgBtn.disabled = true;
   if (clearDirectChatBtn) clearDirectChatBtn.disabled = true;
   agentTabs.forEach((tab) => { tab.disabled = true; });
@@ -174,7 +203,7 @@ async function dispatchDirectTask(description) {
     appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: message });
     if (chatStatus) chatStatus.textContent = message;
   } finally {
-    isSending = false;
+    setIsSending(false);
     if (sendMsgBtn) sendMsgBtn.disabled = false;
     if (clearDirectChatBtn) clearDirectChatBtn.disabled = false;
     agentTabs.forEach((tab) => { tab.disabled = false; });
@@ -184,9 +213,9 @@ async function dispatchDirectTask(description) {
 async function sendInteractiveMessage(text) {
   if (activeChatMode === "direct") return dispatchDirectTask(text);
   if (!text || !activeSessionId || isSending) return;
-  isSending = true;
-  streamingAssistantEl = null;
-  activeAbortController = new AbortController();
+  setIsSending(true);
+  setStreamingAssistantEl(null);
+  setActiveAbortController(new AbortController());
   if (sendMsgBtn) sendMsgBtn.disabled = true;
   if (interruptMsgBtn) interruptMsgBtn.hidden = false;
   if (newSessionBtn) newSessionBtn.disabled = true;
@@ -256,8 +285,8 @@ async function sendInteractiveMessage(text) {
       });
     }
   } finally {
-    isSending = false;
-    activeAbortController = null;
+    setIsSending(false);
+    setActiveAbortController(null);
     if (interruptMsgBtn) interruptMsgBtn.hidden = true;
     if (sendMsgBtn) sendMsgBtn.disabled = false;
     if (newSessionBtn) newSessionBtn.disabled = false;
@@ -288,12 +317,12 @@ function handleStreamEvent(event) {
   } else if (event.type === "final_message" && event.message) {
     if (streamingAssistantEl) {
       dashboardDOM.removeVirtualListItem(chatMessagesEl, streamingAssistantEl);
-      streamingAssistantEl = null;
+      setStreamingAssistantEl(null);
     }
     appendMessageToChat(event.message);
   } else if (event.type === "text_delta" && event.content) {
     if (!streamingAssistantEl) {
-      streamingAssistantEl = document.createElement("div");
+      setStreamingAssistantEl(document.createElement("div"));
       streamingAssistantEl.className = "chat-msg assistant";
       const meta = document.createElement("div");
       meta.className = "msg-meta";
@@ -349,7 +378,7 @@ newSessionBtn?.addEventListener("click", () => {
 
 clearDirectChatBtn?.addEventListener("click", () => {
   if (isSending) return;
-  directMessages = [];
+  setDirectMessages([]);
   if (chatStatus) chatStatus.textContent = "";
   renderDirectMessages();
 });

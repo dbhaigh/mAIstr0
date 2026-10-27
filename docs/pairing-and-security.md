@@ -7,8 +7,14 @@ pairing. Normal HTTP control-plane and RPC-relay traffic requires mutual TLS 1.3
 currently valid, explicitly trusted peer certificate. The trust roster is
 stored with the node identity. POSIX identity and log files are restricted to
 mode 0600, including existing files reopened by the application. On Windows
-these modes are not owner-only ACL enforcement: protect the profile and any
-custom data/log directories with OS ACLs.
+startup checks the identity file, current log, and retained log archives for
+allow entries granted to broad principals. It warns but does not change ACLs.
+Review the file and parent-directory Security settings; remove broad grants
+such as Everyone, Authenticated Users, Users, Guests, Interactive, Network,
+and Anonymous, while retaining the current service/user account and SYSTEM.
+For a service installation, preserve its service account instead of assuming
+the interactive user is the owner. Apply the same review to custom identity,
+data, and log paths.
 
 ## Pairing a node
 
@@ -28,11 +34,12 @@ invalidated after 20 failed attempts. Comparisons use a constant-time
 comparison. Attempt and outcome logs omit PIN values. The local operator can
 view the active PIN or generate a replacement from the Setup panel.
 
-New enrollment requires the PIN on every subnet. Discovery is an unauthenticated
-availability/election mechanism, not a membership credential. First-contact
-TLS refuses unknown certificates without the verified fingerprint; existing
-pins reconnect without supplying it again. Orchestrator-to-orchestrator
-pairing is disabled. Remote pairing status never discloses the active PIN.
+New enrollment requires the PIN on every subnet. Discovery is not a membership
+credential; it is unauthenticated by default and can optionally authenticate
+announcements with a shared cluster HMAC key (see below). First-contact TLS
+refuses unknown certificates without the verified fingerprint; existing pins
+reconnect without supplying it again. Orchestrator-to-orchestrator pairing is
+disabled. Remote pairing status never discloses the active PIN.
 
 TLS invitations require the sender to verify the destination node's fingerprint.
 They remain pending until the node's local operator supplies the orchestrator's
@@ -64,6 +71,52 @@ the old pin. If a peer certificate changes unexpectedly, verify the peer out
 of band and re-pair it rather than disabling certificate checks. A pin proves
 identity, not current leadership; the current election authority is checked
 separately for mutating requests.
+
+## Optional LAN discovery authentication
+
+Discovery remains unauthenticated by default for compatibility. To authenticate
+LAN announcements, set `discovery_hmac_secret` to the same standard-base64
+encoding of a random 32-byte value in every node and orchestrator config.
+Generate a value locally with `openssl rand -base64 32`; do not commit it or
+include it in support logs. In `auto` or `both` startup, the node and
+orchestrator values must match. When configured, listeners reject unsigned,
+forged, stale, and replayed announcements. All discovery participants must run
+a version configured with the same key; older or keyless announcements are
+rejected. This authenticates discovery only; it does not replace
+PIN/fingerprint pairing or prevent packet loss, denial of service, or election
+splits during a network partition.
+
+The Local Network panel labels the current instance as
+**HMAC-SHA256 enabled** or **Unauthenticated (default)**. `GET
+/api/security/status` returns only that mode and never the secret.
+
+## Optional signed peer updates
+
+Peer updates remain disabled unless `--allow-peer-updates` is set. Without a
+configured publisher key, the existing paired-peer and SHA-256 checksum path
+is retained for compatibility. To require release signatures on a node, set
+its `peer_update_publisher_key` to the standard-base64 32-byte Ed25519 public
+key for the release publisher. A configured key causes unsigned, invalidly
+signed, or tampered manifests to be rejected before staging.
+
+Keep the Ed25519 private key offline. `cmd/updatebundle` creates a `.peer.json`
+manifest beside each executable. Create an unencrypted PKCS#8 key on the
+publisher machine with `openssl genpkey -algorithm ED25519 -out release-private.pem`,
+then sign each published manifest with:
+
+```text
+maistr0 sign-release --manifest path/to/maistr0.peer.json --key path/to/release-private.pem
+```
+
+The key must be an unencrypted PKCS#8 Ed25519 PEM file. The command updates the
+manifest in place and prints the public-key configuration value; distribute
+that public value to receiving nodes through protected configuration. The
+signature covers the manifest metadata other than the signature itself, whose
+SHA-256 and size bind it to the executable. Protect and back up the private
+key separately; rotating the configured public key requires signing future
+manifests with the matching private key. Every peer that may publish an update
+must serve a signed sidecar matching its executable once a receiver key is
+configured.
 
 ## Local dashboard boundary
 
@@ -130,8 +183,11 @@ and are not sandboxed. Use a dedicated account with a minimal environment and
 operator-controlled executable/model allowlists. HTTPS host, archive path,
 size, and digest checks restrict downloads but do not independently authenticate
 their publishers. A checksum fetched from the same source is not a release
-signature. Peer updates are disabled unless explicitly enabled; enabling them
-trusts paired publishers to execute code (see [configuration](./configuration.md#automatic-peer-executable-updates)).
+signature. Signed peer manifests are optional and only enforced when a trusted
+publisher key is configured; peer updates also remain disabled unless explicitly
+enabled. Enabling updates trusts paired publishers to execute code, and a
+configured signing key adds publisher verification (see
+[configuration](./configuration.md#automatic-peer-executable-updates)).
 External inference adapters retain their configured HTTP/TLS transport; cluster
 certificate pinning does not secure a separate remote engine HTTP endpoint.
 Use HTTPS or an authenticated encrypted network for those connections. Keep
@@ -142,9 +198,10 @@ vLLM distributed data traffic is **not mTLS protected**. Keep it on explicitly
 trusted private interfaces, preferably an authenticated encrypted overlay such
 as WireGuard; `allow_insecure_shard_network` deliberately bypasses the network
 preflight. The GGML peer RPC relay uses mTLS, while its worker-side raw service
-is loopback-only. Discovery can still be spoofed or disrupted, and network
-partitions can elect multiple local coordinators. Neither certificate pins nor
-PINs provide global consensus or availability against network attackers.
+is loopback-only. Discovery can still be spoofed in the default unauthenticated
+mode or disrupted regardless of HMAC configuration; network partitions can
+elect multiple local coordinators. Neither certificate pins nor PINs provide
+global consensus or availability against network attackers.
 
 For coordinated vulnerability reporting, see the repository
 [security policy](../SECURITY.md).

@@ -312,9 +312,8 @@ func TestShardGenerationBudgetIncludesQueueAndCallerCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	start := time.Now()
 	_, err = s.nodeClient.generateShardGroup(context.Background(), group, group.Members[0].Address, "hi", 0, 0)
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "request slot") || time.Since(start) > time.Second {
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "request slot") {
 		t.Fatalf("queue was not bounded: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

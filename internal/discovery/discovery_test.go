@@ -7,6 +7,7 @@ import (
 )
 
 func TestBestOrchestratorCandidatePrefersCapabilityThenStableID(t *testing.T) {
+	t.Parallel()
 	self := Announcement{Role: "candidate", ID: "orchestrator-c", Score: 10}
 	peers := []Peer{
 		{Announcement: Announcement{Role: "candidate", ID: "orchestrator-b", Score: 12}},
@@ -24,6 +25,7 @@ func TestBestOrchestratorCandidatePrefersCapabilityThenStableID(t *testing.T) {
 }
 
 func TestBestOrchestratorCandidateElectsSelfWhenAlone(t *testing.T) {
+	t.Parallel()
 	self := Announcement{Role: "candidate", ID: "orchestrator-a", Score: 1}
 	if !IsBestOrchestratorCandidate(self, nil) {
 		t.Fatal("the only candidate should win")
@@ -31,6 +33,7 @@ func TestBestOrchestratorCandidateElectsSelfWhenAlone(t *testing.T) {
 }
 
 func TestBestOrchestratorCandidateWithTwoVisibleCandidates(t *testing.T) {
+	t.Parallel()
 	candidateA := Announcement{Role: "candidate", ID: "orchestrator-a", Score: 1}
 	candidateB := Announcement{Role: "candidate", ID: "orchestrator-b", Score: 2}
 
@@ -43,6 +46,7 @@ func TestBestOrchestratorCandidateWithTwoVisibleCandidates(t *testing.T) {
 }
 
 func TestBestActiveOrchestratorIgnoresCandidates(t *testing.T) {
+	t.Parallel()
 	peers := []Peer{
 		{Announcement: Announcement{Role: "candidate", ID: "candidate-high", Score: 100}},
 		{Announcement: Announcement{Role: "orchestrator", ID: "active-low", Score: 10}},
@@ -57,6 +61,7 @@ func TestBestActiveOrchestratorIgnoresCandidates(t *testing.T) {
 }
 
 func TestPartitionedCandidatesCanElectIndependentLocalWinners(t *testing.T) {
+	t.Parallel()
 	candidateA := Announcement{Role: "candidate", ID: "orchestrator-a", Score: 1}
 	candidateB := Announcement{Role: "candidate", ID: "orchestrator-b", Score: 2}
 
@@ -66,6 +71,7 @@ func TestPartitionedCandidatesCanElectIndependentLocalWinners(t *testing.T) {
 }
 
 func TestSnapshotExpiresCandidatesAndAllowsPartitionLocalWinner(t *testing.T) {
+	t.Parallel()
 	listener := &Listener{peers: map[string]Peer{
 		"orchestrator-visible": {
 			Announcement: Announcement{Role: "candidate", ID: "orchestrator-visible", Score: 100},
@@ -87,6 +93,7 @@ func TestSnapshotExpiresCandidatesAndAllowsPartitionLocalWinner(t *testing.T) {
 }
 
 func TestExcludePeerSuppressesAndCanRestoreAnnouncements(t *testing.T) {
+	t.Parallel()
 	listener := &Listener{
 		peers: map[string]Peer{
 			"leader": {
@@ -112,6 +119,7 @@ func TestExcludePeerSuppressesAndCanRestoreAnnouncements(t *testing.T) {
 }
 
 func TestElectedOrchestratorDoesNotPreemptActiveLeader(t *testing.T) {
+	t.Parallel()
 	self := Announcement{Role: "orchestrator", ID: "orchestrator-old", Score: 10}
 	challenger := Peer{Announcement: Announcement{Role: "candidate", ID: "orchestrator-new", Score: 20}}
 	if !IsElectedOrchestrator(self, []Peer{challenger}) {
@@ -127,14 +135,28 @@ func TestElectedOrchestratorDoesNotPreemptActiveLeader(t *testing.T) {
 }
 
 func TestListenerWaitReady(t *testing.T) {
-	listener := Listen("discovery-readiness-test")
+	t.Parallel()
+	listener := listenAt("127.0.0.1:0", 0, "discovery-readiness-test")
 	defer listener.Close()
 	if err := listener.WaitReady(3 * time.Second); err != nil {
 		t.Fatal(err)
 	}
+	listener.mu.RLock()
+	address := listener.conn.LocalAddr().String()
+	listener.mu.RUnlock()
+	sender, err := net.Dial("udp4", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	if _, err := sender.Write([]byte(`{"role":"node","id":"ephemeral-peer"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitForPeer(t, listener, "ephemeral-peer")
 }
 
 func TestIsSameSubnet(t *testing.T) {
+	t.Parallel()
 	if !IsSameSubnet(net.ParseIP("127.0.0.1")) {
 		t.Fatal("expected 127.0.0.1 to be on same subnet (loopback)")
 	}
@@ -145,30 +167,27 @@ func TestIsSameSubnet(t *testing.T) {
 		t.Fatal("expected nil IP to return false")
 	}
 
-	// Mock interfaces to test specific subnet matching
-	orig := interfaceAddrs
-	defer func() { interfaceAddrs = orig }()
-
 	_, testSubnet, err := net.ParseCIDR("192.168.10.0/24")
 	if err != nil {
 		t.Fatal(err)
 	}
-	interfaceAddrs = func() ([]net.Addr, error) {
+	getAddrs := func() ([]net.Addr, error) {
 		return []net.Addr{testSubnet}, nil
 	}
 
-	if !IsSameSubnet(net.ParseIP("192.168.10.50")) {
+	if !isSameSubnetWithAddrs(net.ParseIP("192.168.10.50"), getAddrs) {
 		t.Fatal("expected 192.168.10.50 to be in 192.168.10.0/24 subnet")
 	}
-	if IsSameSubnet(net.ParseIP("192.168.11.50")) {
+	if isSameSubnetWithAddrs(net.ParseIP("192.168.11.50"), getAddrs) {
 		t.Fatal("expected 192.168.11.50 not to be in 192.168.10.0/24 subnet")
 	}
-	if IsSameSubnet(net.ParseIP("10.0.0.1")) {
+	if isSameSubnetWithAddrs(net.ParseIP("10.0.0.1"), getAddrs) {
 		t.Fatal("expected 10.0.0.1 not to be in 192.168.10.0/24 subnet")
 	}
 }
 
 func TestIsSameSubnetAddress(t *testing.T) {
+	t.Parallel()
 	if !IsSameSubnetAddress("localhost") {
 		t.Fatal("expected localhost to be on same subnet")
 	}
@@ -186,5 +205,25 @@ func TestIsSameSubnetAddress(t *testing.T) {
 	}
 	if IsSameSubnetAddress("not-an-ip-address-12345.invalid") {
 		t.Fatal("expected unresolvable invalid address to return false")
+	}
+}
+
+func waitForPeer(t *testing.T, listener *Listener, id string) {
+	t.Helper()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		for _, peer := range listener.Snapshot() {
+			if peer.ID == id {
+				return
+			}
+		}
+		select {
+		case <-timer.C:
+			t.Fatalf("listener did not receive peer %q", id)
+		case <-ticker.C:
+		}
 	}
 }

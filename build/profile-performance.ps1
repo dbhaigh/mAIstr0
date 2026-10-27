@@ -98,6 +98,8 @@ $matrix = @(
     @{ Name = "transparent"; Package = "orchestrator"; Pattern = '^BenchmarkProfileRouting$/^Transparent$' },
     @{ Name = "slow-stream"; Package = "orchestrator"; Pattern = '^BenchmarkProfileRouting$/^SlowStream$' },
     @{ Name = "heterogeneous"; Package = "orchestrator"; Pattern = '^BenchmarkProfileHeterogeneousRouting$' },
+    @{ Name = "router-selection"; Package = "orchestrator"; Pattern = '^BenchmarkRouterCandidateSelection$' },
+    @{ Name = "router-headers"; Package = "orchestrator"; Pattern = '^BenchmarkRouterHeaderNormalization$' },
     @{ Name = "workflow"; Package = "orchestrator"; Pattern = '^BenchmarkProfileWorkflow$'; Fixed = "256x" },
     @{ Name = "snapshot"; Package = "orchestrator"; Pattern = '^BenchmarkBuildSnapshot$' },
     @{ Name = "memory-http"; Package = "orchestrator"; Pattern = '^BenchmarkProfileMemorySyncHTTP$' },
@@ -105,6 +107,7 @@ $matrix = @(
     @{ Name = "inventory"; Package = "nodeagent"; Pattern = '^BenchmarkProfileInventory$' },
     @{ Name = "telemetry"; Package = "nodeagent"; Pattern = '^BenchmarkProfileTelemetry$' },
     @{ Name = "publication"; Package = "hub"; Pattern = '^BenchmarkProfilePublication$' },
+    @{ Name = "memory-snapshot"; Package = "memory"; Pattern = '^BenchmarkBboltSnapshotScanSort$' },
     @{ Name = "memory-operations"; Package = "memory"; Pattern = '^BenchmarkProfileMemoryOperations$'; Fixed = "256x" },
     @{ Name = "sync-page"; Package = "memory"; Pattern = '^BenchmarkProfileSyncPage$' },
     @{ Name = "sync-transfer"; Package = "memory"; Pattern = '^BenchmarkMemoryHistoryPageTransfer$/^100K$' }

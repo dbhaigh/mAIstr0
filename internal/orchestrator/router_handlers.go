@@ -598,7 +598,7 @@ func (s *Server) assignRouterRequest(model string, protocol inferroute.Protocol,
 	nodes := s.dispatcherPort().schedulerNodes()
 	eligible := make([]cluster.NodeStatus, 0, len(nodes))
 	for _, node := range nodes {
-		models := make([]engine.Model, 0, len(node.Models))
+		models := node.Models[:0]
 		for _, candidate := range node.Models {
 			engineName := candidate.Engine
 			if engineName == "" || !node.EngineReady(engineName) {
@@ -745,8 +745,13 @@ func sleepWithContext(ctx context.Context, delay time.Duration) bool {
 
 func stripHopHeaders(header http.Header) {
 	for _, connection := range header.Values("Connection") {
-		for _, name := range strings.Split(connection, ",") {
+		for {
+			name, remaining, found := strings.Cut(connection, ",")
 			header.Del(strings.TrimSpace(name))
+			if !found {
+				break
+			}
+			connection = remaining
 		}
 	}
 	for _, name := range []string{
@@ -759,19 +764,37 @@ func stripHopHeaders(header http.Header) {
 
 func copyRouterHeaders(dst, src http.Header) {
 	stripHopHeaders(dst)
-	connectionTokens := make(map[string]bool)
+	var tokenStorage [8]string
+	connectionTokens := tokenStorage[:0]
 	for _, connection := range src.Values("Connection") {
-		for _, name := range strings.Split(connection, ",") {
-			connectionTokens[http.CanonicalHeaderKey(strings.TrimSpace(name))] = true
+		for {
+			name, remaining, found := strings.Cut(connection, ",")
+			connectionTokens = append(connectionTokens, http.CanonicalHeaderKey(strings.TrimSpace(name)))
+			if !found {
+				break
+			}
+			connection = remaining
 		}
 	}
 	for name, values := range src {
 		if strings.EqualFold(name, "Connection") || strings.EqualFold(name, "Keep-Alive") ||
 			strings.EqualFold(name, "Proxy-Authenticate") || strings.EqualFold(name, "Proxy-Authorization") ||
 			strings.EqualFold(name, "Te") || strings.EqualFold(name, "Trailer") ||
-			strings.EqualFold(name, "Transfer-Encoding") || strings.EqualFold(name, "Upgrade") ||
-			connectionTokens[http.CanonicalHeaderKey(name)] {
+			strings.EqualFold(name, "Transfer-Encoding") || strings.EqualFold(name, "Upgrade") {
 			continue
+		}
+		if len(connectionTokens) > 0 {
+			canonicalName := http.CanonicalHeaderKey(name)
+			connectionSpecific := false
+			for _, token := range connectionTokens {
+				if token == canonicalName {
+					connectionSpecific = true
+					break
+				}
+			}
+			if connectionSpecific {
+				continue
+			}
 		}
 		for _, value := range values {
 			dst.Add(name, value)

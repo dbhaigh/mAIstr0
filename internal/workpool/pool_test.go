@@ -10,6 +10,7 @@ import (
 )
 
 func TestPoolMetricsTrackActiveAndQueuedJobs(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
 	pool := New[int](2, 2, func(ctx context.Context, _ int) {
@@ -45,6 +46,7 @@ func TestPoolMetricsTrackActiveAndQueuedJobs(t *testing.T) {
 }
 
 func TestSubmitPropagatesContextAndPoolShutdown(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{}, 2)
 	ctxDone := make(chan struct{}, 2)
 	pool := New[int](1, 1, func(ctx context.Context, _ int) {
@@ -95,6 +97,7 @@ func TestSubmitPropagatesContextAndPoolShutdown(t *testing.T) {
 }
 
 func TestPoolCanIgnoreSubmitterContextForAcceptedJobs(t *testing.T) {
+	t.Parallel()
 	started := make(chan context.Context, 1)
 	pool := NewWithOptions[int](1, 1, func(ctx context.Context, _ int) {
 		started <- ctx
@@ -201,6 +204,7 @@ func TestSubmitBlocksForQueueAndReturnsContextError(t *testing.T) {
 }
 
 func TestConcurrentSubmitAndCloseUnblocksSubmitters(t *testing.T) {
+	t.Parallel()
 	pool := New[int](2, 1, func(ctx context.Context, _ int) { <-ctx.Done() })
 	var submitters sync.WaitGroup
 	results := make(chan error, 16)
@@ -263,12 +267,15 @@ func TestCloseDoesNotLeakWorkers(t *testing.T) {
 
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for !condition() {
+		select {
+		case <-deadline.C:
+			t.Fatal("condition was not met before timeout")
+		case <-poll.C:
 		}
-		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("condition was not met before timeout")
 }

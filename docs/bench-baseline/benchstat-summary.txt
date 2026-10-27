@@ -1,0 +1,478 @@
+## snapshot.txt
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/hub
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+                         │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                         │                                sec/op                                 │
+ProfilePublication/0-24                                                             17.02n ± 25%
+ProfilePublication/1-24                                                             41.48µ ±  4%
+ProfilePublication/64-24                                                            48.32µ ±  7%
+geomean                                                                             3.243µ
+
+                         │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                         │                                 B/op                                  │
+ProfilePublication/0-24                                                             0.000 ± 0%
+ProfilePublication/1-24                                                           147.3Ki ± 0%
+ProfilePublication/64-24                                                          149.4Ki ± 0%
+geomean                                                                                        ¹
+¹ summaries must be >0 to compute geomean
+
+                         │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                         │                               allocs/op                               │
+ProfilePublication/0-24                                                             0.000 ± 0%
+ProfilePublication/1-24                                                             7.000 ± 0%
+ProfilePublication/64-24                                                            7.000 ± 0%
+geomean                                                                                        ¹
+¹ summaries must be >0 to compute geomean
+
+                         │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                         │                            latency-samples                            │
+ProfilePublication/0-24                                                             8.192k ±  0%
+ProfilePublication/1-24                                                             6.225k ±  9%
+ProfilePublication/64-24                                                            5.396k ± 14%
+geomean                                                                             6.504k
+
+                         │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                         │                                p50-us                                 │
+ProfilePublication/0-24                                                             0.000 ± 0%
+ProfilePublication/1-24                                                             0.000 ± 0%
+ProfilePublication/64-24                                                            0.000 ± 0%
+geomean                                                                                        ¹
+¹ summaries must be >0 to compute geomean
+
+                         │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                         │                                p95-us                                 │
+ProfilePublication/0-24                                                             0.000 ± 0%
+ProfilePublication/1-24                                                             509.6 ±  ?
+ProfilePublication/64-24                                                            512.9 ±  ?
+geomean                                                                                        ¹
+¹ summaries must be >0 to compute geomean
+
+                         │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                         │                                p99-us                                 │
+ProfilePublication/0-24                                                            0.000 ±  0%
+ProfilePublication/1-24                                                           1.000k ± 19%
+ProfilePublication/64-24                                                          1.000k ± 42%
+geomean                                                                                        ¹
+¹ summaries must be >0 to compute geomean
+
+                         │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                         │                              requests/s                               │
+ProfilePublication/0-24                                                             58.76M ± 20%
+ProfilePublication/1-24                                                             24.12k ±  4%
+ProfilePublication/64-24                                                            20.70k ±  7%
+geomean                                                                             308.4k
+
+pkg: github.com/maistr0/maistr0/internal/memory
+                                        │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                                        │                                sec/op                                 │
+SnapshotPayloadSizes10KExperiences-24                                                              4.012m ±  1%
+MemoryHistorySnapshotGeneration/10K-24                                                             652.3µ ± 16%
+MemoryHistorySnapshotGeneration/100K-24                                                            3.426m ±  5%
+geomean                                                                                            2.077m
+
+                                        │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                                        │                                 B/op                                  │
+SnapshotPayloadSizes10KExperiences-24                                                              2.597Mi ± 8%
+MemoryHistorySnapshotGeneration/10K-24                                                             2.524Mi ± 0%
+MemoryHistorySnapshotGeneration/100K-24                                                            25.18Mi ± 0%
+geomean                                                                                            5.485Mi
+
+                                        │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                                        │                               allocs/op                               │
+SnapshotPayloadSizes10KExperiences-24                                                                11.00 ± 9%
+MemoryHistorySnapshotGeneration/10K-24                                                               6.000 ± 0%
+MemoryHistorySnapshotGeneration/100K-24                                                              6.000 ± 0%
+geomean                                                                                              7.343
+
+                                      │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                                      │                              full-bytes                               │
+SnapshotPayloadSizes10KExperiences-24                                                            2.379Mi ± 0%
+
+                                      │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                                      │                           incremental-bytes                           │
+SnapshotPayloadSizes10KExperiences-24                                                            2.563Ki ± 0%
+
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+                                                                      │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                                                                      │                                sec/op                                 │
+BuildSnapshot-24                                                                                                                 653.6µ ± 10%
+PublishSnapshotRequests/NoSubscribers-24                                                                                        0.8818n ±  2%
+PublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24                                                            819.0µ ±  8%
+PublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24                                                              5.481n ±  1%
+geomean                                                                                                                          1.268µ
+
+                                                                      │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                                                                      │                                 B/op                                  │
+BuildSnapshot-24                                                                                                               641.5Ki ± 2%
+PublishSnapshotRequests/NoSubscribers-24                                                                                         0.000 ± 0%
+PublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24                                                          875.1Ki ± 3%
+PublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24                                                              0.000 ± 0%
+geomean                                                                                                                                     ¹
+¹ summaries must be >0 to compute geomean
+
+                                                                      │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\snapshot.txt │
+                                                                      │                               allocs/op                               │
+BuildSnapshot-24                                                                                                                1.629k ± 0%
+PublishSnapshotRequests/NoSubscribers-24                                                                                         0.000 ± 0%
+PublishSnapshotRequests/SubscribedHandler/SynchronousBuildBaseline-24                                                           1.638k ± 0%
+PublishSnapshotRequests/SubscribedHandler/QueuedPublisherRequest-24                                                              0.000 ± 0%
+geomean                                                                                                                                     ¹
+¹ summaries must be >0 to compute geomean
+## scheduler.txt
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/scheduler
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+                                                    │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\scheduler.txt │
+                                                    │                                 sec/op                                 │
+AssignWithConfigNodes80-24                                                                                      40.01µ ±  3%
+AssignWithExperienceNodes32ManyModels-24                                                                        71.35µ ±  5%
+AssignWithExperienceNodeModels/10-nodes-models-24                                                               8.503µ ± 14%
+AssignWithExperienceNodeModels/100-nodes-models-24                                                              39.10µ ±  9%
+AssignWithExperienceNodeModels/1000-nodes-models-24                                                             444.2µ ± 14%
+DecisionDiagnostics/disabled-24                                                                                 9.593n ±  2%
+DecisionDiagnostics/enabled-24                                                                                  4.206µ ±  5%
+geomean                                                                                                         10.79µ
+
+                                                    │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\scheduler.txt │
+                                                    │                                  B/op                                  │
+AssignWithConfigNodes80-24                                                                                    75.51Ki ± 0%
+AssignWithExperienceNodes32ManyModels-24                                                                      35.01Ki ± 0%
+AssignWithExperienceNodeModels/10-nodes-models-24                                                             10.83Ki ± 0%
+AssignWithExperienceNodeModels/100-nodes-models-24                                                            78.41Ki ± 0%
+AssignWithExperienceNodeModels/1000-nodes-models-24                                                           749.2Ki ± 0%
+DecisionDiagnostics/disabled-24                                                                                 0.000 ± 0%
+DecisionDiagnostics/enabled-24                                                                                1.664Ki ± 0%
+geomean                                                                                                                    ¹
+¹ summaries must be >0 to compute geomean
+
+                                                    │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\scheduler.txt │
+                                                    │                               allocs/op                                │
+AssignWithConfigNodes80-24                                                                                      33.00 ± 0%
+AssignWithExperienceNodes32ManyModels-24                                                                        40.00 ± 0%
+AssignWithExperienceNodeModels/10-nodes-models-24                                                               22.00 ± 0%
+AssignWithExperienceNodeModels/100-nodes-models-24                                                              22.00 ± 0%
+AssignWithExperienceNodeModels/1000-nodes-models-24                                                             26.00 ± 0%
+DecisionDiagnostics/disabled-24                                                                                 0.000 ± 0%
+DecisionDiagnostics/enabled-24                                                                                  23.00 ± 0%
+geomean                                                                                                                    ¹
+¹ summaries must be >0 to compute geomean
+
+pkg: github.com/maistr0/maistr0/internal/scheduler/evaluation
+                                     │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\scheduler.txt │
+                                     │                                 sec/op                                 │
+Policies/8/round_robin-24                                                                         74.72n ± 1%
+Policies/8/least_loaded-24                                                                        626.2n ± 1%
+Policies/8/capability_aware-24                                                                    620.2n ± 1%
+Policies/8/existing_scorer-24                                                                     953.4n ± 2%
+Policies/80/round_robin-24                                                                        74.22n ± 1%
+Policies/80/least_loaded-24                                                                       6.069µ ± 1%
+Policies/80/capability_aware-24                                                                   6.096µ ± 2%
+Policies/80/existing_scorer-24                                                                    9.434µ ± 1%
+Policies/800/round_robin-24                                                                       74.58n ± 1%
+Policies/800/least_loaded-24                                                                      60.62µ ± 1%
+Policies/800/capability_aware-24                                                                  60.65µ ± 2%
+Policies/800/existing_scorer-24                                                                   95.25µ ± 1%
+PoliciesParallel/round_robin-24                                                                   8.207n ± 2%
+PoliciesParallel/least_loaded-24                                                                  68.58n ± 2%
+PoliciesParallel/capability_aware-24                                                              68.18n ± 2%
+PoliciesParallel/existing_scorer-24                                                               104.8n ± 5%
+geomean                                                                                           850.7n
+
+                                     │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\scheduler.txt │
+                                     │                                  B/op                                  │
+Policies/8/round_robin-24                                                                        0.000 ± 0%
+Policies/8/least_loaded-24                                                                       0.000 ± 0%
+Policies/8/capability_aware-24                                                                   0.000 ± 0%
+Policies/8/existing_scorer-24                                                                    0.000 ± 0%
+Policies/80/round_robin-24                                                                       0.000 ± 0%
+Policies/80/least_loaded-24                                                                      0.000 ± 0%
+Policies/80/capability_aware-24                                                                  0.000 ± 0%
+Policies/80/existing_scorer-24                                                                   0.000 ± 0%
+Policies/800/round_robin-24                                                                      0.000 ± 0%
+Policies/800/least_loaded-24                                                                     0.000 ± 0%
+Policies/800/capability_aware-24                                                                 0.000 ± 0%
+Policies/800/existing_scorer-24                                                                  0.000 ± 0%
+PoliciesParallel/round_robin-24                                                                  0.000 ± 0%
+PoliciesParallel/least_loaded-24                                                                 0.000 ± 0%
+PoliciesParallel/capability_aware-24                                                             0.000 ± 0%
+PoliciesParallel/existing_scorer-24                                                              0.000 ± 0%
+geomean                                                                                                     ¹
+¹ summaries must be >0 to compute geomean
+
+                                     │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\scheduler.txt │
+                                     │                               allocs/op                                │
+Policies/8/round_robin-24                                                                        0.000 ± 0%
+Policies/8/least_loaded-24                                                                       0.000 ± 0%
+Policies/8/capability_aware-24                                                                   0.000 ± 0%
+Policies/8/existing_scorer-24                                                                    0.000 ± 0%
+Policies/80/round_robin-24                                                                       0.000 ± 0%
+Policies/80/least_loaded-24                                                                      0.000 ± 0%
+Policies/80/capability_aware-24                                                                  0.000 ± 0%
+Policies/80/existing_scorer-24                                                                   0.000 ± 0%
+Policies/800/round_robin-24                                                                      0.000 ± 0%
+Policies/800/least_loaded-24                                                                     0.000 ± 0%
+Policies/800/capability_aware-24                                                                 0.000 ± 0%
+Policies/800/existing_scorer-24                                                                  0.000 ± 0%
+PoliciesParallel/round_robin-24                                                                  0.000 ± 0%
+PoliciesParallel/least_loaded-24                                                                 0.000 ± 0%
+PoliciesParallel/capability_aware-24                                                             0.000 ± 0%
+PoliciesParallel/existing_scorer-24                                                              0.000 ± 0%
+geomean                                                                                                     ¹
+¹ summaries must be >0 to compute geomean
+
+                                 │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\scheduler.txt │
+                                 │                              eligible/op                               │
+Policies/8/round_robin-24                                                                      1.000 ± 0%
+Policies/8/least_loaded-24                                                                     8.000 ± 0%
+Policies/8/capability_aware-24                                                                 8.000 ± 0%
+Policies/8/existing_scorer-24                                                                  8.000 ± 0%
+Policies/80/round_robin-24                                                                     1.000 ± 0%
+Policies/80/least_loaded-24                                                                    80.00 ± 0%
+Policies/80/capability_aware-24                                                                80.00 ± 0%
+Policies/80/existing_scorer-24                                                                 80.00 ± 0%
+Policies/800/round_robin-24                                                                    1.000 ± 0%
+Policies/800/least_loaded-24                                                                   800.0 ± 0%
+Policies/800/capability_aware-24                                                               800.0 ± 0%
+Policies/800/existing_scorer-24                                                                800.0 ± 0%
+geomean                                                                                        26.75
+
+                                 │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\scheduler.txt │
+                                 │                              examined/op                               │
+Policies/8/round_robin-24                                                                      1.000 ± 0%
+Policies/8/least_loaded-24                                                                     8.000 ± 0%
+Policies/8/capability_aware-24                                                                 8.000 ± 0%
+Policies/8/existing_scorer-24                                                                  8.000 ± 0%
+Policies/80/round_robin-24                                                                     1.000 ± 0%
+Policies/80/least_loaded-24                                                                    80.00 ± 0%
+Policies/80/capability_aware-24                                                                80.00 ± 0%
+Policies/80/existing_scorer-24                                                                 80.00 ± 0%
+Policies/800/round_robin-24                                                                    1.000 ± 0%
+Policies/800/least_loaded-24                                                                   800.0 ± 0%
+Policies/800/capability_aware-24                                                               800.0 ± 0%
+Policies/800/existing_scorer-24                                                                800.0 ± 0%
+geomean                                                                                        26.75
+## sync-paging.txt
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/memory
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+                                  │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                                  │                                  sec/op                                  │
+ProfileSyncPage/10000/0-24                                                                      7.457m ±  9%
+ProfileSyncPage/10000/90-24                                                                     2.721m ±  8%
+ProfileSyncPage/10000/99-24                                                                     1.341m ± 10%
+ProfileSyncPage/10000/100-24                                                                    1.236m ±  8%
+ProfileSyncPage/100000/0-24                                                                     13.10m ±  2%
+ProfileSyncPage/100000/90-24                                                                    13.53m ±  2%
+ProfileSyncPage/100000/99-24                                                                    10.18m ±  2%
+ProfileSyncPage/100000/100-24                                                                   8.833m ±  1%
+MemoryHistoryPageTransfer/10K-24                                                                19.52m ±  7%
+MemoryHistoryPageTransfer/100K-24                                                               307.7m ±  3%
+geomean                                                                                         8.929m
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                              │                             latency-samples                              │
+ProfileSyncPage/10000/0-24                                                                   36.50 ± 12%
+ProfileSyncPage/10000/90-24                                                                  100.0 ±  7%
+ProfileSyncPage/10000/99-24                                                                  192.0 ± 10%
+ProfileSyncPage/10000/100-24                                                                 198.0 ± 14%
+ProfileSyncPage/100000/0-24                                                                  17.00 ±  6%
+ProfileSyncPage/100000/90-24                                                                 16.00 ±  0%
+ProfileSyncPage/100000/99-24                                                                 21.50 ±  7%
+ProfileSyncPage/100000/100-24                                                                26.00 ±  4%
+geomean                                                                                      46.29
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                              │                                  p50-us                                  │
+ProfileSyncPage/10000/0-24                                                                   6.393k ± 4%
+ProfileSyncPage/10000/90-24                                                                  2.041k ± 4%
+ProfileSyncPage/10000/99-24                                                                  1.000k ± 0%
+ProfileSyncPage/10000/100-24                                                                 1.000k ± 0%
+ProfileSyncPage/100000/0-24                                                                  13.05k ± 1%
+ProfileSyncPage/100000/90-24                                                                 13.54k ± 3%
+ProfileSyncPage/100000/99-24                                                                 9.629k ± 3%
+ProfileSyncPage/100000/100-24                                                                8.507k ± 2%
+geomean                                                                                      4.565k
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                              │                                  p95-us                                  │
+ProfileSyncPage/10000/0-24                                                                  16.30k ± 17%
+ProfileSyncPage/10000/90-24                                                                 6.480k ± 58%
+ProfileSyncPage/10000/99-24                                                                 3.826k ± 41%
+ProfileSyncPage/10000/100-24                                                                2.958k ± 62%
+ProfileSyncPage/100000/0-24                                                                 16.60k ± 17%
+ProfileSyncPage/100000/90-24                                                                17.84k ± 13%
+ProfileSyncPage/100000/99-24                                                                13.25k ± 10%
+ProfileSyncPage/100000/100-24                                                               11.76k ± 15%
+geomean                                                                                     9.283k
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                              │                                  p99-us                                  │
+ProfileSyncPage/10000/0-24                                                                  20.08k ± 56%
+ProfileSyncPage/10000/90-24                                                                 13.67k ± 14%
+ProfileSyncPage/10000/99-24                                                                 10.51k ± 29%
+ProfileSyncPage/10000/100-24                                                                9.515k ± 32%
+ProfileSyncPage/100000/0-24                                                                 16.60k ± 17%
+ProfileSyncPage/100000/90-24                                                                17.84k ± 13%
+ProfileSyncPage/100000/99-24                                                                14.17k ±  8%
+ProfileSyncPage/100000/100-24                                                               13.87k ± 17%
+geomean                                                                                     14.14k
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                              │                                requests/s                                │
+ProfileSyncPage/10000/0-24                                                                   134.1 ±  8%
+ProfileSyncPage/10000/90-24                                                                  367.6 ±  8%
+ProfileSyncPage/10000/99-24                                                                  745.8 ± 11%
+ProfileSyncPage/10000/100-24                                                                 809.1 ±  9%
+ProfileSyncPage/100000/0-24                                                                  76.36 ±  2%
+ProfileSyncPage/100000/90-24                                                                 73.88 ±  2%
+ProfileSyncPage/100000/99-24                                                                 98.21 ±  2%
+ProfileSyncPage/100000/100-24                                                                113.2 ±  1%
+geomean                                                                                      192.3
+
+                                  │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                                  │                                   B/op                                   │
+ProfileSyncPage/10000/0-24                                                                      12.70Mi ± 1%
+ProfileSyncPage/10000/90-24                                                                     3.965Mi ± 0%
+ProfileSyncPage/10000/99-24                                                                     1.695Mi ± 0%
+ProfileSyncPage/10000/100-24                                                                    1.461Mi ± 0%
+ProfileSyncPage/100000/0-24                                                                     25.81Mi ± 0%
+ProfileSyncPage/100000/90-24                                                                    25.79Mi ± 0%
+ProfileSyncPage/100000/99-24                                                                    17.00Mi ± 0%
+ProfileSyncPage/100000/100-24                                                                   14.50Mi ± 0%
+MemoryHistoryPageTransfer/10K-24                                                                29.54Mi ± 0%
+MemoryHistoryPageTransfer/100K-24                                                               588.3Mi ± 0%
+geomean                                                                                         14.29Mi
+
+                                  │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                                  │                                allocs/op                                 │
+ProfileSyncPage/10000/0-24                                                                       24.34k ± 0%
+ProfileSyncPage/10000/90-24                                                                      20.82k ± 0%
+ProfileSyncPage/10000/99-24                                                                      19.90k ± 0%
+ProfileSyncPage/10000/100-24                                                                     19.77k ± 0%
+ProfileSyncPage/100000/0-24                                                                      204.3k ± 0%
+ProfileSyncPage/100000/90-24                                                                     204.3k ± 0%
+ProfileSyncPage/100000/99-24                                                                     200.8k ± 0%
+ProfileSyncPage/100000/100-24                                                                    199.8k ± 0%
+MemoryHistoryPageTransfer/10K-24                                                                 69.50k ± 0%
+MemoryHistoryPageTransfer/100K-24                                                                4.696M ± 0%
+geomean                                                                                          100.9k
+
+                                  │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                                  │                                records/op                                │
+MemoryHistoryPageTransfer/10K-24                                                                 10.00k ± 0%
+MemoryHistoryPageTransfer/100K-24                                                                100.0k ± 0%
+geomean                                                                                          31.62k
+
+                                  │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\sync-paging.txt │
+                                  │                              snapshot-bytes                              │
+MemoryHistoryPageTransfer/10K-24                                                                2.229Mi ± 0%
+MemoryHistoryPageTransfer/100K-24                                                               22.57Mi ± 0%
+geomean                                                                                         7.092Mi
+## streaming.txt
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming.txt │
+                              │                                 sec/op                                 │
+ProfileRouting/Direct-24                                                                  93.50µ ±  5%
+ProfileRouting/Transparent-24                                                             95.96µ ±  8%
+ProfileRouting/SlowStream-24                                                              12.53m ±  7%
+ShardGenerationStream-24                                                                  5.280µ ± 15%
+geomean                                                                                   156.1µ
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming.txt │
+                              │                            latency-samples                             │
+ProfileRouting/Direct-24                                                                   2.300k ± 3%
+ProfileRouting/Transparent-24                                                              2.377k ± 8%
+ProfileRouting/SlowStream-24                                                                18.50 ± 8%
+geomean                                                                                     465.9
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming.txt │
+                              │                                 p50-us                                 │
+ProfileRouting/Direct-24                                                                  0.000 ± 0%
+ProfileRouting/Transparent-24                                                             0.000 ± 0%
+ProfileRouting/SlowStream-24                                                             12.56k ± 8%
+geomean                                                                                              ¹
+¹ summaries must be >0 to compute geomean
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming.txt │
+                              │                                 p95-us                                 │
+ProfileRouting/Direct-24                                                                   1.000k ± 0%
+ProfileRouting/Transparent-24                                                              1.000k ± 0%
+ProfileRouting/SlowStream-24                                                               13.15k ± 3%
+geomean                                                                                    2.360k
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming.txt │
+                              │                                 p99-us                                 │
+ProfileRouting/Direct-24                                                                   1.045k ± 4%
+ProfileRouting/Transparent-24                                                              1.109k ± 8%
+ProfileRouting/SlowStream-24                                                               13.15k ± 3%
+geomean                                                                                    2.479k
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming.txt │
+                              │                               requests/s                               │
+ProfileRouting/Direct-24                                                                   10.70k ± 5%
+ProfileRouting/Transparent-24                                                              10.42k ± 7%
+ProfileRouting/SlowStream-24                                                                79.81 ± 8%
+geomean                                                                                    2.072k
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming.txt │
+                              │                                  B/op                                  │
+ProfileRouting/Direct-24                                                                  28.48Ki ± 1%
+ProfileRouting/Transparent-24                                                             31.05Ki ± 2%
+ProfileRouting/SlowStream-24                                                              51.11Ki ± 8%
+ShardGenerationStream-24                                                                  4.336Ki ± 0%
+geomean                                                                                   21.04Ki
+
+                              │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming.txt │
+                              │                               allocs/op                                │
+ProfileRouting/Direct-24                                                                    236.0 ± 0%
+ProfileRouting/Transparent-24                                                               247.0 ± 0%
+ProfileRouting/SlowStream-24                                                                279.5 ± 2%
+ShardGenerationStream-24                                                                    10.00 ± 0%
+geomean                                                                                     113.0
+## streaming-compat-one-shot.txt
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+                               │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming-compat-one-shot.txt │
+                               │                                         sec/op                                         │
+CompatAPIStreamingSimulated-24                                                                             496.4µ ± 74%
+
+                               │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming-compat-one-shot.txt │
+                               │                                          B/op                                          │
+CompatAPIStreamingSimulated-24                                                                            127.9Ki ± 22%
+
+                               │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming-compat-one-shot.txt │
+                               │                                       allocs/op                                        │
+CompatAPIStreamingSimulated-24                                                                               462.0 ± 3%
+## streaming-router-100.txt
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+                                        │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming-router-100.txt │
+                                        │                                      sec/op                                       │
+TransparentRouterStreamingConcurrent100                                                                         34.03m ± 2%
+
+                                        │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming-router-100.txt │
+                                        │                                    streams/op                                     │
+TransparentRouterStreamingConcurrent100                                                                          100.0 ± 0%
+
+                                        │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming-router-100.txt │
+                                        │                                     streams/s                                     │
+TransparentRouterStreamingConcurrent100                                                                         2.939k ± 2%
+
+                                        │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming-router-100.txt │
+                                        │                                       B/op                                        │
+TransparentRouterStreamingConcurrent100                                                                        4.475Mi ± 1%
+
+                                        │ C:\Users\ahaigh\source\repos\mAIstr0\docs\bench-baseline\streaming-router-100.txt │
+                                        │                                     allocs/op                                     │
+TransparentRouterStreamingConcurrent100                                                                         36.04k ± 0%

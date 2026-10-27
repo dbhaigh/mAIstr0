@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/security-status.schema.json",
+  "title": "SecurityStatus",
+  "type": "object",
+  "required": ["discovery_authentication"],
+  "properties": {
+    "discovery_authentication": {"type": "string", "enum": ["unauthenticated", "hmac-sha256"]}
+  },
+  "additionalProperties": false
+}

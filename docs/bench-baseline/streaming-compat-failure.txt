@@ -1,0 +1,48 @@
+# revision: 2f77419
+# command: go test ./internal/orchestrator -run ^$ -bench ^(BenchmarkCompatAPIStreamingSimulated|BenchmarkShardGenerationStream)$ -benchmem -count=10 -benchtime=200ms
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49153/generate?stream=true\": dial tcp 127.0.0.1:49153: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49153/generate?stream=true\": dial tcp 127.0.0.1:49153: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49153/generate?stream=true\": dial tcp 127.0.0.1:49153: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49153/generate?stream=true\": dial tcp 127.0.0.1:49153: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49153/generate?stream=true\": dial tcp 127.0.0.1:49153: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49153/generate?stream=true\": dial tcp 127.0.0.1:49153: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkCompatAPIStreamingSimulated-24    	--- FAIL: BenchmarkCompatAPIStreamingSimulated-24
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkShardGenerationStream-24          	  160216	      1483 ns/op	    4437 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  160693	      1536 ns/op	    4437 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  171961	      1330 ns/op	    4437 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  185744	      1361 ns/op	    4437 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  182224	      1336 ns/op	    4436 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  192181	      1437 ns/op	    4437 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  169323	      1374 ns/op	    4437 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  186136	      1364 ns/op	    4438 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  194668	      1554 ns/op	    4436 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24          	  212336	      1434 ns/op	    4437 B/op	      10 allocs/op
+FAIL
+exit status 1
+FAIL	github.com/maistr0/maistr0/internal/orchestrator	14.748s
+FAIL

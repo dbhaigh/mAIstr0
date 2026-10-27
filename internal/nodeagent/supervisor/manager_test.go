@@ -496,21 +496,32 @@ func readPID(t *testing.T, path string) int {
 
 func waitPIDFile(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return readPID(t, path)
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		if data, err := os.ReadFile(path); err == nil {
+			if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil {
+				return pid
+			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-deadline.C:
+			t.Fatalf("pid file %q was not created with a valid PID", path)
+			return 0
+		case <-poll.C:
+		}
 	}
-	t.Fatalf("pid file %q was not created", path)
-	return 0
 }
 
 func waitForStatus(t *testing.T, manager *Manager, id string, ready func(Status) bool) Status {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
 		status, err := manager.Status(id)
 		if err != nil {
 			t.Fatal(err)
@@ -518,21 +529,30 @@ func waitForStatus(t *testing.T, manager *Manager, id string, ready func(Status)
 		if ready(status) {
 			return status
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-deadline.C:
+			t.Fatalf("managed engine status did not reach the expected state: %+v", status)
+			return Status{}
+		case <-poll.C:
+		}
 	}
-	status, _ := manager.Status(id)
-	t.Fatalf("managed engine status did not reach the expected state: %+v", status)
-	return Status{}
 }
 
 func waitProcessDead(t *testing.T, pid int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
 		if !processAlive(pid) {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-deadline.C:
+			t.Fatalf("process %d is still alive after managed engine shutdown", pid)
+			return
+		case <-poll.C:
+		}
 	}
-	t.Fatalf("process %d is still alive after managed engine shutdown", pid)
 }

@@ -1,0 +1,247 @@
+# revision: 2f77419
+# command: go test ./internal/scheduler ./internal/scheduler/evaluation ./internal/scheduler/score -run ^$ -bench ^Benchmark(Assign.*|DecisionDiagnostics|Policies|PoliciesParallel)$ -benchmem -count=10 -benchtime=200ms
+# benchtime: 200ms; count: 10; benchmem: enabled
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/scheduler
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkAssignWithConfigNodes80-24                  	    6019	     40452 ns/op	   77326 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    5384	     39931 ns/op	   77325 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    6528	     40950 ns/op	   77329 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    6370	     40095 ns/op	   77326 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    6640	     38748 ns/op	   77323 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    6219	     40098 ns/op	   77316 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    6648	     38824 ns/op	   77322 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    6396	     39134 ns/op	   77325 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    6199	     39907 ns/op	   77326 B/op	      33 allocs/op
+BenchmarkAssignWithConfigNodes80-24                  	    6550	     43852 ns/op	   77320 B/op	      33 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3386	     71497 ns/op	   35858 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3350	     73052 ns/op	   35855 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3411	     68721 ns/op	   35854 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3160	     76439 ns/op	   35853 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3583	     74827 ns/op	   35858 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3679	     71682 ns/op	   35862 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3390	     71056 ns/op	   35852 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3012	     70886 ns/op	   35851 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3742	     71202 ns/op	   35861 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodes32ManyModels-24    	    3602	     69862 ns/op	   35853 B/op	      40 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   26821	      7822 ns/op	   11093 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   30787	      8119 ns/op	   11094 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   28824	      9701 ns/op	   11095 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   30804	     10065 ns/op	   11093 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   30678	      8668 ns/op	   11093 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   30170	      9170 ns/op	   11093 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   28246	      8332 ns/op	   11093 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   30692	      8423 ns/op	   11092 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   29970	      7811 ns/op	   11093 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/10-nodes-models-24         	   31399	      8583 ns/op	   11093 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    5486	     41685 ns/op	   80282 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    6523	     39017 ns/op	   80287 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    7039	     36523 ns/op	   80288 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    7077	     39211 ns/op	   80288 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    7038	     44672 ns/op	   80296 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    6850	     38417 ns/op	   80283 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    5349	     39180 ns/op	   80290 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    6433	     36514 ns/op	   80286 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    6972	     38789 ns/op	   80291 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/100-nodes-models-24        	    7045	     42720 ns/op	   80287 B/op	      22 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     691	    360212 ns/op	  767138 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     688	    416957 ns/op	  767154 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     679	    457832 ns/op	  767141 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     474	    597510 ns/op	  767194 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     573	    456935 ns/op	  767131 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     687	    485942 ns/op	  767165 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     548	    431543 ns/op	  767126 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     616	    384931 ns/op	  767160 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     696	    488372 ns/op	  767134 B/op	      26 allocs/op
+BenchmarkAssignWithExperienceNodeModels/1000-nodes-models-24       	     572	    380584 ns/op	  767113 B/op	      26 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	26077885	         9.577 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	25813668	         9.568 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	25401663	         9.610 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	24100014	         9.635 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	25386884	         9.765 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	25643764	         9.574 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	25480682	         9.554 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	25775686	         9.523 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	25395212	         9.801 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/disabled-24                           	25235000	         9.612 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   56434	      4376 ns/op	    1704 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   60224	      4099 ns/op	    1704 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   49513	      4144 ns/op	    1705 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   62743	      4481 ns/op	    1705 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   55602	      4372 ns/op	    1705 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   61051	      4143 ns/op	    1704 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   61575	      4267 ns/op	    1704 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   59199	      4390 ns/op	    1704 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   58708	      4008 ns/op	    1704 B/op	      23 allocs/op
+BenchmarkDecisionDiagnostics/enabled-24                            	   59245	      3989 ns/op	    1704 B/op	      23 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/scheduler	21.950s
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/scheduler/evaluation
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkPolicies/8/round_robin-24         	 3204002	        74.74 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3221666	        74.69 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3293878	        74.26 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3169789	        75.10 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3261236	        74.23 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3253054	        74.92 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3226422	        76.60 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3198838	        74.57 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3278634	        75.29 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/round_robin-24         	 3265642	        74.70 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  378303	       630.9 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  400492	       628.6 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  393022	       622.6 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  392425	       621.3 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  392098	       630.7 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  389716	       624.1 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  394795	       621.2 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  391951	       628.3 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  343411	       628.1 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/least_loaded-24        	  369936	       624.2 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  397482	       623.9 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  400033	       619.0 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  394833	       622.7 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  396006	       619.2 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  373941	       622.9 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  396477	       616.2 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  391414	       621.2 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  394645	       624.5 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  397890	       617.2 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/capability_aware-24    	  384386	       618.8 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  256807	       945.9 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  258238	       951.1 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  253356	       970.5 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  259534	       950.8 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  258403	       955.7 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  257775	       957.8 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  259400	       962.4 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  250435	       945.2 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  255633	       975.9 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/8/existing_scorer-24     	  260452	       950.4 ns/op	         8.000 eligible/op	         8.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3236236	        74.36 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3225793	        74.66 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3234318	        73.76 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3226855	        74.99 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3280928	        74.24 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3256687	        74.56 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3259389	        74.03 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3234601	        74.20 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3247762	        73.89 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/round_robin-24        	 3203463	        74.18 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   39936	      6113 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   39820	      5999 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   39139	      6104 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   39187	      6062 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   39190	      6080 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   40216	      6041 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   40182	      6054 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   39865	      6081 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   39936	      6047 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/least_loaded-24       	   40446	      6075 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   38480	      6144 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   40042	      6092 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   39568	      5980 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   39840	      6075 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   39954	      6091 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   38268	      6188 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   40028	      6100 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   39148	      6078 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   39684	      6188 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/capability_aware-24   	   40102	      6133 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   24990	      9430 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   25752	      9574 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   25464	      9438 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   25566	      9523 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   25659	      9395 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   24975	      9396 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   25764	      9391 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   25635	      9577 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   25609	      9352 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/80/existing_scorer-24    	   25510	      9534 ns/op	        80.00 eligible/op	        80.00 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3169446	        74.51 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3230068	        75.68 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3245685	        74.65 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3234051	        74.69 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3220006	        74.18 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3281095	        74.27 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3202087	        73.51 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3162166	        73.70 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3239289	        74.65 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/round_robin-24       	 3117409	        78.22 ns/op	         1.000 eligible/op	         1.000 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4081	     61637 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4136	     60764 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4051	     60168 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4060	     61006 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4132	     60470 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4082	     61083 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4072	     61098 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4078	     60245 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4059	     60325 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/least_loaded-24      	    4089	     59980 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    4057	     60095 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    4088	     60953 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    3588	     60400 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    3973	     60082 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    4071	     60576 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    3937	     59982 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    4077	     62155 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    3840	     60730 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    4029	     61502 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/capability_aware-24  	    4040	     61948 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2626	     93549 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2602	     95453 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2524	     95113 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2592	     95241 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2618	     94914 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2432	     95390 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2605	     95822 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2571	     95215 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2623	     95253 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPolicies/800/existing_scorer-24   	    2592	     96842 ns/op	       800.0 eligible/op	       800.0 examined/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	26561905	         8.578 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	28639502	         8.080 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	28468794	         8.091 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	26142369	         8.219 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	27406542	         8.196 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	28345707	         8.237 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	26894578	         8.337 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	27791960	         8.180 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	28143866	         8.218 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/round_robin-24   	28107588	         8.106 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 2837251	        71.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 3117684	        69.74 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 2949195	        69.37 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 3278983	        67.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 3354939	        68.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 3090823	        67.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 3483657	        68.71 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 3385394	        68.46 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 3361387	        69.37 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/least_loaded-24  	 2997046	        68.36 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3390368	        68.35 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3415816	        68.68 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3417264	        68.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3228118	        67.79 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3152679	        68.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3337435	        67.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3158900	        69.45 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3438271	        67.55 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 3460551	        67.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/capability_aware-24         	 2979844	        70.90 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2248160	       104.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2298411	       104.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2308304	       110.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2163582	       110.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2169534	       108.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2183610	       109.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2213890	       105.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2292015	       104.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2215159	       104.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPoliciesParallel/existing_scorer-24          	 2305081	       104.1 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/scheduler/evaluation	49.689s
+PASS
+ok  	github.com/maistr0/maistr0/internal/scheduler/score	0.255s

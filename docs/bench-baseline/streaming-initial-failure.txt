@@ -1,0 +1,40 @@
+# revision: 2f77419
+# command: go test ./internal/orchestrator -run ^$ -bench ^Benchmark(TransparentRouterStreamingConcurrent100|CompatAPIStreamingSimulated|ShardGenerationStream)$ -benchmem -count=10 -benchtime=200ms
+# benchtime: 200ms; count: 10; benchmem: enabled
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkTransparentRouterStreamingConcurrent100-24    	      25	   9956720 ns/op	       100.0 streams/op	     10043 streams/s	 5128033 B/op	   34164 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100-24    	      21	  11623100 ns/op	       100.0 streams/op	      8604 streams/s	 4630990 B/op	   33715 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100-24    	      16	  13643162 ns/op	       100.0 streams/op	      7330 streams/s	 4605699 B/op	   33992 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100-24    	      15	  14736753 ns/op	       100.0 streams/op	      6786 streams/s	 4658011 B/op	   33775 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100-24    	      28	  10745114 ns/op	       100.0 streams/op	      9307 streams/s	 4478801 B/op	   33968 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100-24    	      19	  12278879 ns/op	       100.0 streams/op	      8144 streams/s	 4636731 B/op	   33863 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100-24    	      14	  16608079 ns/op	       100.0 streams/op	      6021 streams/s	 4846407 B/op	   34040 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100-24    	--- FAIL: BenchmarkTransparentRouterStreamingConcurrent100-24
+    performance_benchmark_test.go:248: router returned 502: {"error":{"message":"no additional compatible inference node is available"}}
+
+BenchmarkTransparentRouterStreamingConcurrent100-24    	       7	  28610529 ns/op	       100.0 streams/op	      3495 streams/s	 4317845 B/op	   32101 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100-24    	--- FAIL: BenchmarkTransparentRouterStreamingConcurrent100
+    performance_benchmark_test.go:248: router returned 502: {"error":{"message":"no additional compatible inference node is available"}}
+
+--- FAIL: BenchmarkTransparentRouterStreamingConcurrent100-24
+    performance_benchmark_test.go:248: router returned 502: {"error":{"message":"no additional compatible inference node is available"}}
+
+--- FAIL: BenchmarkCompatAPIStreamingSimulated
+    performance_benchmark_test.go:270: compat API returned 502: {"node_id":"","node_address":"","model":"","output":"","duration_ms":0,"error":"Post \"http://127.0.0.1:49152/generate?stream=true\": dial tcp 127.0.0.1:49152: connectex: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."}
+BenchmarkShardGenerationStream-24                      	  117446	      1876 ns/op	    4431 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  106574	      2195 ns/op	    4432 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  212281	      1718 ns/op	    4431 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  129542	      2002 ns/op	    4431 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  116948	      2130 ns/op	    4432 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  158350	      1712 ns/op	    4432 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  107348	      2080 ns/op	    4431 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  216678	      1874 ns/op	    4431 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  219303	      1959 ns/op	    4431 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24                      	  125580	      1659 ns/op	    4431 B/op	      10 allocs/op
+FAIL
+exit status 1
+FAIL	github.com/maistr0/maistr0/internal/orchestrator	9.347s
+FAIL

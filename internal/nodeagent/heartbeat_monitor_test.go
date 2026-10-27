@@ -11,6 +11,7 @@ import (
 )
 
 func TestHeartbeatMonitorRequiresConsecutiveFailuresAndRearmsAfterRecovery(t *testing.T) {
+	t.Parallel()
 	var attempts atomic.Int32
 	elections := make(chan string, 2)
 	recoveries := make(chan string, 1)
@@ -48,14 +49,27 @@ func TestHeartbeatMonitorRequiresConsecutiveFailuresAndRearmsAfterRecovery(t *te
 }
 
 func TestHeartbeatMonitorElectionCallbackDoesNotBlockProbes(t *testing.T) {
+	t.Parallel()
 	var attempts atomic.Int32
+	probes := make(chan struct{}, 32)
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
 	monitor := newHeartbeatMonitor(
 		func() string { return "https://orchestrator.example:7450" },
 		func() string { return "orchestrator-a" },
 		func(context.Context, string) error {
 			attempts.Add(1)
+			select {
+			case probes <- struct{}{}:
+			default:
+			}
 			return errors.New("unreachable")
 		},
 		nil,
@@ -72,17 +86,32 @@ func TestHeartbeatMonitorElectionCallbackDoesNotBlockProbes(t *testing.T) {
 	go monitor.Run(ctx)
 	receiveSignal(t, started)
 
-	deadline := time.Now().Add(time.Second)
-	for attempts.Load() < 7 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	for {
+		select {
+		case <-probes:
+		default:
+			goto drained
+		}
 	}
-	if got := attempts.Load(); got < 7 {
-		t.Fatalf("monitor performed only %d probes while election callback was blocked", got)
+drained:
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for range 7 {
+		select {
+		case <-probes:
+		case <-deadline.C:
+			t.Fatalf("monitor performed only %d probes while election callback was blocked", attempts.Load())
+		}
 	}
-	close(release)
+	select {
+	case <-release:
+	default:
+		close(release)
+	}
 }
 
 func TestStatusProbeRequestsAPIStatusAndRejectsUnhealthyResponses(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		statusCode int

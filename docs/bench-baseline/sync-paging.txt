@@ -1,0 +1,109 @@
+# revision: 2f77419
+# command: go test ./internal/memory -run ^$ -bench ^Benchmark(MemoryHistoryPageTransfer|ProfileSyncPage)$ -benchmem -count=10 -benchtime=200ms
+# benchtime: 200ms; count: 10; benchmem: enabled
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/memory
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkProfileSyncPage/10000/0-24      	      32	   7614497 ns/op	        32.00 latency-samples	      6369 p50-us	     16190 p95-us	     16483 p99-us	       131.3 requests/s	13390626 B/op	   24337 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      37	   7296751 ns/op	        37.00 latency-samples	      6510 p50-us	     17599 p95-us	     18156 p99-us	       137.0 requests/s	13390643 B/op	   24336 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      37	   6898192 ns/op	        37.00 latency-samples	      6508 p50-us	     12351 p95-us	     16907 p99-us	       145.0 requests/s	13248724 B/op	   24335 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      37	   7127076 ns/op	        37.00 latency-samples	      6451 p50-us	     14903 p95-us	     19327 p99-us	       140.3 requests/s	13248915 B/op	   24334 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      37	   7371619 ns/op	        37.00 latency-samples	      6133 p50-us	     14996 p95-us	     15951 p99-us	       135.7 requests/s	13390294 B/op	   24334 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      34	   9038721 ns/op	        34.00 latency-samples	      6417 p50-us	     18116 p95-us	     31557 p99-us	       110.6 requests/s	13236326 B/op	   24335 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      36	   8115628 ns/op	        36.00 latency-samples	      6318 p50-us	     16400 p95-us	     21863 p99-us	       123.2 requests/s	13244935 B/op	   24336 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      28	   7998300 ns/op	        28.00 latency-samples	      6505 p50-us	     19284 p95-us	     20830 p99-us	       125.0 requests/s	13390675 B/op	   24337 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      37	   7541995 ns/op	        37.00 latency-samples	      6170 p50-us	     18988 p95-us	     31265 p99-us	       132.6 requests/s	13248492 B/op	   24336 allocs/op
+BenchmarkProfileSyncPage/10000/0-24      	      36	   7299097 ns/op	        36.00 latency-samples	      6134 p50-us	     14044 p95-us	     21440 p99-us	       137.0 requests/s	13389926 B/op	   24333 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	     100	   2749792 ns/op	       100.0 latency-samples	      2132 p50-us	      6441 p95-us	     14039 p99-us	       363.7 requests/s	 4157320 B/op	   20821 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	     100	   2793986 ns/op	       100.0 latency-samples	      2034 p50-us	      8114 p95-us	     12841 p99-us	       357.9 requests/s	 4157698 B/op	   20821 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	     100	   3208140 ns/op	       100.0 latency-samples	      2082 p50-us	     13281 p95-us	     15648 p99-us	       311.7 requests/s	 4157741 B/op	   20819 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	     100	   2691468 ns/op	       100.0 latency-samples	      2005 p50-us	      6519 p95-us	     15871 p99-us	       371.5 requests/s	 4157556 B/op	   20821 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	     100	   2566350 ns/op	       100.0 latency-samples	      2042 p50-us	      4035 p95-us	     13309 p99-us	       389.7 requests/s	 4157754 B/op	   20822 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	      93	   2470941 ns/op	        93.00 latency-samples	      2002 p50-us	      6192 p95-us	     14729 p99-us	       404.7 requests/s	 4158088 B/op	   20820 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	     100	   2594564 ns/op	       100.0 latency-samples	      2203 p50-us	      5636 p95-us	     11967 p99-us	       385.4 requests/s	 4156862 B/op	   20820 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	      72	   2950982 ns/op	        72.00 latency-samples	      2039 p50-us	     10223 p95-us	     14486 p99-us	       338.9 requests/s	 4157881 B/op	   20821 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	     100	   2856815 ns/op	       100.0 latency-samples	      2030 p50-us	      8510 p95-us	     13185 p99-us	       350.0 requests/s	 4157241 B/op	   20820 allocs/op
+BenchmarkProfileSyncPage/10000/90-24     	     100	   2662156 ns/op	       100.0 latency-samples	      2122 p50-us	      5333 p95-us	     12139 p99-us	       375.6 requests/s	 4157661 B/op	   20820 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     186	   1152931 ns/op	       186.0 latency-samples	      1043 p50-us	      2242 p95-us	      5805 p99-us	       867.4 requests/s	 1777523 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     211	   1353603 ns/op	       211.0 latency-samples	      1000 p50-us	      3470 p95-us	     11511 p99-us	       738.8 requests/s	 1777624 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     207	   1361852 ns/op	       207.0 latency-samples	      1000 p50-us	      4063 p95-us	     11092 p99-us	       734.3 requests/s	 1777507 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     175	   1349021 ns/op	       175.0 latency-samples	      1000 p50-us	      4854 p95-us	     10510 p99-us	       741.3 requests/s	 1777573 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     171	   1269582 ns/op	       171.0 latency-samples	      1000 p50-us	      3809 p95-us	      9412 p99-us	       787.7 requests/s	 1777555 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     198	   1346311 ns/op	       198.0 latency-samples	      1000 p50-us	      3844 p95-us	     13946 p99-us	       742.8 requests/s	 1777616 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     172	   1207217 ns/op	       172.0 latency-samples	      1000 p50-us	      2516 p95-us	      8503 p99-us	       828.4 requests/s	 1777524 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     190	   1568696 ns/op	       190.0 latency-samples	      1000 p50-us	      6316 p95-us	     13546 p99-us	       637.5 requests/s	 1777606 B/op	   19902 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     195	   1335670 ns/op	       195.0 latency-samples	      1000 p50-us	      5292 p95-us	     10503 p99-us	       748.7 requests/s	 1777532 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/99-24     	     194	   1239389 ns/op	       194.0 latency-samples	      1001 p50-us	      2059 p95-us	      9836 p99-us	       806.8 requests/s	 1777602 B/op	   19901 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     184	   1284555 ns/op	       184.0 latency-samples	      1000 p50-us	      3045 p95-us	     12320 p99-us	       778.5 requests/s	 1531763 B/op	   19770 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     171	   1245826 ns/op	       171.0 latency-samples	      1000 p50-us	      4076 p95-us	      8849 p99-us	       802.7 requests/s	 1532050 B/op	   19770 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     208	   1280527 ns/op	       208.0 latency-samples	      1000 p50-us	      3787 p95-us	     10064 p99-us	       780.9 requests/s	 1532219 B/op	   19771 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     241	   1131677 ns/op	       241.0 latency-samples	      1000 p50-us	      2508 p95-us	      8010 p99-us	       883.6 requests/s	 1532176 B/op	   19771 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     201	   1347541 ns/op	       201.0 latency-samples	      1000 p50-us	      4784 p95-us	     10060 p99-us	       742.1 requests/s	 1532073 B/op	   19771 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     194	   1156935 ns/op	       194.0 latency-samples	      1000 p50-us	      2512 p95-us	      6509 p99-us	       864.4 requests/s	 1531969 B/op	   19770 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     216	   1070849 ns/op	       216.0 latency-samples	       999.7 p50-us	      2514 p95-us	      6003 p99-us	       933.8 requests/s	 1532170 B/op	   19771 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     169	   1226257 ns/op	       169.0 latency-samples	       999.5 p50-us	      5438 p95-us	      9954 p99-us	       815.5 requests/s	 1532081 B/op	   19770 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     195	   1306375 ns/op	       195.0 latency-samples	      1000 p50-us	      2870 p95-us	     10588 p99-us	       765.5 requests/s	 1531911 B/op	   19770 allocs/op
+BenchmarkProfileSyncPage/10000/100-24    	     204	   1181221 ns/op	       204.0 latency-samples	      1000 p50-us	      2850 p95-us	      9076 p99-us	       846.6 requests/s	 1532080 B/op	   19770 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      15	  13796873 ns/op	        15.00 latency-samples	     13015 p50-us	     18533 p95-us	     18533 p99-us	        72.48 requests/s	27060846 B/op	  204326 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      18	  12936606 ns/op	        18.00 latency-samples	     13041 p50-us	     16196 p95-us	     16196 p99-us	        77.30 requests/s	27060137 B/op	  204326 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      18	  12981039 ns/op	        18.00 latency-samples	     13101 p50-us	     16613 p95-us	     16613 p99-us	        77.04 requests/s	27060196 B/op	  204326 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      16	  13073662 ns/op	        16.00 latency-samples	     12456 p50-us	     21662 p95-us	     21662 p99-us	        76.49 requests/s	27059614 B/op	  204325 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      16	  13048400 ns/op	        16.00 latency-samples	     13098 p50-us	     15860 p95-us	     15860 p99-us	        76.64 requests/s	27060450 B/op	  204327 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      18	  13144050 ns/op	        18.00 latency-samples	     13106 p50-us	     16224 p95-us	     16224 p99-us	        76.08 requests/s	27059941 B/op	  204326 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      16	  13197206 ns/op	        16.00 latency-samples	     13240 p50-us	     19422 p95-us	     19422 p99-us	        75.77 requests/s	27059403 B/op	  204325 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      18	  13100133 ns/op	        18.00 latency-samples	     12962 p50-us	     16592 p95-us	     16592 p99-us	        76.34 requests/s	27059698 B/op	  204326 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      18	  13321633 ns/op	        18.00 latency-samples	     13048 p50-us	     17175 p95-us	     17175 p99-us	        75.07 requests/s	27059507 B/op	  204325 allocs/op
+BenchmarkProfileSyncPage/100000/0-24     	      16	  13094150 ns/op	        16.00 latency-samples	     13050 p50-us	     15148 p95-us	     15148 p99-us	        76.37 requests/s	27059979 B/op	  204325 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      18	  13368489 ns/op	        18.00 latency-samples	     13105 p50-us	     17561 p95-us	     17561 p99-us	        74.80 requests/s	27043016 B/op	  204255 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      16	  13277600 ns/op	        16.00 latency-samples	     13716 p50-us	     16814 p95-us	     16814 p99-us	        75.31 requests/s	27043107 B/op	  204254 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      16	  13276719 ns/op	        16.00 latency-samples	     12732 p50-us	     15274 p95-us	     15274 p99-us	        75.32 requests/s	27043142 B/op	  204255 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      16	  13559931 ns/op	        16.00 latency-samples	     13464 p50-us	     15932 p95-us	     15932 p99-us	        73.75 requests/s	27042851 B/op	  204253 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      15	  13548980 ns/op	        15.00 latency-samples	     13601 p50-us	     20089 p95-us	     20089 p99-us	        73.81 requests/s	27042990 B/op	  204254 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      16	  13587012 ns/op	        16.00 latency-samples	     13560 p50-us	     23107 p95-us	     23107 p99-us	        73.60 requests/s	27042736 B/op	  204254 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      16	  13319831 ns/op	        16.00 latency-samples	     13465 p50-us	     18254 p95-us	     18254 p99-us	        75.08 requests/s	27043176 B/op	  204255 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      16	  13679556 ns/op	        16.00 latency-samples	     13516 p50-us	     18629 p95-us	     18629 p99-us	        73.10 requests/s	27042609 B/op	  204253 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      16	  13520412 ns/op	        16.00 latency-samples	     13826 p50-us	     16133 p95-us	     16133 p99-us	        73.96 requests/s	27043197 B/op	  204258 allocs/op
+BenchmarkProfileSyncPage/100000/90-24    	      16	  13986644 ns/op	        16.00 latency-samples	     13565 p50-us	     18110 p95-us	     18110 p99-us	        71.50 requests/s	27042551 B/op	  204255 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      22	  10274064 ns/op	        22.00 latency-samples	     10420 p50-us	     13167 p95-us	     13308 p99-us	        97.33 requests/s	17831122 B/op	  200819 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      20	  10370445 ns/op	        20.00 latency-samples	      9135 p50-us	     15134 p95-us	     16958 p99-us	        96.43 requests/s	17830656 B/op	  200817 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      20	  10410525 ns/op	        20.00 latency-samples	      9713 p50-us	     14571 p95-us	     14733 p99-us	        96.06 requests/s	17830632 B/op	  200817 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      22	   9920614 ns/op	        22.00 latency-samples	      9312 p50-us	     12566 p95-us	     13001 p99-us	       100.8 requests/s	17831072 B/op	  200818 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      22	  10007959 ns/op	        22.00 latency-samples	      9418 p50-us	     12042 p95-us	     14711 p99-us	        99.92 requests/s	17830729 B/op	  200817 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      21	   9992933 ns/op	        21.00 latency-samples	      9827 p50-us	     13928 p95-us	     13950 p99-us	       100.1 requests/s	17831475 B/op	  200820 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      22	  10173568 ns/op	        22.00 latency-samples	      9544 p50-us	     12516 p95-us	     13795 p99-us	        98.29 requests/s	17830725 B/op	  200817 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      21	  10191652 ns/op	        21.00 latency-samples	      9391 p50-us	     12959 p95-us	     13080 p99-us	        98.12 requests/s	17830948 B/op	  200819 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      22	  10232100 ns/op	        22.00 latency-samples	      9749 p50-us	     14133 p95-us	     14813 p99-us	        97.73 requests/s	17831183 B/op	  200819 allocs/op
+BenchmarkProfileSyncPage/100000/99-24    	      21	  10120333 ns/op	        21.00 latency-samples	      9893 p50-us	     13342 p95-us	     14393 p99-us	        98.81 requests/s	17830917 B/op	  200818 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      26	   8803438 ns/op	        26.00 latency-samples	      8507 p50-us	     11483 p95-us	     11546 p99-us	       113.6 requests/s	15209004 B/op	  199773 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      26	   8863315 ns/op	        26.00 latency-samples	      8509 p50-us	     11146 p95-us	     13417 p99-us	       112.8 requests/s	15209038 B/op	  199773 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      26	   8795135 ns/op	        26.00 latency-samples	      8297 p50-us	     10628 p95-us	     15903 p99-us	       113.7 requests/s	15208953 B/op	  199772 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      26	   8904519 ns/op	        26.00 latency-samples	      8127 p50-us	     12373 p95-us	     12700 p99-us	       112.3 requests/s	15208900 B/op	  199771 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      26	   8710015 ns/op	        26.00 latency-samples	      8394 p50-us	     10771 p95-us	     11509 p99-us	       114.8 requests/s	15208879 B/op	  199771 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      27	   8919170 ns/op	        27.00 latency-samples	      8512 p50-us	     12039 p95-us	     14212 p99-us	       112.1 requests/s	15208907 B/op	  199772 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      26	   8781850 ns/op	        26.00 latency-samples	      8481 p50-us	     12285 p95-us	     14988 p99-us	       113.9 requests/s	15208979 B/op	  199772 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      25	   8756176 ns/op	        25.00 latency-samples	      8750 p50-us	     13469 p95-us	     13537 p99-us	       114.2 requests/s	15209072 B/op	  199772 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      25	   9373276 ns/op	        25.00 latency-samples	      8632 p50-us	     13942 p95-us	     14463 p99-us	       106.7 requests/s	15209102 B/op	  199773 allocs/op
+BenchmarkProfileSyncPage/100000/100-24   	      25	   8954464 ns/op	        25.00 latency-samples	      8506 p50-us	     11066 p95-us	     15797 p99-us	       111.7 requests/s	15209059 B/op	  199772 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      14	  19137379 ns/op	     10000 records/op	   2336795 snapshot-bytes	30971543 B/op	   69505 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      10	  21074150 ns/op	     10000 records/op	   2336795 snapshot-bytes	30971521 B/op	   69503 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      10	  20805060 ns/op	     10000 records/op	   2336795 snapshot-bytes	30970273 B/op	   69498 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      18	  19060950 ns/op	     10000 records/op	   2336795 snapshot-bytes	30972221 B/op	   69502 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      15	  20466280 ns/op	     10000 records/op	   2336795 snapshot-bytes	30624156 B/op	   69506 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      15	  20402580 ns/op	     10000 records/op	   2336795 snapshot-bytes	30970570 B/op	   69499 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      16	  19867725 ns/op	     10000 records/op	   2336795 snapshot-bytes	30971295 B/op	   69502 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      12	  18099075 ns/op	     10000 records/op	   2336795 snapshot-bytes	30973532 B/op	   69504 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      16	  19173831 ns/op	     10000 records/op	   2336795 snapshot-bytes	30971515 B/op	   69502 allocs/op
+BenchmarkMemoryHistoryPageTransfer/10K-24         	      14	  18886450 ns/op	     10000 records/op	   2336795 snapshot-bytes	30970825 B/op	   69501 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 318002800 ns/op	    100000 records/op	  23666798 snapshot-bytes	616863520 B/op	 4696156 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 317955800 ns/op	    100000 records/op	  23666798 snapshot-bytes	616862784 B/op	 4696137 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 315644800 ns/op	    100000 records/op	  23666798 snapshot-bytes	616871984 B/op	 4696137 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 307926600 ns/op	    100000 records/op	  23666798 snapshot-bytes	616859584 B/op	 4696093 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 306848400 ns/op	    100000 records/op	  23666798 snapshot-bytes	616863440 B/op	 4696143 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 312430000 ns/op	    100000 records/op	  23666798 snapshot-bytes	616862576 B/op	 4696136 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 302904100 ns/op	    100000 records/op	  23666798 snapshot-bytes	616861808 B/op	 4696123 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 307383100 ns/op	    100000 records/op	  23666798 snapshot-bytes	616860544 B/op	 4696109 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 307572300 ns/op	    100000 records/op	  23666798 snapshot-bytes	616860368 B/op	 4696106 allocs/op
+BenchmarkMemoryHistoryPageTransfer/100K-24        	       1	 304331500 ns/op	    100000 records/op	  23666798 snapshot-bytes	616864480 B/op	 4696154 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/memory	33.440s

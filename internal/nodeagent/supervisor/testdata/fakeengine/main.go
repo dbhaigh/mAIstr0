@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"time"
 )
@@ -42,7 +43,6 @@ func main() {
 			}
 		}
 	case "tree":
-		time.Sleep(150 * time.Millisecond)
 		command := exec.Command(os.Args[0])
 		command.Env = childEnvironment(os.Environ())
 		if err := command.Start(); err != nil {
@@ -97,9 +97,9 @@ func writePID(path string, pids ...int) {
 }
 
 func waitForever() {
-	for {
-		time.Sleep(time.Hour)
-	}
+	interrupted := make(chan os.Signal, 1)
+	signal.Notify(interrupted, os.Interrupt)
+	<-interrupted
 }
 
 func childEnvironment(environment []string) []string {

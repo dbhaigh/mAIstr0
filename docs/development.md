@@ -31,10 +31,18 @@ go test ./...
 node --test web/app_test.js
 ```
 
+Check local Markdown links and heading fragments with:
+
+```sh
+python scripts/check_doc_links.py
+```
+
 The Go suite includes contract, integration, and deterministic simulated-engine
-tests. The race detector needs cgo and a working C compiler. Run it with the
-helper scripts, which accept optional packages and `go test` flags (default
-`./...`):
+tests. The race detector needs cgo and a working C compiler. CI also runs a
+short shuffled suite to expose order-dependent tests. See
+[Test health and determinism](./test-health.md) for the audited test seams and
+current package timings. Run the race detector with the helper scripts, which
+accept optional packages and `go test` flags (default `./...`):
 
 ```sh
 ./build/test-race.sh            # Linux/macOS
@@ -223,14 +231,13 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
 
 ### Rapid iteration releases
 
-The source release number is now `0.1.0`, a three-component SemVer minor
-release. Normal minor releases increment the second component and reset the
-patch and optional iteration components. For explicitly requested rapid
-iterations, append/increment a fourth numeric component (`0.1.0.1`, ...,
-`0.1.0.10`); use the next third component for a new patch series. The optional
-four-component convention is not SemVer. Peer manifests accept both three and four
-components and compare components numerically, with an omitted fourth
-component treated as zero.
+The source release number is now `0.1.1`, a three-component SemVer patch
+release. Patch releases increment the third component; minor releases increment
+the second component and reset the patch and optional iteration components.
+For explicitly requested rapid iterations, append/increment a fourth numeric
+component (`0.1.1.1`, ..., `0.1.1.10`). The optional four-component convention
+is not SemVer. Peer manifests accept both three and four components and compare
+components numerically, with an omitted fourth component treated as zero.
 
 The release workflow detects four-component tags and uses the repository
 build scripts plus GitHub CLI packaging; ordinary three-component tags

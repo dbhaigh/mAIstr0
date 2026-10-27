@@ -1,9 +1,13 @@
+import { fetchJSON } from "../shared/api.js";
+import { escapeHtml, formatBytes } from "../shared/format.js";
+import { dashboardState } from "../shared/state.js";
+
 const pipelineModelList = document.getElementById("pipeline-model-list");
 const pipelineActionStatus = document.getElementById("pipeline-action-status");
 const pipelineActions = new Map();
 let pipelineActionMessage = "";
 
-function renderPipelineDashboard(models, pipelines) {
+export function renderPipelineDashboard(models, pipelines) {
   if (!pipelineModelList) return;
   const focusedModel = pipelineModelList.contains(document.activeElement)
     ? document.activeElement?.dataset?.reshardModel

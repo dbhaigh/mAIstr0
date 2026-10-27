@@ -2,15 +2,18 @@ package nodeagent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -21,6 +24,7 @@ import (
 type syncTrafficRoundTripper struct {
 	requestBytes  atomic.Int64
 	responseBytes atomic.Int64
+	peerVersion   int
 }
 
 func (t *syncTrafficRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -38,6 +42,12 @@ func (t *syncTrafficRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	t.requestBytes.Add(syncTrafficRequestSize(req, len(requestBody)))
 
 	version, _ := strconv.Atoi(req.Header.Get(memory.SyncVersionHeader))
+	if version <= 0 {
+		version = memory.FirstSyncProtocolVersion
+	}
+	if t.peerVersion > 0 && t.peerVersion < version {
+		version = t.peerVersion
+	}
 	headers := make(http.Header)
 	headers.Set("Date", "Wed, 21 Oct 2026 00:00:00 GMT")
 
@@ -45,10 +55,10 @@ func (t *syncTrafficRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	var responseBody []byte
 	switch {
 	case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/memory/sync"):
-		if err := memory.SetSyncHeaders(headers, map[string]uint64{}); err != nil {
+		if err := memory.SetSyncHeadersVersion(headers, map[string]uint64{}, version); err != nil {
 			return nil, err
 		}
-		if version >= 3 {
+		if memory.SupportsEmptySync(version) {
 			statusCode = http.StatusNoContent
 		} else {
 			responseBody, _ = json.Marshal(memory.Snapshot{
@@ -56,17 +66,17 @@ func (t *syncTrafficRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 				Facts:        []memory.Fact{},
 				Performances: []memory.Performance{},
 				Dialogues:    []memory.DialogueRecord{},
-				SyncVersion:  memory.SyncProtocolVersion,
+				SyncVersion:  version,
 				Watermarks:   map[string]uint64{},
 			})
 			headers.Set("Content-Type", "application/json")
 			headers.Set("Content-Length", strconv.Itoa(len(responseBody)))
 		}
 	case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/tasks"):
-		if err := memory.SetSyncHeaders(headers, map[string]uint64{}); err != nil {
+		if err := memory.SetSyncHeadersVersion(headers, map[string]uint64{}, version); err != nil {
 			return nil, err
 		}
-		if version >= 3 {
+		if memory.SupportsEmptySync(version) {
 			statusCode = http.StatusNoContent
 		} else {
 			responseBody = []byte("[]")
@@ -125,6 +135,18 @@ func syncTrafficHeaderSize(headers http.Header) int64 {
 }
 
 func BenchmarkIdleSyncTraffic5Node(b *testing.B) {
+	benchmarkIdleSyncTraffic(b, 5, memory.SyncProtocolVersion)
+}
+
+func BenchmarkIdleSyncTraffic3Node(b *testing.B) {
+	for _, peerVersion := range []int{memory.SyncPageProtocolVersion, memory.SyncProtocolVersion} {
+		b.Run(fmt.Sprintf("peer-v%d", peerVersion), func(b *testing.B) {
+			benchmarkIdleSyncTraffic(b, 3, peerVersion)
+		})
+	}
+}
+
+func benchmarkIdleSyncTraffic(b *testing.B, nodeCount, peerVersion int) {
 	oldLogOutput := log.Writer()
 	log.SetOutput(io.Discard)
 	b.Cleanup(func() { log.SetOutput(oldLogOutput) })
@@ -135,9 +157,9 @@ func BenchmarkIdleSyncTraffic5Node(b *testing.B) {
 	}
 	defer closeutil.Discard(tasks)
 
-	transport := &syncTrafficRoundTripper{}
+	transport := &syncTrafficRoundTripper{peerVersion: peerVersion}
 	client := &http.Client{Transport: transport}
-	peers := make([]cluster.NodeStatus, 4)
+	peers := make([]cluster.NodeStatus, nodeCount-1)
 	for i := range peers {
 		peers[i] = cluster.NodeStatus{
 			ID:      fmt.Sprintf("peer-%d", i),
@@ -172,8 +194,79 @@ func BenchmarkIdleSyncTraffic5Node(b *testing.B) {
 
 	memoryPerCycle := float64(memoryBytes) / float64(b.N)
 	taskPerCycle := float64(taskBytes) / float64(b.N)
+	workPerCycle := float64(b.Elapsed().Nanoseconds()) / float64(b.N)
 	b.ReportMetric(memoryPerCycle, "memory-bytes/cycle")
 	b.ReportMetric(taskPerCycle, "task-bytes/cycle")
-	b.ReportMetric(memoryPerCycle/30+taskPerCycle/15, "bytes/s-30s-memory")
-	b.ReportMetric(memoryPerCycle/15+taskPerCycle/15, "bytes/s-15s-memory")
+	b.ReportMetric((memoryPerCycle+taskPerCycle)/60, "bytes/s-at-60s-backstop")
+	b.ReportMetric(workPerCycle/1e6, "cpu-ms/min-at-60s-backstop")
+}
+
+func BenchmarkTaskHistoryTransfer10K(b *testing.B) {
+	tasks := make([]*taskmgr.Task, 10_000)
+	createdAt := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	description := strings.Repeat("Representative completed task history record. ", 3)
+	for i := range tasks {
+		tasks[i] = &taskmgr.Task{
+			ID:          fmt.Sprintf("task-%05d", i+1),
+			Origin:      "task:worker-a",
+			Sequence:    uint64(i + 1),
+			Description: description,
+			Status:      taskmgr.StatusCompleted,
+			CreatedAt:   createdAt,
+			UpdatedAt:   createdAt,
+		}
+	}
+	jsonBody, err := json.Marshal(tasks)
+	if err != nil {
+		b.Fatal(err)
+	}
+	watermarks := taskmgr.SnapshotWatermarks(tasks)
+
+	for _, peerVersion := range []int{memory.SyncPageProtocolVersion, memory.SyncProtocolVersion} {
+		b.Run(fmt.Sprintf("peer-v%d", peerVersion), func(b *testing.B) {
+			var requestBytes atomic.Int64
+			var bodyBytes atomic.Int64
+			handlerErrors := make(chan error, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n, err := io.Copy(io.Discard, r.Body)
+				if err != nil {
+					select {
+					case handlerErrors <- err:
+					default:
+					}
+				} else {
+					bodyBytes.Add(n)
+					requestBytes.Add(syncTrafficRequestSize(r, int(n)))
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+			client := server.Client()
+			ctx := context.Background()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := postTaskSnapshotPagesWithContext(
+					ctx,
+					client,
+					server.URL+"/tasks/replica",
+					tasks,
+					watermarks,
+					maxTaskSyncBodyBytes,
+					peerVersion,
+				); err != nil {
+					b.Fatal(err)
+				}
+				select {
+				case err := <-handlerErrors:
+					b.Fatal(err)
+				default:
+				}
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(len(jsonBody)), "json-bytes")
+			b.ReportMetric(float64(bodyBytes.Load())/float64(b.N), "body-bytes/op")
+			b.ReportMetric(float64(requestBytes.Load())/float64(b.N), "request-bytes/op")
+		})
+	}
 }

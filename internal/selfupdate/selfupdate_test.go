@@ -220,6 +220,8 @@ func TestReplacementHelperPreservesArgumentsAndBackup(t *testing.T) {
 		t.Fatalf("launch parent: %v\n%s", err, output)
 	}
 	deadline := time.Now().Add(10 * time.Second)
+	poll := time.NewTicker(20 * time.Millisecond)
+	defer poll.Stop()
 	var result struct {
 		Version, Directory string
 		Args               []string
@@ -233,7 +235,7 @@ func TestReplacementHelperPreservesArgumentsAndBackup(t *testing.T) {
 			log, _ := os.ReadFile(target + ".peer-update.log")
 			t.Fatalf("replacement did not restart: %v\n%s", err, log)
 		}
-		time.Sleep(20 * time.Millisecond)
+		<-poll.C
 	}
 	if result.Version != "9.0.1" || result.Directory != root || len(result.Args) != 2 || result.Args[1] != record {
 		t.Fatalf("restart lost version/arguments/cwd: %+v", result)
@@ -283,7 +285,7 @@ func TestReplacementHelperPreservesArgumentsAndBackup(t *testing.T) {
 				log, _ := os.ReadFile(installed + ".peer-update.log")
 				t.Fatalf("original did not restart after blocked replacement: %s", log)
 			}
-			time.Sleep(20 * time.Millisecond)
+			<-poll.C
 		}
 		if recovered.Version != "9.0.0" {
 			t.Fatalf("recovered wrong executable: %+v", recovered)
@@ -296,7 +298,7 @@ func TestReplacementHelperPreservesArgumentsAndBackup(t *testing.T) {
 			if time.Now().After(deadline) {
 				t.Fatalf("helper did not exit: %v", err)
 			}
-			time.Sleep(20 * time.Millisecond)
+			<-poll.C
 		}
 	})
 }

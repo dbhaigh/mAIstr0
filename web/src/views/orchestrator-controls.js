@@ -1,7 +1,43 @@
-async function activateAgentTab(harness) {
+import { refresh } from "../app.js";
+import { loadPairingStatus } from "../components/pairing-dialog.js";
+import { fetchJSON } from "../shared/api.js";
+import {
+  activeChatMode,
+  activeSessionIds,
+  agentHarnessSelect,
+  agentHarnessStatus,
+  agentModelSelect,
+  agentSettingsTitle,
+  agentSidebar,
+  agentStepsSelect,
+  agentSupportsCoordinatorModel,
+  agentTabs,
+  agentToolsList,
+  chatInput,
+  clearDirectChatBtn,
+  currentAgentHarness,
+  dashboardState,
+  isSending,
+  newSessionBtn,
+  pairingAddress,
+  pairingCode,
+  pairingConnectButton,
+  pairingConnectDialog,
+  pairingConnectForm,
+  pairingFingerprint,
+  pairingState,
+  pairingStatus,
+  sendMsgBtn,
+  sessionListEl,
+  setActiveChatMode,
+} from "../shared/state.js";
+import { renderDirectMessages } from "./orchestrator-chat.js";
+import { applyAgentBackend, createNewSession, loadAgentTools, loadClusterModels, renderSessionList, selectSession, sessionsForHarness } from "./orchestrator-sessions.js";
+
+export async function activateAgentTab(harness) {
   if (isSending) return;
   const previousMode = activeChatMode;
-  activeChatMode = harness;
+  setActiveChatMode(harness);
   if (newSessionBtn) newSessionBtn.disabled = true;
   if (agentHarnessSelect) agentHarnessSelect.disabled = true;
   agentTabs.forEach((tab) => {
@@ -33,7 +69,7 @@ async function activateAgentTab(harness) {
   } catch (err) {
     console.error("failed to switch agent tab", err);
     if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not switch agent: ${err.message}`;
-    activeChatMode = previousMode;
+    setActiveChatMode(previousMode);
     setAgentConsoleMode(previousMode);
     agentTabs.forEach((tab) => {
       const active = tab.dataset.agent === previousMode;
@@ -49,7 +85,7 @@ async function activateAgentTab(harness) {
   }
 }
 
-function setAgentConsoleMode(mode) {
+export function setAgentConsoleMode(mode) {
   const direct = mode === "direct";
   const sessionSection = sessionListEl?.closest(".sidebar-section");
   const settingsSection = agentSettingsTitle?.closest(".sidebar-section");
@@ -94,9 +130,9 @@ function setAgentConsoleMode(mode) {
   }
 }
 
-function activateDirectChat() {
+export function activateDirectChat() {
   if (isSending) return;
-  activeChatMode = "direct";
+  setActiveChatMode("direct");
   agentTabs.forEach((tab) => {
     const active = tab.dataset.agent === "direct";
     tab.classList.toggle("active", active);

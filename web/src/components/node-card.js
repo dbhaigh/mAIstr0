@@ -1,4 +1,7 @@
-function engineStatusSummaryMarkup(engines) {
+import { escapeHtml } from "../shared/format.js";
+import { dashboardViewModel } from "../shared/view-model.js";
+
+export function engineStatusSummaryMarkup(engines) {
   if (!Array.isArray(engines) || !engines.length) {
     return '<span class="engine-status-empty">No engines reported</span>';
   }
@@ -16,7 +19,7 @@ function engineStatusSummaryMarkup(engines) {
   }).join("")}</div>`;
 }
 
-function engineStatusDetailsMarkup(engines) {
+export function engineStatusDetailsMarkup(engines) {
   if (!Array.isArray(engines) || !engines.length) {
     return '<p class="engine-inventory-empty">No engine inventory status has been reported.</p>';
   }
@@ -45,7 +48,7 @@ function engineStatusDetailsMarkup(engines) {
   </section>`;
 }
 
-function nodeContextDetailsMarkup(node, expanded) {
+export function nodeContextDetailsMarkup(node, expanded) {
   const models = (node.models || []).map((model) => {
     const tags = Array.isArray(model.tags) && model.tags.length ? model.tags.join(", ") : "general";
     const engine = model.engine ? ` · ${escapeHtml(model.engine)}` : "";

@@ -1,4 +1,7 @@
-function isClusterStatusQuestion(text) {
+import { fetchJSON } from "../shared/api.js";
+import { dashboardViewModel } from "../shared/view-model.js";
+
+export function isClusterStatusQuestion(text) {
   const query = text.toLowerCase();
   const subject = /\b(cluster|nodes?|workers?|orchestrators?|peers?|engines?|models?|llms?|gpus?|npus?|cpus?|ram|vram|memory|hardware|capacity|telemetry|shards?|pipelines?|tasks?|queues?|versions?|leader|leadership|maistr0|network)\b/.test(query);
   const read = /^(?:(?:hi|hello|please)[,.! ]+)*(?:what|which|who|where|when|why|how|is|are|do|does|can|could|would|has|have|show|list|tell|check|inspect|describe|compare|report|status|cluster)\b/.test(query.trim()) ||
@@ -10,7 +13,7 @@ function isClusterStatusQuestion(text) {
   return subject && read && !mutation;
 }
 
-async function answerClusterStatusQuestion(nodes) {
+export async function answerClusterStatusQuestion(nodes) {
   const sources = [
     ["/api/cluster/health", "Capacity and telemetry"],
     ["/api/status", "Orchestrator status"],

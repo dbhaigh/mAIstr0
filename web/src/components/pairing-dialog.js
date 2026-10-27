@@ -1,4 +1,9 @@
-function openPairingDialog(node = null) {
+import { refresh } from "../app.js";
+import { fetchJSON } from "../shared/api.js";
+import { dashboardState, pairingAddress, pairingAddressDisplay, pairingAddressField, pairingCode, pairingConnectButton, pairingConnectDialog, pairingConnectOpenBtn, pairingFingerprint, pairingFingerprintDisplay, pairingInstructions, pairingInvitationAcceptBtn, pairingInvitationDeclineBtn, pairingInvitationDetails, pairingInvitationDialog, pairingInvitationFingerprint, pairingInvitationStatus, pairingNodeConnect, pairingPin, pairingPinExpiry, pairingPinRegenerateBtn, pairingPinView, pairingState, pairingStatus } from "../shared/state.js";
+import { dashboardViewModel } from "../shared/view-model.js";
+
+export function openPairingDialog(node = null) {
   if (!pairingConnectDialog || pairingConnectDialog.open) return;
   if (dashboardState.pairing.status?.role === "node" && node?.id === dashboardState.pairing.status.node_id) {
     node = null;
@@ -80,7 +85,7 @@ pairingPinRegenerateBtn?.addEventListener("click", async () => {
   }
 });
 
-async function loadPairingStatus() {
+export async function loadPairingStatus() {
   try {
     const status = await fetchJSON("/api/pairing/status");
     if (status.dashboard_url) {

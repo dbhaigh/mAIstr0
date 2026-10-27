@@ -25,6 +25,7 @@ type electionComponent struct {
 	selfID           string
 	selfScore        float64
 	discoveryEnabled bool
+	discoveryHMACKey []byte
 	// leaderMu protects leader-change logging state; it is not nested with registry or discovery access.
 	leaderMu        sync.Mutex
 	lastLeaderID    string
@@ -40,6 +41,7 @@ type electionComponent struct {
 type electionAPI interface {
 	setIdentity(interface{ IsTrustedID(string) bool })
 	setDiscoveryEnabled(bool)
+	setDiscoveryHMACKey([]byte)
 	setDiscovery(*discovery.Listener)
 	discoverySnapshot() []discovery.Peer
 	hasDiscovery() bool
@@ -82,6 +84,10 @@ func (e *electionComponent) setDiscoveryEnabled(enabled bool) {
 	e.discoveryEnabled = enabled
 }
 
+func (e *electionComponent) setDiscoveryHMACKey(key []byte) {
+	e.discoveryHMACKey = append(e.discoveryHMACKey[:0], key...)
+}
+
 func (e *electionComponent) setDiscovery(listener *discovery.Listener) {
 	if listener == nil {
 		e.discovery = nil
@@ -106,7 +112,7 @@ func (e *electionComponent) startBeacon(ctx context.Context, listenAddr string) 
 		return nil
 	}
 	if e.discovery == nil {
-		e.ownedDiscovery = discovery.Listen(e.selfID)
+		e.ownedDiscovery = discovery.ListenWithSecret(e.discoveryHMACKey, e.selfID)
 		e.discovery = e.ownedDiscovery
 	}
 	if err := e.discovery.WaitReady(2 * time.Second); err != nil {
@@ -117,14 +123,14 @@ func (e *electionComponent) startBeacon(ctx context.Context, listenAddr string) 
 	e.beaconDone = make(chan struct{})
 	go func() {
 		defer close(e.beaconDone)
-		discovery.Beacon(func() discovery.Announcement {
+		discovery.BeaconWithSecret(func() discovery.Announcement {
 			if e.retired.Load() {
 				return discovery.Announcement{}
 			}
 			ann := e.selfAnnouncement()
 			ann.HTTPAddr, ann.PeerAddr = selfAddr, peerAddr
 			return ann
-		}, 5*time.Second, ctx.Done())
+		}, 5*time.Second, ctx.Done(), e.discoveryHMACKey)
 	}()
 	return nil
 }

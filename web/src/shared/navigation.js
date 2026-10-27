@@ -1,3 +1,8 @@
+import { activateDashboardTab, activateWorkspacePanel } from "../app.js";
+import { openPairingDialog } from "../components/pairing-dialog.js";
+import { catalogEngineSelect, catalogNodeSelect, catalogSearch, clusterWindows, clusterWorkspaceTabs, navTabs, overviewPanels, overviewTabs, pairingConnectCancelBtn, pairingConnectDialog, pairingConnectOpenBtn, setupCheckBtn, setupPanels, setupTabs, tabContents } from "./state.js";
+import { checkSetupReadiness, loadCatalogTarget, renderModelCatalog } from "../views/cluster-setup.js";
+
 function wirePrimaryTabs(tabs, panels) {
   const tabList = tabs[0]?.closest('[role="tablist"]');
   if (tabList) tabList.setAttribute("role", "tablist");

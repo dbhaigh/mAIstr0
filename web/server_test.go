@@ -13,7 +13,7 @@ import (
 func TestNewHandlerCompressedRepresentationsAndCaching(t *testing.T) {
 	const asset = "app.0123456789ab.js"
 	files := fstest.MapFS{
-		"index.html":  &fstest.MapFile{Data: []byte("<html></html>")},
+		"index.html":  &fstest.MapFile{Data: []byte(`<script src="/app.0123456789ab.js"></script>`)},
 		"app.js":      &fstest.MapFile{Data: []byte("stable script")},
 		asset:         &fstest.MapFile{Data: []byte("plain script")},
 		asset + ".br": &fstest.MapFile{Data: []byte("brotli representation")},
@@ -61,8 +61,55 @@ func TestNewHandlerCompressedRepresentationsAndCaching(t *testing.T) {
 	if got := stableResponse.Header().Get("Cache-Control"); got != "no-cache" {
 		t.Fatalf("stable asset Cache-Control = %q, want no-cache", got)
 	}
-	if got := stableResponse.Header().Get("Content-Encoding"); got != "" {
-		t.Fatalf("stable asset Content-Encoding = %q, want identity", got)
+	if got := stableResponse.Header().Get("Content-Encoding"); got != "br" {
+		t.Fatalf("stable alias Content-Encoding = %q, want br", got)
+	}
+	if got := stableResponse.Body.String(); got != "brotli representation" {
+		t.Fatalf("stable alias body = %q, want the hashed asset representation", got)
+	}
+}
+
+func TestNewHandlerAliasesAndCachesOnDemandGzip(t *testing.T) {
+	const app = "app.0123456789ab.js"
+	const style = "style.abcdef012345.css"
+	files := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte(`<script src="/app.0123456789ab.js"></script><link href="/style.abcdef012345.css">`)},
+		app:          &fstest.MapFile{Data: []byte("plain script")},
+		style:        &fstest.MapFile{Data: []byte("plain style")},
+	}
+	handler := NewHandler(files)
+
+	for _, path := range []struct {
+		url  string
+		body string
+	}{
+		{url: "/app.js", body: "plain script"},
+		{url: "/style.css", body: "plain style"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, path.url, nil)
+		request.Header.Set("Accept-Encoding", "gzip")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path.url, response.Code)
+		}
+		if got := response.Header().Get("Content-Encoding"); got != "gzip" {
+			t.Fatalf("%s Content-Encoding = %q, want gzip", path.url, got)
+		}
+		reader, err := gzip.NewReader(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(body); got != path.body {
+			t.Fatalf("%s body = %q, want %q", path.url, got, path.body)
+		}
+		if got := response.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("%s Cache-Control = %q, want no-cache for compatibility alias", path.url, got)
+		}
 	}
 }
 

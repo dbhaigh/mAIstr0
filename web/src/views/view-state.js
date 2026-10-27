@@ -1,3 +1,17 @@
+import { markDashboardSynced, refresh, refreshDiscovery, refreshTaskHistory, resetDashboardSignatures } from "../app.js";
+import { loadPairingStatus } from "../components/pairing-dialog.js";
+import {
+  activeChatMode,
+  activeSessionId,
+  directMessages,
+  setDirectMessages,
+} from "../shared/state.js";
+import { checkSetupReadiness, loadModelCatalog } from "./cluster-setup.js";
+import { refreshMemory } from "./memory.js";
+import { renderDirectMessages } from "./orchestrator-chat.js";
+import { selectSession } from "./orchestrator-sessions.js";
+import { refreshShardGroups } from "./shards.js";
+
 const VIEW_STATE_KEY = "maistr0.viewState";
 const DIRECT_CHAT_KEY = "maistr0.directChat";
 const MAX_SAVED_DIRECT_MESSAGES = 100;
@@ -52,7 +66,7 @@ function selectSavedTab(id) {
 function restoreViewState() {
   const messages = savedDirectMessages(readSessionJSON(DIRECT_CHAT_KEY));
   if (messages.length) {
-    directMessages = messages;
+    setDirectMessages(messages);
     if (activeChatMode === "direct") renderDirectMessages();
   }
   const saved = readSessionJSON(VIEW_STATE_KEY);
@@ -70,9 +84,7 @@ function activeSubPanel(selector) {
 }
 
 async function refreshActiveView() {
-  for (const key of Object.keys(window)) {
-    if (/^last\w*Signature$/.test(key)) window[key] = undefined;
-  }
+  resetDashboardSignatures();
   const primary = document.querySelector(".nav-tab.active")?.dataset.tab;
   if (primary === "memory-tab") return refreshMemory();
   if (primary === "agent-tab") {

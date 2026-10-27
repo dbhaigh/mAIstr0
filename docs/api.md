@@ -42,8 +42,10 @@ conversion. See [migration](./pairing-and-security.md#migration).
 - `GET /api/updates/binary` with the same query downloads that executable.
   Both listeners expose these read-only endpoints to paired mTLS peers
   (or local loopback). An unavailable target returns 404. No arbitrary
-  filesystem paths or download URLs are accepted. There is **no independent
-  release signature**; see the executable-trust warning in
+  filesystem paths or download URLs are accepted. The manifest may include an
+  Ed25519 `signature`; a receiving node configured with
+  `peer_update_publisher_key` requires and verifies it before staging. Without
+  that key, the legacy checksum-only behavior remains. See the executable-trust warning in
   [configuration](./configuration.md#automatic-peer-executable-updates).
 - `POST /api/shards/{id}/members` accepts
   `{ "node_ids": ["AHDEV01", "AHDT00"] }` and returns the ready group.
@@ -58,6 +60,16 @@ conversion. See [migration](./pairing-and-security.md#migration).
   remain visible on the saved group; inspect the error and use Start to retry.
   The existing pairing/current-authority fence and operation exclusion apply
   on both the coordinator and worker-dashboard forwarding route. reference
+
+## Discovery authentication status
+
+`GET /api/security/status` returns the local instance's discovery mode:
+`{"discovery_authentication":"unauthenticated"}` or
+`{"discovery_authentication":"hmac-sha256"}`. It never returns the configured
+secret. LAN announcements remain unauthenticated by default; when
+`discovery_hmac_secret` is configured, announcements include an HMAC and
+freshness timestamp, and listeners reject forged, stale, and replayed packets.
+See [pairing and security](./pairing-and-security.md#optional-lan-discovery-authentication).
 
 ## Automatic RPC worker installation
 
@@ -157,7 +169,9 @@ described in [Pairing and security](./pairing-and-security.md).
 - `POST /api/tasks/{id}/cancel` cancels work.
 - `POST /api/tasks/{id}/approve` resumes a task waiting for human approval.
 - `GET /api/status` reports service and persistence health.
-- `GET /api/events` streams cluster snapshots using SSE.
+- `GET /api/events` streams full cluster snapshots using SSE. Clients that
+  advertise gzip may receive a compressed HTTP stream; the decoded event data
+  and SSE framing are unchanged.
 
 For task planning, `"plan_mode":"auto"` is the recommended option. It asks a
 local coordinator model for a plan and caches successful plans in a bounded
@@ -168,10 +182,15 @@ dependencies.
 
 The automatic planner retries another advertised node/model if the selected
 coordinator model fails. If no candidate succeeds, the error is returned.
-The heuristic recognizes enumerations, comparisons, and “for each” work,
-and adds a final synthesis task for fan-out plans. Plans are checked for
-missing dependencies and cycles. Subtasks can specify roles, expected output,
-JSON output contracts, required fields, and bounded retries. Set
+The default heuristic recognizes enumerations (including semicolon-delimited
+topic lists), comparisons, “for each” work, supported action conjunctions, and
+explicit sequential cues. It infers researcher/reviewer roles for supported
+action wording and adds a final synthesis task for fan-out plans. The explicit
+`heuristic_v1` mode retains the legacy heuristic. See the
+[routing and decomposition evaluation](./routing-evaluation.md) for the
+synthetic fixture results. Plans are checked for missing dependencies and
+cycles. Subtasks can specify roles, expected output, JSON output contracts,
+required fields, and bounded retries. Set
 `"require_review":true` to require reviewer approval before synthesis, or
 `"require_approval":true` to pause completed work for a human. Approval state
 and outputs survive restarts.
@@ -248,7 +267,7 @@ incremental tokens.
 `DELETE /api/shards/{id}` is also forwarded by node-served dashboards. The
 dashboard exposes deletion for failed cards. A successful delete returns `204`;
 cleanup failures keep the group and return an error. Runtime installations and
-original weights are retained. See [using a shard group](../README.md#use-a-shard-group)
+original weights are retained. See [using a shard group](./dashboard.md#use-a-shard-group)
 for dashboard steps and a PowerShell request.
 
 `POST /api/shards/{id}/start`, `/stop`, and `/restart` require an empty body
@@ -323,3 +342,93 @@ OpenAI-compatible adapters are not production partial-layer backends. A stage
 failure cancels the request; live KV state is not migrated. See
 [Configuration](./configuration.md) for engine and sharded-model settings and
 [the shard planner guide](./shard-planner.md) for planning semantics.
+
+
+## Shard-group API examples
+
+The same create operation is available through the API. For example, after
+configuring the engines and choosing eligible node IDs, send this payload to
+`POST /api/shards` (replace the model metadata and IDs with actual values):
+
+```json
+{
+  "model": {
+    "name": "my-sharded-model",
+    "architecture": "llama",
+    "parameters": 7000000000,
+    "layer_count": 32,
+    "hidden_size": 4096,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "vocab_size": 32000,
+    "quantization": "q4_0",
+    "file_size_bytes": 4000000000,
+    "requested_context": 4096
+  },
+  "mode": "llamacpp-rpc",
+  "pinned_nodes": ["worker-1", "worker-2"]
+}
+```
+
+Save the JSON as `shard-group.json` and submit it with
+PowerShell's `curl.exe` (replace the URL with the orchestrator's listener URL):
+
+```powershell
+curl.exe --fail-with-body `
+  -H "Content-Type: application/json" `
+  --data-binary "@shard-group.json" `
+  "http://127.0.0.1:7450/api/shards"
+```
+
+A successful request returns `201` with the ready group. Check `GET /api/shards`
+or `GET /api/shards/{id}` for the plan, rationale, members, and state.
+
+Requests within a group are serialized. Member/process loss first produces `degraded`;
+the next health sweep tears down the group and marks it `failed`. Neither
+state accepts inference. Rebuild by creating a new group with the same model
+name after fixing the cause; a failed group may remain for diagnosis.
+`DELETE /api/shards/{id}` stops the head before workers and removes the record.
+Restart recovery verifies every member before restoring readiness.
+Automatic llama.cpp heads are also checked against the saved model's name and
+weight metadata. Starting a saved group restores its original local GGUF model
+if another stopped group reconfigured the shared automatic head. If those
+weights are no longer available, startup fails explicitly rather than running a
+different model under the saved name. Runtime health checks and inference reject
+mismatched heads; stop and start the group to restore the intended model.
+
+### Explicit shard chat request
+
+To explicitly select the group instead of using automatic task planning,
+   send an OpenAI-compatible request to the orchestrator's
+   `POST /v1/chat/completions` with the exact model name shown on its card.
+   For example, save this as `shard-chat.json`, replacing `model` with your
+   ready group's model:
+
+   ```json
+   {
+     "model": "Llama-3.2-3B-Instruct-Q4_K_M",
+     "messages": [
+       {"role": "user", "content": "<your prompt>"}
+     ],
+     "stream": false
+   }
+   ```
+
+   ```powershell
+   curl.exe --fail-with-body `
+     -H "Content-Type: application/json" `
+     --data-binary "@shard-chat.json" `
+     "http://127.0.0.1:7450/v1/chat/completions"
+   ```
+
+The equivalent API calls use an empty request body:
+
+```powershell
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/stop"
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/start"
+curl.exe --fail-with-body -X POST "http://127.0.0.1:7450/api/shards/GROUP_ID/restart"
+```
+
+Each successful call returns `200` and the updated group. Start on a ready
+group and stop on a stopped group are idempotent. Concurrent lifecycle
+operations return `409`.

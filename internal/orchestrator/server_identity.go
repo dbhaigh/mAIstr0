@@ -85,6 +85,11 @@ func (s *Server) IdentityCertificate() (string, error) {
 	return s.identity.CertificatePEM(), nil
 }
 
+// IdentityPath returns the configured persistent identity file path.
+func (s *Server) IdentityPath() string {
+	return s.identityPath
+}
+
 func (s *Server) TrustPeer(id, certificatePEM string) error {
 	if s.identity == nil {
 		return errors.New("orchestrator identity is not initialized")

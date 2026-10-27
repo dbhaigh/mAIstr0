@@ -5,6 +5,9 @@ package discovery
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -23,6 +26,7 @@ import (
 const Port = 7999
 
 const peerTTL = 15 * time.Second
+const announcementMaxClockSkew = 30 * time.Second
 
 // Announcement is broadcast periodically by every running instance.
 type Announcement struct {
@@ -34,6 +38,19 @@ type Announcement struct {
 	Members        int     `json:"members,omitempty"`
 	Elected        bool    `json:"elected,omitempty"`
 	OrchestratorID string  `json:"orchestrator_id,omitempty"`
+	IssuedAtUnixNS int64   `json:"issued_at_unix_nano,omitempty"`
+	HMACSHA256     string  `json:"hmac_sha256,omitempty"`
+}
+
+type SecurityStatus struct {
+	DiscoveryAuthentication string `json:"discovery_authentication"`
+}
+
+func SecurityStatusForKey(secret []byte) SecurityStatus {
+	if len(secret) != 0 {
+		return SecurityStatus{DiscoveryAuthentication: "hmac-sha256"}
+	}
+	return SecurityStatus{DiscoveryAuthentication: "unauthenticated"}
 }
 
 // Peer is a discovered instance, with the time we last heard from it.
@@ -49,7 +66,12 @@ type Listener struct {
 	done      chan struct{}
 	closeOnce sync.Once
 	conn      net.PacketConn
+	port      int // Owned by run after construction.
 	ready     chan struct{}
+	retryMin  time.Duration
+	retryMax  time.Duration
+	authKey   []byte
+	lastSeen  map[string]int64
 	// bind opens the discovery socket; nil uses UDP Port. Tests inject fakes.
 	bind func() (net.PacketConn, error)
 
@@ -67,10 +89,31 @@ type Listener struct {
 // It never returns an error for callers that want to keep running without
 // discovery (e.g. port in use); it just logs and leaves the peer set empty.
 func Listen(selfIDs ...string) *Listener {
-	return listenWith(nil, selfIDs...)
+	return ListenWithSecret(nil, selfIDs...)
+}
+
+func ListenWithSecret(secret []byte, selfIDs ...string) *Listener {
+	return listenWithSecretOptions(Port, listenerRetryMin, listenerRetryMax, nil, secret, selfIDs...)
+}
+
+// listenAt allows loopback tests to bind an ephemeral address; Listen keeps the
+// production UDP port unchanged.
+func listenAt(address string, port int, selfIDs ...string) *Listener {
+	return listenWithOptions(port, listenerRetryMin, listenerRetryMax, func() (net.PacketConn, error) {
+		return listenUDP("udp4", address, false)
+	}, selfIDs...)
 }
 
 func listenWith(bind func() (net.PacketConn, error), selfIDs ...string) *Listener {
+	return listenWithOptions(Port, listenerRetryMin, listenerRetryMax, bind, selfIDs...)
+}
+
+// listenWithOptions keeps socket and retry timing configurable for tests.
+func listenWithOptions(port int, retryMin, retryMax time.Duration, bind func() (net.PacketConn, error), selfIDs ...string) *Listener {
+	return listenWithSecretOptions(port, retryMin, retryMax, bind, nil, selfIDs...)
+}
+
+func listenWithSecretOptions(port int, retryMin, retryMax time.Duration, bind func() (net.PacketConn, error), secret []byte, selfIDs ...string) *Listener {
 	exclude := make(map[string]bool, len(selfIDs))
 	for _, id := range selfIDs {
 		exclude[id] = true
@@ -82,7 +125,12 @@ func listenWith(bind func() (net.PacketConn, error), selfIDs ...string) *Listene
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 		ready:    make(chan struct{}),
+		port:     port,
+		retryMin: retryMin,
+		retryMax: retryMax,
 		bind:     bind,
+		authKey:  append([]byte(nil), secret...),
+		lastSeen: make(map[string]int64),
 	}
 	go func() {
 		defer close(l.done)
@@ -96,27 +144,28 @@ const (
 	listenerRetryMax = 5 * time.Second
 )
 
-func bindListenerPort() (net.PacketConn, error) {
-	return listenUDP("udp4", ":"+itoa(Port), false)
+func bindListenerPort(port int) (net.PacketConn, error) {
+	return listenUDP("udp4", ":"+itoa(port), false)
 }
 
 func (l *Listener) bindPort() (net.PacketConn, error) {
 	if l.bind != nil {
 		return l.bind()
 	}
-	return bindListenerPort()
+	return bindListenerPort(l.port)
 }
 
 func (l *Listener) run() {
 	conn, err := l.bindPort()
 	if err != nil {
-		logging.Errorf("discovery", "discovery: listener disabled, could not bind UDP port %d: %v", Port, err)
+		logging.Errorf("discovery", "discovery: listener disabled, could not bind UDP port %d: %v", l.port, err)
 		l.mu.Lock()
 		l.readyErr = err
 		close(l.ready)
 		l.mu.Unlock()
 		return
 	}
+	l.recordBoundPort(conn)
 	if !l.setConn(conn) {
 		close(l.ready)
 		return
@@ -132,8 +181,17 @@ func (l *Listener) run() {
 		}
 		// A socket error would otherwise end discovery silently while the
 		// process keeps running; reopen the port instead.
-		logging.Errorf("discovery", "discovery: listener read on UDP port %d failed: %v; reopening", Port, err)
+		logging.Errorf("discovery", "discovery: listener read on UDP port %d failed: %v; reopening", l.port, err)
 		conn = l.rebind()
+		if conn != nil {
+			l.recordBoundPort(conn)
+		}
+	}
+}
+
+func (l *Listener) recordBoundPort(conn net.PacketConn) {
+	if address, ok := conn.LocalAddr().(*net.UDPAddr); ok && address.Port != 0 {
+		l.port = address.Port
 	}
 }
 
@@ -165,7 +223,7 @@ func (l *Listener) stopped() bool {
 // rebind retries binding the discovery port with capped exponential backoff
 // until it succeeds or the listener stops (returning nil).
 func (l *Listener) rebind() net.PacketConn {
-	delay := listenerRetryMin
+	delay := l.retryMin
 	for {
 		timer := time.NewTimer(delay)
 		select {
@@ -182,8 +240,8 @@ func (l *Listener) rebind() net.PacketConn {
 			logging.Infof("discovery", "discovery: listener reopened UDP port %d", Port)
 			return conn
 		}
-		logging.Errorf("discovery", "discovery: could not reopen UDP port %d: %v", Port, err)
-		delay = min(delay*2, listenerRetryMax)
+		logging.Errorf("discovery", "discovery: could not reopen UDP port %d: %v", l.port, err)
+		delay = min(delay*2, l.retryMax)
 	}
 }
 
@@ -210,12 +268,70 @@ func (l *Listener) serve(conn net.PacketConn) error {
 		if ann.ID == "" || l.selfIDs[ann.ID] {
 			continue
 		}
-		l.mu.Lock()
-		if !l.excluded[ann.ID] {
-			l.peers[ann.ID] = Peer{Announcement: ann, LastSeen: time.Now()}
-		}
-		l.mu.Unlock()
+		l.acceptAnnouncement(ann, time.Now())
 	}
+}
+
+func (l *Listener) acceptAnnouncement(ann Announcement, now time.Time) bool {
+	if len(l.authKey) != 0 && !verifyAnnouncement(ann, l.authKey, now) {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.authKey) != 0 {
+		if previous, ok := l.lastSeen[ann.ID]; ok && ann.IssuedAtUnixNS <= previous {
+			return false
+		}
+		l.lastSeen[ann.ID] = ann.IssuedAtUnixNS
+		cutoff := now.Add(-announcementMaxClockSkew).UnixNano()
+		for id, timestamp := range l.lastSeen {
+			if timestamp < cutoff {
+				delete(l.lastSeen, id)
+			}
+		}
+	}
+	if !l.excluded[ann.ID] {
+		l.peers[ann.ID] = Peer{Announcement: ann, LastSeen: now}
+	}
+	return true
+}
+
+func signAnnouncement(ann Announcement, secret []byte, now time.Time) (Announcement, error) {
+	if len(secret) == 0 {
+		return Announcement{}, fmt.Errorf("discovery HMAC key is required")
+	}
+	ann.IssuedAtUnixNS = now.UnixNano()
+	ann.HMACSHA256 = ""
+	payload, err := json.Marshal(ann)
+	if err != nil {
+		return Announcement{}, fmt.Errorf("encode discovery announcement: %w", err)
+	}
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(payload)
+	ann.HMACSHA256 = hex.EncodeToString(mac.Sum(nil))
+	return ann, nil
+}
+
+func verifyAnnouncement(ann Announcement, secret []byte, now time.Time) bool {
+	if len(secret) == 0 || ann.IssuedAtUnixNS == 0 || len(ann.HMACSHA256) != sha256.Size*2 {
+		return false
+	}
+	issuedAt := time.Unix(0, ann.IssuedAtUnixNS)
+	if issuedAt.Before(now.Add(-announcementMaxClockSkew)) || issuedAt.After(now.Add(announcementMaxClockSkew)) {
+		return false
+	}
+	provided, err := hex.DecodeString(ann.HMACSHA256)
+	if err != nil {
+		return false
+	}
+	ann.HMACSHA256 = ""
+	payload, err := json.Marshal(ann)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(payload)
+	return hmac.Equal(provided, mac.Sum(nil))
 }
 
 func listenUDP(network, address string, broadcast bool) (net.PacketConn, error) {
@@ -396,12 +512,14 @@ func OutboundIP() string {
 	return "127.0.0.1"
 }
 
-var interfaceAddrs = net.InterfaceAddrs
-
 // firstLANIP returns the first non-loopback, non-link-local IPv4 address of
 // any local interface, or "" if none exists.
 func firstLANIP() string {
-	addrs, err := interfaceAddrs()
+	return firstLANIPFrom(net.InterfaceAddrs)
+}
+
+func firstLANIPFrom(getAddrs func() ([]net.Addr, error)) string {
+	addrs, err := getAddrs()
 	if err != nil {
 		return ""
 	}
@@ -422,6 +540,10 @@ func firstLANIP() string {
 // IsSameSubnet reports whether the given IP is on the same subnet as any of
 // this host's local network interfaces (including loopback).
 func IsSameSubnet(target net.IP) bool {
+	return isSameSubnetWithAddrs(target, net.InterfaceAddrs)
+}
+
+func isSameSubnetWithAddrs(target net.IP, getAddrs func() ([]net.Addr, error)) bool {
 	if target == nil {
 		return false
 	}
@@ -431,7 +553,7 @@ func IsSameSubnet(target net.IP) bool {
 	if ip4 := target.To4(); ip4 != nil {
 		target = ip4
 	}
-	addrs, err := interfaceAddrs()
+	addrs, err := getAddrs()
 	if err != nil {
 		return false
 	}

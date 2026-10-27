@@ -3,6 +3,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -67,6 +69,8 @@ type NodeConfig struct {
 	TrustedNetworkInterfaces     []string              `json:"trusted_network_interfaces,omitempty"`
 	AllowInsecureShardNetwork    bool                  `json:"allow_insecure_shard_network,omitempty"`
 	DiscoveryEnabled             bool                  `json:"discovery_enabled"`
+	DiscoveryHMACSecret          string                `json:"discovery_hmac_secret,omitempty"`
+	PeerUpdatePublisherKey       string                `json:"peer_update_publisher_key,omitempty"`
 	AutoOpenBrowser              bool                  `json:"auto_open_browser"`
 	TrayMode                     string                `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
 	MemoryPath                   string                `json:"memory_path"` // empty = default per-user data dir
@@ -193,6 +197,16 @@ func (cfg NodeConfig) Validate() error {
 			violations = append(violations, fmt.Errorf("orchestrator_fingerprint: %w", err))
 		}
 	}
+	if cfg.DiscoveryHMACSecret != "" {
+		if _, err := decodeConfiguredKey(cfg.DiscoveryHMACSecret, 32); err != nil {
+			violations = append(violations, fmt.Errorf("discovery_hmac_secret: %w", err))
+		}
+	}
+	if cfg.PeerUpdatePublisherKey != "" {
+		if _, err := decodeConfiguredKey(cfg.PeerUpdatePublisherKey, ed25519.PublicKeySize); err != nil {
+			violations = append(violations, fmt.Errorf("peer_update_publisher_key: %w", err))
+		}
+	}
 	if err := validateMemoryPath(cfg.MemoryPath); err != nil {
 		violations = append(violations, err)
 	}
@@ -215,6 +229,16 @@ func DefaultNodeConfig() NodeConfig {
 	}
 }
 
+func (cfg NodeConfig) DiscoveryHMACKey() []byte {
+	key, _ := base64.StdEncoding.DecodeString(cfg.DiscoveryHMACSecret)
+	return key
+}
+
+func (cfg NodeConfig) TrustedPeerUpdatePublicKey() ed25519.PublicKey {
+	key, _ := base64.StdEncoding.DecodeString(cfg.PeerUpdatePublisherKey)
+	return ed25519.PublicKey(key)
+}
+
 type OrchestratorConfig struct {
 	ListenAddr                          string               `json:"listen_addr"`
 	LogLevel                            string               `json:"log_level,omitempty"`
@@ -224,6 +248,7 @@ type OrchestratorConfig struct {
 	DispatchTimeoutSeconds              int                  `json:"dispatch_timeout_seconds"`
 	ShardedModels                       []ShardedModelConfig `json:"sharded_models,omitempty"`
 	DiscoveryEnabled                    bool                 `json:"discovery_enabled"`
+	DiscoveryHMACSecret                 string               `json:"discovery_hmac_secret,omitempty"`
 	AutoOpenBrowser                     bool                 `json:"auto_open_browser"`
 	TrayMode                            string               `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
 	MemoryPath                          string               `json:"memory_path"` // empty = default per-user data dir
@@ -361,6 +386,11 @@ func (cfg OrchestratorConfig) Validate() error {
 	if !cfg.DiscoveryEnabled {
 		violations = append(violations, fmt.Errorf("discovery_enabled must be true for an orchestrator"))
 	}
+	if cfg.DiscoveryHMACSecret != "" {
+		if _, err := decodeConfiguredKey(cfg.DiscoveryHMACSecret, 32); err != nil {
+			violations = append(violations, fmt.Errorf("discovery_hmac_secret: %w", err))
+		}
+	}
 	if err := validateMemoryPath(cfg.MemoryPath); err != nil {
 		violations = append(violations, err)
 	}
@@ -396,6 +426,19 @@ func DefaultOrchestratorConfig() OrchestratorConfig {
 		SyncMaxBytes:                        DefaultSyncMaxBytes,
 		SyncTimeoutSeconds:                  DefaultSyncTimeoutSeconds,
 	}
+}
+
+func (cfg OrchestratorConfig) DiscoveryHMACKey() []byte {
+	key, _ := base64.StdEncoding.DecodeString(cfg.DiscoveryHMACSecret)
+	return key
+}
+
+func decodeConfiguredKey(value string, size int) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(key) != size {
+		return nil, fmt.Errorf("must be base64-encoded %d-byte key", size)
+	}
+	return key, nil
 }
 
 func normalizeLogLevel(value string) string {

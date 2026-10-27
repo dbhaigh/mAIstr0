@@ -14,11 +14,7 @@ func (c *identityComponent) initialize(nodeID, memoryPath, advertiseAddr string)
 	if c.identity != nil {
 		return nil
 	}
-	path := peeridentity.DefaultPath(nodeID)
-	if memoryPath != "" {
-		path = memoryPath + ".identity"
-	}
-	identity, err := peeridentity.Open(path, nodeID)
+	identity, err := peeridentity.Open(identityFilePath(nodeID, memoryPath), nodeID)
 	if err != nil {
 		return err
 	}
@@ -27,6 +23,20 @@ func (c *identityComponent) initialize(nodeID, memoryPath, advertiseAddr string)
 	}
 	c.identity = identity
 	return nil
+}
+
+func identityFilePath(nodeID, memoryPath string) string {
+	if memoryPath != "" {
+		return memoryPath + ".identity"
+	}
+	return peeridentity.DefaultPath(nodeID)
+}
+
+func (c *identityComponent) path(nodeID, memoryPath string) string {
+	if c.identity != nil {
+		return c.identity.Path()
+	}
+	return identityFilePath(nodeID, memoryPath)
 }
 
 func (c *identityComponent) certificate() (string, error) {

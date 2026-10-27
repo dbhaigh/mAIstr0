@@ -1,0 +1,19 @@
+# revision: 2f77419
+# command: go test ./internal/orchestrator -run ^$ -bench ^BenchmarkTransparentRouterStreamingConcurrent100$ -benchmem -count=10 -benchtime=1x -cpu=1
+# one benchmark iteration per sample; not comparable to 200ms samples
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  39480100 ns/op	       100.0 streams/op	      2533 streams/s	 4989520 B/op	   36754 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  33577700 ns/op	       100.0 streams/op	      2978 streams/s	 4693080 B/op	   36027 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  33305300 ns/op	       100.0 streams/op	      3003 streams/s	 4723480 B/op	   36017 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  34042200 ns/op	       100.0 streams/op	      2938 streams/s	 4690576 B/op	   36014 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  34080900 ns/op	       100.0 streams/op	      2934 streams/s	 4690960 B/op	   36021 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  33069000 ns/op	       100.0 streams/op	      3024 streams/s	 4692000 B/op	   36044 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  34208900 ns/op	       100.0 streams/op	      2923 streams/s	 4691584 B/op	   36041 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  34498700 ns/op	       100.0 streams/op	      2899 streams/s	 4692432 B/op	   36048 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  34009100 ns/op	       100.0 streams/op	      2940 streams/s	 4691552 B/op	   36040 allocs/op
+BenchmarkTransparentRouterStreamingConcurrent100 	       1	  33949700 ns/op	       100.0 streams/op	      2946 streams/s	 4692448 B/op	   36048 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/orchestrator	1.867s

@@ -11,6 +11,7 @@ import (
 )
 
 func TestDispatchCapacityGateReservesAnyAvailableNodeConcurrently(t *testing.T) {
+	t.Parallel()
 	registry := cluster.NewRegistry()
 	registry.Upsert(cluster.NodeStatus{
 		ID: "node-a", Address: "http://node-a", MaxConcurrentTasks: 1, AvailableCapacity: 1,
@@ -76,6 +77,7 @@ func TestDispatchCapacityGateReservesAnyAvailableNodeConcurrently(t *testing.T) 
 }
 
 func TestDispatchCapacityGateReleasesNodeReservationOnGlobalWaitCancellation(t *testing.T) {
+	t.Parallel()
 	registry := cluster.NewRegistry()
 	registry.Upsert(cluster.NodeStatus{
 		ID: "node", Address: "http://node", MaxConcurrentTasks: 2, AvailableCapacity: 2,
@@ -94,7 +96,10 @@ func TestDispatchCapacityGateReleasesNodeReservationOnGlobalWaitCancellation(t *
 		result <- err
 	}()
 	nodeGate := gate.nodeDispatchGate("node", 2)
-	deadline := time.Now().Add(time.Second)
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
 	for {
 		nodeGate.mu.Lock()
 		active := nodeGate.active
@@ -102,10 +107,11 @@ func TestDispatchCapacityGateReleasesNodeReservationOnGlobalWaitCancellation(t *
 		if active == 2 {
 			break
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-deadline.C:
 			t.Fatal("second reservation did not acquire its node slot")
+		case <-poll.C:
 		}
-		time.Sleep(time.Millisecond)
 	}
 	cancel()
 	select {

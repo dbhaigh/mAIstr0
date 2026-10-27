@@ -3,6 +3,7 @@ package memory
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/maistr0/maistr0/internal/syncpage"
 )
@@ -12,7 +13,7 @@ func PageSnapshot(snapshot Snapshot, cursor, upper map[string]uint64, maxBytes i
 	for i := range snapshot.Experiences {
 		experience := &snapshot.Experiences[i]
 		records = append(records, syncpage.Record[any]{
-			Value: experience, Origin: experience.Origin, Sequence: experience.Sequence, Key: fmt.Sprintf("experience:%020d", experience.ID),
+			Value: experience, Origin: experience.Origin, Sequence: experience.Sequence, Key: experiencePageKey(experience.ID),
 		})
 	}
 	for i := range snapshot.Facts {
@@ -73,6 +74,20 @@ func PageSnapshot(snapshot Snapshot, cursor, upper map[string]uint64, maxBytes i
 		page.Watermarks = cloneWatermarks(upper)
 	}
 	return page, nextCursor, more, nil
+}
+
+func experiencePageKey(id uint64) string {
+	const prefix = "experience:"
+	var digits [20]byte
+	number := strconv.AppendUint(digits[:0], id, 10)
+	var key [len(prefix) + 20]byte
+	copy(key[:], prefix)
+	padding := 20 - len(number)
+	for i := 0; i < padding; i++ {
+		key[len(prefix)+i] = '0'
+	}
+	copy(key[len(prefix)+padding:], number)
+	return string(key[:])
 }
 
 func SplitSnapshot(snapshot Snapshot, maxBytes int64, envelopeBytes int) ([]Snapshot, error) {

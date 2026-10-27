@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -117,6 +118,96 @@ func TestSyncTaskHistoryImportsAndReplicatesCompleteHistory(t *testing.T) {
 	}
 	if len(replicated) != 2 {
 		t.Fatalf("replica received %d tasks, want full history of 2", len(replicated))
+	}
+}
+
+func TestTaskHistorySyncCommitsOnlyAfterAllPages(t *testing.T) {
+	const maxPageBytes = 1024
+	remoteTasks := make([]*taskmgr.Task, 4)
+	for i := range remoteTasks {
+		remoteTasks[i] = &taskmgr.Task{
+			ID:          fmt.Sprintf("task-%d", i+1),
+			Origin:      "task:worker",
+			Sequence:    uint64(i + 1),
+			Description: strings.Repeat("history ", 50),
+			Status:      taskmgr.StatusCompleted,
+		}
+	}
+	watermarks := taskmgr.SnapshotWatermarks(remoteTasks)
+
+	for _, failSecondPage := range []bool{false, true} {
+		name := "completed transfer"
+		if failSecondPage {
+			name = "interrupted transfer"
+		}
+		t.Run(name, func(t *testing.T) {
+			followupPages := 0
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/tasks" {
+					http.NotFound(w, r)
+					return
+				}
+				cursor, upper, err := memory.ReadSyncPageRequestHeaders(r)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if cursor != nil {
+					followupPages++
+					if failSecondPage {
+						http.Error(w, "injected page failure", http.StatusInternalServerError)
+						return
+					}
+				} else {
+					upper = watermarks
+				}
+				page, nextCursor, more, err := taskmgr.PageTasks(remoteTasks, cursor, upper, maxPageBytes)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+					return
+				}
+				if err := memory.SetSyncHeadersVersion(w.Header(), upper, memory.SyncPageProtocolVersion); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if more {
+					if err := memory.SetSyncPageResponseHeader(w, nextCursor); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+				}
+				if err := json.NewEncoder(w).Encode(page); err != nil {
+					t.Errorf("encode task page: %v", err)
+				}
+			}))
+			defer peer.Close()
+
+			registry := cluster.NewRegistry()
+			registry.Upsert(cluster.NodeStatus{ID: "worker", Address: peer.URL, Healthy: true})
+			store := memory.NewInMemoryStore()
+			manager := taskmgr.NewManager()
+			syncer := newSyncerComponent(registry, manager, peer.Client(), store, nil)
+			syncer.maxBytes = maxPageBytes
+			syncer.syncTaskHistory()
+
+			if followupPages == 0 {
+				t.Fatal("transfer did not request a follow-up page")
+			}
+			gotTasks := len(manager.All())
+			gotWatermarks := store.PeerWatermarks("worker")
+			if failSecondPage {
+				if gotTasks != 0 || len(gotWatermarks) != 0 {
+					t.Fatalf("interrupted transfer applied %d tasks and watermarks %v", gotTasks, gotWatermarks)
+				}
+				return
+			}
+			if gotTasks != len(remoteTasks) {
+				t.Fatalf("completed transfer applied %d tasks, want %d", gotTasks, len(remoteTasks))
+			}
+			if gotWatermarks["task:worker"] != uint64(len(remoteTasks)) {
+				t.Fatalf("completed transfer watermarks = %v, want task:worker=%d", gotWatermarks, len(remoteTasks))
+			}
+		})
 	}
 }
 

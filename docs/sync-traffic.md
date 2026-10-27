@@ -68,5 +68,48 @@ The same benchmark after implementation measured:
 
 The idle benchmark uses empty responses, so gzip does not contribute to this
 reduction; the gains come from watermark-only 204 responses and omitting the
-empty task POST. The benchmark output reports application bytes/sec directly
-for both memory heartbeat assumptions.
+empty task POST. The rates above are historical calculations from the stated
+30/15-second heartbeat assumptions; the current benchmark no longer emits
+those assumptions. It reports per-cycle bytes and estimates steady-state
+traffic using the 60-second maximum heartbeat.
+
+## Fresh three-node and 10k-task measurements
+
+Reproduce the comparison on Windows/amd64 or another Go platform with:
+
+```sh
+go test ./internal/nodeagent -run '^$' -bench '^(BenchmarkIdleSyncTraffic3Node|BenchmarkTaskHistoryTransfer10K)$' -benchmem -count=10 -benchtime=10x
+```
+
+The idle case models one leader and two healthy idle peers. It performs one
+memory and one task-history pass per peer, counts HTTP request/status lines,
+headers, and bodies, and assumes one pass per minute after the adaptive
+heartbeat reaches its 60-second backstop. It excludes TLS, TCP/IP framing,
+connection setup, and remote handler work. Comparing a protocol-v2
+compatibility peer with a protocol-v3 peer:
+
+- v2: 758 memory bytes plus 590 task-history bytes per pass, or **1,348
+  application bytes/minute**.
+- v3: 512 memory bytes plus 500 task-history bytes per pass, or **1,012
+  application bytes/minute** (**24.9% fewer**).
+- The single-threaded sync-work proxy was 55.16 us/op for v2 and 50.95 us/op
+  for v3. `benchstat` reports no significant timing difference (`p=0.315`).
+  At one pass/minute that corresponds to about 0.055 and 0.051 ms of measured
+  work per minute, respectively; this is not a live-process CPU-utilization
+  measurement.
+
+`BenchmarkTaskHistoryTransfer10K` sends 10,000 representative completed task
+records through the real HTTP client to an `httptest` loopback receiver. The
+uncompressed JSON is 3,248,895 bytes. Version 2 sends a 3,248,895-byte body
+(3,249,174 request bytes including headers); negotiated v3 sends an 86,490-byte
+gzip body (86,789 request bytes), a **97.34% body-size reduction**. The measured
+loopback operation was 16.33 ms/op for v2 and 14.70 ms/op for v3; `benchstat`
+does not establish a timing improvement (`p=0.105`). Compression increased
+measured allocations by 0.28% and allocated bytes by 4.31% in this workload.
+The benchmark therefore supports the transfer-size reduction, not a local
+CPU/latency improvement; remote transfer time depends on link bandwidth and
+peer processing.
+
+The recorded 10-sample output is in
+[sync-cost.txt](./bench-baseline/sync-cost.txt). It includes the raw per-sample
+metrics for both compatibility modes.

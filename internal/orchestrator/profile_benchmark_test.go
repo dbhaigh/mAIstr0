@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/hardware"
+	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/shard"
@@ -183,6 +185,82 @@ func BenchmarkProfileHeterogeneousRouting(b *testing.B) {
 	latencies.Report(b, requests)
 	if server.dispatcher.reservations().Active() != 0 {
 		b.Fatal("concurrent router leaked capacity")
+	}
+}
+
+func BenchmarkRouterCandidateSelection(b *testing.B) {
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})))
+	b.Cleanup(func() { slog.SetDefault(previousLogger) })
+	server := newPerformanceOrchestrator(b, nil, 16)
+	server.routerBreakers = newRouterCircuitBreakers()
+	for nodeIndex := range 32 {
+		models := make([]engine.Model, 8)
+		for modelIndex := range models {
+			name := "synthetic-model-" + strconv.Itoa(modelIndex)
+			if modelIndex == 0 {
+				name = benchmarkModel
+			}
+			models[modelIndex] = engine.Model{
+				Name: name, Engine: "simulated", Tags: []string{"general"}, Protocols: []string{"openai"},
+			}
+		}
+		server.registry.Upsert(cluster.NodeStatus{
+			ID: "router-benchmark-" + strconv.Itoa(nodeIndex), Address: "http://simulated-node",
+			FastScore: float64(nodeIndex), Healthy: true, MaxConcurrentTasks: 16, AvailableCapacity: 16,
+			Engines: []engine.Status{{Name: "simulated", Ready: true}}, Models: models,
+		})
+	}
+
+	tried := make(map[string]bool)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		assignment, err := server.assignRouterRequest(benchmarkModel, inferroute.ProtocolOpenAI, tried)
+		if err != nil || assignment.NodeID == "" {
+			b.Fatalf("candidate selection failed: assignment=%+v err=%v", assignment, err)
+		}
+	}
+}
+
+func BenchmarkRouterHeaderNormalization(b *testing.B) {
+	fixtures := []struct {
+		name    string
+		headers http.Header
+	}{
+		{
+			name: "Typical",
+			headers: http.Header{
+				"Content-Type":   {"application/json"},
+				"Content-Length": {"128"},
+				"Cache-Control":  {"no-cache"},
+				"X-Request-Id":   {"synthetic-request"},
+				"Set-Cookie":     {"first=1", "second=2"},
+			},
+		},
+		{
+			name: "ConnectionTokens",
+			headers: http.Header{
+				"Connection":         {"X-Internal, keep-alive"},
+				"Keep-Alive":         {"timeout=5"},
+				"X-Internal":         {"private"},
+				"Content-Type":       {"application/json"},
+				"X-Request-Id":       {"synthetic-request"},
+				"X-Forwarded-For":    {"127.0.0.1"},
+				"Proxy-Authenticate": {"Basic"},
+			},
+		},
+	}
+	for _, fixture := range fixtures {
+		b.Run(fixture.name, func(b *testing.B) {
+			destination := make(http.Header, len(fixture.headers))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				clear(destination)
+				copyRouterHeaders(destination, fixture.headers)
+			}
+		})
 	}
 }
 

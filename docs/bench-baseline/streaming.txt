@@ -1,0 +1,48 @@
+# revision: 2f77419
+# command: go test ./internal/orchestrator -run ^$ -bench ^Benchmark(ProfileRouting|ShardGenerationStream)$ -benchmem -count=10 -benchtime=200ms
+goos: windows
+goarch: amd64
+pkg: github.com/maistr0/maistr0/internal/orchestrator
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkProfileRouting/Direct-24    	    2308	     96870 ns/op	      2308 latency-samples	         0 p50-us	      1000 p95-us	      1040 p99-us	     10323 requests/s	   30872 B/op	     238 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2220	     98484 ns/op	      2220 latency-samples	         0 p50-us	       998.8 p95-us	      1007 p99-us	     10154 requests/s	   29202 B/op	     236 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2282	     93593 ns/op	      2282 latency-samples	         0 p50-us	      1000 p95-us	      1116 p99-us	     10685 requests/s	   29006 B/op	     236 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2366	     92251 ns/op	      2366 latency-samples	         0 p50-us	       999.9 p95-us	      1050 p99-us	     10840 requests/s	   29101 B/op	     236 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2292	     93270 ns/op	      2292 latency-samples	         0 p50-us	      1000 p95-us	      1066 p99-us	     10722 requests/s	   29227 B/op	     236 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2365	     94739 ns/op	      2365 latency-samples	         0 p50-us	      1000 p95-us	      1037 p99-us	     10555 requests/s	   29115 B/op	     236 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2162	     94207 ns/op	      2162 latency-samples	         0 p50-us	       999.5 p95-us	      1015 p99-us	     10615 requests/s	   29414 B/op	     236 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2340	     93408 ns/op	      2340 latency-samples	         0 p50-us	      1000 p95-us	      1079 p99-us	     10706 requests/s	   29121 B/op	     236 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2246	     89265 ns/op	      2246 latency-samples	         0 p50-us	      1000 p95-us	      1058 p99-us	     11203 requests/s	   28993 B/op	     236 allocs/op
+BenchmarkProfileRouting/Direct-24    	    2850	     86111 ns/op	      2850 latency-samples	         0 p50-us	       999.2 p95-us	      1006 p99-us	     11613 requests/s	   29284 B/op	     236 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2200	    108063 ns/op	      2200 latency-samples	         0 p50-us	      1000 p95-us	      1093 p99-us	      9254 requests/s	   33242 B/op	     248 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2239	     96426 ns/op	      2239 latency-samples	         0 p50-us	       999.7 p95-us	      1006 p99-us	     10371 requests/s	   31672 B/op	     247 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2613	    102433 ns/op	      2613 latency-samples	         0 p50-us	       999.9 p95-us	      1098 p99-us	      9762 requests/s	   31885 B/op	     247 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2414	     95501 ns/op	      2414 latency-samples	         0 p50-us	       999.8 p95-us	      1074 p99-us	     10471 requests/s	   31566 B/op	     247 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2450	    103365 ns/op	      2450 latency-samples	         0 p50-us	      1000 p95-us	      1197 p99-us	      9674 requests/s	   31938 B/op	     247 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2574	     93728 ns/op	      2574 latency-samples	         0 p50-us	      1000 p95-us	      1096 p99-us	     10669 requests/s	   31711 B/op	     247 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2092	     99631 ns/op	      2092 latency-samples	         0 p50-us	      1000 p95-us	      1502 p99-us	     10037 requests/s	   31203 B/op	     247 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2324	     95254 ns/op	      2324 latency-samples	         0 p50-us	      1000 p95-us	      1132 p99-us	     10498 requests/s	   31883 B/op	     247 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2494	     92952 ns/op	      2494 latency-samples	         0 p50-us	      1000 p95-us	      1121 p99-us	     10758 requests/s	   31243 B/op	     246 allocs/op
+BenchmarkProfileRouting/Transparent-24         	    2340	     93995 ns/op	      2340 latency-samples	         0 p50-us	      1000 p95-us	      1143 p99-us	     10639 requests/s	   31923 B/op	     247 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      21	  11604043 ns/op	        21.00 latency-samples	     11509 p50-us	     12572 p95-us	     12677 p99-us	        86.18 requests/s	   61061 B/op	     284 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      18	  11549533 ns/op	        18.00 latency-samples	     11335 p50-us	     12812 p95-us	     12812 p99-us	        86.58 requests/s	   56784 B/op	     284 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      19	  12001989 ns/op	        19.00 latency-samples	     11733 p50-us	     14785 p95-us	     14785 p99-us	        83.32 requests/s	   52373 B/op	     279 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      19	  12590542 ns/op	        19.00 latency-samples	     12598 p50-us	     13153 p95-us	     13153 p99-us	        79.42 requests/s	   52875 B/op	     279 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      18	  12558278 ns/op	        18.00 latency-samples	     12553 p50-us	     13175 p95-us	     13175 p99-us	        79.63 requests/s	   52299 B/op	     280 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      18	  12595194 ns/op	        18.00 latency-samples	     12547 p50-us	     13170 p95-us	     13170 p99-us	        79.40 requests/s	   51732 B/op	     279 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      20	  12502170 ns/op	        20.00 latency-samples	     12599 p50-us	     12736 p95-us	     12754 p99-us	        79.99 requests/s	   51278 B/op	     277 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      18	  12642861 ns/op	        18.00 latency-samples	     12590 p50-us	     13082 p95-us	     13082 p99-us	        79.10 requests/s	   55882 B/op	     280 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      19	  12592153 ns/op	        19.00 latency-samples	     12562 p50-us	     13141 p95-us	     13141 p99-us	        79.41 requests/s	   50848 B/op	     278 allocs/op
+BenchmarkProfileRouting/SlowStream-24          	      18	  12192906 ns/op	        18.00 latency-samples	     12561 p50-us	     13259 p95-us	     13259 p99-us	        82.01 requests/s	   51845 B/op	     280 allocs/op
+BenchmarkShardGenerationStream-24              	   67876	      6253 ns/op	    4442 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   46106	      5161 ns/op	    4440 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   41764	      5575 ns/op	    4441 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   53169	      4939 ns/op	    4439 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   50449	      5301 ns/op	    4440 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   83636	      3500 ns/op	    4440 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   49744	      4480 ns/op	    4440 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   37982	      5651 ns/op	    4441 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   52354	      5587 ns/op	    4442 B/op	      10 allocs/op
+BenchmarkShardGenerationStream-24              	   71539	      5259 ns/op	    4441 B/op	      10 allocs/op
+PASS
+ok  	github.com/maistr0/maistr0/internal/orchestrator	12.025s

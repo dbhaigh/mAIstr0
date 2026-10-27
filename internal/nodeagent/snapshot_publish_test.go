@@ -16,6 +16,7 @@ import (
 )
 
 func TestPublishSnapshotSkipsTaskFetchWithoutSubscribers(t *testing.T) {
+	t.Parallel()
 	var fetches atomic.Int32
 	events := hub.New()
 	link := &orchestratorLink{
@@ -47,12 +48,16 @@ func TestPublishSnapshotSkipsTaskFetchWithoutSubscribers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeutil.Discard(response.Body)
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
 	for !events.HasSubscribers() {
-		if time.Now().After(deadline) {
+		select {
+		case <-deadline.C:
 			t.Fatal("dashboard subscriber was not registered")
+		case <-poll.C:
 		}
-		time.Sleep(time.Millisecond)
 	}
 
 	link.publishSnapshot()

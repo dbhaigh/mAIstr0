@@ -47,7 +47,8 @@ and reusable release call:
   require explicit human review in the [PR checklist](../.github/PULL_REQUEST_TEMPLATE.md).
   There is no approved legal SPDX allowlist, so CI does not claim legal approval.
 - **Test and build (ubuntu-latest/windows-latest)**: `go build ./...`,
-  `go vet ./...`, and `go test -short -count=1 -timeout=120s ./...`.
+  `go vet ./...`, `go test -short -count=1 -timeout=120s ./...`, and
+  `go test -short -shuffle=on -count=1 -timeout=120s ./...`.
 - **Required CI**: always evaluates both upstream job results and fails for
   failure, cancellation or skip. It has no token permissions and no checkout.
 
@@ -171,6 +172,7 @@ Fast checks, from the repository root:
 go build ./...
 go vet ./...
 go test -short -count=1 -timeout=120s ./...
+go test -short -shuffle=on -count=1 -timeout=120s ./...
 go generate ./contracts ./internal/scheduler
 node --test web/app_test.js build/benchmark-gate.test.mjs build/workflow-policy.test.mjs
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --timeout=5m

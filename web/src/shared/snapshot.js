@@ -1,8 +1,4 @@
-(function (root, factory) {
-  const snapshot = factory(root);
-  if (typeof module === "object" && module.exports) module.exports = snapshot;
-  root.dashboardSnapshot = snapshot;
-})(globalThis, (root) => {
+export const dashboardSnapshot = ((root) => {
   function hashSnapshot(serialized) {
     let hash = 2166136261;
     for (let i = 0; i < serialized.length; i++) {
@@ -99,4 +95,4 @@
   }
 
   return Object.freeze({ connectDashboardEvents, createSnapshotScheduler, hashSnapshot, mergeTaskSnapshot });
-});
+})(globalThis);

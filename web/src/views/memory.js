@@ -1,6 +1,11 @@
+import { fetchJSON } from "../shared/api.js";
+import { dashboardDOM } from "../shared/dom.js";
+import { escapeHtml } from "../shared/format.js";
+import { experiencesList, factForm, factKey, factValue, factsList, learningSummary, memoryHistoryPages, memorySearch, transcriptsList } from "../shared/state.js";
+
 // --- Persistent memory & learning ---
 
-async function refreshMemory() {
+export async function refreshMemory() {
   dashboardDOM.renderSkeleton(factsList, 2);
   dashboardDOM.renderSkeleton(experiencesList, 3);
   dashboardDOM.renderSkeleton(transcriptsList, 2);

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,36 @@ import (
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 )
+
+func TestPrintNormalizedConfigRedactsDiscoveryAndPublisherKeys(t *testing.T) {
+	discoveryKey := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("d", 32)))
+	publisherKey := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("p", 32)))
+	nodePath := filepath.Join(t.TempDir(), "node.json")
+	orchestratorPath := filepath.Join(t.TempDir(), "orchestrator.json")
+	nodeConfig := []byte(`{"discovery_hmac_secret":"` + discoveryKey + `","peer_update_publisher_key":"` + publisherKey + `"}`)
+	orchestratorConfig := []byte(`{"discovery_hmac_secret":"` + discoveryKey + `"}`)
+	if err := os.WriteFile(nodePath, nodeConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orchestratorPath, orchestratorConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := printNormalizedConfig(&output, configPrintOptions{
+		role: "both", nodeConfigPath: nodePath, orchConfigPath: orchestratorPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{discoveryKey, publisherKey} {
+		if strings.Contains(output.String(), key) {
+			t.Fatal("normalized configuration exposed a configured security key")
+		}
+	}
+	if strings.Count(output.String(), "[REDACTED]") < 3 {
+		t.Fatalf("normalized configuration omitted security key redactions: %s", output.String())
+	}
+}
 
 func TestStartupElectionWindowCoversDiscoveryLease(t *testing.T) {
 	if startupElectionWindow < 15*time.Second {

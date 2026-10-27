@@ -25,6 +25,7 @@ import (
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/fileguard"
 	"github.com/maistr0/maistr0/internal/hardware"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/logging"
@@ -38,6 +39,14 @@ import (
 const startupElectionWindow = 15 * time.Second
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "sign-release" {
+		if err := runSignRelease(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "sign-release failed: %v\n", err)
+			os.Exit(2)
+		}
+		return
+	}
+
 	role := flag.String("role", "auto", "which component to run: auto, orchestrator, node, or both")
 	nodeConfigPath := flag.String("node-config", "", "path to node JSON config file")
 	orchConfigPath := flag.String("orchestrator-config", "", "path to orchestrator JSON config file")
@@ -152,13 +161,16 @@ func main() {
 		if err := electionNodeCfg.Validate(); err != nil {
 			exitConfigValidation(err)
 		}
+		if electionOrchCfg.DiscoveryHMACSecret != electionNodeCfg.DiscoveryHMACSecret {
+			fatal("node and orchestrator discovery_hmac_secret must match in auto or both roles")
+		}
 		ip := discovery.OutboundIP()
 		candidate := discovery.Announcement{
 			Role: "candidate", ID: "orchestrator-" + ip,
 			PeerAddr: "https://" + ip + portSuffix(electionOrchCfg.ListenAddr),
 			Score:    cluster.SelfScore(hardware.Detect()),
 		}
-		probe := discovery.Listen(candidate.ID)
+		probe := discovery.ListenWithSecret(electionOrchCfg.DiscoveryHMACKey(), candidate.ID)
 		if err := probe.WaitReady(2 * time.Second); err != nil {
 			probe.Close()
 			fatalf("cannot elect a single orchestrator without LAN discovery: %v", err)
@@ -167,7 +179,7 @@ func main() {
 		beaconDone := make(chan struct{})
 		go func() {
 			defer close(beaconDone)
-			discovery.Beacon(func() discovery.Announcement { return candidate }, 250*time.Millisecond, stop)
+			discovery.BeaconWithSecret(func() discovery.Announcement { return candidate }, 250*time.Millisecond, stop, electionOrchCfg.DiscoveryHMACKey())
 		}()
 		logging.Infof("main", "main: checking for an active orchestrator and startup candidates for %s", startupElectionWindow)
 		started := background.Wait(runCtx, startupElectionWindow)
@@ -199,6 +211,8 @@ func main() {
 	var updateNode *nodeagent.Agent
 	var updateOrchestrator *orchestrator.Server
 	var updateFailover *failoverCoordinator
+	var updatePublisherKey []byte
+	sensitiveFilePaths := []string{logFilePath}
 
 	switch *role {
 	case "node":
@@ -219,6 +233,7 @@ func main() {
 		if err := cfg.Validate(); err != nil {
 			exitConfigValidation(err)
 		}
+		updatePublisherKey = cfg.TrustedPeerUpdatePublicKey()
 		if err := logging.SetLevel(cfg.LogLevel); err != nil {
 			fatalf("configure log level: %v", err)
 		}
@@ -226,10 +241,14 @@ func main() {
 		if err != nil {
 			fatalf("failed to open node task history: %v", err)
 		}
+		if err := agent.InitializeIdentity(); err != nil {
+			fatalf("failed to initialize node identity: %v", err)
+		}
+		sensitiveFilePaths = append(sensitiveFilePaths, agent.IdentityPath())
 		updateNode = agent
 		var nodeDiscovery *discovery.Listener
 		if cfg.DiscoveryEnabled {
-			nodeDiscovery = discovery.Listen(agent.ID())
+			nodeDiscovery = discovery.ListenWithSecret(cfg.DiscoveryHMACKey(), agent.ID())
 			agent.SetDiscovery(nodeDiscovery)
 
 			orchCfg := loadOrchestratorConfig(*orchConfigPath, *orchListenAddr, *noDiscovery)
@@ -245,6 +264,9 @@ func main() {
 			orchCfg.Normalize()
 			if err := orchCfg.Validate(); err != nil {
 				exitConfigValidation(err)
+			}
+			if cfg.DiscoveryHMACSecret != orchCfg.DiscoveryHMACSecret {
+				fatal("node and orchestrator discovery_hmac_secret must match for failover")
 			}
 			failover := newFailoverCoordinator(agent, nodeDiscovery, orchCfg, cfg.ListenAddr)
 			updateFailover = failover
@@ -270,6 +292,7 @@ func main() {
 	case "both":
 		orchCfg := electionOrchCfg
 		nodeCfg := electionNodeCfg
+		updatePublisherKey = nodeCfg.TrustedPeerUpdatePublicKey()
 
 		// The local worker must register with this process's orchestrator,
 		// regardless of any saved or command-line node address.
@@ -308,6 +331,7 @@ func main() {
 		if err := agent.InitializeIdentity(); err != nil {
 			fatalf("failed to initialize node identity: %v", err)
 		}
+		sensitiveFilePaths = append(sensitiveFilePaths, srv.IdentityPath(), agent.IdentityPath())
 		orchestratorCertificate, err := srv.IdentityCertificate()
 		if err != nil {
 			fatalf("failed to read orchestrator identity: %v", err)
@@ -327,7 +351,7 @@ func main() {
 		// socket instead of each binding its own (which would conflict).
 		// This is only used to find *other* peers on the LAN now.
 		if orchCfg.DiscoveryEnabled || nodeCfg.DiscoveryEnabled {
-			shared := discovery.Listen(srv.SelfID(), agent.ID())
+			shared := discovery.ListenWithSecret(orchCfg.DiscoveryHMACKey(), srv.SelfID(), agent.ID())
 			if err := shared.WaitReady(2 * time.Second); err != nil {
 				shared.Close()
 				fatalf("cannot start cluster discovery: %v", err)
@@ -344,6 +368,8 @@ func main() {
 	default:
 		fatalf("unknown --role %q (want orchestrator, node, or both)", *role)
 	}
+
+	warnSensitiveFileACLs(sensitiveFilePaths...)
 
 	if *trayMode != "" {
 		effectiveTrayMode = *trayMode
@@ -379,6 +405,7 @@ func main() {
 			defer close(updaterDone)
 			selfupdate.Run(runCtx, func() selfupdate.Source {
 				source := updateNode.UpdateSource()
+				source.PublisherPublicKey = updatePublisherKey
 				if updateOrchestrator != nil {
 					source.Peers = append(source.Peers, updateOrchestrator.UpdateSource().Peers...)
 				}
@@ -443,6 +470,38 @@ func applicationLogPath() (string, error) {
 		return "", fmt.Errorf("locate user config directory: %w", err)
 	}
 	return filepath.Join(configDir, "maistr0", "maistr0.log"), nil
+}
+
+func warnSensitiveFileACLs(paths ...string) {
+	seen := make(map[string]struct{}, len(paths))
+	files := append([]string(nil), paths...)
+	for _, path := range paths {
+		if filepath.Ext(path) != ".log" {
+			continue
+		}
+		pattern := filepath.Join(filepath.Dir(path), strings.TrimSuffix(filepath.Base(path), ".log")+"-*.log")
+		archives, err := filepath.Glob(pattern)
+		if err != nil {
+			logging.Warnf("main", "main: could not enumerate rotated log files in %s: %v", filepath.Dir(path), err)
+			continue
+		}
+		files = append(files, archives...)
+	}
+	for _, path := range files {
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		broad, err := fileguard.HasBroadACL(path)
+		if err != nil {
+			logging.Warnf("main", "main: could not inspect Windows ACL for %s; review its permissions manually: %v", path, err)
+			continue
+		}
+		if broad {
+			logging.Warnf("main", "main: %s grants access to a broad Windows principal; restrict its ACL to the current user and SYSTEM", path)
+		}
+	}
 }
 
 func loadOrchestratorConfig(path, listenOverride string, noDiscovery bool) config.OrchestratorConfig {
@@ -595,6 +654,7 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 	if err != nil {
 		return err
 	}
+	orchCfg = redactOrchestratorConfig(orchCfg)
 	return writeNormalizedConfig(out, struct {
 		Node         config.NodeConfig         `json:"node"`
 		Orchestrator config.OrchestratorConfig `json:"orchestrator"`
@@ -604,6 +664,12 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 func redactNodeConfig(cfg config.NodeConfig) (config.NodeConfig, error) {
 	if cfg.PairingPIN != "" {
 		cfg.PairingPIN = "[REDACTED]"
+	}
+	if cfg.DiscoveryHMACSecret != "" {
+		cfg.DiscoveryHMACSecret = "[REDACTED]"
+	}
+	if cfg.PeerUpdatePublisherKey != "" {
+		cfg.PeerUpdatePublisherKey = "[REDACTED]"
 	}
 	cfg.Engines = append([]config.EngineConfig(nil), cfg.Engines...)
 	urls := []*string{&cfg.OrchestratorAddr, &cfg.AdvertiseAddr}
@@ -624,6 +690,13 @@ func redactNodeConfig(cfg config.NodeConfig) (config.NodeConfig, error) {
 		*value = redacted
 	}
 	return cfg, nil
+}
+
+func redactOrchestratorConfig(cfg config.OrchestratorConfig) config.OrchestratorConfig {
+	if cfg.DiscoveryHMACSecret != "" {
+		cfg.DiscoveryHMACSecret = "[REDACTED]"
+	}
+	return cfg
 }
 
 func writeNormalizedConfig(out io.Writer, value any) error {
