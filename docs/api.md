@@ -12,12 +12,14 @@ See [timing, privacy, retention and benchmark semantics](./end-to-end-benchmarks
 
 ## Enrollment security migration
 
-New `POST /api/pairing/connect` requests supply `address`, a valid one-use `pin`
-on every subnet, and the out-of-band verified `fingerprint` (64 hexadecimal
-characters, SHA-256 of the complete DER leaf certificate), unless that
-fingerprint is configured or an existing pin is being reused. Discovery IDs
-and addresses are not authentication. TLS redirects are refused and enrollment
-certificates must match the actual TLS leaf before trust changes.
+New `POST /api/pairing/connect` requests supply `address`, a valid one-use `pin`,
+and the out-of-band verified `fingerprint` (64 hexadecimal characters, SHA-256
+of the complete DER leaf certificate), unless the coordinator's strict policy
+is disabled and the connection is on a prefix assigned to one of its local
+interfaces. The same-subnet path independently validates client TLS identity;
+discovery IDs and addresses alone are not authorization. TLS redirects are
+refused and enrollment certificates must match the actual TLS leaf before
+trust changes.
 
 `POST /api/discovery/{id}/pairing/invite` requires `pin` and the destination
 node's verified `fingerprint`. Incoming invitations remain pending until local
@@ -27,8 +29,15 @@ Missing/malformed fingerprints return 400, mismatches 403 (pending invitation
 retained), and expired/consumed invitations 410. Invitation status includes an
 offered fingerprint for comparison, not automatic trust.
 
-`GET /api/pairing/status` adds the public `fingerprint`; the active PIN and
-expiry are local-plaintext-only. `auto_join_available` is retained but false.
+`GET /api/pairing/status` adds the public `fingerprint` and
+`require_pairing_verification`; the active PIN is local-plaintext-only, while
+its expiry remains visible to support the local dashboard. For nodes,
+`auto_join_available` reports a discovered orchestrator on a connected local
+interface prefix when strict verification is disabled.
+`GET /api/pairing/policy` reads the cluster-wide policy. Local-dashboard-only
+`PATCH /api/pairing/policy` changes it immediately on the coordinator and
+propagates it to joined peers during normal refresh. Strict mode affects only
+new joins and re-pairs; it does not revoke existing trust.
 Public engine endpoints omit URL userinfo/query/fragment and sanitize inventory
 errors. Saving an unchanged redacted endpoint preserves its existing credentials;
 change credentials in protected configuration. Existing trust files need no
@@ -36,8 +45,8 @@ conversion. See [migration](./pairing-and-security.md#migration).
 
 ## Peer executable distribution and shard membership
 
-- `GET /api/updates/manifest?os=windows&arch=amd64` returns
-  `{ "version": "0.0.24.1", "os": "windows", "arch": "amd64",
+- `GET /api/updates/manifest?os=darwin&arch=arm64` returns
+  `{ "version": "0.0.24.1", "os": "darwin", "arch": "arm64",
   "sha256": "<64 lowercase hex characters>", "size": 14000000 }`.
 - `GET /api/updates/binary` with the same query downloads that executable.
   Both listeners expose these read-only endpoints to paired mTLS peers

@@ -331,11 +331,6 @@ func TestScoreRejectsIneligibleModels(t *testing.T) {
 			subtask: Subtask{TaskType: "general", RequiredCapabilities: []string{"gpu"}},
 		},
 		{
-			name:    "incompatible specialty tag",
-			node:    scoreNode(engine.Model{Name: "m", Tags: []string{"math"}}),
-			subtask: Subtask{TaskType: "code"},
-		},
-		{
 			name:    "model below minimum size",
 			node:    scoreNode(engine.Model{Name: "m", SizeGB: 4}),
 			subtask: Subtask{TaskType: "general", MinModelSizeGB: 7},
@@ -348,6 +343,29 @@ func TestScoreRejectsIneligibleModels(t *testing.T) {
 				t.Fatalf("Score() = (%v, %+v), want (-Inf, zero factors)", got, factors)
 			}
 		})
+	}
+}
+
+func TestTextModelTagsArePreferencesButVisionRemainsRequired(t *testing.T) {
+	textNode := scoreNode(engine.Model{Name: "m", Tags: []string{"math"}})
+	if got, _ := Score(textNode, Subtask{TaskType: "code"}, 0, 0, Experience{}, ScoringConfig{}, time.Now()); math.IsInf(got, -1) {
+		t.Fatal("a math-tagged text model was rejected for a code task")
+	}
+	if got, _ := Score(textNode, Subtask{TaskType: "vision"}, 0, 0, Experience{}, ScoringConfig{}, time.Now()); !math.IsInf(got, -1) {
+		t.Fatal("a text-only model was accepted for a vision task")
+	}
+}
+
+func TestAdvisoryRoleCapabilitiesDoNotBlockGeneralModels(t *testing.T) {
+	node := scoreNode(engine.Model{Name: "m", Tags: []string{"general"}})
+	task := Subtask{
+		TaskType: "general", RequiredCapabilities: []string{"researcher", "translator", "editor"},
+	}
+	if got, _ := Score(node, task, 0, 0, Experience{}, ScoringConfig{}, time.Now()); math.IsInf(got, -1) {
+		t.Fatal("general text model was rejected for advisory role capabilities")
+	}
+	if got, _ := Score(node, Subtask{TaskType: "general", RequiredCapabilities: []string{"quantum-computing"}}, 0, 0, Experience{}, ScoringConfig{}, time.Now()); !math.IsInf(got, -1) {
+		t.Fatal("unknown required capability was treated as advisory")
 	}
 }
 

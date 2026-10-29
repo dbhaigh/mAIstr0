@@ -47,7 +47,7 @@ func TestFilterSubtaskCandidatesDropsIneligibleNodesAndKeepsFullNodes(t *testing
 	for _, candidate := range candidates {
 		got = append(got, candidate.node.ID)
 	}
-	if want := []string{"full", "available"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"wrong-tags", "full", "available"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("filtered candidates = %v, want %v", got, want)
 	}
 }

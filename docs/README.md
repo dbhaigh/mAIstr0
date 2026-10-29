@@ -10,6 +10,7 @@ guides below.
 - [Dashboard architecture](./dashboard-architecture.md)
 - [Dashboard events, measurements, and delta proposal](./dashboard-events.md)
 - [Configuration](./configuration.md)
+- [Node service controller](./node-service-controller.md)
 - [Engine support and network guidance](./engines.md)
 - [Memory and task synchronization](./sync.md) and
   [sync protocol details](./memory-sync.md)

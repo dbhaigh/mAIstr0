@@ -18,6 +18,13 @@ type windowsProcessTree struct {
 
 func nativeWindows() bool { return true }
 
+func configureProbeCommand(command *exec.Cmd) {
+	command.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.CREATE_NO_WINDOW,
+		HideWindow:    true,
+	}
+}
+
 func startProcessTree(command *exec.Cmd) (processTree, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {

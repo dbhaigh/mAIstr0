@@ -189,6 +189,7 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 	orchestratorConfig := config.DefaultOrchestratorConfig()
 	nodeStatus := cluster.NodeStatus{
 		ID: "worker-1", Version: "1.0.0", Address: "https://worker-1",
+		ControlAddress: "https://worker-1:7453", Draining: true,
 		Hardware:             hardware.Info{OS: "linux", Arch: "amd64", CPUCores: 8, TotalRAMMB: 16384, Score: 10},
 		Models:               []engine.Model{{Name: "general", Engine: "simulated", Tags: []string{}}},
 		SupportedShardModels: []string{"large-model"}, MaxLayersItCanHost: 16,
@@ -260,7 +261,7 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 
 	values := map[string]any{
 		"shard-membership.schema.json": map[string]any{"node_ids": []string{"worker-1", "worker-2"}},
-		"peer-update.schema.json":      map[string]any{"version": "0.0.24.1", "os": "linux", "arch": "amd64", "sha256": strings.Repeat("a", 64), "size": 14000000},
+		"peer-update.schema.json":      map[string]any{"version": "0.0.24.1", "os": "darwin", "arch": "arm64", "sha256": strings.Repeat("a", 64), "size": 14000000},
 		"dashboard-pipeline.schema.json": map[string]any{
 			"model_inventory": []any{
 				map[string]any{"model_id": "whole-model", "kind": "whole", "nodes": []string{"worker-1"}},
@@ -356,6 +357,14 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		"assignment.schema.json":          assignment,
 		"score-factors.schema.json":       scheduler.ScoreFactors{},
 		"node-status.schema.json":         nodeStatus,
+		"runtime-settings.schema.json": map[string]any{
+			"role": "node", "allow_peer_updates": true,
+			"discovery_enabled": true, "auto_open_browser": false,
+		},
+		"node-service-status.schema.json": map[string]any{
+			"running": true, "desired_running": true, "operation": "drain",
+			"draining": true, "active_tasks": 2, "control_address": "https://worker-1:7453",
+		},
 		"stage-assignment.schema.json": engine.StageAssignment{
 			ModelID: "large-model", StartLayer: 0, EndLayer: 16, Engine: "vllm", IsFinal: true,
 		},
@@ -491,6 +500,16 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 			}
 		})
 	}
+	peerUpdateSchema, err := compiler.Compile(schemaIDs["peer-update.schema.json"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peerUpdateSchema.Validate(map[string]any{
+		"version": "0.0.24.1", "os": "windows", "arch": "arm64",
+		"sha256": strings.Repeat("a", 64), "size": 14000000,
+	}); err == nil {
+		t.Fatal("peer-update schema accepted unsupported windows/arm64")
+	}
 	fixtureFiles, err := filepath.Glob(filepath.Join("fixtures", "shards", "*.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -587,10 +606,10 @@ func TestSchemaSetIsComplete(t *testing.T) {
 		"worker-install-request.schema.json", "worker-install-result.schema.json",
 		"local-head-models.schema.json", "configure-local-head.schema.json",
 		"download-head-model.schema.json",
-		"node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json", "pipeline-plan.schema.json",
+		"node-service-status.schema.json", "node-status.schema.json", "orchestrator-config.schema.json", "performance.schema.json", "pipeline-plan.schema.json",
 		"pipeline-stage-capabilities.schema.json", "pipeline-stage-control.schema.json", "pipeline-stage-message.schema.json",
 		"pipeline-stage-output.schema.json", "pipeline-stage-request.schema.json",
-		"router-circuit-breaker.schema.json", "router-request-event.schema.json", "router-requests.schema.json",
+		"router-circuit-breaker.schema.json", "router-request-event.schema.json", "router-requests.schema.json", "runtime-settings.schema.json",
 		"score-factors.schema.json", "security-status.schema.json", "snapshot.schema.json",
 		"shard-group-list.schema.json", "shard-group.schema.json", "shard-model-profile.schema.json", "shard-plan.schema.json",
 		"peer-update.schema.json", "shard-membership.schema.json",

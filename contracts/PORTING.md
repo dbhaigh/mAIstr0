@@ -8,13 +8,16 @@ in another language.
 
 ### Security migration
 
-New enrollment requires a valid one-use PIN on every subnet and a verified
-server certificate SHA-256 fingerprint (64 hex characters, complete DER leaf).
-Discovery addresses and IDs are not trust anchors. Send `fingerprint` on
-`POST /api/pairing/connect`, or configure `orchestrator_fingerprint`; existing
-stored pins reconnect without a new anchor. A discovery invitation requires
-the destination node fingerprint. Local invitation acceptance now requires
-JSON `{"fingerprint":"<independently verified orchestrator SHA-256>"}`; wrong
+New enrollment requires a valid one-use PIN and verified server certificate
+SHA-256 fingerprint (64 hex characters, complete DER leaf), except when the
+cluster's strict policy is disabled and the connection shares a prefix assigned
+to the coordinator's local interfaces. Send `fingerprint` on
+`POST /api/pairing/connect`, or configure `orchestrator_fingerprint`, for
+strict or off-subnet enrollment; existing stored pins reconnect without a new
+anchor. Discovery addresses and IDs alone are not authorization. A discovery
+invitation requires the destination node fingerprint. Local invitation
+acceptance now requires JSON
+`{"fingerprint":"<independently verified orchestrator SHA-256>"}`; wrong
 anchors return 403 without discarding pending state. Both enrollment directions
 bind advertised certificates to the actual TLS leaf and refuse redirects.
 The coordinator's roster entry cannot override that leaf; invalid roster
@@ -22,11 +25,15 @@ certificates are rejected before any trust writes. Disk failures can still
 leave partially persisted enrollment; trust storage is not transactional.
 
 Pairing status adds the public `fingerprint`; remote TLS status omits PIN and
-expiry. `auto_join_available` remains present but false. Peer executable updates
-are disabled by default and require `--allow-peer-updates`; the legacy disable
-flag overrides it. Public engine URLs omit userinfo/query/fragment, and inventory
-errors are generic. Unchanged redacted endpoint saves preserve credentials.
-Protected configuration is the credential-editing surface. See
+exposes only the active PIN's expiry. `auto_join_available` reports a discovered
+coordinator on a local interface prefix when strict mode is disabled. Local
+dashboard `PATCH /api/pairing/policy` sets the cluster-wide policy; joined nodes
+save it during peer refresh, and it affects new joins/re-pairs without revoking
+existing trust. Peer executable updates are disabled by default and require
+`--allow-peer-updates`; the legacy disable flag overrides it. Public engine URLs
+omit userinfo/query/fragment, and inventory errors are generic. Unchanged
+redacted endpoint saves preserve credentials. Protected configuration is the
+credential-editing surface. See
 [security migration](../docs/pairing-and-security.md#migration) and the tested
 [missing-fingerprint fixture](./fixtures/security/invitation-requires-fingerprint.json).
 

@@ -78,6 +78,13 @@ func (c *identityComponent) BootstrapTransportForID(expectedID string) *http.Tra
 	return c.identity.BootstrapTransportForID(expectedID)
 }
 
+func (c *identityComponent) BootstrapTransportForLANID(expectedID string) *http.Transport {
+	if c.identity == nil {
+		return nil
+	}
+	return c.identity.BootstrapTransportForLANID(expectedID)
+}
+
 func (c *identityComponent) BootstrapTransportForFingerprint(expectedID, fingerprint string) *http.Transport {
 	if c.identity == nil {
 		return nil

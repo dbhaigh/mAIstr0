@@ -40,7 +40,7 @@ func (systemDeviceProbe) LookPath(name string) (string, error) {
 func (systemDeviceProbe) Run(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, name, args...).Output()
+	return newHardwareCommand(ctx, name, args...).Output()
 }
 
 func (systemDeviceProbe) Glob(pattern string) ([]string, error) {

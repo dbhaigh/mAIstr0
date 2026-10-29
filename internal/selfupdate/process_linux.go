@@ -11,6 +11,7 @@ import (
 )
 
 func detach(command *exec.Cmd) { command.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+func hideConsole(*exec.Cmd)    {}
 
 func waitForParent(pid int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)

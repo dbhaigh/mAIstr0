@@ -47,6 +47,29 @@ func TestModelCandidatesRespectNodeMemoryAndSubtaskCapabilities(t *testing.T) {
 	}
 }
 
+func TestModelCandidatesTreatTextRolesAsAdvisory(t *testing.T) {
+	node := cluster.NodeStatus{
+		ID: "worker", Address: "http://worker", Healthy: true,
+		Hardware: hardware.Info{TotalRAMMB: 4 * 1024},
+		Engines:  []engine.Status{{Name: "ollama", Ready: true}},
+	}
+	for _, capability := range []string{"researcher", "translator", "editor"} {
+		t.Run(capability, func(t *testing.T) {
+			candidates := modelCandidates(scheduler.Subtask{
+				ID: "text", TaskType: "general", RequiredCapabilities: []string{capability},
+			}, []cluster.NodeStatus{node})
+			if len(candidates) == 0 {
+				t.Fatalf("no general Ollama model considered for advisory %q capability", capability)
+			}
+			for _, candidate := range candidates {
+				if candidate.model.Engine != "ollama" {
+					t.Errorf("candidate engine = %q, want ollama", candidate.model.Engine)
+				}
+			}
+		})
+	}
+}
+
 func TestAutomaticModelProvisioningPullsAndRefreshesBeforeTaskAssignment(t *testing.T) {
 	var mu sync.Mutex
 	var installed []engine.Model

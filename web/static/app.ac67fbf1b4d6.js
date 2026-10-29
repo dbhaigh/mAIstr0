@@ -36,6 +36,8 @@
   var pairingPin = document.getElementById("pairing-pin");
   var pairingPinExpiry = document.getElementById("pairing-pin-expiry");
   var pairingPinRegenerateBtn = document.getElementById("pairing-pin-regenerate-btn");
+  var pairingRequireVerification = document.getElementById("pairing-require-verification");
+  var pairingPolicyState = document.getElementById("pairing-policy-state");
   var pairingAddressDisplay = document.getElementById("pairing-address-display");
   var pairingInstructions = document.getElementById("pairing-instructions");
   var pairingNodeConnect = document.getElementById("pairing-node-connect");
@@ -202,6 +204,39 @@
     terminalDialogueId = value;
   }
 
+  // src/shared/theme.js
+  var THEME_STORAGE_KEY = "maistr0-theme";
+  var themeToggle = document.getElementById("theme-toggle");
+  var root = document.documentElement;
+  function setDashboardTheme(theme, persist = false) {
+    const selectedTheme = theme === "light" ? "light" : "dark";
+    root.dataset.theme = selectedTheme;
+    if (themeToggle) {
+      const nextTheme = selectedTheme === "light" ? "dark" : "light";
+      themeToggle.textContent = `${nextTheme[0].toUpperCase()}${nextTheme.slice(1)} mode`;
+      themeToggle.setAttribute("aria-label", `Switch to ${nextTheme} mode`);
+      themeToggle.setAttribute("aria-pressed", String(selectedTheme === "light"));
+      themeToggle.title = `Switch to ${nextTheme} mode`;
+    }
+    if (persist) {
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, selectedTheme);
+      } catch (error) {
+        console.warn("Could not save dashboard theme preference.", error);
+      }
+    }
+  }
+  var savedTheme = "dark";
+  try {
+    if (localStorage.getItem(THEME_STORAGE_KEY) === "light") savedTheme = "light";
+  } catch (error) {
+    console.warn("Could not read dashboard theme preference.", error);
+  }
+  setDashboardTheme(savedTheme);
+  themeToggle?.addEventListener("click", () => {
+    setDashboardTheme(root.dataset.theme === "light" ? "dark" : "light", true);
+  });
+
   // src/shared/view-model.js
   var dashboardViewModel = (() => {
     function engineInventoryState(engine) {
@@ -272,13 +307,15 @@
     }
     function pairingPINViewModel(status) {
       const hasPIN = Boolean(status?.pin);
+      const hasActivePIN = hasPIN || Boolean(status?.expires_at);
       return {
         visible: status?.role === "orchestrator",
         hasPIN,
-        pinText: status?.pin || "Expired",
-        regenerateText: hasPIN ? "Generate / replace pairing PIN" : "Generate pairing PIN",
+        hasActivePIN,
+        pinText: status?.pin || (hasActivePIN ? "Hidden on this connection" : "Expired"),
+        regenerateText: hasPIN ? "Generate / replace pairing PIN" : hasActivePIN ? "Generate / reveal pairing PIN" : "Generate pairing PIN",
         expiryText: status?.expires_at ? `Expires ${new Date(status.expires_at).toLocaleTimeString()}. The PIN can be used once.` : "No active PIN. Generate a new PIN to pair another node.",
-        stateText: hasPIN ? "Share the PIN and HTTPS address only with the node you intend to add." : "No active PIN. Generate one to add or re-pair a node."
+        stateText: hasPIN ? "Share the PIN and HTTPS address only with the node you intend to add." : hasActivePIN ? "An active PIN is hidden on this connection. Generate a replacement to reveal it locally." : "No active PIN. Generate one to add or re-pair a node."
       };
     }
     return Object.freeze({
@@ -292,7 +329,7 @@
   })();
 
   // src/shared/snapshot.js
-  var dashboardSnapshot = ((root) => {
+  var dashboardSnapshot = ((root2) => {
     function hashSnapshot(serialized) {
       let hash = 2166136261;
       for (let i = 0; i < serialized.length; i++) {
@@ -302,8 +339,8 @@
       return hash >>> 0;
     }
     function createSnapshotScheduler(onSnapshot, options = {}) {
-      const requestFrame = options.requestAnimationFrameImpl || root.requestAnimationFrame?.bind(root) || ((callback) => root.setTimeout(callback, 0));
-      const cancelFrame = options.cancelAnimationFrameImpl || root.cancelAnimationFrame?.bind(root) || root.clearTimeout?.bind(root);
+      const requestFrame = options.requestAnimationFrameImpl || root2.requestAnimationFrame?.bind(root2) || ((callback) => root2.setTimeout(callback, 0));
+      const cancelFrame = options.cancelAnimationFrameImpl || root2.cancelAnimationFrame?.bind(root2) || root2.clearTimeout?.bind(root2);
       let pending = null;
       let lastHash = null;
       let lastSerialized = null;
@@ -354,8 +391,8 @@
       };
     }
     function connectDashboardEvents(onSnapshot, options = {}) {
-      const EventSourceImpl = options.EventSourceImpl || root.EventSource;
-      const onError = options.onError || ((error) => root.console.error(error));
+      const EventSourceImpl = options.EventSourceImpl || root2.EventSource;
+      const onError = options.onError || ((error) => root2.console.error(error));
       const onConnectionChange = options.onConnectionChange || (() => {
       });
       const scheduler = createSnapshotScheduler((snapshot) => {
@@ -381,7 +418,7 @@
   })(globalThis);
 
   // src/shared/dom.js
-  var dashboardDOM = ((root) => {
+  var dashboardDOM = ((root2) => {
     const keyedState = /* @__PURE__ */ new WeakMap();
     const virtualState = /* @__PURE__ */ new WeakMap();
     function patchKeyedChildren(container, items, options) {
@@ -477,15 +514,15 @@
         state = { top, content, bottom, items: [], options, frame: 0, heights: /* @__PURE__ */ new Map(), observer: null };
         state.onScroll = () => {
           if (state.frame) return;
-          const raf = root.requestAnimationFrame || ((callback) => root.setTimeout(callback, 16));
+          const raf = root2.requestAnimationFrame || ((callback) => root2.setTimeout(callback, 16));
           state.frame = raf(() => {
             state.frame = 0;
             renderVirtualList(container, state.items, state.options);
           });
         };
         container.addEventListener("scroll", state.onScroll, { passive: true });
-        if (typeof root.ResizeObserver === "function") {
-          state.observer = new root.ResizeObserver((entries) => {
+        if (typeof root2.ResizeObserver === "function") {
+          state.observer = new root2.ResizeObserver((entries) => {
             let changed = false;
             for (const entry of entries) {
               const key = entry.target.dataset.renderKey;
@@ -572,8 +609,8 @@
       if (state) {
         state.observer?.disconnect();
         if (state.frame) {
-          const cancel = root.cancelAnimationFrame || root.clearTimeout;
-          cancel?.call(root, state.frame);
+          const cancel = root2.cancelAnimationFrame || root2.clearTimeout;
+          cancel?.call(root2, state.frame);
         }
         container.removeEventListener("scroll", state.onScroll);
         virtualState.delete(container);
@@ -1511,6 +1548,20 @@ ${escapeHtml(tr.output.node_reply)}</div>
   }
 
   // src/components/pairing-dialog.js
+  var generatedPairingPIN = null;
+  var pairingPolicyPending = false;
+  function pairingStatusWithGeneratedPIN(status) {
+    if (status.pin) {
+      generatedPairingPIN = { pin: status.pin, expires_at: status.expires_at };
+      return status;
+    }
+    if (!generatedPairingPIN) return status;
+    if (!status.expires_at || status.expires_at !== generatedPairingPIN.expires_at || Date.parse(status.expires_at) <= Date.now()) {
+      generatedPairingPIN = null;
+      return status;
+    }
+    return { ...status, pin: generatedPairingPIN.pin };
+  }
   function openPairingDialog(node = null) {
     if (!pairingConnectDialog || pairingConnectDialog.open) return;
     if (dashboardState.pairing.status?.role === "node" && node?.id === dashboardState.pairing.status.node_id) {
@@ -1525,7 +1576,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
       const pairingStatus2 = dashboardState.pairing.status;
       const alreadyPairedWithTarget = pairingStatus2?.joined && pairingStatus2.orchestrator_id === node.id;
       if (title) title.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}'s cluster` : `Join ${node.id}'s cluster`;
-      if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. Verify its certificate fingerprint out of band and enter its one-use PIN, including on the same subnet.`;
+      if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. Discovery does not authenticate its certificate. With strict verification off, same-subnet pairing skips the fingerprint and PIN; otherwise verify the fingerprint out of band and enter the PIN.`;
       if (pairingAddressField) pairingAddressField.hidden = false;
       if (pairingAddress) {
         pairingAddress.required = true;
@@ -1562,7 +1613,13 @@ ${escapeHtml(tr.output.node_reply)}</div>
     pairingPinRegenerateBtn.textContent = "Generating PIN…";
     if (pairingState) pairingState.textContent = "Generating a new one-use PIN…";
     try {
-      await fetchJSON("/api/pairing/pin", { method: "POST" });
+      const generated = await fetchJSON("/api/pairing/pin", { method: "POST" });
+      if (!generated.pin || !generated.expires_at) throw new Error("The server did not return an active PIN.");
+      generatedPairingPIN = { pin: generated.pin, expires_at: generated.expires_at };
+      if (pairingPin) pairingPin.textContent = generated.pin;
+      if (pairingPinExpiry) {
+        pairingPinExpiry.textContent = `Expires ${new Date(generated.expires_at).toLocaleTimeString()}. The PIN can be used once.`;
+      }
       await loadPairingStatus();
       if (pairingState) pairingState.textContent = "New PIN generated. Enter it only on the node you intend to pair.";
     } catch (err) {
@@ -1572,9 +1629,39 @@ ${escapeHtml(tr.output.node_reply)}</div>
       pairingPinRegenerateBtn.textContent = "Generate / replace pairing PIN";
     }
   });
+  pairingRequireVerification?.addEventListener("change", async () => {
+    const required = pairingRequireVerification.checked;
+    pairingPolicyPending = true;
+    pairingRequireVerification.disabled = true;
+    if (pairingPolicyState) pairingPolicyState.textContent = "Saving cluster-wide pairing policy…";
+    try {
+      const saved = await fetchJSON("/api/pairing/policy", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ require_pairing_verification: required })
+      });
+      if (typeof saved.require_pairing_verification !== "boolean") {
+        throw new Error("The server did not confirm the pairing policy.");
+      }
+      dashboardState.pairing.status = {
+        ...dashboardState.pairing.status,
+        require_pairing_verification: saved.require_pairing_verification
+      };
+      pairingRequireVerification.checked = saved.require_pairing_verification;
+      if (pairingPolicyState) {
+        pairingPolicyState.textContent = saved.require_pairing_verification ? "Strict mode is on. New joins and re-pairs require both checks; existing trust is unchanged." : "Strict mode is off. Nodes on a connected local subnet may auto-join; existing trust is unchanged.";
+      }
+    } catch (err) {
+      pairingRequireVerification.checked = !required;
+      if (pairingPolicyState) pairingPolicyState.textContent = `Could not save pairing policy: ${err.message}`;
+    } finally {
+      pairingPolicyPending = false;
+      pairingRequireVerification.disabled = false;
+    }
+  });
   async function loadPairingStatus() {
     try {
-      const status = await fetchJSON("/api/pairing/status");
+      const status = pairingStatusWithGeneratedPIN(await fetchJSON("/api/pairing/status"));
       if (status.dashboard_url) {
         window.location.replace(status.dashboard_url);
         return;
@@ -1585,7 +1672,13 @@ ${escapeHtml(tr.output.node_reply)}</div>
         const pinViewModel = dashboardViewModel.pairingPINViewModel(status);
         if (pairingPinView) pairingPinView.hidden = !pinViewModel.visible;
         if (pairingNodeConnect) pairingNodeConnect.hidden = true;
-        if (pairingInstructions) pairingInstructions.textContent = "Verify this certificate fingerprint out of band. New nodes require it and the one-use PIN, including on the same subnet.";
+        if (pairingInstructions) pairingInstructions.textContent = "Strict mode requires an out-of-band verified fingerprint and one-use PIN. With strict mode off, nodes on a connected local subnet can auto-join.";
+        if (pairingRequireVerification && !pairingPolicyPending) {
+          pairingRequireVerification.checked = status.require_pairing_verification === true;
+        }
+        if (pairingPolicyState && !pairingPolicyPending) {
+          pairingPolicyState.textContent = status.require_pairing_verification ? "Strict mode is on. New joins and re-pairs require both checks; existing trust is unchanged." : "Strict mode is off. Nodes on a connected local subnet may auto-join; existing trust is unchanged.";
+        }
         if (pairingPinRegenerateBtn) {
           pairingPinRegenerateBtn.textContent = pinViewModel.regenerateText;
         }
@@ -1599,7 +1692,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
         if (pairingPinView) pairingPinView.hidden = true;
         if (pairingNodeConnect) pairingNodeConnect.hidden = false;
         if (pairingConnectOpenBtn) pairingConnectOpenBtn.textContent = status.joined ? "Re-pair / change orchestrator" : "Enter address and pairing PIN";
-        if (pairingInstructions) pairingInstructions.textContent = "New pairing requires the orchestrator's verified certificate fingerprint and one-use PIN. Discovery alone does not establish trust.";
+        if (pairingInstructions) pairingInstructions.textContent = status.auto_join_available ? "This orchestrator is on a connected local subnet. If cluster strict mode is off, the node joins automatically without an out-of-band fingerprint or PIN." : status.require_pairing_verification ? "Cluster strict mode is on. New joins and re-pairs require the orchestrator's verified certificate fingerprint and one-use PIN." : "For non-local connections, verify the orchestrator's certificate fingerprint out of band and enter its one-use PIN. Discovery alone does not establish trust.";
         if (status.orchestrator_addr && pairingAddress && !pairingAddress.value) {
           pairingAddress.value = status.orchestrator_addr;
         }
@@ -1613,12 +1706,12 @@ ${escapeHtml(tr.output.node_reply)}</div>
           document.getElementById("setup-pairing-tab")?.click();
         }
         const invitationPending = await checkPairingInvitation();
-        if (status.auto_join_available && dashboardState.pairing.dialogAutoOpened) {
+        if ((status.auto_join_available || status.joined || status.trusted) && dashboardState.pairing.dialogAutoOpened) {
           pairingConnectDialog?.close();
           dashboardState.pairing.dialogAutoOpened = false;
           dashboardState.pairing.promptShown = false;
         }
-        if (!invitationPending && !status.joined && !status.auto_join_available && !dashboardState.pairing.promptShown) {
+        if (!invitationPending && !status.joined && !status.trusted && status.pairing_required !== false && !status.auto_join_available && !dashboardState.pairing.promptShown) {
           dashboardState.pairing.promptShown = true;
           dashboardState.pairing.dialogAutoOpened = true;
           openPairingDialog();
@@ -2801,6 +2894,11 @@ ${s.output || s.error || ""}`)
         const nodeActions = n.healthy ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
            <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
            <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>` : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
+        const serviceActions = n.control_address ? `<div class="node-service-actions" aria-label="Node service controls">
+            ${n.healthy ? `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="drain" ${n.draining ? "disabled" : ""}>Drain &amp; stop</button>
+                 <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="stop">Stop</button>
+                 <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="restart">Restart</button>` : `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="start">Start</button>`}
+          </div>` : "";
         card.innerHTML = `
         <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
         ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
@@ -2819,10 +2917,15 @@ ${s.output || s.error || ""}`)
         <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
         <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
         ${nodeActions}
+        ${n.draining ? '<small class="node-offline-note">Draining · waiting for active work</small>' : ""}
+        ${serviceActions}
         <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
       `;
         card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
         card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
+        card.querySelectorAll(".node-service-action").forEach((button) => {
+          button.addEventListener("click", () => controlNodeService(n.id, button.dataset.action, button));
+        });
         card.querySelector(".model-config-toggle")?.addEventListener("click", () => {
           if (modelPanelOpen.has(n.id)) {
             modelPanelOpen.delete(n.id);
@@ -2856,6 +2959,21 @@ ${s.output || s.error || ""}`)
         return card;
       }
     });
+  }
+  async function controlNodeService(nodeId, action, button) {
+    if (action !== "start" && !window.confirm(`${action[0].toUpperCase()}${action.slice(1)} ${nodeId}?`)) return;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = `${action}…`;
+    try {
+      await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/service/${action}`, { method: "POST" });
+      button.textContent = action === "drain" ? "Draining…" : `${action} requested`;
+      await refresh();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = original;
+      window.alert(`Unable to ${action} ${nodeId}: ${err.message}`);
+    }
   }
   function renderSetupNodes(nodes) {
     if (!setupNodeList) return;
@@ -2992,7 +3110,10 @@ ${s.output || s.error || ""}`)
     status.textContent = "Loading properties...";
     modal.hidden = false;
     try {
-      const props = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/properties`);
+      const [props, runtimeSettings] = await Promise.all([
+        node.healthy ? fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/properties`) : {},
+        fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/runtime-settings`)
+      ]);
       nodeProperties.set(node.id, props);
       for (const [name, value] of Object.entries(props)) {
         const field = form.elements.namedItem(name);
@@ -3001,8 +3122,30 @@ ${s.output || s.error || ""}`)
         else if (name === "disabled_models") field.value = (value || []).join("\n");
         else field.value = value ?? "";
       }
+      const runtimeFields = {
+        runtime_role: "role",
+        runtime_node_config_path: "node_config_path",
+        runtime_orchestrator_config_path: "orchestrator_config_path",
+        runtime_node_listen_addr: "node_listen_addr",
+        runtime_orchestrator_listen_addr: "orchestrator_listen_addr",
+        runtime_orchestrator_addr: "orchestrator_addr",
+        runtime_tray_mode: "tray_mode",
+        runtime_harness: "harness",
+        runtime_memory_path: "memory_path",
+        runtime_auto_open_browser: "auto_open_browser",
+        runtime_discovery_enabled: "discovery_enabled",
+        runtime_allow_peer_updates: "allow_peer_updates",
+        runtime_no_peer_updates: "no_peer_updates"
+      };
+      for (const [fieldName, settingName] of Object.entries(runtimeFields)) {
+        const field = form.elements.namedItem(fieldName);
+        if (!field) continue;
+        const value = runtimeSettings[settingName];
+        if (field.type === "checkbox") field.checked = Boolean(value);
+        else field.value = value ?? "";
+      }
       document.getElementById("node-properties-title").textContent = `${node.id} properties`;
-      document.getElementById("node-properties-subtitle").textContent = "Edit runtime settings. Identity and listen address apply after restart.";
+      document.getElementById("node-properties-subtitle").textContent = "Edit node properties and persistent startup settings. Startup changes apply after restart.";
       status.textContent = "";
       form.elements.namedItem("advertise_addr")?.focus();
     } catch (err) {
@@ -3018,20 +3161,42 @@ ${s.output || s.error || ""}`)
     const value = (name) => form.elements.namedItem(name)?.value.trim() || "";
     status.textContent = "Saving...";
     try {
-      await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/properties`, {
+      const node = dashboardState.nodes.find((item) => item.id === nodeId);
+      if (node?.healthy) {
+        await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/properties`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            advertise_addr: value("advertise_addr"),
+            orchestrator_addr: value("orchestrator_addr"),
+            default_model: value("default_model"),
+            engine_name: value("engine_name"),
+            engine_url: value("engine_url"),
+            disabled_models: value("disabled_models").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+            discovery_enabled: form.elements.namedItem("discovery_enabled").checked,
+            auto_open_browser: form.elements.namedItem("auto_open_browser").checked,
+            tray_mode: value("tray_mode"),
+            memory_path: value("memory_path")
+          })
+        });
+      }
+      await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/runtime-settings`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          advertise_addr: value("advertise_addr"),
-          orchestrator_addr: value("orchestrator_addr"),
-          default_model: value("default_model"),
-          engine_name: value("engine_name"),
-          engine_url: value("engine_url"),
-          disabled_models: value("disabled_models").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
-          discovery_enabled: form.elements.namedItem("discovery_enabled").checked,
-          auto_open_browser: form.elements.namedItem("auto_open_browser").checked,
-          tray_mode: value("tray_mode"),
-          memory_path: value("memory_path")
+          role: value("runtime_role"),
+          node_config_path: value("runtime_node_config_path"),
+          orchestrator_config_path: value("runtime_orchestrator_config_path"),
+          node_listen_addr: value("runtime_node_listen_addr"),
+          orchestrator_listen_addr: value("runtime_orchestrator_listen_addr"),
+          orchestrator_addr: value("runtime_orchestrator_addr"),
+          tray_mode: value("runtime_tray_mode"),
+          harness: value("runtime_harness"),
+          memory_path: value("runtime_memory_path"),
+          auto_open_browser: form.elements.namedItem("runtime_auto_open_browser").checked,
+          discovery_enabled: form.elements.namedItem("runtime_discovery_enabled").checked,
+          allow_peer_updates: form.elements.namedItem("runtime_allow_peer_updates").checked,
+          no_peer_updates: form.elements.namedItem("runtime_no_peer_updates").checked
         })
       });
       status.textContent = "Saved";
@@ -3079,7 +3244,7 @@ ${s.output || s.error || ""}`)
     const joiningOrchestrator = Boolean(contextNode.joinOrchestrator);
     if (properties) {
       properties.textContent = joiningOrchestrator ? "Configure host properties" : `Configure ${contextNode.id}`;
-      properties.disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
+      properties.disabled = !contextNode.healthy && !contextNode.control_address || nodeIsDiscovered || joiningOrchestrator;
     }
     if (pairing) {
       const currentOrchestrator = dashboardState.pairing.status?.orchestrator_id === contextNode.id;

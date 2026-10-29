@@ -38,6 +38,9 @@ try {
         $examples = Join-Path $folder "examples"
         New-Item -ItemType Directory -Path $examples | Out-Null
         Copy-Item ([IO.Path]::Combine($root, "examples", "benchmark.json")) $examples
+        $packaging = Join-Path $folder "packaging\systemd"
+        New-Item -ItemType Directory -Path $packaging -Force | Out-Null
+        Copy-Item ([IO.Path]::Combine($root, "packaging", "systemd", "maistr0.service")) $packaging
         $epoch = [DateTime]::new(2000, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
         Get-ChildItem $folder -Recurse | ForEach-Object { $_.LastWriteTimeUtc = $epoch }
         if ($IsWindows) {

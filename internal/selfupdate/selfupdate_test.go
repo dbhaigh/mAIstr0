@@ -105,6 +105,8 @@ func TestManifestValidation(t *testing.T) {
 		{"digest", func(m *Manifest) { m.SHA256 = "abc" }},
 		{"platform", func(m *Manifest) { m.OS = "../windows" }},
 		{"arch", func(m *Manifest) { m.Arch = "unknown" }},
+		{"windows arm64", func(m *Manifest) { m.OS, m.Arch = "windows", "arm64" }},
+		{"linux arm64", func(m *Manifest) { m.OS, m.Arch = "linux", "arm64" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := valid
@@ -116,6 +118,125 @@ func TestManifestValidation(t *testing.T) {
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	for _, arch := range []string{"amd64", "arm64"} {
+		manifest := valid
+		manifest.OS, manifest.Arch = "darwin", arch
+		if err := manifest.Validate(); err != nil {
+			t.Fatalf("valid darwin/%s manifest rejected: %v", arch, err)
+		}
+	}
+}
+
+func TestReplacementLockSerializesConcurrentHelpers(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "maistr0")
+	release, acquired, err := acquireReplacementLock(target)
+	if err != nil || !acquired {
+		t.Fatalf("first lock = (%v, %v), want (true, nil)", acquired, err)
+	}
+	if secondRelease, secondAcquired, err := acquireReplacementLock(target); err != nil || secondAcquired {
+		if secondRelease != nil {
+			_ = secondRelease()
+		}
+		t.Fatalf("concurrent lock = (%v, %v), want (false, nil)", secondAcquired, err)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	nextRelease, nextAcquired, err := acquireReplacementLock(target)
+	if err != nil || !nextAcquired {
+		t.Fatalf("lock after release = (%v, %v), want (true, nil)", nextAcquired, err)
+	}
+	if err := nextRelease(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArtifactManifestRollbackRestoresPreviousSidecar(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "maistr0.exe")
+	path := target + ".peer.json"
+	previous := Manifest{
+		Version: "0.1.1.6", OS: runtime.GOOS, Arch: runtime.GOARCH,
+		SHA256: strings.Repeat("a", 64), Size: 1,
+	}
+	next := previous
+	next.Version = "0.1.1.7"
+	next.SHA256 = strings.Repeat("b", 64)
+	previousData, err := json.Marshal(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, previousData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rollback, err := installArtifactManifest(target, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current Manifest
+	if err := json.Unmarshal(currentData, &current); err != nil || current != next {
+		t.Fatalf("installed sidecar = %+v, error %v; want %+v", current, err, next)
+	}
+	if err := rollback(); err != nil {
+		t.Fatal(err)
+	}
+	restoredData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Manifest
+	if err := json.Unmarshal(restoredData, &restored); err != nil || restored != previous {
+		t.Fatalf("restored sidecar = %+v, error %v; want %+v", restored, err, previous)
+	}
+}
+
+func TestNewestPeerReleasesSelectsOnlyTheHighestRelease(t *testing.T) {
+	offers := []peerRelease{
+		{peer: Peer{ID: "older"}, manifest: Manifest{Version: "0.1.1.3"}},
+		{peer: Peer{ID: "intermediate"}, manifest: Manifest{Version: "0.1.1.4"}},
+		{peer: Peer{ID: "newest-a"}, manifest: Manifest{Version: "0.1.1.5"}},
+		{peer: Peer{ID: "newest-b"}, manifest: Manifest{Version: "0.1.1.5"}},
+	}
+
+	got := newestPeerReleases("0.1.1.3", offers)
+	if len(got) != 2 || got[0].peer.ID != "newest-a" || got[1].peer.ID != "newest-b" {
+		t.Fatalf("newestPeerReleases() = %+v, want only both 0.1.1.5 publishers", got)
+	}
+	if got := newestPeerReleases("0.1.1.5", offers); len(got) != 0 {
+		t.Fatalf("newestPeerReleases() at the cluster maximum = %+v, want no update", got)
+	}
+}
+
+func TestDistributionUsesRunningExecutableVersionAsUpdateBaseline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("version probe fixture builds an executable")
+	}
+	extension := ""
+	if runtime.GOOS == "windows" {
+		extension = ".exe"
+	}
+	executable := filepath.Join(t.TempDir(), "maistr0"+extension)
+	command := exec.Command("go", "build", "-ldflags", "-X main.release=9.0.1", "-o", executable, "."+string(filepath.Separator)+"testdata"+string(filepath.Separator)+"helper")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build version probe fixture: %v\n%s", err, output)
+	}
+	distribution, err := distributionForExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if distribution.Version != "9.0.1" {
+		t.Fatalf("running executable version = %q, want 9.0.1", distribution.Version)
+	}
+	offers := []peerRelease{
+		{manifest: Manifest{Version: "9.0.1"}},
+		{manifest: Manifest{Version: "9.0.2"}},
+	}
+	if got := newestPeerReleases(distribution.Version, offers); len(got) != 1 || got[0].manifest.Version != "9.0.2" {
+		t.Fatalf("updates after restart = %+v, want only a newer 9.0.2 release", got)
 	}
 }
 
@@ -192,11 +313,64 @@ func TestDownloadVerifiesBytesVersionPlatformAndCleansPartialFiles(t *testing.T)
 	}
 }
 
+func TestControllerHandoffRequestMatchesBothProcesses(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "maistr0")
+	if requested, err := ControllerHandoffRequested(target, 71, 83); err != nil || requested {
+		t.Fatalf("missing handoff = (%v, %v), want (false, nil)", requested, err)
+	}
+	path := controllerHandoffPath(target, 71, 83)
+	if err := writeControllerHandoff(path, controllerHandoffRequest{ControllerPID: 71, ParentPID: 83}); err != nil {
+		t.Fatal(err)
+	}
+	if requested, err := ControllerHandoffRequested(target, 71, 83); err != nil || !requested {
+		t.Fatalf("matching handoff = (%v, %v), want (true, nil)", requested, err)
+	}
+	if requested, err := ControllerHandoffRequested(target, 71, 84); err != nil || requested {
+		t.Fatalf("different child handoff = (%v, %v), want (false, nil)", requested, err)
+	}
+	if requested, err := ControllerHandoffRequested(target, 72, 83); err != nil || requested {
+		t.Fatalf("different controller handoff = (%v, %v), want (false, nil)", requested, err)
+	}
+}
+
+func TestReplacementStartArgsRespectControllerOwnership(t *testing.T) {
+	job := applyJob{Target: "maistr0", Staged: ".maistr0-update-new", Args: []string{"--role", "node"}}
+	got, shouldStart := replacementStartArgs(job, true)
+	if !shouldStart || strings.Join(got, " ") != "--role node -cleanup-peer-update .maistr0-update-new" {
+		t.Fatalf("standalone app restart = (%v, %v)", got, shouldStart)
+	}
+	job.ControllerPID = 71
+	job.ControllerArgs = []string{"controller", "--runtime-config", "runtime.json"}
+	got, shouldStart = replacementStartArgs(job, true)
+	if !shouldStart || strings.Join(got, " ") != "controller --runtime-config runtime.json -cleanup-peer-update .maistr0-update-new" {
+		t.Fatalf("unmanaged controller restart = (%v, %v)", got, shouldStart)
+	}
+	job.ControllerServiceManaged = true
+	if got, shouldStart = replacementStartArgs(job, true); shouldStart || len(got) != 0 {
+		t.Fatalf("service-managed update should defer restart to the service manager: (%v, %v)", got, shouldStart)
+	}
+}
+
+func TestDeferredCleanupPersistsTheStagedHelperPath(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "maistr0.exe")
+	staged := filepath.Join(filepath.Dir(target), ".maistr0-update-version.exe")
+	if err := writeDeferredCleanup(target, staged); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target + ".peer-update-cleanup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != staged {
+		t.Fatalf("deferred cleanup path = %q, want %q", strings.TrimSpace(string(data)), staged)
+	}
+}
+
 func TestReplacementHelperPreservesArgumentsAndBackup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process replacement fixture builds two executables")
 	}
-	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
+	if runtime.GOOS != "windows" && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("unsupported replacement platform")
 	}
 	root := t.TempDir()
@@ -244,6 +418,43 @@ func TestReplacementHelperPreservesArgumentsAndBackup(t *testing.T) {
 	if output, err := backup.Output(); err != nil || strings.TrimSpace(string(output)) != "maistr0 9.0.0" {
 		t.Fatalf("backup missing or wrong: %q %v", output, err)
 	}
+	installedManifest, err := Inspect(target, "9.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target + ".peer.json")
+	if err != nil {
+		t.Fatalf("updated peer manifest is missing: %v", err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil || !sameArtifact(installedManifest, manifest) {
+		t.Fatalf("updated peer manifest = %+v, error %v; want executable metadata %+v", manifest, err, installedManifest)
+	}
+
+	duplicateRecord := filepath.Join(root, "duplicate-restart.json")
+	duplicateStaged := filepath.Join(root, ".maistr0-update-duplicate"+extension)
+	duplicateImage, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(duplicateStaged, duplicateImage, 0700); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := exec.Command(target, "-replace", duplicateStaged, "-record", duplicateRecord)
+	duplicate.Dir = root
+	if output, err := duplicate.CombinedOutput(); err != nil {
+		t.Fatalf("launch duplicate replacement: %v\n%s", err, output)
+	}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(duplicateRecord); err == nil {
+			t.Fatal("duplicate helper restarted the already-installed release")
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("inspect duplicate restart record: %v", err)
+		}
+		<-poll.C
+	}
+
 	t.Run("replacement failure restarts original", func(t *testing.T) {
 		directory := t.TempDir()
 		installed := filepath.Join(directory, "maistr0"+extension)

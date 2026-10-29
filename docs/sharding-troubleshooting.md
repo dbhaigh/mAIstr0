@@ -82,3 +82,21 @@ Fix/rebuild the group rather than routing directly to a headless worker.
 The fake process test (`go test ./internal/integration -run
 TestManagedShardProcessLifecycle -count=1 -v`) checks lifecycle, routing, loss,
 and rebuild without GPUs. It cannot diagnose real tensor/backend failures.
+
+## Automatic task-model acquisition
+
+When a task has no compatible installed model, the orchestrator first considers
+the local Ollama catalog and can pull a fitting Ollama model. If that does not
+work, managed llama.cpp recovery considers locally available GGUFs and the
+curated public Hugging Face GGUF recommendations. For GGUF recovery, available
+device memory is planned across idle cluster nodes, including the per-device
+safety margin and KV cache; the model need not fit on one node. The selected
+cluster must have the managed RPC runtime and an authenticated relay on every
+planned worker. The orchestrator may install its official managed worker on
+idle nodes to make them candidates. Active tasks and shard groups are not
+replaced. Model tags and agent-role labels are treated as suitability hints for
+ordinary text work; vision tasks still require a vision-capable model.
+
+Automatic acquisition uses curated model IDs and verified Hugging Face
+artifacts rather than URLs supplied by a task or planner. It does not imply
+support for arbitrary repositories or gated models.

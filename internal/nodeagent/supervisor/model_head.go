@@ -148,6 +148,7 @@ func (m *Manager) RuntimeDevices(ctx context.Context) ([]hardware.Device, error)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, installedServerBinary(*installed), "--list-devices")
+	configureProbeCommand(cmd)
 	cmd.Dir = filepath.Dir(installed.Binary)
 	var output runtimeDeviceOutput
 	cmd.Stdout, cmd.Stderr = &output, &output

@@ -18,28 +18,48 @@ data, and log paths.
 
 ## Pairing a node
 
-1. Open the orchestrator dashboard's **Setup** panel and copy its one-time
-   pairing PIN and certificate SHA-256 fingerprint over an authenticated
-   out-of-band channel. The fingerprint is 64 hexadecimal characters of the
-   complete DER-encoded leaf certificate, not the public key alone.
-2. Open the node dashboard's **Setup** panel, enter the orchestrator's HTTPS
-   address, verified fingerprint, and PIN. Never use discovery data or an
-   unverified remote certificate as the fingerprint's source.
-3. For unattended enrollment, provide the PIN out of band with
-   `--pairing-pin` and `--orchestrator-fingerprint`, or the node config's
-   `pairing_pin` and `orchestrator_fingerprint`.
+1. The orchestrator's **Pairing access** panel displays the active one-time PIN
+   and certificate SHA-256 fingerprint. The fingerprint is 64 hexadecimal
+   characters of the complete DER-encoded leaf certificate, not the public key
+   alone.
+2. With the default policy, a discovered node on a prefix assigned to one of
+   the orchestrator's local interfaces can join automatically without the
+   fingerprint or PIN. The node resolves advertised hostnames when checking
+   its local interface prefixes. The coordinator independently checks the
+   actual accepted connection's local and remote addresses against its
+   interface prefixes; discovery and DNS alone never authorize membership.
+   After restart, a node with an already trusted orchestrator retries
+   registration in the background without opening a new-join prompt. The
+   dashboard waits for a discovered candidate before prompting for an
+   untrusted pairing.
+3. For connections outside those prefixes, or whenever strict verification is
+   enabled, enter the orchestrator's HTTPS address, out-of-band verified
+   fingerprint, and PIN in the node's **Setup** panel. For unattended
+   enrollment, provide the PIN and fingerprint through protected node
+   configuration.
 
 PINs are six digits, expire after 30 minutes, can be used once, and are
 invalidated after 20 failed attempts. Comparisons use a constant-time
 comparison. Attempt and outcome logs omit PIN values. The local operator can
-view the active PIN or generate a replacement from the Setup panel.
+view the active PIN or generate a replacement from the Setup panel. A PIN
+generated there remains visible across dashboard status refreshes without
+exposing it on remote TLS status requests.
 
-New enrollment requires the PIN on every subnet. Discovery is not a membership
-credential; it is unauthenticated by default and can optionally authenticate
-announcements with a shared cluster HMAC key (see below). First-contact TLS
-refuses unknown certificates without the verified fingerprint; existing pins
-reconnect without supplying it again. Orchestrator-to-orchestrator pairing is
-disabled. Remote pairing status never discloses the active PIN.
+The **Require the out-of-band fingerprint and one-use PIN** control in
+**Pairing access** is a cluster-wide strict-mode setting. The active coordinator
+enforces changes immediately and propagates them to joined nodes during their
+regular peer refresh. Strict mode applies to new joins and re-pairs; it does not
+revoke or rewrite existing trust. With strict mode off, subnet-based auto-pair
+uses the local interface prefix and the discovered orchestrator identity as the
+trust boundary. First-contact TLS outside that path still requires the
+independently verified fingerprint. Existing pins reconnect without supplying
+it again. Orchestrator-to-orchestrator pairing is disabled. Remote pairing
+status never discloses the active PIN.
+
+Discovery remains unauthenticated by default and can optionally authenticate
+announcements with a shared cluster HMAC key (see below). Discovery identifies
+candidate addresses only; the server-side interface-prefix check is what
+authorizes PIN-less enrollment.
 
 TLS invitations require the sender to verify the destination node's fingerprint.
 They remain pending until the node's local operator supplies the orchestrator's
@@ -51,12 +71,18 @@ validation.
 
 ### Migration
 
-Existing stored pins and identities do not need conversion. New enrollment and
-re-pairing after rotation require the verified new fingerprint and a valid PIN;
-PIN-less same-subnet enrollment is removed. Invitation-accept clients must send
-JSON `{"fingerprint":"<verified 64-hex SHA-256>"}`. The compatibility status field
-`auto_join_available` is always false. Peer executable updates are now opt-in
-with `--allow-peer-updates`; `--no-peer-updates` wins if both flags are present.
+Existing stored pins and identities do not need conversion. By default,
+same-subnet auto-pairing is enabled for new joins and re-pairs; turn on strict
+mode in the coordinator's **Pairing access** panel to require the verified
+fingerprint and a valid PIN on every subnet. The global policy is stored in
+each node's runtime settings as peers refresh and is used if a node becomes the
+coordinator. Existing trust remains unchanged when strict mode is enabled.
+Invitation-accept clients continue to send JSON
+`{"fingerprint":"<verified 64-hex SHA-256>"}`. The compatibility status field
+`auto_join_available` now reports whether a discovered candidate is on a local
+interface prefix and strict mode is disabled. Peer executable updates are now
+opt-in with `--allow-peer-updates`; `--no-peer-updates` wins if both flags are
+present.
 
 ## Certificates and pin changes
 
@@ -114,9 +140,9 @@ that public value to receiving nodes through protected configuration. The
 signature covers the manifest metadata other than the signature itself, whose
 SHA-256 and size bind it to the executable. Protect and back up the private
 key separately; rotating the configured public key requires signing future
-manifests with the matching private key. Every peer that may publish an update
-must serve a signed sidecar matching its executable once a receiver key is
-configured.
+manifests with the matching private key. Every peer that may publish an update must serve a signed sidecar matching its
+executable once a receiver key is configured. macOS update manifests support
+both `darwin/arm64` and `darwin/amd64`.
 
 ## Local dashboard boundary
 

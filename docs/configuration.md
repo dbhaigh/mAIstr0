@@ -21,21 +21,34 @@ The main options include:
   the local re-pairing UI/API.
 - `--no-discovery` for node-only configurations
 - `--no-browser` to suppress automatic dashboard launch
+- `--auto-open-browser` to enable automatic dashboard launch
 - `--harness pi|deepseek` to select the default interactive harness
 - `--print-config` to print normalized configuration and exit
 - `--diagnostics` to print a prompt-free local health summary
 - `--allow-peer-updates` to opt in to executable updates from paired peers
 - `--no-peer-updates` to prohibit those updates, overriding the allow flag
 
+The dashboard's **Runtime settings** panel saves these persistent startup
+options in `runtime.json` and applies them after the host service restarts.
+Explicit command-line options override saved values. One-shot commands such as
+`--version`, `--print-config`, and `--diagnostics`, plus internal replacement
+flags and transient pairing credentials, are not saved there.
+The persistent options include role and config-file paths, listen addresses,
+the orchestrator address, tray and browser behavior, LAN discovery, the agent
+harness, memory path, and both peer-update gates.
+
 Use `auto` for normal LAN election: the process joins an active orchestrator or
 starts the orchestrator and its local worker if elected. Use `node` to join a
 cluster as a node. `both` runs the orchestrator and local worker when this
-instance is elected. In this release, startup does not implement a standalone
-`orchestrator` role, despite the CLI help text listing it.
+instance is elected. The `orchestrator` role participates in startup election as a candidate; the
+winning process starts both the orchestrator and its local node worker.
 
 Run `maistr0 --help` for the complete option list. Orchestrator election
 requires LAN discovery; disabling discovery is supported only for
 node-oriented startup.
+
+See [node service controller](./node-service-controller.md) for installing the
+Windows or Linux companion service used by dashboard lifecycle controls.
 
 ## Automatic peer executable updates
 
@@ -50,6 +63,8 @@ Install this version manually once on existing nodes: earlier executables do
 not contain the updater and cannot bootstrap themselves. When opted in, a node
 checks healthy registered peers and LAN-discovered paired identities every
 30 seconds, using pinned mutual TLS and the peer's executable manifest.
+It compares the reachable trusted manifests first and stages only the highest
+available release, avoiding a separate restart for each intermediate version.
 Only strictly newer numeric `major.minor.patch` or
 `major.minor.patch.iteration` releases are accepted;
 rebuilding the same version does not trigger an update. Use a new version
@@ -116,11 +131,12 @@ current-coordinator write checks are not bypassed by the updater.
 
 ### Cross-platform bundles
 
-A node always serves its own native running image. Windows cannot manufacture
-a Linux executable (or vice versa) from its running image; publish both
-builds in sibling `windows-amd64` and `linux-amd64` directories with generated
-`.peer.json` metadata. A native seed on each platform also works.
-Ubuntu uses the Linux amd64 image.
+A node always serves its own native running image. Windows and Linux release
+builders cannot produce the cgo-enabled macOS app; publish macOS builds from a
+native Mac using `bash build/build-macos.sh`. Cross-platform publishers can
+keep Windows/Linux binaries in sibling `windows-amd64` and `linux-amd64`
+directories with generated `.peer.json` metadata. A native seed on each
+platform also works. Ubuntu uses the Linux amd64 image.
 
 For locally built bundles, build every platform with the **same explicit**
 `-X github.com/maistr0/maistr0/internal/version.Value=0.0.24.1` linker setting,
@@ -131,8 +147,9 @@ go run .\cmd\updatebundle -root .\dist -version 0.0.24.1
 ```
 
 The tool requires the existing `windows-amd64`, `linux-amd64`, and
-`linux-ubuntu-amd64` build outputs; it
-does not compile binaries or download anything. Native images are probed with
+`linux-ubuntu-amd64` build outputs; it does not compile binaries or download
+anything. The macOS build script separately creates metadata for its Darwin
+arm64 and amd64 bundles. Native images are probed with
 `-version`; the publisher asserts the foreign image's version with `-version`
 because Go trimpath builds do not retain linker settings. Receiving nodes
 verify that image's reported version before installation. When a running Windows image
@@ -146,7 +163,10 @@ archives are single-platform native seeds.
 
 The node listener defaults to port `7451`; a configured orchestrator commonly
 uses port `7450`. A node's `orchestrator_addr` must be an HTTPS URL. Pairing
-PINs are optional for manual setup and should be supplied out of band.
+PINs are required for off-subnet joins and whenever cluster strict verification
+is enabled; otherwise a discovered orchestrator on a connected local interface
+prefix may admit the node automatically. Supply the PIN and verified
+`orchestrator_fingerprint` out of band when required.
 
 ```json
 {
@@ -208,7 +228,7 @@ bounded memory and task-history transfers; see
   "harness": "pi",
   "log_level": "info",
   "max_concurrent_dispatches": 16,
-  "dispatch_timeout_seconds": 600,
+  "dispatch_timeout_seconds": 1800,
   "sync_max_bytes": 67108864,
   "sync_timeout_seconds": 600
 }
@@ -227,9 +247,9 @@ node. If omitted, discovery remains unauthenticated for compatibility.
 
 - `max_concurrent_dispatches` defaults to `16` and limits cluster-wide
   subtask execution.
-- `dispatch_timeout_seconds` defaults to `600` seconds and bounds a subtask's
+- `dispatch_timeout_seconds` defaults to `1800` seconds and bounds a subtask's
   dispatch and retry attempts. The inference HTTP client also uses this setting
-  for planning and final synthesis rather than a separate fixed ten-minute
+  for planning and final synthesis rather than a separate fixed
   limit. Managed-shard generation includes waiting for the group's request slot
   in this budget. Earlier caller deadlines and cancellation still win.
 - `max_concurrent_tasks` defaults to `2` on a node; both the orchestrator and
@@ -244,12 +264,12 @@ node. If omitted, discovery remains unauthenticated for compatibility.
   score, telemetry, and capacity-wait explanations; see
   [scheduler diagnostics](./scheduler-evaluation.md#structured-diagnostics).
 
-For a slow distributed model, use a thirty-minute budget without changing the
-global default:
+For models that need more time than the default, increase the budget. For
+example, use a one-hour budget:
 
 ```json
 {
-  "dispatch_timeout_seconds": 1800
+  "dispatch_timeout_seconds": 3600
 }
 ```
 

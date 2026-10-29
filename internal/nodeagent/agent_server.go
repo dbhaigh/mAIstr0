@@ -106,6 +106,10 @@ func (a *Agent) run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/nodes/all", a.handleAPINodesGet)
 	mux.HandleFunc("GET /api/nodes/{id}/models", a.handleAPINodeModelsGet)
 	mux.HandleFunc("PATCH /api/nodes/{id}/models", a.handleAPINodeModelsPatch)
+	mux.HandleFunc("GET /api/nodes/{id}/runtime-settings", a.handleAPINodeControl)
+	mux.HandleFunc("PATCH /api/nodes/{id}/runtime-settings", a.handleAPINodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/service", a.handleAPIOrchestratorProxy)
+	mux.HandleFunc("POST /api/nodes/{id}/service/{action}", a.handleAPIOrchestratorProxy)
 	mux.HandleFunc("POST /api/nodes/{id}/pairing/connect", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/properties", a.handleAPINodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", a.handleAPINodeControl)
@@ -120,6 +124,9 @@ func (a *Agent) run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/nodes/{id}/models/refresh", a.handleAPINodeControl)
 	mux.HandleFunc("POST /api/nodes/{id}/models/pull", a.handleAPINodeControl)
 	mux.HandleFunc("GET /api/discovery", a.handleAPIDiscovery)
+	mux.HandleFunc("GET /api/runtime-settings", a.handleRuntimeSettings)
+	mux.Handle("PATCH /api/runtime-settings", a.runtimeSettingsMutation(http.HandlerFunc(a.handleRuntimeSettings)))
+	registerLifecycleRoutes(mux, a)
 	mux.HandleFunc("GET /api/cluster/health", a.handleAPIOrchestratorRead)
 	mux.HandleFunc("GET /api/security/status", a.handleAPISecurityStatus)
 	mux.HandleFunc("GET /api/shards", a.handleAPIOrchestratorRead)
@@ -210,7 +217,8 @@ func (a *Agent) run(ctx context.Context) error {
 
 	cfg = a.configSnapshot()
 	logging.Infof("nodeagent", "node agent %q listening on %s (advertised as %s)", cfg.NodeID, cfg.ListenAddr, cfg.AdvertiseAddr)
-	trustedHandler := a.identityComponent.requireTrustedPeer(a.currentCoordinatorWriteFence(mux))
+	handler := a.rejectDrainingWork(mux)
+	trustedHandler := a.identityComponent.requireTrustedPeer(a.currentCoordinatorWriteFence(handler))
 	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/pairing/invitation" {
 			a.handlePairingInvitation(w, r)
@@ -227,7 +235,7 @@ func (a *Agent) run(ctx context.Context) error {
 	}
 	return peeridentity.ServeDualContext(ctx,
 		cfg.ListenAddr,
-		withMiddleware(peeridentity.LoopbackOnly(mux)),
+		withMiddleware(peeridentity.LoopbackOnly(handler)),
 		withMiddleware(secureHandler),
 		a.identityComponent.serverTLSConfig(),
 	)

@@ -48,6 +48,11 @@ type Agent struct {
 	managedEngines      *supervisor.Manager
 	rpcRelays           *rpcRelayManager
 	rpcRelayMu          sync.Mutex
+	runtimeSettingsMu   sync.RWMutex
+	runtimeSettings     config.RuntimeSettings
+	runtimeSettingsPath string
+	lifecycleMu         sync.RWMutex
+	shutdown            func()
 }
 
 type peerDispatchJob struct {

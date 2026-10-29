@@ -512,7 +512,7 @@ func TestPairingConnectEndpointEnrollsNode(t *testing.T) {
 	}
 }
 
-func TestFirstContactRequiresVerifiedFingerprintEvenOnSameSubnet(t *testing.T) {
+func TestFirstContactSameSubnetAutoPairsWithoutFingerprintOrPIN(t *testing.T) {
 	orchestrator, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), "orchestrator-auto-test")
 	if err != nil {
 		t.Fatal(err)
@@ -558,11 +558,11 @@ func TestFirstContactRequiresVerifiedFingerprintEvenOnSameSubnet(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(requestBody))
 	response := httptest.NewRecorder()
 	agent.handlePairingConnect(response, request)
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "verified certificate fingerprint") {
-		t.Fatalf("first contact without fingerprint returned %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("same-subnet first contact returned %d: %s", response.Code, response.Body.String())
 	}
-	if agent.identity.IsTrustedID(orchestrator.ID()) {
-		t.Fatal("same-subnet discovery established trust without verification")
+	if !agent.identity.IsTrustedID(orchestrator.ID()) {
+		t.Fatal("same-subnet auto-pair did not trust the discovered orchestrator")
 	}
 }
 
@@ -643,9 +643,9 @@ func TestPairingStatusRequestsPINForUntrustedOrchestrator(t *testing.T) {
 	}
 }
 
-func TestPairingStatusDoesNotOfferPINlessEnrollment(t *testing.T) {
+func TestPairingStatusOffersSameSubnetAutoJoinForDiscoveredOrchestrator(t *testing.T) {
 	agent := mustNewTestAgent(t, config.NodeConfig{
-		NodeID: "node-same-subnet", OrchestratorAddr: "https://127.0.0.1:7450",
+		NodeID: "node-same-subnet", OrchestratorAddr: "https://localhost:7450",
 		MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	})
 	if agent.Memory() != nil {
@@ -655,8 +655,8 @@ func TestPairingStatusDoesNotOfferPINlessEnrollment(t *testing.T) {
 	response := httptest.NewRecorder()
 	agent.handlePairingStatus(response, httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil))
 	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `"auto_join_available":false`) {
-		t.Fatalf("pairing status offered PINless enrollment: %d: %s", response.Code, response.Body.String())
+		!strings.Contains(response.Body.String(), `"auto_join_available":true`) {
+		t.Fatalf("pairing status omitted same-subnet auto-join: %d: %s", response.Code, response.Body.String())
 	}
 }
 

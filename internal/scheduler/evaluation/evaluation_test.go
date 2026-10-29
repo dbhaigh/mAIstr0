@@ -54,9 +54,6 @@ func TestGeneratedTracesAreDeterministicAndPoliciesRespectInvariants(t *testing.
 						if scenario.Name == "resource_limits" && i%2 == 0 && got.Started[i] != 0 {
 							t.Fatalf("insufficient NPU memory selected on node %d", i)
 						}
-						if scenario.Name == "uneven_models" && i%3 != 0 && got.Started[i] != 0 {
-							t.Fatalf("incompatible model selected on node %d", i)
-						}
 					}
 				})
 			}
@@ -142,7 +139,6 @@ func TestEveryPolicyUsesProductionHardEligibilityAndStableTies(t *testing.T) {
 				n.Engines = []engine.Status{{Name: "unready", Ready: false}}
 			}, score.Subtask{TaskType: "general"}},
 			{"capability", func(n *cluster.NodeStatus) { n.Capabilities = []string{"cpu"} }, score.Subtask{RequiredCapabilities: []string{"gpu"}}},
-			{"model", func(n *cluster.NodeStatus) { n.Models[0].Tags = []string{"math"} }, score.Subtask{TaskType: "code"}},
 		} {
 			t.Run(string(policy)+"/"+test.name, func(t *testing.T) {
 				base := tinyScenario().Nodes[0]

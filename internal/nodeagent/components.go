@@ -100,6 +100,7 @@ type orchestratorLink struct {
 		CertificatePEM() string
 		BootstrapTransport() *http.Transport
 		BootstrapTransportForID(string) *http.Transport
+		BootstrapTransportForLANID(string) *http.Transport
 		BootstrapTransportForFingerprint(string, string) *http.Transport
 		TrustPeer(string, string) error
 		ValidatePeer(string, string) error
@@ -126,7 +127,7 @@ type orchestratorLink struct {
 	statusSnapshot func() statusResponse
 	currentTasks   func(context.Context) ([]*taskmgr.Task, error)
 	heartbeat      *HeartbeatMonitor
-	// orchMu protects the current and co-located orchestrator identities and address; it is not nested with joinedMu or pairingInviteMu.
+	// orchMu protects orchestrator identity/address and the cached cluster pairing policy; it is not nested with joinedMu or pairingInviteMu.
 	orchMu                sync.RWMutex
 	orchestratorAddr      string
 	orchestratorID        string
@@ -136,9 +137,11 @@ type orchestratorLink struct {
 	joinedMu sync.Mutex
 	joined   bool
 	// pairingInviteMu protects invitation state; do not hold it while calling peers or waiting for user confirmation.
-	pairingInviteMu  sync.Mutex
-	pairingInvite    *pairingInvitation
-	pairingAccepting bool
+	pairingInviteMu            sync.Mutex
+	pairingInvite              *pairingInvitation
+	pairingAccepting           bool
+	requirePairingVerification bool
+	applyPairingPolicy         func(bool) error
 }
 
 type executorComponent struct {
@@ -235,6 +238,7 @@ func newOrchestratorLink(
 		CertificatePEM() string
 		BootstrapTransport() *http.Transport
 		BootstrapTransportForID(string) *http.Transport
+		BootstrapTransportForLANID(string) *http.Transport
 		BootstrapTransportForFingerprint(string, string) *http.Transport
 		TrustPeer(string, string) error
 		ValidatePeer(string, string) error

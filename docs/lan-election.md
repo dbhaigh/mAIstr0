@@ -26,11 +26,12 @@ A promoted node reuses its paired node identity and member certificate roster;
 it does not create a new trust identity. Members that already trust that node
 can register with the promoted coordinator, and update its role to
 orchestrator after registration. Untrusted LAN announcements cannot win a
-failover election. New members still require authorization: remote pairing
-requires the elected leader's one-time PIN and an out-of-band verified
-certificate fingerprint on every subnet. Invitations require local fingerprint
-confirmation as well. Discovery visibility alone
-does not grant membership.
+failover election. New members still require authorization: with strict pairing
+verification disabled, PIN-less enrollment is accepted only from a prefix
+assigned to the elected leader's local interfaces. Other joins require the
+leader's one-time PIN and an out-of-band verified certificate fingerprint.
+Invitations require local fingerprint confirmation as well. Discovery
+visibility alone does not grant membership.
 
 A combined-role host can advertise both its worker and a coordinator candidate
 under the same identity. For an already registered, trusted worker, coordinator
@@ -95,13 +96,14 @@ become the local authority again if it is the best active orchestrator visible
 to that node.
 
 Pairing bootstrap is the deliberate exception to ordinary pin authentication.
-`POST /api/pairing/join` is accepted only by the locally elected orchestrator
-and requires its one-time PIN on every subnet. First-contact TLS also requires
-an out-of-band verified server certificate fingerprint. A TLS invitation to a
-node creates only a pending invitation; the node user must accept it locally
-with an independently verified fingerprint, and the subsequent join still goes
-through the orchestrator's PIN check. A join with a wrong or expired PIN does
-not add a trust pin.
+`POST /api/pairing/join` is accepted only by the locally elected orchestrator.
+The cluster-wide strict policy requires a one-time PIN and out-of-band
+fingerprint for all joins; otherwise both are waived only for a connection
+within a local interface prefix. A TLS invitation to a node creates only a
+pending invitation; the node user must accept it locally with an independently
+verified fingerprint, and the subsequent join is still checked against the
+coordinator's policy. A join with a wrong or expired PIN does not add a trust
+pin.
 
 ## Optional request-view fencing
 

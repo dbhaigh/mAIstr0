@@ -38,7 +38,7 @@ func PlacePipeline(
 	candidates := make([]pipelineCandidate, 0, len(nodes))
 	seen := make(map[string]struct{}, len(nodes))
 	for _, node := range nodes {
-		if !node.Healthy || node.ID == "" || node.Address == "" ||
+		if !node.Healthy || node.Draining || node.ID == "" || node.Address == "" ||
 			node.MaxLayersItCanHost <= 0 || !supportsShardModel(node, model) {
 			LogDecision("pipeline", "node_or_model_ineligible", node, "", 0, ScoreFactors{})
 			continue

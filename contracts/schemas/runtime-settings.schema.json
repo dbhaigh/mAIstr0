@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/runtime-settings.schema.json",
+  "title": "RuntimeSettings",
+  "type": "object",
+  "properties": {
+    "role": {"type": "string", "enum": ["auto", "orchestrator", "node", "both"]},
+    "node_config_path": {"type": "string"},
+    "orchestrator_config_path": {"type": "string"},
+    "node_listen_addr": {"type": "string"},
+    "orchestrator_listen_addr": {"type": "string"},
+    "orchestrator_addr": {"type": "string"},
+    "tray_mode": {"type": "string", "enum": ["taskbar", "hidden"]},
+    "auto_open_browser": {"type": "boolean"},
+    "discovery_enabled": {"type": "boolean"},
+    "harness": {"type": "string", "enum": ["pi", "deepseek"]},
+    "memory_path": {"type": "string"},
+    "allow_peer_updates": {"type": "boolean"},
+    "no_peer_updates": {"type": "boolean"},
+    "require_pairing_verification": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}

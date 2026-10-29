@@ -19,9 +19,39 @@ jobs:
     name: Full release qualification
     uses: ./.github/workflows/qualification.yml
 
-  release:
-    name: Publish Windows and Linux binaries
+  macos-build:
+    name: Build unsigned macOS packages
     needs: [acceptance, qualification]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.mod
+            go.sum
+      - name: Verify release tag and build macOS packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version=$(sed -n 's/^[[:space:]]*var Value = "\([^"]*\)".*/\1/p' internal/version/version.go)
+          test "${GITHUB_REF_NAME#v}" = "$source_version"
+          go test ./internal/selfupdate ./contracts -count=1 -timeout=180s
+          bash build/build-macos.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-release-packages
+          path: dist/macos/${{ github.ref_name }}/*
+          if-no-files-found: error
+
+  release:
+    name: Publish Windows, Linux, and macOS binaries
+    needs: [acceptance, qualification, macos-build]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -86,3 +116,14 @@ jobs:
           done
           (cd dist/packages && sha256sum *.zip *.tar.gz > checksums.txt)
           gh release create "$GITHUB_REF_NAME" dist/packages/*.zip dist/packages/*.tar.gz dist/packages/checksums.txt --verify-tag --generate-notes
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-release-packages
+          path: dist/packages/macos
+      - name: Attach macOS release packages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" dist/packages/macos/*.zip dist/packages/macos/*.tar.gz dist/packages/macos/checksums-darwin.txt --clobber

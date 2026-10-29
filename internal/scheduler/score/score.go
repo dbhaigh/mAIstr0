@@ -95,6 +95,7 @@ type Candidate struct {
 	modelMatch             float64
 	modelQualityTags       int
 	modelAtLeastSevenGB    bool
+	matchedRequiredCaps    int
 	matchedCapabilityCount int
 	matchedCapabilities    []string
 }
@@ -144,7 +145,7 @@ func DefaultScoringConfig() ScoringConfig {
 // model-specific score inputs. It does not read learned experience or mutate
 // the node. A false result means no model satisfies the subtask requirements.
 func Prepare(node cluster.NodeStatus, subtask Subtask) (Candidate, bool) {
-	if !node.Healthy {
+	if !node.Healthy || node.Draining {
 		return Candidate{}, false
 	}
 	return PrepareWithCapabilities(node, subtask, node.EffectiveCapabilities())
@@ -164,11 +165,17 @@ func PrepareWithCapabilitiesForScoring(node cluster.NodeStatus, subtask Subtask,
 }
 
 func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapabilities []string, includeDetails bool) (Candidate, bool) {
-	if !node.Healthy {
+	if !node.Healthy || node.Draining {
 		return Candidate{}, false
 	}
+	matchedRequiredCaps := 0
 	for _, required := range subtask.RequiredCapabilities {
-		if !hasCapability(nodeCapabilities, strings.ToLower(strings.TrimSpace(required))) {
+		required = strings.ToLower(strings.TrimSpace(required))
+		if hasCapability(nodeCapabilities, required) {
+			matchedRequiredCaps++
+			continue
+		}
+		if !isAdvisoryCapability(required) {
 			return Candidate{}, false
 		}
 	}
@@ -226,6 +233,7 @@ func prepareWithCapabilities(node cluster.NodeStatus, subtask Subtask, nodeCapab
 				modelMatch:          modelScore,
 				modelQualityTags:    qualityTags,
 				modelAtLeastSevenGB: model.SizeGB >= 7.0,
+				matchedRequiredCaps: matchedRequiredCaps,
 			}
 
 		}
@@ -615,10 +623,8 @@ func scorePrepared(
 		topologyScore = float64(subtask.OutDegree) * cfg.CriticalPathBonus * (hardware.Score / 100.0)
 	}
 
-	capabilityScore := float64(candidate.matchedCapabilityCount) * cfg.PreferredCapMatchBonus
-	if len(subtask.RequiredCapabilities) > 0 {
-		capabilityScore += float64(len(subtask.RequiredCapabilities)) * cfg.RequiredCapMatchBonus
-	}
+	capabilityScore := float64(candidate.matchedCapabilityCount)*cfg.PreferredCapMatchBonus +
+		float64(candidate.matchedRequiredCaps)*cfg.RequiredCapMatchBonus
 	modelQuality := 0.0
 	for range candidate.modelQualityTags {
 		modelQuality += cfg.ModelQualityBonus
@@ -699,26 +705,28 @@ func fallbackTokensPerSecond(modelSizeGB float64) float64 {
 }
 
 func modelMatchesSubtask(subtask Subtask, model engine.Model) bool {
-	if subtask.TaskType != "general" && hasSpecialtyTag(model.Tags) &&
-		!containsTag(model.Tags, subtask.TaskType) && !containsTag(model.Tags, "general") {
+	// Tags describe relative strengths, not text-generation incompatibility.
+	// Vision is the exception because a text-only model cannot accept image work.
+	if subtask.TaskType == "vision" && !containsTag(model.Tags, "vision") {
 		return false
 	}
 	return subtask.MinModelSizeGB <= 0 || model.SizeGB <= 0 || model.SizeGB >= subtask.MinModelSizeGB
 }
 
+func isAdvisoryCapability(capability string) bool {
+	switch capability {
+	case "analyst", "code", "coder", "creative", "editor", "general", "math",
+		"researcher", "reviewer", "summarize", "summarizer", "translate", "translator",
+		"writer":
+		return true
+	default:
+		return false
+	}
+}
+
 func hasCapability(capabilities []string, target string) bool {
 	for _, capability := range capabilities {
 		if strings.EqualFold(capability, target) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasSpecialtyTag(tags []string) bool {
-	for _, tag := range tags {
-		switch tag {
-		case "code", "summarize", "translate", "math", "vision", "creative":
 			return true
 		}
 	}

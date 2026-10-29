@@ -483,22 +483,29 @@ func (i *Identity) invalidateConnections() {
 // BootstrapTransport is used only for PIN-authenticated first contact. It
 // must not be used for ordinary cluster requests.
 func (i *Identity) BootstrapTransport() *http.Transport {
-	return i.bootstrapTransport("", "")
+	return i.bootstrapTransport("", "", false)
 }
 
 // BootstrapTransportForID verifies a previously pinned identity. A discovered
 // name alone does not authenticate a first-contact certificate.
 func (i *Identity) BootstrapTransportForID(expectedID string) *http.Transport {
-	return i.bootstrapTransport(expectedID, "")
+	return i.bootstrapTransport(expectedID, "", false)
+}
+
+// BootstrapTransportForLANID verifies the discovered identity without a
+// fingerprint. Callers must first confirm the address is on a local subnet;
+// the server independently enforces its same-subnet pairing policy.
+func (i *Identity) BootstrapTransportForLANID(expectedID string) *http.Transport {
+	return i.bootstrapTransport(expectedID, "", true)
 }
 
 // BootstrapTransportForFingerprint uses an operator-verified out-of-band pin
 // for enrollment or certificate rotation. It does not trust discovery metadata.
 func (i *Identity) BootstrapTransportForFingerprint(expectedID, fingerprint string) *http.Transport {
-	return i.bootstrapTransport(expectedID, fingerprint)
+	return i.bootstrapTransport(expectedID, fingerprint, false)
 }
 
-func (i *Identity) bootstrapTransport(expectedID, fingerprint string) *http.Transport {
+func (i *Identity) bootstrapTransport(expectedID, fingerprint string, allowUntrusted bool) *http.Transport {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	config := &tls.Config{
@@ -524,7 +531,7 @@ func (i *Identity) bootstrapTransport(expectedID, fingerprint string) *http.Tran
 			if !strings.EqualFold(certificateFingerprint(certificate), fingerprint) {
 				return errors.New("peeridentity: bootstrap server certificate fingerprint does not match the verified fingerprint")
 			}
-		} else if !i.IsTrustedCertificate(certificate) {
+		} else if !allowUntrusted && !i.IsTrustedCertificate(certificate) {
 			return errors.New("peeridentity: first-contact pairing requires an out-of-band verified certificate fingerprint")
 		}
 		return nil
@@ -710,6 +717,29 @@ func (i *Identity) IsTrustedID(id string) bool {
 	defer i.mu.RUnlock()
 	_, ok := i.trusted[id]
 	return ok
+}
+
+// ReloadTrustedPeers refreshes the paired roster from the shared identity file.
+// It supports a companion process sharing identity material with the node.
+func (i *Identity) ReloadTrustedPeers() error {
+	raw, err := os.ReadFile(i.path)
+	if err != nil {
+		return fmt.Errorf("peeridentity: reload trust roster: %w", err)
+	}
+	var saved identityFile
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		return fmt.Errorf("peeridentity: decode shared identity: %w", err)
+	}
+	if saved.ID != i.id {
+		return fmt.Errorf("peeridentity: shared identity belongs to %q, not %q", saved.ID, i.id)
+	}
+	if saved.Trusted == nil {
+		saved.Trusted = make(map[string]trustedPeer)
+	}
+	i.mu.Lock()
+	i.trusted = saved.Trusted
+	i.mu.Unlock()
+	return nil
 }
 
 // IsTrustedOrchestratorID reports whether id is pinned with the orchestrator role.

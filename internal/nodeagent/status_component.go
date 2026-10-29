@@ -41,6 +41,8 @@ type statusResponse struct {
 	ID                        string                       `json:"id"`
 	Version                   string                       `json:"version"`
 	Address                   string                       `json:"address"`
+	ControlAddress            string                       `json:"control_address,omitempty"`
+	Draining                  bool                         `json:"draining,omitempty"`
 	Hardware                  hardware.Info                `json:"hardware"`
 	TelemetryAt               time.Time                    `json:"telemetry_at"`
 	GPUHistory                []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
@@ -109,6 +111,8 @@ func (c *statusComponent) snapshot() statusResponse {
 		ID:                        cfg.NodeID,
 		Version:                   version.String(),
 		Address:                   cfg.AdvertiseAddr,
+		ControlAddress:            cfg.ControlAddress,
+		Draining:                  cfg.Draining,
 		Hardware:                  hw,
 		TelemetryAt:               c.telemetry.telemetryTimestamp(),
 		GPUHistory:                c.telemetry.gpuHistorySnapshot(),

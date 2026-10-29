@@ -1,7 +1,24 @@
 import { refresh } from "../app.js";
 import { fetchJSON } from "../shared/api.js";
-import { dashboardState, pairingAddress, pairingAddressDisplay, pairingAddressField, pairingCode, pairingConnectButton, pairingConnectDialog, pairingConnectOpenBtn, pairingFingerprint, pairingFingerprintDisplay, pairingInstructions, pairingInvitationAcceptBtn, pairingInvitationDeclineBtn, pairingInvitationDetails, pairingInvitationDialog, pairingInvitationFingerprint, pairingInvitationStatus, pairingNodeConnect, pairingPin, pairingPinExpiry, pairingPinRegenerateBtn, pairingPinView, pairingState, pairingStatus } from "../shared/state.js";
+import { dashboardState, pairingAddress, pairingAddressDisplay, pairingAddressField, pairingCode, pairingConnectButton, pairingConnectDialog, pairingConnectOpenBtn, pairingFingerprint, pairingFingerprintDisplay, pairingInstructions, pairingInvitationAcceptBtn, pairingInvitationDeclineBtn, pairingInvitationDetails, pairingInvitationDialog, pairingInvitationFingerprint, pairingInvitationStatus, pairingNodeConnect, pairingPin, pairingPinExpiry, pairingPinRegenerateBtn, pairingPinView, pairingPolicyState, pairingRequireVerification, pairingState, pairingStatus } from "../shared/state.js";
 import { dashboardViewModel } from "../shared/view-model.js";
+
+let generatedPairingPIN = null;
+let pairingPolicyPending = false;
+
+function pairingStatusWithGeneratedPIN(status) {
+  if (status.pin) {
+    generatedPairingPIN = { pin: status.pin, expires_at: status.expires_at };
+    return status;
+  }
+  if (!generatedPairingPIN) return status;
+  if (!status.expires_at || status.expires_at !== generatedPairingPIN.expires_at ||
+      Date.parse(status.expires_at) <= Date.now()) {
+    generatedPairingPIN = null;
+    return status;
+  }
+  return { ...status, pin: generatedPairingPIN.pin };
+}
 
 export function openPairingDialog(node = null) {
   if (!pairingConnectDialog || pairingConnectDialog.open) return;
@@ -22,7 +39,7 @@ export function openPairingDialog(node = null) {
       : pairingStatus?.joined
         ? `Switch to ${node.id}'s cluster`
         : `Join ${node.id}'s cluster`;
-    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. Verify its certificate fingerprint out of band and enter its one-use PIN, including on the same subnet.`;
+    if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. Discovery does not authenticate its certificate. With strict verification off, same-subnet pairing skips the fingerprint and PIN; otherwise verify the fingerprint out of band and enter the PIN.`;
     if (pairingAddressField) pairingAddressField.hidden = false;
     if (pairingAddress) {
       pairingAddress.required = true;
@@ -74,7 +91,13 @@ pairingPinRegenerateBtn?.addEventListener("click", async () => {
   pairingPinRegenerateBtn.textContent = "Generating PIN…";
   if (pairingState) pairingState.textContent = "Generating a new one-use PIN…";
   try {
-    await fetchJSON("/api/pairing/pin", { method: "POST" });
+    const generated = await fetchJSON("/api/pairing/pin", { method: "POST" });
+    if (!generated.pin || !generated.expires_at) throw new Error("The server did not return an active PIN.");
+    generatedPairingPIN = { pin: generated.pin, expires_at: generated.expires_at };
+    if (pairingPin) pairingPin.textContent = generated.pin;
+    if (pairingPinExpiry) {
+      pairingPinExpiry.textContent = `Expires ${new Date(generated.expires_at).toLocaleTimeString()}. The PIN can be used once.`;
+    }
     await loadPairingStatus();
     if (pairingState) pairingState.textContent = "New PIN generated. Enter it only on the node you intend to pair.";
   } catch (err) {
@@ -85,9 +108,42 @@ pairingPinRegenerateBtn?.addEventListener("click", async () => {
   }
 });
 
+pairingRequireVerification?.addEventListener("change", async () => {
+  const required = pairingRequireVerification.checked;
+  pairingPolicyPending = true;
+  pairingRequireVerification.disabled = true;
+  if (pairingPolicyState) pairingPolicyState.textContent = "Saving cluster-wide pairing policy…";
+  try {
+    const saved = await fetchJSON("/api/pairing/policy", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ require_pairing_verification: required }),
+    });
+    if (typeof saved.require_pairing_verification !== "boolean") {
+      throw new Error("The server did not confirm the pairing policy.");
+    }
+    dashboardState.pairing.status = {
+      ...dashboardState.pairing.status,
+      require_pairing_verification: saved.require_pairing_verification,
+    };
+    pairingRequireVerification.checked = saved.require_pairing_verification;
+    if (pairingPolicyState) {
+      pairingPolicyState.textContent = saved.require_pairing_verification
+        ? "Strict mode is on. New joins and re-pairs require both checks; existing trust is unchanged."
+        : "Strict mode is off. Nodes on a connected local subnet may auto-join; existing trust is unchanged.";
+    }
+  } catch (err) {
+    pairingRequireVerification.checked = !required;
+    if (pairingPolicyState) pairingPolicyState.textContent = `Could not save pairing policy: ${err.message}`;
+  } finally {
+    pairingPolicyPending = false;
+    pairingRequireVerification.disabled = false;
+  }
+});
+
 export async function loadPairingStatus() {
   try {
-    const status = await fetchJSON("/api/pairing/status");
+    const status = pairingStatusWithGeneratedPIN(await fetchJSON("/api/pairing/status"));
     if (status.dashboard_url) {
       window.location.replace(status.dashboard_url);
       return;
@@ -98,7 +154,15 @@ export async function loadPairingStatus() {
       const pinViewModel = dashboardViewModel.pairingPINViewModel(status);
       if (pairingPinView) pairingPinView.hidden = !pinViewModel.visible;
       if (pairingNodeConnect) pairingNodeConnect.hidden = true;
-      if (pairingInstructions) pairingInstructions.textContent = "Verify this certificate fingerprint out of band. New nodes require it and the one-use PIN, including on the same subnet.";
+      if (pairingInstructions) pairingInstructions.textContent = "Strict mode requires an out-of-band verified fingerprint and one-use PIN. With strict mode off, nodes on a connected local subnet can auto-join.";
+      if (pairingRequireVerification && !pairingPolicyPending) {
+        pairingRequireVerification.checked = status.require_pairing_verification === true;
+      }
+      if (pairingPolicyState && !pairingPolicyPending) {
+        pairingPolicyState.textContent = status.require_pairing_verification
+          ? "Strict mode is on. New joins and re-pairs require both checks; existing trust is unchanged."
+          : "Strict mode is off. Nodes on a connected local subnet may auto-join; existing trust is unchanged.";
+      }
       if (pairingPinRegenerateBtn) {
         pairingPinRegenerateBtn.textContent = pinViewModel.regenerateText;
       }
@@ -114,7 +178,11 @@ export async function loadPairingStatus() {
       if (pairingConnectOpenBtn) pairingConnectOpenBtn.textContent = status.joined
         ? "Re-pair / change orchestrator"
         : "Enter address and pairing PIN";
-      if (pairingInstructions) pairingInstructions.textContent = "New pairing requires the orchestrator's verified certificate fingerprint and one-use PIN. Discovery alone does not establish trust.";
+      if (pairingInstructions) pairingInstructions.textContent = status.auto_join_available
+        ? "This orchestrator is on a connected local subnet. If cluster strict mode is off, the node joins automatically without an out-of-band fingerprint or PIN."
+        : status.require_pairing_verification
+          ? "Cluster strict mode is on. New joins and re-pairs require the orchestrator's verified certificate fingerprint and one-use PIN."
+          : "For non-local connections, verify the orchestrator's certificate fingerprint out of band and enter its one-use PIN. Discovery alone does not establish trust.";
       if (status.orchestrator_addr && pairingAddress && !pairingAddress.value) {
         pairingAddress.value = status.orchestrator_addr;
       }
@@ -134,12 +202,13 @@ export async function loadPairingStatus() {
         document.getElementById("setup-pairing-tab")?.click();
       }
       const invitationPending = await checkPairingInvitation();
-      if (status.auto_join_available && dashboardState.pairing.dialogAutoOpened) {
+      if ((status.auto_join_available || status.joined || status.trusted) && dashboardState.pairing.dialogAutoOpened) {
         pairingConnectDialog?.close();
         dashboardState.pairing.dialogAutoOpened = false;
         dashboardState.pairing.promptShown = false;
       }
-      if (!invitationPending && !status.joined && !status.auto_join_available && !dashboardState.pairing.promptShown) {
+      if (!invitationPending && !status.joined && !status.trusted && status.pairing_required !== false &&
+          !status.auto_join_available && !dashboardState.pairing.promptShown) {
         dashboardState.pairing.promptShown = true;
         dashboardState.pairing.dialogAutoOpened = true;
         openPairingDialog();

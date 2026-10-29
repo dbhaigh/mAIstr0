@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
-	"github.com/maistr0/maistr0/internal/version"
 )
 
 const MaxBinaryBytes int64 = 128 << 20
@@ -33,7 +32,10 @@ type Manifest struct {
 }
 
 func (m Manifest) Validate() error {
-	if !releaseVersion.MatchString(m.Version) || (m.OS != "windows" && m.OS != "linux") || m.Arch != "amd64" ||
+	validPlatform := (m.OS == "windows" && m.Arch == "amd64") ||
+		(m.OS == "linux" && m.Arch == "amd64") ||
+		(m.OS == "darwin" && (m.Arch == "amd64" || m.Arch == "arm64"))
+	if !releaseVersion.MatchString(m.Version) || !validPlatform ||
 		m.Size <= 0 || m.Size > MaxBinaryBytes {
 		return errors.New("unsupported peer update version, platform, or executable size")
 	}
@@ -80,7 +82,10 @@ type Distribution struct {
 }
 
 func (d Distribution) artifact(goos, arch string) (string, Manifest, error) {
-	if (goos != "windows" && goos != "linux") || arch != "amd64" {
+	validTarget := (goos == "windows" && arch == "amd64") ||
+		(goos == "linux" && arch == "amd64") ||
+		(goos == "darwin" && (arch == "amd64" || arch == "arm64"))
+	if !validTarget {
 		return "", Manifest{}, errors.New("unsupported update target")
 	}
 	if goos == runtime.GOOS && arch == runtime.GOARCH {
@@ -183,6 +188,17 @@ func CurrentDistribution() (Distribution, error) {
 	if err != nil {
 		return Distribution{}, err
 	}
-	path, err = filepath.EvalSymlinks(path)
-	return Distribution{Executable: path, Version: version.String()}, err
+	return distributionForExecutable(path)
+}
+
+func distributionForExecutable(path string) (Distribution, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return Distribution{}, fmt.Errorf("resolve running executable path: %w", err)
+	}
+	release, err := executableVersion(resolved)
+	if err != nil {
+		return Distribution{}, fmt.Errorf("read running executable version: %w", err)
+	}
+	return Distribution{Executable: resolved, Version: release}, nil
 }

@@ -27,58 +27,58 @@ func Download(ctx context.Context, client *http.Client, address, target string, 
 	if len(trustedPublisherKey) > 1 {
 		return "", Manifest{}, errors.New("only one trusted peer update publisher key may be configured")
 	}
-	copyClient := *client
-	copyClient.Timeout = 10 * time.Minute
-	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return errors.New("peer update redirects are not permitted")
-	}
-	query := "?os=" + runtime.GOOS + "&arch=" + runtime.GOARCH
-	get := func(path string) (*http.Response, error) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(address, "/")+path+query, nil)
-		if err != nil {
-			return nil, err
-		}
-		response, err := copyClient.Do(request)
-		if err != nil {
-			return nil, err
-		}
-		if response.StatusCode != http.StatusOK {
-			_ = response.Body.Close()
-			if response.StatusCode == http.StatusNotFound {
-				return nil, ErrNoUpdate
-			}
-			return nil, fmt.Errorf("peer update returned %s", response.Status)
-		}
-		return response, nil
-	}
-	response, err := get("/api/updates/manifest")
+	manifest, err := fetchManifest(ctx, client, address, trustedPublisherKey...)
 	if err != nil {
-		return "", Manifest{}, err
+		return "", manifest, err
+	}
+	if version.Compare(manifest.Version, version.String()) <= 0 {
+		return "", manifest, ErrNoUpdate
+	}
+	path, err := downloadManifest(ctx, client, address, target, manifest)
+	return path, manifest, err
+}
+
+func fetchManifest(ctx context.Context, client *http.Client, address string, trustedPublisherKey ...ed25519.PublicKey) (Manifest, error) {
+	if len(trustedPublisherKey) > 1 {
+		return Manifest{}, errors.New("only one trusted peer update publisher key may be configured")
+	}
+	copyClient := configuredUpdateClient(client)
+	response, err := peerUpdateRequest(ctx, copyClient, address, "/api/updates/manifest")
+	if err != nil {
+		return Manifest{}, err
 	}
 	var manifest Manifest
 	err = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&manifest)
 	_ = response.Body.Close()
 	if err != nil {
-		return "", manifest, fmt.Errorf("decode peer update manifest: %w", err)
+		return manifest, fmt.Errorf("decode peer update manifest: %w", err)
 	}
 	if err := manifest.Validate(); err != nil {
-		return "", manifest, err
+		return manifest, err
 	}
 	if len(trustedPublisherKey) == 1 {
 		if err := manifest.VerifySignature(trustedPublisherKey[0]); err != nil {
-			return "", manifest, err
+			return manifest, err
 		}
 	}
 	if manifest.OS != runtime.GOOS || manifest.Arch != runtime.GOARCH {
-		return "", manifest, errors.New("peer executable platform does not match requested target")
+		return manifest, errors.New("peer executable platform does not match requested target")
 	}
-	if version.Compare(manifest.Version, version.String()) <= 0 {
-		return "", manifest, ErrNoUpdate
+	return manifest, nil
+}
+
+func downloadManifest(ctx context.Context, client *http.Client, address, target string, manifest Manifest) (string, error) {
+	if err := manifest.Validate(); err != nil {
+		return "", err
 	}
+	if manifest.OS != runtime.GOOS || manifest.Arch != runtime.GOARCH {
+		return "", errors.New("peer executable platform does not match requested target")
+	}
+	copyClient := configuredUpdateClient(client)
 	directory := filepath.Dir(target)
 	file, err := os.CreateTemp(directory, ".maistr0-update-*"+filepath.Ext(target))
 	if err != nil {
-		return "", manifest, fmt.Errorf("create staged executable beside current binary: %w", err)
+		return "", fmt.Errorf("create staged executable beside current binary: %w", err)
 	}
 	path := file.Name()
 	ok := false
@@ -88,29 +88,58 @@ func Download(ctx context.Context, client *http.Client, address, target string, 
 			_ = os.Remove(path)
 		}
 	}()
-	response, err = get("/api/updates/binary")
+	response, err := peerUpdateRequest(ctx, copyClient, address, "/api/updates/binary")
 	if err != nil {
-		return "", manifest, err
+		return "", err
 	}
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, manifest.Size+1))
 	_ = response.Body.Close()
 	if err := errors.Join(copyErr, file.Sync(), file.Close()); err != nil {
-		return "", manifest, fmt.Errorf("save peer executable: %w", err)
+		return "", fmt.Errorf("save peer executable: %w", err)
 	}
 	if size != manifest.Size || hex.EncodeToString(hash.Sum(nil)) != manifest.SHA256 {
-		return "", manifest, errors.New("peer executable size or SHA256 mismatch")
+		return "", errors.New("peer executable size or SHA256 mismatch")
 	}
 	actual, err := Inspect(path, manifest.Version)
 	if err != nil || !sameArtifact(actual, manifest) {
-		return "", manifest, errors.New("downloaded executable platform/build metadata mismatch")
+		return "", errors.New("downloaded executable platform/build metadata mismatch")
 	}
 	if err := os.Chmod(path, 0700); err != nil {
-		return "", manifest, err
+		return "", err
 	}
 	if err := ctx.Err(); err != nil {
-		return "", manifest, err
+		return "", err
 	}
 	ok = true
-	return path, manifest, nil
+	return path, nil
+}
+
+func configuredUpdateClient(client *http.Client) *http.Client {
+	copyClient := *client
+	copyClient.Timeout = 10 * time.Minute
+	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return errors.New("peer update redirects are not permitted")
+	}
+	return &copyClient
+}
+
+func peerUpdateRequest(ctx context.Context, client *http.Client, address, path string) (*http.Response, error) {
+	query := "?os=" + runtime.GOOS + "&arch=" + runtime.GOARCH
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(address, "/")+path+query, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		_ = response.Body.Close()
+		if response.StatusCode == http.StatusNotFound {
+			return nil, ErrNoUpdate
+		}
+		return nil, fmt.Errorf("peer update returned %s", response.Status)
+	}
+	return response, nil
 }

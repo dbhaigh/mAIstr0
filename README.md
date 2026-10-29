@@ -5,13 +5,19 @@ across trusted LAN machines. It includes a web dashboard, worker nodes,
 interactive agents, and synchronized cluster memory; a cloud service is not
 required.
 
-Current version: **0.1.1**. See the [changelog](./changelog.md#011-2026-10-26)
+Current version: **0.1.1.15**. See the [changelog](./changelog.md#unreleased)
 and the [documentation index](./docs/README.md).
 
 ## Quick start
 
 Download and extract the matching archive from
 [GitHub Releases](https://github.com/dbhaigh/mAIstr0/releases).
+macOS releases include Apple Silicon and Intel builds, a menu-bar app ZIP, and
+a command-line archive. The app is currently unsigned and unnotarized; macOS
+will show a Gatekeeper warning on first launch. Control-click the app, choose
+**Open**, and confirm if you trust this download. See the
+[macOS installation guide](./docs/node-service-controller.md#macos-launchagent)
+for the optional background service.
 
 On the first machine, start automatic election. If no active orchestrator is
 visible on the LAN, this instance becomes the orchestrator and starts its
@@ -48,16 +54,20 @@ bash:
   --orchestrator-fingerprint "PASTE_VERIFIED_SHA256_FINGERPRINT"
 ```
 
-Complete pairing in the **Setup** panels using the one-time PIN and the
-independently verified fingerprint. First-contact pairing requires the
-orchestrator fingerprint on every subnet; never trust an address or
-certificate learned only through LAN discovery. For unattended enrollment,
-provide the PIN securely with `--pairing-pin`; do not store or reuse it.
+When both machines share a connected local interface prefix, a node can join
+automatically if the coordinator's **Pairing access** panel has strict
+verification disabled. For other connections, pair in the **Setup** panels
+using the one-time PIN and independently verified certificate fingerprint.
+Enable strict verification in **Pairing access** to require both checks for
+every new join or re-pair. Discovery by itself never establishes trust. For
+unattended enrollment, provide the PIN securely with `--pairing-pin`; do not
+store or reuse it.
 
 Default ports (configurable):
 
 - Orchestrator API/dashboard listener: TCP `7450`
 - Node API/dashboard listener: TCP `7451`
+- Host service controller (paired mutual TLS): TCP `7453`
 - LAN discovery: UDP `7999`
 - Optional managed llama.cpp RPC relay: TCP `7452`; do not expose the raw RPC
   backend
@@ -66,6 +76,11 @@ The dashboard opens automatically by default; the orchestrator dashboard is
 available locally at `http://127.0.0.1:7450`. Use `--no-browser` to suppress
 browser launch, `--print-config` to inspect redacted normalized settings, and
 `--diagnostics` for a prompt-free local health summary.
+
+Persistent runtime options, including `--allow-peer-updates`, can be edited in
+the dashboard and take effect after restart. Install the companion controller
+service to manage stopped nodes from the dashboard; see
+[node service controller](./docs/node-service-controller.md).
 
 ## Security essentials
 

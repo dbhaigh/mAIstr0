@@ -125,6 +125,9 @@ func (a *Agent) handleAPINodeControl(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/refresh") {
 		path = "/models/refresh"
 	}
+	if strings.HasSuffix(r.URL.Path, "/runtime-settings") {
+		path = "/api/runtime-settings"
+	}
 	if strings.HasSuffix(r.URL.Path, "/pairing/connect") {
 		path = "/api/pairing/connect"
 	}
@@ -138,6 +141,8 @@ func (a *Agent) handleAPINodeControl(w http.ResponseWriter, r *http.Request) {
 			a.handleModelsRefresh(w, r)
 		case "/api/pairing/connect":
 			a.handlePairingConnect(w, r)
+		case "/api/runtime-settings":
+			a.runtimeSettingsMutation(http.HandlerFunc(a.handleRuntimeSettings)).ServeHTTP(w, r)
 		default:
 			a.handleProperties(w, r)
 		}

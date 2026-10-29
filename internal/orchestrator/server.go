@@ -67,6 +67,10 @@ type Server struct {
 	syncTimeout        time.Duration
 	routerTTFBTimeout  time.Duration
 	routerIdleTimeout  time.Duration
+	// pairingPolicyMu protects the cluster-wide enrollment policy.
+	pairingPolicyMu            sync.RWMutex
+	requirePairingVerification bool
+	pairingPolicyUpdater       func(bool) error
 }
 
 type SessionStore interface {
@@ -313,12 +317,41 @@ func (s *Server) Close() error {
 // unavailable or disabled by minimal mode).
 func (s *Server) Memory() memory.Store { return s.mem }
 
+func (s *Server) SetPairingVerificationRequired(required bool) {
+	s.pairingPolicyMu.Lock()
+	s.requirePairingVerification = required
+	s.pairingPolicyMu.Unlock()
+}
+
+func (s *Server) PairingVerificationRequired() bool {
+	s.pairingPolicyMu.RLock()
+	defer s.pairingPolicyMu.RUnlock()
+	return s.requirePairingVerification
+}
+
+func (s *Server) SetPairingPolicyUpdater(updater func(bool) error) {
+	s.pairingPolicyUpdater = updater
+}
+
+func (s *Server) updatePairingPolicy(required bool) error {
+	if s.pairingPolicyUpdater == nil {
+		return errors.New("cluster pairing policy persistence is unavailable")
+	}
+	if err := s.pairingPolicyUpdater(required); err != nil {
+		return fmt.Errorf("persist cluster pairing policy: %w", err)
+	}
+	s.SetPairingVerificationRequired(required)
+	return nil
+}
+
 func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/updates/manifest", s.handlePeerUpdate)
 	mux.HandleFunc("GET /api/updates/binary", s.handlePeerUpdate)
 	mux.HandleFunc("POST /api/pairing/join", s.handlePairingJoin)
 	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
+	mux.HandleFunc("GET /api/pairing/policy", s.handlePairingPolicy)
+	mux.Handle("PATCH /api/pairing/policy", peeridentity.LoopbackOnly(http.HandlerFunc(s.handlePairingPolicy)))
 	mux.HandleFunc("GET /api/status", s.handleSystemStatus)
 	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
@@ -335,6 +368,10 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/nodes/{id}/models", s.handleNodeModelsGet)
 	mux.HandleFunc("PATCH /api/nodes/{id}/models", s.handleNodeModelsPatch)
+	mux.HandleFunc("GET /api/nodes/{id}/runtime-settings", s.handleNodeControl)
+	mux.HandleFunc("PATCH /api/nodes/{id}/runtime-settings", s.handleNodeControl)
+	mux.HandleFunc("GET /api/nodes/{id}/service", s.handleNodeServiceStatus)
+	mux.HandleFunc("POST /api/nodes/{id}/service/{action}", s.handleNodeServiceAction)
 	mux.HandleFunc("POST /api/nodes/{id}/pairing/connect", s.handleNodeControl)
 	mux.HandleFunc("GET /api/nodes/{id}/properties", s.handleNodeControl)
 	mux.HandleFunc("PATCH /api/nodes/{id}/properties", s.handleNodeControl)

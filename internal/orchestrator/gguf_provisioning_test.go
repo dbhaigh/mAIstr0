@@ -121,17 +121,57 @@ func TestGGUFProvisioningLoadsLocalBeforeDownloading(t *testing.T) {
 func TestReadyShardAdvertisesTextCapabilitiesWithoutClaimingVision(t *testing.T) {
 	node := cluster.NodeStatus{ID: "head", Address: "http://head", Healthy: true, Capabilities: []string{"gpu"}}
 	group := ShardGroup{ID: "group", State: ShardGroupReady, Model: shard.ModelProfile{Name: "Llama-3.2-3B-Instruct"},
+		Plan: shard.ShardPlan{Nodes: []shard.NodePlan{
+			{NodeID: "worker", Devices: []shard.DeviceAllocation{{Kind: "gpu"}}},
+		}},
 		Members: []ShardGroupMember{{NodeID: "head", Address: node.Address, Role: "head"}}}
-	nodes := shardSchedulerNodes([]cluster.NodeStatus{node}, []ShardGroup{group})
+	worker := cluster.NodeStatus{ID: "worker", Address: "http://worker", Healthy: true}
+	nodes := shardSchedulerNodes([]cluster.NodeStatus{node, worker}, []ShardGroup{group})
 	for _, capability := range []string{"writer", "summarizer", "translator"} {
 		if _, err := scheduler.Assign([]scheduler.Subtask{{ID: "text", TaskType: "creative", RequiredCapabilities: []string{capability}}}, nodes); err != nil {
 			t.Fatalf("%s rejected: %v", capability, err)
 		}
+	}
+	if _, err := scheduler.Assign([]scheduler.Subtask{{ID: "gpu", TaskType: "creative", RequiredCapabilities: []string{"gpu"}}}, nodes); err != nil {
+		t.Fatalf("cluster GPU capability was not attributed to the sharded model: %v", err)
 	}
 	if _, err := scheduler.Assign([]scheduler.Subtask{{ID: "image", TaskType: "vision", RequiredCapabilities: []string{"vision"}}}, nodes); err == nil {
 		t.Fatal("text-only shard advertised vision")
 	}
 	if len(node.Capabilities) != 1 || len(node.Models) != 0 {
 		t.Fatal("scheduler enrichment modified input node slices")
+	}
+}
+
+func TestAutomaticGGUFPlanningCombinesIdleNodeMemory(t *testing.T) {
+	manager, registry, _, _, _ := newTestShardManager(t, "")
+	manager.planner = shard.Plan
+	for id, node := range registry.nodes {
+		node.Hardware = hardware.Info{
+			OS: "linux", HasGPU: true,
+			Devices: []hardware.Device{{
+				Kind: "gpu", Vendor: "nvidia", Name: "test GPU",
+				MemoryMB: 5 * 1024, FreeMemoryMB: 5 * 1024,
+			}},
+		}
+		registry.nodes[id] = node
+	}
+	profile := shard.ModelProfile{
+		Name: "large-test-model", Parameters: 8_000_000_000, LayerCount: 32,
+		HiddenSize: 4096, KVHeads: 8, HeadDim: 128,
+		Quantization: "q4_0", RequestedContext: 4096,
+	}
+	provisioner := newAutoModelProvisioner(cluster.NewRegistry(), nil)
+	provisioner.shards = manager
+	nodes := registry.All()
+	if _, err := provisioner.planGGUF(context.Background(), profile, nodes[:1]); err == nil {
+		t.Fatal("single-node placement unexpectedly fit the model and safety margin")
+	}
+	plan, err := provisioner.planGGUF(context.Background(), profile, nodes)
+	if err != nil {
+		t.Fatalf("cluster placement: %v", err)
+	}
+	if len(plan.Nodes) != 2 || plan.Nodes[0].NodeID == plan.Nodes[1].NodeID {
+		t.Fatalf("cluster plan did not shard across both nodes: %+v", plan.Nodes)
 	}
 }

@@ -1,4 +1,5 @@
 import "./shared/state.js";
+import "./shared/theme.js";
 import "./shared/view-model.js";
 import "./shared/snapshot.js";
 import "./shared/dom.js";

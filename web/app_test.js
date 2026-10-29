@@ -55,6 +55,7 @@ const moduleSources = [...entrySource.matchAll(/^import\s+"([^"]+)";$/gm)]
   .map((match) => readModuleSource("src", match[1]));
 const source = moduleSources.join("\n");
 const pipelineViewSource = readModuleSource("src", "views", "pipelines.js");
+const nodeViewSource = readModuleSource("src", "views", "nodes.js");
 const shardViewSource = readModuleSource("src", "views", "shards.js");
 const shardSetupSource = readModuleSource("src", "views", "shard-setup.js");
 const statusQuestionSource = readModuleSource("src", "views", "status-questions.js");
@@ -68,6 +69,8 @@ const taskSourceStart = source.lastIndexOf("function renderTaskHistoryTable(");
 const taskSource = source.slice(taskSourceStart, source.indexOf("async function copyText(", taskSourceStart));
 const resourceHistorySource = source.slice(source.indexOf("function gpuGaugeMarkup("), source.indexOf("const TASK_ACTIVE_STATES"));
 const engineStatusSource = readModuleSource("src", "components", "node-card.js");
+const pairingDialogSource = readModuleSource("src", "components", "pairing-dialog.js");
+const themeSource = readModuleSource("src", "shared", "theme.js");
 const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
 const optionalFeaturesSource = source.slice(source.indexOf("let optionalFeaturesInitialized = false;"), source.indexOf("async function refreshPersistenceStatus()"));
 const sendInteractiveStart = source.indexOf("async function sendInteractiveMessage(text) {");
@@ -88,6 +91,8 @@ test("Dashboard loads its generated bundle through the Go embedded static path",
   assert.equal(appScriptPaths.length, 1);
   assert.match(appScriptPaths[0], /^\/app\.[a-f0-9]{12}\.js$/);
   assert.match(indexSource, /href="\/style\.[a-f0-9]{12}\.css"/);
+  assert.match(indexSource, /<html[^>]*data-theme="dark"/);
+  assert.match(indexSource, /id="theme-toggle"[^>]*aria-pressed="false"/);
   assert.match(indexSource, /id="connection-status"[^>]*role="status"[^>]*aria-live="polite"/);
   assert.match(indexSource, /id="pipeline-model-list"/);
   assert.match(indexSource, /id="pipeline-action-status"/);
@@ -681,7 +686,79 @@ test("Pairing PIN view model covers active, missing, and node-side states", () =
   assert.equal(missing.expiryText, "No active PIN. Generate a new PIN to pair another node.");
   assert.equal(missing.stateText, "No active PIN. Generate one to add or re-pair a node.");
 
+  const hidden = dashboardViewModel.pairingPINViewModel({
+    role: "orchestrator",
+    expires_at: "2026-10-18T00:00:00Z",
+  });
+  assert.equal(hidden.hasPIN, false);
+  assert.equal(hidden.hasActivePIN, true);
+  assert.equal(hidden.pinText, "Hidden on this connection");
+  assert.equal(hidden.regenerateText, "Generate / reveal pairing PIN");
+  assert.match(hidden.stateText, /hidden on this connection/);
+
   assert.equal(dashboardViewModel.pairingPINViewModel({ role: "node" }).visible, false);
+});
+
+test("Pairing access retains the generated PIN across TLS status refreshes and saves cluster policy", async () => {
+  const sourceStart = pairingDialogSource.indexOf("let generatedPairingPIN = null;");
+  const sourceEnd = pairingDialogSource.indexOf("\nasync function loadPairingStatus(", sourceStart);
+  const handlersSource = pairingDialogSource.slice(sourceStart, sourceEnd);
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  let pinClick;
+  let policyChange;
+  const requests = [];
+  const button = {
+    disabled: false,
+    textContent: "",
+    addEventListener: (event, handler) => { if (event === "click") pinClick = handler; },
+  };
+  const checkbox = {
+    checked: false,
+    disabled: false,
+    addEventListener: (event, handler) => { if (event === "change") policyChange = handler; },
+  };
+  const pin = { textContent: "" };
+  const expiry = { textContent: "" };
+  const policyState = { textContent: "" };
+  const dashboardState = { pairing: { status: { role: "orchestrator" } } };
+  const context = vm.createContext({
+    pairingPinRegenerateBtn: button,
+    pairingRequireVerification: checkbox,
+    pairingPolicyState: policyState,
+    pairingPin: pin,
+    pairingPinExpiry: expiry,
+    pairingState: { textContent: "" },
+    dashboardState,
+    fetchJSON: async (url, options) => {
+      requests.push({ url, options });
+      return url === "/api/pairing/pin"
+        ? { pin: "123456", expires_at: expiresAt }
+        : { require_pairing_verification: true };
+    },
+    loadPairingStatus: async () => {},
+  });
+  vm.runInContext(handlersSource, context);
+
+  await pinClick();
+  assert.equal(pin.textContent, "123456");
+  assert.equal(expiry.textContent, `Expires ${new Date(expiresAt).toLocaleTimeString()}. The PIN can be used once.`);
+  const refreshed = context.pairingStatusWithGeneratedPIN({
+    role: "orchestrator",
+    expires_at: expiresAt,
+  });
+  assert.equal(refreshed.pin, "123456");
+  const replaced = context.pairingStatusWithGeneratedPIN({
+    role: "orchestrator",
+    expires_at: new Date(Date.now() + 120_000).toISOString(),
+  });
+  assert.equal(replaced.pin, undefined);
+
+  checkbox.checked = true;
+  await policyChange();
+  assert.equal(requests[1].url, "/api/pairing/policy");
+  assert.deepEqual(JSON.parse(requests[1].options.body), { require_pairing_verification: true });
+  assert.equal(dashboardState.pairing.status.require_pairing_verification, true);
+  assert.match(policyState.textContent, /existing trust is unchanged/);
 });
 
 test("SSE snapshots parse safely and merge live task updates without losing history", () => {
@@ -834,6 +911,81 @@ test("Node properties allow configuring supported inference engines", () => {
   ]) {
     assert.match(index, new RegExp(`<option value="${value}">${label}<\\/option>`));
   }
+});
+
+test("Offline node properties save persistent runtime settings without requiring the node process", async () => {
+  const start = nodeViewSource.indexOf("async function saveNodeProperties(");
+  const end = nodeViewSource.indexOf("\nasync function refreshNodeModels(", start);
+  const requests = [];
+  const status = { textContent: "" };
+  const fields = Object.fromEntries([
+    "runtime_role", "runtime_node_config_path", "runtime_orchestrator_config_path",
+    "runtime_node_listen_addr", "runtime_orchestrator_listen_addr", "runtime_orchestrator_addr",
+    "runtime_tray_mode", "runtime_harness", "runtime_memory_path",
+    "runtime_auto_open_browser", "runtime_discovery_enabled",
+    "runtime_allow_peer_updates", "runtime_no_peer_updates",
+  ].map((name) => [name, { value: "", checked: false }]));
+  fields.runtime_role.value = "node";
+  fields.runtime_allow_peer_updates.checked = true;
+  const form = { elements: { namedItem: (name) => fields[name] || null } };
+  let refreshed = 0;
+  const context = vm.createContext({
+    dashboardState: { nodes: [{ id: "offline/<node>", healthy: false }] },
+    document: { getElementById: () => status },
+    fetchJSON: async (url, options) => { requests.push({ url, options }); return {}; },
+    refresh: async () => { refreshed += 1; },
+    setTimeout: (callback) => callback(),
+    closeNodeProperties() {},
+  });
+  vm.runInContext(nodeViewSource.slice(start, end), context);
+  await context.saveNodeProperties("offline/<node>", form);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/nodes/offline%2F%3Cnode%3E/runtime-settings");
+  assert.equal(requests[0].options.method, "PATCH");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    role: "node",
+    node_config_path: "",
+    orchestrator_config_path: "",
+    node_listen_addr: "",
+    orchestrator_listen_addr: "",
+    orchestrator_addr: "",
+    tray_mode: "",
+    harness: "",
+    memory_path: "",
+    auto_open_browser: false,
+    discovery_enabled: false,
+    allow_peer_updates: true,
+    no_peer_updates: false,
+  });
+  assert.equal(status.textContent, "Saved");
+  assert.equal(refreshed, 1);
+});
+
+test("Node service actions require confirmation and use the encoded lifecycle route", async () => {
+  const start = nodeViewSource.indexOf("async function controlNodeService(");
+  const end = nodeViewSource.indexOf("\nfunction renderSetupNodes(", start);
+  const requests = [];
+  let confirmation = false;
+  let refreshed = 0;
+  const context = vm.createContext({
+    window: {
+      confirm: () => confirmation,
+      alert: (message) => { throw new Error(message); },
+    },
+    fetchJSON: async (url, options) => { requests.push({ url, options }); return {}; },
+    refresh: async () => { refreshed += 1; },
+  });
+  vm.runInContext(nodeViewSource.slice(start, end), context);
+  const button = { disabled: false, textContent: "Stop" };
+  await context.controlNodeService("node/<id>", "stop", button);
+  assert.equal(requests.length, 0);
+  confirmation = true;
+  await context.controlNodeService("node/<id>", "drain", button);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/nodes/node%2F%3Cid%3E/service/drain");
+  assert.equal(requests[0].options.method, "POST");
+  assert.equal(button.textContent, "Draining…");
+  assert.equal(refreshed, 1);
 });
 
 test("Live node context is expandable from cluster overview node cards", () => {
@@ -1854,6 +2006,7 @@ test("An open yielded dashboard navigates to the local worker before using pairi
   let destination;
   const context = vm.createContext({
     fetchJSON: async () => ({ role: "node", dashboard_url: "http://localhost:7451" }),
+    pairingStatusWithGeneratedPIN: (status) => status,
     window: { location: { replace: (url) => { destination = url; } } },
   });
   vm.runInContext(pairingSource, context);
@@ -1861,15 +2014,29 @@ test("An open yielded dashboard navigates to the local worker before using pairi
   assert.equal(destination, "http://localhost:7451");
 });
 
-test("Legacy auto-join status remains displayable; current manual status prompts for verified pairing", async () => {
+test("Trusted nodes do not get restart prompts while awaiting registration", async () => {
   const pairingSource = source.slice(source.indexOf("async function loadPairingStatus("), source.indexOf("async function activateAgentTab("));
-  async function pairingContext(autoJoinAvailable, promptAlreadyOpen = false) {
+  async function pairingContext(
+    autoJoinAvailable,
+    promptAlreadyOpen = false,
+    joined = false,
+    trusted = false,
+    pairingRequired = !autoJoinAvailable,
+  ) {
     let dialogsShown = 0;
     let dialogsClosed = 0;
     const context = vm.createContext({
       fetchJSON: async (path) => path === "/api/pairing/status"
-        ? { role: "node", joined: false, auto_join_available: autoJoinAvailable, orchestrator_addr: "https://192.168.1.10:7450" }
+        ? {
+          role: "node",
+          joined,
+          trusted,
+          pairing_required: pairingRequired,
+          auto_join_available: autoJoinAvailable,
+          orchestrator_addr: "https://192.168.1.10:7450",
+        }
         : { pending: false },
+      pairingStatusWithGeneratedPIN: (status) => status,
       dashboardState: {
         nodes: [],
         tasks: [],
@@ -1908,6 +2075,20 @@ test("Legacy auto-join status remains displayable; current manual status prompts
 
   const automaticAfterPrompt = await pairingContext(true, true);
   assert.equal(automaticAfterPrompt.dialogsClosed, 1);
+
+  const joinedAfterPrompt = await pairingContext(false, true, true);
+  assert.equal(joinedAfterPrompt.dialogsClosed, 1);
+  assert.equal(joinedAfterPrompt.context.dashboardState.pairing.dialogAutoOpened, false);
+  assert.equal(joinedAfterPrompt.context.dashboardState.pairing.promptShown, false);
+
+  const trustedAfterRestart = await pairingContext(false, false, false, true, false);
+  assert.equal(trustedAfterRestart.dialogsShown, 0);
+
+  const trustedAfterPrompt = await pairingContext(false, true, false, true, false);
+  assert.equal(trustedAfterPrompt.dialogsClosed, 1);
+
+  const waitingForDiscovery = await pairingContext(false, false, false, false, false);
+  assert.equal(waitingForDiscovery.dialogsShown, 0);
 
   const manual = await pairingContext(false);
   assert.equal(manual.dialogsShown, 1);
@@ -2091,15 +2272,49 @@ test("Direct chat removes the welcome card before showing the first message", ()
   assert.equal(appended.length, 2);
 });
 
-test("Light theme gives chat replies a readable light surface", () => {
+test("Light theme is explicit and gives chat replies a readable light surface", () => {
   const css = fs.readFileSync(path.join(__dirname, "src", "style.css"), "utf8");
-  const light = css.slice(css.indexOf("@media (prefers-color-scheme: light)"));
+  assert.doesNotMatch(css, /prefers-color-scheme:\s*light/);
+  const light = css.slice(css.indexOf(':root[data-theme="light"]'));
   const rule = light.match(/\.chat-msg\.assistant \.msg-bubble[^{]*\{([^}]*)\}/);
   assert.ok(rule, "light theme must override the dark assistant bubble");
   assert.match(rule[1], /background:\s*var\(--surface\)/);
   assert.match(rule[1], /color:\s*var\(--text\)/);
 });
 
+test("Theme toggle restores, switches, and persists the dashboard preference", () => {
+  const attributes = {};
+  const listeners = {};
+  const root = { dataset: { theme: "dark" } };
+  const button = {
+    textContent: "",
+    title: "",
+    setAttribute: (name, value) => { attributes[name] = value; },
+    addEventListener: (name, callback) => { listeners[name] = callback; },
+  };
+  const values = new Map([["maistr0-theme", "light"]]);
+  const context = vm.createContext({
+    document: {
+      documentElement: root,
+      getElementById: (id) => id === "theme-toggle" ? button : null,
+    },
+    localStorage: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+    },
+    console: { warn: () => {} },
+  });
+  vm.runInContext(themeSource, context);
+
+  assert.equal(root.dataset.theme, "light");
+  assert.equal(button.textContent, "Dark mode");
+  assert.equal(attributes["aria-pressed"], "true");
+  listeners.click();
+  assert.equal(root.dataset.theme, "dark");
+  assert.equal(button.textContent, "Light mode");
+  assert.equal(attributes["aria-pressed"], "false");
+  assert.equal(values.get("maistr0-theme"), "dark");
+});
 function viewStateHarness({ stored = {}, chatMode = "direct" } = {}) {
   const storage = new Map(Object.entries(stored));
   const tabs = new Map();

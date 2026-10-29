@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>mAIstr0 · Interactive Cluster Orchestrator</title>
-  <link rel="stylesheet" href="/style.f3f2594ecfe0.css" />
+  <link rel="stylesheet" href="/style.3f543a09b730.css" />
 </head>
 <body>
   <header>
@@ -13,12 +13,15 @@
         <h1>mAIstr0</h1>
         <p class="subtitle">Local AI, working together</p>
       </div>
-      <div class="header-stats">
-        <span class="stat-pill" id="stat-nodes">Nodes: 0</span>
-        <span class="stat-pill" id="stat-models">Models: 0</span>
-        <span class="stat-pill" id="stat-load">Active Load: 0</span>
-        <span class="stat-pill" id="stat-memory">Memory: 0</span>
-        <span class="stat-pill" id="stat-version">Build -</span>
+      <div class="header-actions">
+        <div class="header-stats">
+          <span class="stat-pill" id="stat-nodes">Nodes: 0</span>
+          <span class="stat-pill" id="stat-models">Models: 0</span>
+          <span class="stat-pill" id="stat-load">Active Load: 0</span>
+          <span class="stat-pill" id="stat-memory">Memory: 0</span>
+          <span class="stat-pill" id="stat-version">Build -</span>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to light mode" aria-pressed="false">Light mode</button>
       </div>
     </div>
     <nav class="nav-tabs" role="tablist" aria-label="Dashboard views">
@@ -168,6 +171,8 @@
             <button id="pairing-pin-regenerate-btn" class="primary-btn pairing-action" type="button">Generate / replace pairing PIN</button>
           </div>
           <p id="pairing-pin-expiry" class="panel-caption"></p>
+          <label class="checkbox-field"><input id="pairing-require-verification" type="checkbox"> Require the out-of-band fingerprint and one-use PIN for every new join or re-pair</label>
+          <p id="pairing-policy-state" class="panel-caption" role="status" aria-live="polite"></p>
         </div>
         <p>Local certificate SHA-256 (verify out of band): <code id="pairing-fingerprint-display"></code></p>
         <p id="pairing-state" class="pairing-state" role="status" aria-live="polite">Loading pairing status…</p>
@@ -441,11 +446,31 @@
             <label class="checkbox-field"><input name="auto_open_browser" type="checkbox" /> Open browser on startup</label>
           </div>
         </div>
+        <div class="node-properties-section">
+          <h3>Startup and command-line settings</h3>
+          <p class="panel-caption">Saved to the local runtime settings file and applied after restarting the host service.</p>
+          <div class="node-properties-grid">
+            <label>Role<select name="runtime_role"><option value="auto">Auto</option><option value="node">Node</option><option value="orchestrator">Orchestrator</option><option value="both">Both</option></select></label>
+            <label>Agent backend<select name="runtime_harness"><option value="">Use config file</option><option value="pi">Pi</option><option value="deepseek">DeepSeek</option></select></label>
+            <label class="wide-field">Node config file<input name="runtime_node_config_path" placeholder="Use default config" /></label>
+            <label class="wide-field">Orchestrator config file<input name="runtime_orchestrator_config_path" placeholder="Use default config" /></label>
+            <label>Node listen override<input name="runtime_node_listen_addr" placeholder="Use config file" /></label>
+            <label>Orchestrator listen override<input name="runtime_orchestrator_listen_addr" placeholder="Use config file" /></label>
+            <label class="wide-field">Orchestrator address override<input name="runtime_orchestrator_addr" placeholder="Auto-discover on LAN" /></label>
+            <label>Tray mode<select name="runtime_tray_mode"><option value="">Use config file</option><option value="taskbar">Taskbar</option><option value="hidden">Hidden</option></select></label>
+            <label class="wide-field">Memory path override<input name="runtime_memory_path" placeholder="Use config file" /></label>
+            <label class="checkbox-field"><input name="runtime_auto_open_browser" type="checkbox" /> Open dashboard on startup</label>
+            <label class="checkbox-field"><input name="runtime_discovery_enabled" type="checkbox" /> Enable LAN discovery</label>
+            <label class="checkbox-field"><input name="runtime_allow_peer_updates" type="checkbox" /> Allow automatic peer executable updates</label>
+            <label class="checkbox-field"><input name="runtime_no_peer_updates" type="checkbox" /> Disable peer updates</label>
+          </div>
+          <p class="panel-caption">Peer updates execute code from paired publishers as this account. Keep them disabled unless every publisher is trusted.</p>
+        </div>
         <div class="node-properties-footer"><span id="node-properties-status" class="node-property-status"></span><button id="node-properties-cancel" type="button" class="secondary-button">Cancel</button><button type="submit" class="primary-btn">Save properties</button></div>
       </form>
     </div>
   </div>
 
-  <script src="/app.5a320200451b.js"></script>
+  <script src="/app.ac67fbf1b4d6.js"></script>
 </body>
 </html>

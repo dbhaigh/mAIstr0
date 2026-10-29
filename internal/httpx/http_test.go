@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/logging"
 )
 
 func TestDecodeJSONBoundsBodiesAndStrictModeRejectsTrailingValues(t *testing.T) {
@@ -117,6 +118,24 @@ func TestMiddlewareChainAddsRequestIDLimitsBodyAndLogsNoRequestContent(t *testin
 	}
 	if !strings.Contains(logs.String(), "component=http") {
 		t.Fatalf("request log omitted component field: %s", logs.String())
+	}
+}
+
+func TestRequestLoggerKeepsAccessRecordsOutOfConsole(t *testing.T) {
+	var console, file bytes.Buffer
+	logger := logging.NewSlogLogger(&console, &file, slog.LevelInfo)
+	handler := RequestLogger(logger)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if strings.Contains(console.String(), "http request") {
+		t.Fatalf("console contains HTTP access log: %s", console.String())
+	}
+	if !strings.Contains(file.String(), `"msg":"http request"`) ||
+		!strings.Contains(file.String(), `"file_only":true`) {
+		t.Fatalf("file omitted marked HTTP access log: %s", file.String())
 	}
 }
 

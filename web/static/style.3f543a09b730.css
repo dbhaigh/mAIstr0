@@ -12,6 +12,8 @@
   --text: #e6ebf5;
   --muted: #8b93a7;
   --focus: #8bd5ff;
+  --button-text: #06101c;
+  --surface-overlay: #0c101b66;
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -75,6 +77,26 @@ header h1 {
   gap: 0.15rem;
   flex-wrap: wrap;
 }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.theme-toggle {
+  margin: 0;
+  padding: 0.35rem 0.65rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.theme-toggle:hover { filter: none; border-color: var(--accent); color: var(--accent); }
 
 .stat-pill {
   padding: 0.2rem 0.35rem;
@@ -230,7 +252,7 @@ header h1 {
 
 .setup-steps strong { color: var(--text); }
 .setup-status { margin: 0.5rem 0; color: var(--muted); }
-.setup-summary { padding: 0.75rem 0.9rem; border: 1px solid #34405e; border-left: 3px solid #596783; border-radius: 6px; background: #0c101b66; line-height: 1.45; }
+.setup-summary { padding: 0.75rem 0.9rem; border: 1px solid #34405e; border-left: 3px solid #596783; border-radius: 6px; background: var(--surface-overlay); line-height: 1.45; }
 .setup-summary[data-state="ready"] { border-left-color: var(--ok); color: var(--text); }
 .setup-summary[data-state="attention"], .setup-summary[data-state="empty"] { border-left-color: var(--warn); color: var(--text); }
 .setup-summary[data-state="error"] { border-left-color: var(--bad); color: var(--text); }
@@ -604,7 +626,7 @@ main {
 .pairing-pin-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem; }
 .pairing-pin { display: inline-block; margin: 0.25rem 0 0.6rem; color: var(--accent); font: 700 2rem/1.2 ui-monospace, Consolas, monospace; letter-spacing: 0.2em; }
 .pairing-action { width: auto; min-height: 2.75rem; padding: 0.7rem 1rem; white-space: normal; }
-.pairing-state { margin: 0.7rem 0; padding: 0.65rem 0.8rem; border-left: 2px solid #52657c; border-radius: 0 5px 5px 0; background: #0c101b66; line-height: 1.45; }
+.pairing-state { margin: 0.7rem 0; padding: 0.65rem 0.8rem; border-left: 2px solid #52657c; border-radius: 0 5px 5px 0; background: var(--surface-overlay); line-height: 1.45; }
 .pairing-connect-fields { display: flex; align-items: end; flex-wrap: wrap; gap: 0.75rem; }
 .pairing-connect-fields label { display: grid; flex: 1 1 220px; gap: 0.3rem; color: var(--muted); font-size: 0.82rem; }
 .pairing-connect-fields button { width: auto; }
@@ -710,7 +732,7 @@ textarea {
 button {
   margin-top: 0.6rem;
   background: var(--accent);
-  color: #06101c;
+  color: var(--button-text);
   border: none;
   border-radius: 6px;
   padding: 0.5rem 1.1rem;
@@ -1716,7 +1738,7 @@ button:hover { filter: brightness(1.1); }
 
 .primary-btn {
   background: var(--accent);
-  color: #06101c;
+  color: var(--button-text);
   font-weight: 600;
 }
 
@@ -1729,8 +1751,7 @@ button:hover { filter: brightness(1.1); }
   *, *::before, *::after { animation-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
+:root[data-theme="light"] {
     color-scheme: light;
     --bg: #f4f6fa;
     --panel: #ffffff;
@@ -1744,44 +1765,97 @@ button:hover { filter: brightness(1.1); }
     --text: #172033;
     --muted: #526176;
     --focus: #075985;
-  }
+    --button-text: #ffffff;
+    --surface-overlay: #e9eef5cc;
+}
 
-  body { background: var(--bg); color: var(--text); }
-  header, .agent-sidebar, .cluster-window, .pairing-panel, .setup-panel-section,
-  .overview-column, .node-terminal, .node-properties-dialog, .pairing-dialog,
-  .card, .overview-node, .tool-card, .welcome-card, .skeleton-card {
-    color: var(--text);
-    background-color: var(--panel);
-    border-color: var(--border);
-  }
-  .welcome-card { background-color: var(--surface); }
-  .nav-tab, .agent-tab, .overview-tab, .setup-tab, .cluster-workspace-tab {
-    color: var(--muted);
-  }
-  .nav-tab.active, .agent-tab.active, .overview-tab.active, .setup-tab.active,
-  .cluster-workspace-tab.active { color: var(--accent); }
-  input, textarea, select, .node-terminal-toolbar select {
-    color: var(--text);
-    background-color: var(--panel);
-    border-color: var(--border);
-  }
-  .task-history-table th, .task-history-table td, .task-history-row:hover,
-  .overview-node, .node-terminal-message, .chat-input-container {
-    border-color: var(--border);
-  }
-  .task-history-row:hover { background: var(--surface-raised); }
-  .connection-status[data-connected="true"] { color: var(--ok); }
-  .connection-status[data-connected="false"] { color: var(--warn); }
-  .persistence-warning { color: #713f12; background: #fef3c7; border-color: #fcd34d; }
-  .chat-msg.assistant .msg-bubble, .dialogue-exchange, .node-msg, .node-output-box {
-    color: var(--text);
-    background: var(--surface);
-    border-color: var(--border);
-  }
-  .thought-box { color: var(--muted); background: var(--surface-raised); }
-  .tool-body, .orch-msg { color: var(--muted); }
-  .tool-body, .chat-input-container { border-color: var(--border); }
-  .chat-input-container { background: var(--panel); }
+:root[data-theme="light"] body { background: var(--bg); color: var(--text); }
+:root[data-theme="light"] header, :root[data-theme="light"] .agent-sidebar,
+:root[data-theme="light"] .cluster-window, :root[data-theme="light"] .pairing-panel,
+:root[data-theme="light"] .setup-panel-section, :root[data-theme="light"] .overview-column,
+:root[data-theme="light"] .node-terminal, :root[data-theme="light"] .node-properties-dialog,
+:root[data-theme="light"] .pairing-dialog, :root[data-theme="light"] .card,
+:root[data-theme="light"] .overview-node, :root[data-theme="light"] .tool-card,
+:root[data-theme="light"] .welcome-card, :root[data-theme="light"] .skeleton-card {
+  color: var(--text);
+  background-color: var(--panel);
+  border-color: var(--border);
+}
+:root[data-theme="light"] .pairing-panel {
+  background: linear-gradient(125deg, #eaf4fb, #f1f5fb 60%);
+}
+:root[data-theme="light"] .welcome-card { background-color: var(--surface); }
+:root[data-theme="light"] .nav-tab, :root[data-theme="light"] .agent-tab,
+:root[data-theme="light"] .overview-tab, :root[data-theme="light"] .setup-tab,
+:root[data-theme="light"] .cluster-workspace-tab { color: var(--muted); }
+:root[data-theme="light"] .nav-tab.active, :root[data-theme="light"] .agent-tab.active,
+:root[data-theme="light"] .overview-tab.active, :root[data-theme="light"] .setup-tab.active,
+:root[data-theme="light"] .cluster-workspace-tab.active { color: var(--accent); }
+:root[data-theme="light"] input, :root[data-theme="light"] textarea,
+:root[data-theme="light"] select, :root[data-theme="light"] .node-terminal-toolbar select {
+  color: var(--text);
+  background-color: var(--panel);
+  border-color: var(--border);
+}
+:root[data-theme="light"] .task-history-table th, :root[data-theme="light"] .task-history-table td,
+:root[data-theme="light"] .task-history-row:hover, :root[data-theme="light"] .overview-node,
+:root[data-theme="light"] .node-terminal-message, :root[data-theme="light"] .chat-input-container {
+  border-color: var(--border);
+}
+:root[data-theme="light"] .task-history-row:hover { background: var(--surface-raised); }
+:root[data-theme="light"] .connection-status[data-connected="true"] { color: var(--ok); }
+:root[data-theme="light"] .connection-status[data-connected="false"] { color: var(--warn); }
+:root[data-theme="light"] .persistence-warning { color: #713f12; background: #fef3c7; border-color: #fcd34d; }
+:root[data-theme="light"] .chat-msg.assistant .msg-bubble,
+:root[data-theme="light"] .dialogue-exchange, :root[data-theme="light"] .node-msg,
+:root[data-theme="light"] .node-output-box {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+}
+:root[data-theme="light"] .thought-box { color: var(--muted); background: var(--surface-raised); }
+:root[data-theme="light"] .tool-body, :root[data-theme="light"] .orch-msg { color: var(--muted); }
+:root[data-theme="light"] .tool-body, :root[data-theme="light"] .chat-input-container { border-color: var(--border); }
+:root[data-theme="light"] .chat-input-container { background: var(--panel); }
+:root[data-theme="light"] .setup-summary, :root[data-theme="light"] .setup-card,
+:root[data-theme="light"] .setup-badge, :root[data-theme="light"] .setup-node-card,
+:root[data-theme="light"] .catalog-controls select, :root[data-theme="light"] .catalog-controls input,
+:root[data-theme="light"] .task-history-toolbar input, :root[data-theme="light"] .task-history-toolbar select,
+:root[data-theme="light"] .task-details-content, :root[data-theme="light"] .fact-form input,
+:root[data-theme="light"] .memory-search, :root[data-theme="light"] .lesson,
+:root[data-theme="light"] .memory-stat, :root[data-theme="light"] .activity-assignment,
+:root[data-theme="light"] .engine-status-chip, :root[data-theme="light"] .engine-inventory-row,
+:root[data-theme="light"] .resource-history, :root[data-theme="light"] .cluster-peer,
+:root[data-theme="light"] .pairing-state, :root[data-theme="light"] .shard-setup-label select,
+:root[data-theme="light"] .shard-setup-label input, :root[data-theme="light"] .context-menu,
+:root[data-theme="light"] .node-properties-grid input, :root[data-theme="light"] .node-properties-grid select,
+:root[data-theme="light"] .node-properties-grid textarea, :root[data-theme="light"] .node-property-panel input,
+:root[data-theme="light"] .node-property-panel select, :root[data-theme="light"] .model-tag,
+:root[data-theme="light"] .model-tag-btn, :root[data-theme="light"] .model-default-select,
+:root[data-theme="light"] .subtask-output, :root[data-theme="light"] .workload-bar,
+:root[data-theme="light"] .session-item, :root[data-theme="light"] .setting-label select,
+:root[data-theme="light"] .tool-pill {
+  background: var(--surface);
+  border-color: var(--border);
+}
+:root[data-theme="light"] .setup-card[data-state="ready"] .setup-badge {
+  color: #166534;
+  background: #dcfce7;
+}
+:root[data-theme="light"] .setup-card[data-state="attention"] .setup-badge {
+  color: #854d0e;
+  background: #fef3c7;
+}
+:root[data-theme="light"] .setup-card[data-state="error"] .setup-badge {
+  color: #991b1b;
+  background: #fee2e2;
+}
+:root[data-theme="light"] .session-item.active { background: var(--surface-raised); }
+:root[data-theme="light"] .model-tag-btn:hover,
+:root[data-theme="light"] .context-menu button:hover { background: var(--surface-raised); }
+:root[data-theme="light"] .theme-toggle {
+  color: var(--text);
+  background: var(--panel);
 }
 
 @media (max-width: 900px) {

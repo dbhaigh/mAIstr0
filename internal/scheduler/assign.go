@@ -113,8 +113,10 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	}
 	healthy := make([]cluster.NodeStatus, 0, len(nodes))
 	for _, n := range nodes {
-		if n.Healthy {
+		if n.Healthy && !n.Draining {
 			healthy = append(healthy, n)
+		} else if n.Draining {
+			LogDecision("planning", "draining", n, "", 0, ScoreFactors{})
 		} else {
 			LogDecision("planning", "unhealthy", n, "", 0, ScoreFactors{})
 		}
@@ -285,7 +287,7 @@ func filterSubtaskCandidatesWithCapabilities(st Subtask, outDegree int, nodes []
 }
 
 func prepareScoringCandidate(node *cluster.NodeStatus, subtask score.Subtask, nodeCapabilities []string) (scoringCandidate, bool) {
-	if !node.Healthy {
+	if !node.Healthy || node.Draining {
 		return scoringCandidate{}, false
 	}
 	prepared, ok := score.PrepareWithCapabilities(*node, subtask, nodeCapabilities)
@@ -296,7 +298,7 @@ func prepareScoringCandidate(node *cluster.NodeStatus, subtask score.Subtask, no
 }
 
 func prepareScoringCandidateForScore(node *cluster.NodeStatus, subtask score.Subtask, nodeCapabilities []string) (scoringCandidate, bool) {
-	if !node.Healthy {
+	if !node.Healthy || node.Draining {
 		return scoringCandidate{}, false
 	}
 	prepared, ok := score.PrepareWithCapabilitiesForScoring(*node, subtask, nodeCapabilities)

@@ -7,14 +7,15 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/bin/maistr0</string>
-		<string>--role</string>
-		<string>auto</string>
-		<string>--no-browser</string>
+		<string>controller</string>
+		<string>--service-managed</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
+	<key>ProcessType</key>
+	<string>Interactive</string>
 	<key>StandardOutPath</key>
 	<string>/dev/null</string>
 	<key>StandardErrorPath</key>

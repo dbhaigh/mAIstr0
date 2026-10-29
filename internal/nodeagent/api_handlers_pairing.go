@@ -6,6 +6,8 @@ import (
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/logging"
+	"github.com/maistr0/maistr0/internal/netutil"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"net/http"
 	"strings"
@@ -20,6 +22,7 @@ func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 	orchestratorAddr := a.getOrchestratorAddr()
 	pairingRequired := false
 	autoJoinAvailable := false
+	requirePairingVerification := a.PairingVerificationRequired()
 	if !joined {
 		candidates := a.orchestratorCandidates()
 		if len(candidates) > 0 {
@@ -30,7 +33,14 @@ func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 		for _, candidate := range candidates {
 			if !a.identityComponent.IsTrustedID(candidate.id) {
 				pairingRequired = true
-				break
+				if !requirePairingVerification {
+					onLocalSubnet, err := netutil.URLOnLocalSubnet(candidate.address)
+					if err != nil {
+						logging.Errorf("nodeagent", "nodeagent: check discovered orchestrator subnet: %v", err)
+					} else if onLocalSubnet {
+						autoJoinAvailable = true
+					}
+				}
 			}
 		}
 	}
@@ -44,16 +54,17 @@ func (a *Agent) handlePairingStatus(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"fingerprint":         fingerprint,
-		"role":                "node",
-		"node_id":             cfg.NodeID,
-		"node_addr":           cfg.AdvertiseAddr,
-		"orchestrator_addr":   orchestratorAddr,
-		"orchestrator_id":     orchestratorID,
-		"trusted":             trusted,
-		"joined":              joined,
-		"pairing_required":    pairingRequired,
-		"auto_join_available": autoJoinAvailable,
+		"fingerprint":                  fingerprint,
+		"role":                         "node",
+		"node_id":                      cfg.NodeID,
+		"node_addr":                    cfg.AdvertiseAddr,
+		"orchestrator_addr":            orchestratorAddr,
+		"orchestrator_id":              orchestratorID,
+		"trusted":                      trusted,
+		"joined":                       joined,
+		"pairing_required":             pairingRequired,
+		"auto_join_available":          autoJoinAvailable,
+		"require_pairing_verification": requirePairingVerification,
 	})
 }
 

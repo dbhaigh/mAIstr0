@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
-	"time"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
@@ -127,26 +127,73 @@ func (p *autoModelProvisioner) provisionGGUF(ctx context.Context, subtask schedu
 		return nil
 	}
 	start := func(node cluster.NodeStatus, model supervisor.LocalHeadModel) error {
-		if err := ensureRuntime(node); err != nil {
-			return err
-		}
 		current, ok := p.registry.Get(node.ID)
 		if !ok || !current.Healthy || current.Address != node.Address {
 			return errors.New("model target node changed or became unavailable")
 		}
-		weights, err := model.Profile.EffectiveWeightsSizeBytes()
-		if err != nil {
-			return fmt.Errorf("read selected model size: %w", err)
+		workerNodes := make([]cluster.NodeStatus, 0, len(available))
+		prepareWorker := func(candidate cluster.NodeStatus) error {
+			if containsNode(workerNodes, candidate.ID) {
+				return nil
+			}
+			if err := ensureRuntime(candidate); err != nil {
+				return fmt.Errorf("%s install worker runtime: %w", candidate.ID, err)
+			}
+			current, ok := p.registry.Get(candidate.ID)
+			if !ok || !current.Healthy || current.Address != candidate.Address {
+				return fmt.Errorf("%s: node changed while preparing shard capacity", candidate.ID)
+			}
+			workerNodes = append(workerNodes, current)
+			return nil
 		}
-		if !compatibleGGUF(subtask, current, model.Name, weights) {
-			return errors.New("selected GGUF does not satisfy the task requirements or available memory")
+		if err := prepareWorker(node); err != nil {
+			return err
+		}
+		plan, planErr := p.planGGUF(ctx, model.Profile, workerNodes)
+		var preparationErrors []error
+		for _, candidate := range available {
+			if planErr == nil {
+				break
+			}
+			if candidate.node.ID == node.ID {
+				continue
+			}
+			if err := prepareWorker(candidate.node); err != nil {
+				preparationErrors = append(preparationErrors, err)
+				continue
+			}
+			plan, planErr = p.planGGUF(ctx, model.Profile, workerNodes)
+		}
+		if planErr != nil {
+			return errors.Join(
+				fmt.Errorf("plan model across idle cluster nodes: %w", planErr),
+				errors.Join(preparationErrors...),
+			)
+		}
+		if !compatibleGGUF(subtask, model, plan) {
+			return errors.New("selected GGUF does not satisfy the task requirements")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		current, ok = p.registry.Get(node.ID)
+		if !ok || !current.Healthy || current.Address != node.Address {
+			return errors.New("model target node changed or became unavailable")
 		}
 		var status supervisor.Status
 		if err := call(node, http.MethodPost, "/api/engines/managed/configure-head", map[string]any{"model_id": model.ID, "requested_context": contextSize}, &status); err != nil {
 			return fmt.Errorf("configure local model: %w", err)
 		}
+		pinnedNodes := make([]string, 0, len(plan.Nodes)+1)
+		for _, plannedNode := range plan.Nodes {
+			pinnedNodes = append(pinnedNodes, plannedNode.NodeID)
+		}
+		if !slices.Contains(pinnedNodes, node.ID) {
+			pinnedNodes = append(pinnedNodes, node.ID)
+		}
 		group, err := p.shards.Create(ctx, CreateShardGroupRequest{
-			Model: model.Profile, Mode: shard.ModeLlamaCPPRPC, PinnedNodes: []string{node.ID}, HeadNodeID: node.ID, HeadEngineID: status.ID,
+			Model: model.Profile, Mode: shard.ModeLlamaCPPRPC, PinnedNodes: pinnedNodes,
+			HeadNodeID: node.ID, HeadEngineID: status.ID,
 		})
 		if err != nil {
 			return fmt.Errorf("start model group %s: %w", group.ID, err)
@@ -158,12 +205,7 @@ func (p *autoModelProvisioner) provisionGGUF(ctx context.Context, subtask schedu
 	}
 	for _, candidate := range available {
 		for _, model := range candidate.models {
-			weights, err := model.Profile.EffectiveWeightsSizeBytes()
-			if err != nil {
-				failures = append(failures, fmt.Errorf("%s local model weight size: %w", candidate.node.ID, err))
-				continue
-			}
-			if !compatibleGGUF(subtask, candidate.node, model.Name, weights) {
+			if !compatibleGGUFTask(subtask) {
 				continue
 			}
 			logging.Infof("orchestrator", "loading compatible local GGUF %s on node %s", model.Name, candidate.node.ID)
@@ -175,14 +217,10 @@ func (p *autoModelProvisioner) provisionGGUF(ctx context.Context, subtask schedu
 		}
 	}
 	for _, recommendation := range supervisor.RecommendedGGUF() {
+		if !compatibleGGUFTask(subtask) {
+			continue
+		}
 		for _, candidate := range available {
-			if !compatibleGGUF(subtask, candidate.node, strings.TrimSuffix(recommendation.Filename, ".gguf"), uint64(recommendation.SizeBytes)) {
-				continue
-			}
-			if err := ensureRuntime(candidate.node); err != nil {
-				failures = append(failures, err)
-				continue
-			}
 			logging.Infof("orchestrator", "downloading recommended Hugging Face GGUF %s on node %s", recommendation.ID, candidate.node.ID)
 			var model supervisor.LocalHeadModel
 			if err := call(candidate.node, http.MethodPost, "/api/engines/managed/download-model", map[string]any{"model": recommendation.ID, "requested_context": contextSize}, &model); err != nil {
@@ -202,30 +240,76 @@ func (p *autoModelProvisioner) provisionGGUF(ctx context.Context, subtask schedu
 	return errors.Join(failures...)
 }
 
-func compatibleGGUF(subtask scheduler.Subtask, node cluster.NodeStatus, name string, bytes uint64) bool {
-	if node.TelemetryAt.IsZero() || node.TelemetryAt.After(time.Now()) || time.Since(node.TelemetryAt) > clusterTelemetryFreshnessWindow {
+func (p *autoModelProvisioner) planGGUF(
+	ctx context.Context,
+	model shard.ModelProfile,
+	nodes []cluster.NodeStatus,
+) (shard.ShardPlan, error) {
+	pinnedNodes := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		pinnedNodes = append(pinnedNodes, node.ID)
+	}
+	request := CreateShardGroupRequest{
+		Mode: shard.ModeLlamaCPPRPC, PinnedNodes: pinnedNodes, allowHeadlessPlanning: true,
+	}
+	candidates, _, err := p.shards.candidates(ctx, request)
+	if err != nil {
+		return shard.ShardPlan{}, fmt.Errorf("collect compatible managed workers: %w", err)
+	}
+	plan, err := p.shards.planner(model, candidates, shard.Policy{
+		Mode: shard.ModeLlamaCPPRPC, SafetyMarginMB: managedShardSafetyMarginMB,
+	})
+	if err != nil {
+		return shard.ShardPlan{}, err
+	}
+	warnings, err := shardPlanNetworkWarnings(plan, candidates)
+	if err != nil {
+		return shard.ShardPlan{}, err
+	}
+	plan.Rationale = append(plan.Rationale, warnings...)
+	return plan, nil
+}
+
+func compatibleGGUFTask(subtask scheduler.Subtask) bool {
+	if subtask.TaskType == "vision" {
 		return false
 	}
-	if bytes == 0 || !nodeCanFitModel(node, float64(bytes)/(1<<30)) {
-		return false
-	}
-	var deviceBudget uint64
-	for _, device := range node.Hardware.Devices {
-		if device.Kind == "gpu" && device.FreeMemoryMB > 2048 {
-			deviceBudget += (device.FreeMemoryMB - 2048) * (1 << 20)
+	for _, capability := range subtask.RequiredCapabilities {
+		if strings.EqualFold(strings.TrimSpace(capability), "vision") {
+			return false
 		}
 	}
-	if float64(deviceBudget) < float64(bytes)*modelMemoryReserve {
+	return true
+}
+
+func compatibleGGUF(subtask scheduler.Subtask, model supervisor.LocalHeadModel, plan shard.ShardPlan) bool {
+	weights, err := model.Profile.EffectiveWeightsSizeBytes()
+	if err != nil || weights == 0 {
 		return false
 	}
-	node.Capabilities = append([]string(nil), node.EffectiveCapabilities()...)
-	node.Models = []engine.Model{{Name: name, Engine: "gguf-candidate", Tags: shardTextTags(name), SizeGB: float64(bytes) / (1 << 30)}}
-	node.Engines = []engine.Status{{Name: "gguf-candidate", Ready: true}}
-	for _, capability := range (cluster.NodeStatus{Models: node.Models}).EffectiveCapabilities() {
+	node := cluster.NodeStatus{
+		ID: "gguf-candidate", Address: "http://gguf-candidate", Healthy: true,
+		Models: []engine.Model{{
+			Name: model.Name, Engine: "gguf-candidate", Tags: shardTextTags(model.Name),
+			SizeGB: float64(weights) / (1 << 30),
+		}},
+		Engines: []engine.Status{{Name: "gguf-candidate", Ready: true}},
+	}
+	node.Capabilities = shardGroupHardwareCapabilities(ShardGroup{Plan: plan})
+	for _, capability := range node.EffectiveCapabilities() {
 		if !containsCapability(node.Capabilities, capability) {
 			node.Capabilities = append(append([]string(nil), node.Capabilities...), capability)
 		}
 	}
-	_, err := scheduler.Assign([]scheduler.Subtask{subtask}, []cluster.NodeStatus{node})
+	_, err = scheduler.Assign([]scheduler.Subtask{subtask}, []cluster.NodeStatus{node})
 	return err == nil
+}
+
+func containsNode(nodes []cluster.NodeStatus, id string) bool {
+	for _, node := range nodes {
+		if node.ID == id {
+			return true
+		}
+	}
+	return false
 }

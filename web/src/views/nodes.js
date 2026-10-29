@@ -67,6 +67,15 @@ export function renderNodes(nodes) {
            <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
            <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>`
         : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
+      const serviceActions = n.control_address
+        ? `<div class="node-service-actions" aria-label="Node service controls">
+            ${n.healthy
+              ? `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="drain" ${n.draining ? "disabled" : ""}>Drain &amp; stop</button>
+                 <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="stop">Stop</button>
+                 <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="restart">Restart</button>`
+              : `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="start">Start</button>`}
+          </div>`
+        : "";
       card.innerHTML = `
         <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
         ${n.version_error ? `<div class="node-version-error">⚠ ${escapeHtml(n.version_error)}</div>` : ""}
@@ -85,10 +94,15 @@ export function renderNodes(nodes) {
         <div class="row"><span>Default model</span><span>${escapeHtml(n.default_model || "automatic")}</span></div>
         <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
         ${nodeActions}
+        ${n.draining ? '<small class="node-offline-note">Draining · waiting for active work</small>' : ""}
+        ${serviceActions}
         <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
       `;
       card.querySelector(".node-terminal-open")?.addEventListener("click", () => openNodeTerminal(n));
       card.querySelector(".node-model-refresh")?.addEventListener("click", () => refreshNodeModels(n.id));
+      card.querySelectorAll(".node-service-action").forEach((button) => {
+        button.addEventListener("click", () => controlNodeService(n.id, button.dataset.action, button));
+      });
       card.querySelector(".model-config-toggle")?.addEventListener("click", () => {
         if (modelPanelOpen.has(n.id)) {
           modelPanelOpen.delete(n.id);
@@ -120,6 +134,22 @@ export function renderNodes(nodes) {
       return card;
     },
   });
+}
+
+async function controlNodeService(nodeId, action, button) {
+  if (action !== "start" && !window.confirm(`${action[0].toUpperCase()}${action.slice(1)} ${nodeId}?`)) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = `${action}…`;
+  try {
+    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/service/${action}`, { method: "POST" });
+    button.textContent = action === "drain" ? "Draining…" : `${action} requested`;
+    await refresh();
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = original;
+    window.alert(`Unable to ${action} ${nodeId}: ${err.message}`);
+  }
 }
 
 export function renderSetupNodes(nodes) {
@@ -263,7 +293,10 @@ async function openNodeProperties(node) {
   status.textContent = "Loading properties...";
   modal.hidden = false;
   try {
-    const props = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/properties`);
+    const [props, runtimeSettings] = await Promise.all([
+      node.healthy ? fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/properties`) : {},
+      fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/runtime-settings`),
+    ]);
     nodeProperties.set(node.id, props);
     for (const [name, value] of Object.entries(props)) {
       const field = form.elements.namedItem(name);
@@ -272,8 +305,30 @@ async function openNodeProperties(node) {
       else if (name === "disabled_models") field.value = (value || []).join("\n");
       else field.value = value ?? "";
     }
+    const runtimeFields = {
+      runtime_role: "role",
+      runtime_node_config_path: "node_config_path",
+      runtime_orchestrator_config_path: "orchestrator_config_path",
+      runtime_node_listen_addr: "node_listen_addr",
+      runtime_orchestrator_listen_addr: "orchestrator_listen_addr",
+      runtime_orchestrator_addr: "orchestrator_addr",
+      runtime_tray_mode: "tray_mode",
+      runtime_harness: "harness",
+      runtime_memory_path: "memory_path",
+      runtime_auto_open_browser: "auto_open_browser",
+      runtime_discovery_enabled: "discovery_enabled",
+      runtime_allow_peer_updates: "allow_peer_updates",
+      runtime_no_peer_updates: "no_peer_updates",
+    };
+    for (const [fieldName, settingName] of Object.entries(runtimeFields)) {
+      const field = form.elements.namedItem(fieldName);
+      if (!field) continue;
+      const value = runtimeSettings[settingName];
+      if (field.type === "checkbox") field.checked = Boolean(value);
+      else field.value = value ?? "";
+    }
     document.getElementById("node-properties-title").textContent = `${node.id} properties`;
-    document.getElementById("node-properties-subtitle").textContent = "Edit runtime settings. Identity and listen address apply after restart.";
+    document.getElementById("node-properties-subtitle").textContent = "Edit node properties and persistent startup settings. Startup changes apply after restart.";
     status.textContent = "";
     form.elements.namedItem("advertise_addr")?.focus();
   } catch (err) {
@@ -291,20 +346,42 @@ async function saveNodeProperties(nodeId, form) {
   const value = (name) => form.elements.namedItem(name)?.value.trim() || "";
   status.textContent = "Saving...";
   try {
-    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/properties`, {
+    const node = dashboardState.nodes.find((item) => item.id === nodeId);
+    if (node?.healthy) {
+      await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/properties`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          advertise_addr: value("advertise_addr"),
+          orchestrator_addr: value("orchestrator_addr"),
+          default_model: value("default_model"),
+          engine_name: value("engine_name"),
+          engine_url: value("engine_url"),
+          disabled_models: value("disabled_models").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+          discovery_enabled: form.elements.namedItem("discovery_enabled").checked,
+          auto_open_browser: form.elements.namedItem("auto_open_browser").checked,
+          tray_mode: value("tray_mode"),
+          memory_path: value("memory_path"),
+        }),
+      });
+    }
+    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/runtime-settings`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        advertise_addr: value("advertise_addr"),
-        orchestrator_addr: value("orchestrator_addr"),
-        default_model: value("default_model"),
-        engine_name: value("engine_name"),
-        engine_url: value("engine_url"),
-        disabled_models: value("disabled_models").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
-        discovery_enabled: form.elements.namedItem("discovery_enabled").checked,
-        auto_open_browser: form.elements.namedItem("auto_open_browser").checked,
-        tray_mode: value("tray_mode"),
-        memory_path: value("memory_path"),
+        role: value("runtime_role"),
+        node_config_path: value("runtime_node_config_path"),
+        orchestrator_config_path: value("runtime_orchestrator_config_path"),
+        node_listen_addr: value("runtime_node_listen_addr"),
+        orchestrator_listen_addr: value("runtime_orchestrator_listen_addr"),
+        orchestrator_addr: value("runtime_orchestrator_addr"),
+        tray_mode: value("runtime_tray_mode"),
+        harness: value("runtime_harness"),
+        memory_path: value("runtime_memory_path"),
+        auto_open_browser: form.elements.namedItem("runtime_auto_open_browser").checked,
+        discovery_enabled: form.elements.namedItem("runtime_discovery_enabled").checked,
+        allow_peer_updates: form.elements.namedItem("runtime_allow_peer_updates").checked,
+        no_peer_updates: form.elements.namedItem("runtime_no_peer_updates").checked,
       }),
     });
     status.textContent = "Saved";
@@ -354,7 +431,7 @@ function showNodeMenu(x, y) {
   const joiningOrchestrator = Boolean(contextNode.joinOrchestrator);
   if (properties) {
     properties.textContent = joiningOrchestrator ? "Configure host properties" : `Configure ${contextNode.id}`;
-    properties.disabled = !contextNode.healthy || nodeIsDiscovered || joiningOrchestrator;
+    properties.disabled = (!contextNode.healthy && !contextNode.control_address) || nodeIsDiscovered || joiningOrchestrator;
   }
   if (pairing) {
     const currentOrchestrator = dashboardState.pairing.status?.orchestrator_id === contextNode.id;

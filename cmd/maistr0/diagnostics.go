@@ -98,8 +98,14 @@ func loadDiagnosticsConfig(options configPrintOptions) (string, diagnosticConfig
 		if options.noDiscovery {
 			nodeCfg.DiscoveryEnabled = false
 		}
+		if options.enableDiscovery {
+			nodeCfg.DiscoveryEnabled = true
+		}
 		if options.noBrowser {
 			nodeCfg.AutoOpenBrowser = false
+		}
+		if options.autoOpenBrowser {
+			nodeCfg.AutoOpenBrowser = true
 		}
 		if nodeCfg.NodeID == "" {
 			nodeCfg.NodeID = nodeagent.DefaultNodeID()
@@ -140,8 +146,14 @@ func loadDiagnosticsConfig(options configPrintOptions) (string, diagnosticConfig
 	if options.noBrowser {
 		orchCfg.AutoOpenBrowser = false
 	}
+	if options.autoOpenBrowser {
+		orchCfg.AutoOpenBrowser = true
+	}
 	if options.noDiscovery {
 		orchCfg.DiscoveryEnabled = false
+	}
+	if options.enableDiscovery {
+		orchCfg.DiscoveryEnabled = true
 	}
 	orchCfg.Normalize()
 	if err := validateOrchestratorConfigWithoutFilesystemChanges(orchCfg); err != nil {
@@ -170,8 +182,14 @@ func loadDiagnosticsConfig(options configPrintOptions) (string, diagnosticConfig
 	if options.noBrowser {
 		nodeCfg.AutoOpenBrowser = false
 	}
+	if options.autoOpenBrowser {
+		nodeCfg.AutoOpenBrowser = true
+	}
 	if options.noDiscovery {
 		nodeCfg.DiscoveryEnabled = false
+	}
+	if options.enableDiscovery {
+		nodeCfg.DiscoveryEnabled = true
 	}
 	if nodeCfg.NodeID == "" {
 		nodeCfg.NodeID = nodeagent.DefaultNodeID()

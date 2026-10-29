@@ -72,17 +72,23 @@ export const dashboardViewModel = (() => {
 
   function pairingPINViewModel(status) {
     const hasPIN = Boolean(status?.pin);
+    const hasActivePIN = hasPIN || Boolean(status?.expires_at);
     return {
       visible: status?.role === "orchestrator",
       hasPIN,
-      pinText: status?.pin || "Expired",
-      regenerateText: hasPIN ? "Generate / replace pairing PIN" : "Generate pairing PIN",
+      hasActivePIN,
+      pinText: status?.pin || (hasActivePIN ? "Hidden on this connection" : "Expired"),
+      regenerateText: hasPIN
+        ? "Generate / replace pairing PIN"
+        : hasActivePIN ? "Generate / reveal pairing PIN" : "Generate pairing PIN",
       expiryText: status?.expires_at
         ? `Expires ${new Date(status.expires_at).toLocaleTimeString()}. The PIN can be used once.`
         : "No active PIN. Generate a new PIN to pair another node.",
       stateText: hasPIN
         ? "Share the PIN and HTTPS address only with the node you intend to add."
-        : "No active PIN. Generate one to add or re-pair a node.",
+        : hasActivePIN
+          ? "An active PIN is hidden on this connection. Generate a replacement to reveal it locally."
+          : "No active PIN. Generate one to add or re-pair a node.",
     };
   }
 

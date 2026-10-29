@@ -2,10 +2,13 @@
 
 ## Workflow dispatch policy
 
-Each subtask gets a three-minute dispatch deadline after its prerequisites are
-ready. Dependency waiting happens before that deadline; waiting for capacity,
-worker requests, and retry backoff happen within it. Cancellation or deadline
-exhaustion stops the current request or wait and prevents another retry.
+Each subtask gets a dispatch deadline after its prerequisites are ready. The
+default is 1800 seconds and can be changed with `dispatch_timeout_seconds`.
+Dependency waiting happens before that deadline; waiting for capacity, worker
+requests, and retry backoff happen within it. Cancellation or deadline
+exhaustion stops the current request or wait and prevents another retry. See
+[configuration](./configuration.md#capacity-timeouts-and-synchronization) for
+the timeout setting.
 
 The dispatcher allows up to five total assignment attempts, including the
 initial assignment. Before each retry it excludes the exact node/model pair

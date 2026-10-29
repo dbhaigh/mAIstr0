@@ -193,12 +193,23 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/pairing/connect") {
 		path = "/api/pairing/connect"
 	}
+	if strings.HasSuffix(r.URL.Path, "/runtime-settings") {
+		path = "/api/runtime-settings"
+	}
 	body, err := httpx.ReadBody(w, r, httpx.ControlJSONBodyBytes)
 	if err != nil {
 		writeError(w, apperr.Invalid(err))
 		return
 	}
-	target := n.Address + path
+	baseAddress := n.Address
+	if path == "/api/runtime-settings" && !n.Healthy {
+		baseAddress, err = serviceControlURL(n.ControlAddress)
+		if err != nil {
+			writeError(w, apperr.UnavailableError(fmt.Errorf("node service controller unavailable: %w", err)))
+			return
+		}
+	}
+	target := baseAddress + path
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}

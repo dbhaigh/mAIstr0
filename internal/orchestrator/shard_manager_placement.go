@@ -103,7 +103,7 @@ func (m *ShardManager) candidates(
 	if len(candidates) == 0 {
 		return nil, nil, fmt.Errorf("%w: no healthy nodes have the managed engines required by the requested shard mode", errShardGroupUnavailable)
 	}
-	if request.Mode == shard.ModeLlamaCPPRPC {
+	if request.Mode == shard.ModeLlamaCPPRPC && !request.allowHeadlessPlanning {
 		hasHead := false
 		for _, candidate := range candidates {
 			if engineByNode[candidate.ID]["llama-server"].ID != "" {

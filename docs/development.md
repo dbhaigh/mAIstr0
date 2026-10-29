@@ -204,10 +204,20 @@ The local cross-build scripts are available for both shells:
 ./build/build.sh
 ```
 
-They produce Windows and Linux amd64 binaries under `dist/`. Tagged releases
-use [GoReleaser](../.goreleaser.yaml) and the
+The scripts produce Windows and Linux amd64 binaries under `dist/`. Build
+macOS packages on macOS with Xcode command line tools:
+
+```sh
+bash build/build-macos.sh
+```
+
+This builds native cgo-enabled arm64 and amd64 binaries, peer-update metadata,
+a menu-bar `.app` ZIP, and a CLI `.tar.gz` with the LaunchAgent installer under
+`dist/macos/<tag>/`. The packages are unsigned and not notarized. Tagged releases use
+[GoReleaser](../.goreleaser.yaml) and the
 [release workflow](../.github/workflows/release.yml) to publish platform
-archives and SHA-256 checksums. Before a release, update
+archives and SHA-256 checksums. The macOS release job runs on a macOS host
+because the native tray backend uses cgo. Before a release, update
 `internal/version/version.go` and its version test, move the completed
 `Unreleased` changelog entries to a dated release section, run the required
 checks and cross-build script, then push a matching `v<version>` tag. The
@@ -231,12 +241,13 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
 
 ### Rapid iteration releases
 
-The source release number is now `0.1.1`, a three-component SemVer patch
-release. Patch releases increment the third component; minor releases increment
-the second component and reset the patch and optional iteration components.
-For explicitly requested rapid iterations, append/increment a fourth numeric
-component (`0.1.1.1`, ..., `0.1.1.10`). The optional four-component convention
-is not SemVer. Peer manifests accept both three and four components and compare
+The base source release number is `0.1.1`, a three-component SemVer patch
+release; the current rapid-iteration build is `0.1.1.15`. Patch releases
+increment the third component; minor releases increment the second component
+and reset the patch and optional iteration components. For explicitly
+requested rapid iterations, append/increment a fourth numeric component
+(`0.1.1.1`, ..., `0.1.1.15`). The optional four-component convention is not
+SemVer. Peer manifests accept both three and four components and compare
 components numerically, with an omitted fourth component treated as zero.
 
 The release workflow detects four-component tags and uses the repository
@@ -250,12 +261,15 @@ On Windows, build without interrupting a running installed executable:
 .\build\build.ps1 -WindowsBinary maistr0-update.exe
 ```
 
-Otherwise run the build script with its default output name. Both build
-scripts now generate checked `.peer.json` metadata for Windows, Linux, and
-Ubuntu outputs, so cross-platform peer publishers do not depend on manually
-created manifests. Binaries and metadata remain ignored build products.
+Otherwise run the build script with its default output name. The Windows/Linux
+build scripts generate checked `.peer.json` metadata for Windows, Linux, and
+Ubuntu outputs. The macOS build script separately builds Darwin arm64/amd64
+and their metadata on a Mac. Cross-platform peer publishers therefore do not
+depend on manually created manifests. Binaries and metadata remain ignored
+build products.
 
-GitHub Actions checks contract drift, tests on Ubuntu and Windows, runs race
-tests on Linux, runs `go vet` and `govulncheck`, builds the application, tests
-the dashboard, and publishes a golangci-lint result and Go coverage report.
+GitHub Actions checks contract drift, tests on Ubuntu, Windows, and macOS,
+runs race tests on Linux, runs `go vet` and `govulncheck`, builds the
+application, tests the dashboard, and publishes a golangci-lint result and Go
+coverage report.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for review expectations.

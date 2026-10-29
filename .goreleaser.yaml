@@ -38,6 +38,7 @@ archives:
       - docs/*.json
       - docs/*.jsonl
       - examples/benchmark.json
+      - packaging/systemd/maistr0.service
 
 checksum:
   name_template: checksums.txt

@@ -19,12 +19,16 @@ type Eligibility struct {
 // ExplainEligibility is a cold-path diagnostic. Scoring callers should still
 // use Prepare, avoiding an extra model scan when diagnostics are disabled.
 func ExplainEligibility(node cluster.NodeStatus, subtask Subtask) Eligibility {
+	if node.Draining {
+		return Eligibility{Reason: "draining"}
+	}
 	if !node.Healthy {
 		return Eligibility{Reason: "unhealthy"}
 	}
 	capabilities := node.EffectiveCapabilities()
 	for _, required := range subtask.RequiredCapabilities {
-		if !hasCapability(capabilities, strings.ToLower(strings.TrimSpace(required))) {
+		required = strings.ToLower(strings.TrimSpace(required))
+		if !hasCapability(capabilities, required) && !isAdvisoryCapability(required) {
 			return Eligibility{Reason: "required_capability"}
 		}
 	}

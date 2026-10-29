@@ -21,17 +21,26 @@ func main() {
 	root := flag.String("root", "dist", "directory containing platform build folders")
 	release := flag.String("version", version.String(), "release of the binaries just built")
 	windowsBinary := flag.String("windows-binary", "maistr0.exe", "Windows output name (maistr0-update.exe when installed image is in use)")
+	darwinOnly := flag.Bool("darwin-only", false, "write manifests for darwin/amd64 and darwin/arm64 bundles only")
 	flag.Parse()
-	for _, target := range []struct{ folder, name string }{
+	targets := []struct{ folder, name string }{
 		{"windows-amd64", *windowsBinary},
 		{"linux-amd64", "maistr0"},
 		{"linux-ubuntu-amd64", "maistr0"},
-	} {
+	}
+	if *darwinOnly {
+		targets = []struct{ folder, name string }{
+			{"darwin-amd64", "maistr0"},
+			{"darwin-arm64", "maistr0"},
+		}
+	}
+	for _, target := range targets {
 		path := filepath.Join(*root, target.folder, target.name)
 		manifest, err := selfupdate.Inspect(path, *release)
 		if err == nil && manifest.OS == runtime.GOOS && manifest.Arch == runtime.GOARCH {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			command := exec.CommandContext(ctx, path, "-version")
+			hideProbeWindow(command)
 			output, probeErr := command.Output()
 			cancel()
 			if probeErr != nil {

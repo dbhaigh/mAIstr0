@@ -14,6 +14,8 @@ type unixProcessTree struct {
 
 func nativeWindows() bool { return false }
 
+func configureProbeCommand(*exec.Cmd) {}
+
 func startProcessTree(command *exec.Cmd) (processTree, error) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := command.Start(); err != nil {

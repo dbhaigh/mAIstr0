@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/node-service-status.schema.json",
+  "title": "NodeServiceStatus",
+  "type": "object",
+  "required": ["running", "desired_running", "control_address"],
+  "properties": {
+    "running": {"type": "boolean"},
+    "desired_running": {"type": "boolean"},
+    "operation": {"type": "string", "enum": ["starting", "stopping", "stop", "drain", "restart"]},
+    "draining": {"type": "boolean"},
+    "active_tasks": {"type": "integer", "minimum": 0},
+    "control_address": {"type": "string", "format": "uri"},
+    "error": {"type": "string"}
+  },
+  "additionalProperties": false
+}

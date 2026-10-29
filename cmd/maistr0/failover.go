@@ -208,6 +208,10 @@ func (f *failoverCoordinator) promote(address string, identity promotionIdentity
 	if err != nil {
 		return fmt.Errorf("configure promoted orchestrator: %w", err)
 	}
+	if f.agent != nil {
+		server.SetPairingVerificationRequired(f.agent.PairingVerificationRequired())
+		server.SetPairingPolicyUpdater(f.agent.SetPairingVerificationRequired)
+	}
 	if err := server.SetAdvertiseAddress(address); err != nil {
 		_ = server.Close()
 		return fmt.Errorf("configure promoted orchestrator address: %w", err)

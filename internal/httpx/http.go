@@ -192,6 +192,7 @@ func RequestLogger(logger *slog.Logger) Middleware {
 				requestID = RequestIDFromContext(r.Context())
 			}
 			logger.Info("http request",
+				"file_only", true,
 				"request_id", requestID,
 				"method", r.Method,
 				"status", status,

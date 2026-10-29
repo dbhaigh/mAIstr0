@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/logging"
+	"github.com/maistr0/maistr0/internal/netutil"
 	"io"
 	"net/http"
 	"strings"
@@ -31,7 +32,9 @@ func (c *orchestratorLink) pairLocal(orchestratorID, certificatePEM, address str
 }
 
 func (c *orchestratorLink) pairOrchestratorContext(ctx context.Context, candidate orchestratorCandidate) error {
-	return c.pairWithAddressContext(ctx, candidate.address, candidate.id, c.configState.configSnapshot().PairingPIN)
+	return c.pairWithAddressContextAndSubnetPolicy(
+		ctx, candidate.address, candidate.id, c.configState.configSnapshot().PairingPIN, true,
+	)
 }
 
 func (c *orchestratorLink) pairWithOrchestrator(address, pin string) error {
@@ -56,7 +59,9 @@ func (c *orchestratorLink) pairWithDiscoveredOrchestrator(id, address, pin strin
 		}
 		candidateAddress, err := normalizeOrchestratorAddress(candidate.address)
 		if err == nil && candidateAddress == address {
-			return c.pairWithAddress(address, id, strings.TrimSpace(pin), fingerprint...)
+			return c.pairWithAddressContextAndSubnetPolicy(
+				context.Background(), address, id, strings.TrimSpace(pin), true, fingerprint...,
+			)
 		}
 	}
 	return errSelectedOrchestratorNotDiscovered
@@ -67,6 +72,15 @@ func (c *orchestratorLink) pairWithAddress(address, expectedID, pin string, fing
 }
 
 func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, expectedID, pin string, fingerprint ...string) (resultErr error) {
+	return c.pairWithAddressContextAndSubnetPolicy(ctx, address, expectedID, pin, false, fingerprint...)
+}
+
+func (c *orchestratorLink) pairWithAddressContextAndSubnetPolicy(
+	ctx context.Context,
+	address, expectedID, pin string,
+	allowSubnetAutoPair bool,
+	fingerprint ...string,
+) (resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			logging.Errorf("nodeagent", "nodeagent: pairing with orchestrator at %s failed: %v", address, resultErr)
@@ -74,6 +88,14 @@ func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, 
 	}()
 	if !c.trust.Initialized() {
 		return errors.New("node identity is not initialized")
+	}
+	autoPairOnSubnet := false
+	if allowSubnetAutoPair && expectedID != "" && !c.pairingVerificationRequired() {
+		onLocalSubnet, err := netutil.URLOnLocalSubnet(address)
+		if err != nil {
+			return fmt.Errorf("check whether the orchestrator is on a local subnet: %w", err)
+		}
+		autoPairOnSubnet = onLocalSubnet
 	}
 	if pin == "" {
 		logging.Infof("nodeagent", "nodeagent: attempting auto-join with orchestrator at %s", address)
@@ -89,7 +111,9 @@ func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, 
 		return fmt.Errorf("encode pairing request: %w", err)
 	}
 	transport := c.trust.BootstrapTransport()
-	if expectedID != "" {
+	if autoPairOnSubnet {
+		transport = c.trust.BootstrapTransportForLANID(expectedID)
+	} else if expectedID != "" {
 		transport = c.trust.BootstrapTransportForID(expectedID)
 	}
 	verifiedFingerprint := ""
@@ -98,6 +122,9 @@ func (c *orchestratorLink) pairWithAddressContext(ctx context.Context, address, 
 	}
 	if len(fingerprint) > 0 && fingerprint[0] != "" {
 		verifiedFingerprint = strings.TrimSpace(fingerprint[0])
+	}
+	if autoPairOnSubnet && verifiedFingerprint == "" {
+		pin = ""
 	}
 	if verifiedFingerprint != "" {
 		if err := peeridentity.ValidateFingerprint(verifiedFingerprint); err != nil {

@@ -56,6 +56,34 @@ func TestPairingPINExpires(t *testing.T) {
 	}
 }
 
+func TestReloadTrustedPeersReadsSharedControllerRoster(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-identity.json")
+	controllerIdentity, err := Open(path, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeIdentity, err := Open(path, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestrator, err := Open(filepath.Join(t.TempDir(), "orchestrator.json"), "orchestrator-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeIdentity.TrustPeerDetails(orchestrator.ID(), orchestrator.CertificatePEM(), "orchestrator", "https://orchestrator.example:7450"); err != nil {
+		t.Fatal(err)
+	}
+	if controllerIdentity.IsTrustedOrchestratorID(orchestrator.ID()) {
+		t.Fatal("controller identity unexpectedly observed the other process's in-memory roster")
+	}
+	if err := controllerIdentity.ReloadTrustedPeers(); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerIdentity.IsTrustedOrchestratorID(orchestrator.ID()) {
+		t.Fatal("controller identity did not reload the shared orchestrator trust roster")
+	}
+}
+
 func TestPairingPINLimitsFailedAttempts(t *testing.T) {
 	identity, err := Open(filepath.Join(t.TempDir(), "identity.json"), "orchestrator")
 	if err != nil {
@@ -486,6 +514,38 @@ func TestBootstrapTransportForIDChecksDiscoveredPeerIdentity(t *testing.T) {
 	client = &http.Client{Transport: clientIdentity.BootstrapTransportForFingerprint("different-node", fingerprint)}
 	if _, err := client.Get(server.URL); err == nil {
 		t.Fatal("bootstrap request succeeded against a peer with a different identity")
+	}
+}
+
+func TestBootstrapTransportForLANIDAllowsExpectedUntrustedIdentity(t *testing.T) {
+	serverIdentity, err := Open(filepath.Join(t.TempDir(), "server.json"), "same-subnet-orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientIdentity, err := Open(filepath.Join(t.TempDir(), "client.json"), "same-subnet-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.TLS = serverIdentity.ServerTLSConfig()
+	server.StartTLS()
+	defer server.Close()
+
+	client := &http.Client{Transport: clientIdentity.BootstrapTransportForLANID(serverIdentity.ID())}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("request to the expected discovered peer failed: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected peer returned %d", response.StatusCode)
+	}
+
+	client = &http.Client{Transport: clientIdentity.BootstrapTransportForLANID("different-node")}
+	if _, err := client.Get(server.URL); err == nil {
+		t.Fatal("LAN bootstrap accepted a certificate with the wrong identity")
 	}
 }
 

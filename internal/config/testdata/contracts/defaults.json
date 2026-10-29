@@ -22,7 +22,7 @@
     "mode": "full",
     "harness": "pi",
     "max_concurrent_dispatches": 16,
-    "dispatch_timeout_seconds": 600,
+    "dispatch_timeout_seconds": 1800,
     "discovery_enabled": true,
     "auto_open_browser": true,
     "tray_mode": "taskbar",

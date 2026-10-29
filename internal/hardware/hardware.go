@@ -106,7 +106,7 @@ func CurrentGPUUsage() (utilization int, freeMemoryMB uint64, available bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=utilization.gpu,memory.free", "--format=csv,noheader,nounits").Output()
+	out, err := newHardwareCommand(ctx, "nvidia-smi", "--query-gpu=utilization.gpu,memory.free", "--format=csv,noheader,nounits").Output()
 	if err != nil {
 		return 0, 0, false
 	}

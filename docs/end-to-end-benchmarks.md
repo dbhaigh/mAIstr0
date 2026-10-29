@@ -164,10 +164,11 @@ manifests. Local checks are not remote CI or publisher-signature verification;
 checksums prove consistency, not a trusted publisher.
 See [the current CI gate split and regression policy](./ci-quality-gates.md).
 
-Published application targets remain Windows/Linux amd64. Linux/Ubuntu package
-names do not imply a separately qualified inference backend. macOS source/service
-examples and upstream accelerator support are not published-binary or hardware
-qualification claims. Native Windows vLLM remains unsupported.
+Published application targets include Windows/Linux amd64 and macOS amd64/arm64.
+Linux/Ubuntu package names do not imply a separately qualified inference
+backend. macOS packages are unsigned and not notarized; upstream accelerator
+support is not a hardware qualification claim. Native Windows vLLM remains
+unsupported.
 
 ## Local verification record
 

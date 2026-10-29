@@ -265,7 +265,7 @@ func (s *simulation) assign(id int) {
 
 func (s *simulation) startQueued(node int) {
 	n := &s.nodes[node]
-	for n.Healthy && n.ActiveTasks < n.MaxConcurrentTasks && len(s.queues[node]) > 0 {
+	for n.Healthy && !n.Draining && n.ActiveTasks < n.MaxConcurrentTasks && len(s.queues[node]) > 0 {
 		id := s.queues[node][0]
 		s.queues[node] = s.queues[node][1:]
 		r := &s.requests[id]
@@ -278,7 +278,7 @@ func (s *simulation) startQueued(node int) {
 		s.metrics.MaxActive[node] = max(s.metrics.MaxActive[node], n.ActiveTasks)
 		s.metrics.Started[node]++
 		if _, eligible := score.Prepare(*n, s.scenario.Requests[id].Task); !eligible ||
-			!n.Healthy || n.ActiveTasks > n.MaxConcurrentTasks {
+			!n.Healthy || n.Draining || n.ActiveTasks > n.MaxConcurrentTasks {
 			s.metrics.InvalidStarts++
 		}
 		r.state, r.start = running, s.now

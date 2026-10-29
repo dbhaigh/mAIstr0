@@ -6,10 +6,11 @@ The Local Network panel labels discovery announcements as
 **HMAC-SHA256 enabled** or **Unauthenticated (default)** for the local
 instance. This reports whether the optional `discovery_hmac_secret` is
 configured; it does not display the secret. HMAC authenticates discovery
-announcements but does not replace node pairing, which still requires the
-orchestrator's independently verified certificate fingerprint and one-use PIN.
-Configure the same discovery secret on all cluster members to enable the
-authenticated mode.
+announcements but does not replace the cluster-wide **Pairing access** policy.
+With strict verification disabled, nodes on a connected local interface prefix
+can auto-join; strict mode requires an out-of-band fingerprint and one-use PIN
+for new joins and re-pairs. Configure the same discovery secret on all cluster
+members to enable the authenticated mode.
 
 ## Sharding
 

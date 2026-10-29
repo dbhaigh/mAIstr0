@@ -44,6 +44,7 @@ func shardSchedulerNodes(nodes []cluster.NodeStatus, groups []ShardGroup) []clus
 		if group.State != ShardGroupReady {
 			continue
 		}
+		groupCapabilities := shardGroupHardwareCapabilities(group)
 		for _, head := range group.Members {
 			if head.Role != "head" {
 				continue
@@ -66,7 +67,7 @@ func shardSchedulerNodes(nodes []cluster.NodeStatus, groups []ShardGroup) []clus
 				nodes[i].Engines = append(append([]engine.Status(nil), nodes[i].Engines...), engine.Status{Name: name, Ready: true, Protocols: []string{"openai"}})
 				derived := cluster.NodeStatus{Models: []engine.Model{nodes[i].Models[len(nodes[i].Models)-1]}}.EffectiveCapabilities()
 				capabilities := append([]string(nil), nodes[i].EffectiveCapabilities()...)
-				for _, capability := range derived {
+				for _, capability := range append(derived, groupCapabilities...) {
 					if !containsCapability(capabilities, capability) {
 						capabilities = append(capabilities, capability)
 					}
@@ -77,6 +78,23 @@ func shardSchedulerNodes(nodes []cluster.NodeStatus, groups []ShardGroup) []clus
 		}
 	}
 	return nodes
+}
+
+func shardGroupHardwareCapabilities(group ShardGroup) []string {
+	var capabilities []string
+	for _, node := range group.Plan.Nodes {
+		for _, device := range node.Devices {
+			switch strings.ToLower(device.Kind) {
+			case "gpu":
+				capabilities = appendUniqueString(capabilities, "gpu")
+				capabilities = appendUniqueString(capabilities, "fast")
+			case "npu":
+				capabilities = appendUniqueString(capabilities, "npu")
+				capabilities = appendUniqueString(capabilities, "fast")
+			}
+		}
+	}
+	return capabilities
 }
 
 func shardTextTags(name string) []string {

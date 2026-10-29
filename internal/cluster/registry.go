@@ -19,6 +19,8 @@ type NodeStatus struct {
 	ID                        string                       `json:"id"`
 	Version                   string                       `json:"version"`
 	Address                   string                       `json:"address"` // base URL the orchestrator can reach the node at
+	ControlAddress            string                       `json:"control_address,omitempty"`
+	Draining                  bool                         `json:"draining,omitempty"`
 	Hardware                  hardware.Info                `json:"hardware"`
 	Models                    []engine.Model               `json:"models"`
 	Engines                   []engine.Status              `json:"engines,omitempty"`

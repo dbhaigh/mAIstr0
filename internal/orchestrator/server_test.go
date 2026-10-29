@@ -805,7 +805,9 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 		t.Fatal(err)
 	}
 	statusResponse := httptest.NewRecorder()
-	srv.Mux().ServeHTTP(statusResponse, httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil))
+	statusRequest := httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil)
+	statusRequest.RemoteAddr = "127.0.0.1:1234"
+	srv.Mux().ServeHTTP(statusResponse, statusRequest)
 	var pairingStatus struct {
 		Role string `json:"role"`
 		PIN  string `json:"pin"`
@@ -814,6 +816,20 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 		json.Unmarshal(statusResponse.Body.Bytes(), &pairingStatus) != nil ||
 		pairingStatus.Role != "orchestrator" || pairingStatus.PIN != pin {
 		t.Fatalf("pairing status returned %d: %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	remoteStatusRequest := httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil)
+	remoteStatusRequest.TLS = &tls.ConnectionState{}
+	remoteStatusResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(remoteStatusResponse, remoteStatusRequest)
+	var remoteStatus struct {
+		PIN       string    `json:"pin"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if remoteStatusResponse.Code != http.StatusOK ||
+		json.Unmarshal(remoteStatusResponse.Body.Bytes(), &remoteStatus) != nil ||
+		remoteStatus.PIN != "" || remoteStatus.ExpiresAt.IsZero() {
+		t.Fatalf("remote pairing status exposed PIN or omitted expiry: %d %s",
+			remoteStatusResponse.Code, remoteStatusResponse.Body.String())
 	}
 	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "node.json"), "pairing-node")
 	if err != nil {
@@ -858,6 +874,55 @@ func TestPairingJoinPinsCertificateAndRotatesPIN(t *testing.T) {
 	}
 }
 
+func TestPairingPolicyIsPersistedBeforeItTakesEffect(t *testing.T) {
+	srv := newTestServer(t)
+	var persisted bool
+	srv.SetPairingPolicyUpdater(func(required bool) error {
+		persisted = required
+		return nil
+	})
+	request := httptest.NewRequest(http.MethodPatch, "/api/pairing/policy",
+		strings.NewReader(`{"require_pairing_verification":true}`))
+	request.RemoteAddr = "127.0.0.1:54321"
+	request.Host = "localhost"
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !persisted || !srv.PairingVerificationRequired() {
+		t.Fatalf("local policy update returned %d, persisted=%v, required=%v: %s",
+			response.Code, persisted, srv.PairingVerificationRequired(), response.Body.String())
+	}
+	getResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(getResponse, httptest.NewRequest(http.MethodGet, "/api/pairing/policy", nil))
+	var policy struct {
+		RequirePairingVerification bool `json:"require_pairing_verification"`
+	}
+	if getResponse.Code != http.StatusOK ||
+		json.Unmarshal(getResponse.Body.Bytes(), &policy) != nil ||
+		!policy.RequirePairingVerification {
+		t.Fatalf("policy GET returned %d: %s", getResponse.Code, getResponse.Body.String())
+	}
+
+	remote := httptest.NewRequest(http.MethodPatch, "/api/pairing/policy",
+		strings.NewReader(`{"require_pairing_verification":false}`))
+	remote.RemoteAddr = "203.0.113.10:54321"
+	remoteResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(remoteResponse, remote)
+	if remoteResponse.Code != http.StatusForbidden || !srv.PairingVerificationRequired() {
+		t.Fatalf("remote policy update returned %d and changed policy=%v", remoteResponse.Code, srv.PairingVerificationRequired())
+	}
+
+	tlsRequest := httptest.NewRequest(http.MethodPatch, "/api/pairing/policy",
+		strings.NewReader(`{"require_pairing_verification":false}`))
+	tlsRequest.RemoteAddr = "127.0.0.1:54321"
+	tlsRequest.Host = "localhost"
+	tlsRequest.TLS = &tls.ConnectionState{}
+	tlsResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(tlsResponse, tlsRequest)
+	if tlsResponse.Code != http.StatusForbidden || !srv.PairingVerificationRequired() {
+		t.Fatalf("TLS policy update returned %d and changed policy=%v", tlsResponse.Code, srv.PairingVerificationRequired())
+	}
+}
+
 func TestPairingJoinRejectsWrongPINFromRemotePeer(t *testing.T) {
 	srv := newTestServer(t)
 	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
@@ -893,7 +958,7 @@ func TestPairingJoinRejectsWrongPINFromRemotePeer(t *testing.T) {
 	}
 }
 
-func TestSameSubnetWithoutPINIsRejected(t *testing.T) {
+func TestSameSubnetWithoutPINIsAcceptedByDefault(t *testing.T) {
 	srv := newTestServer(t)
 	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
 	if err != nil {
@@ -918,18 +983,18 @@ func TestSameSubnetWithoutPINIsRejected(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
 	request.TLS = trustTLS(t, node)
 	request.RemoteAddr = "127.0.0.1:54321" // loopback is on the same subnet
+	request = withLoopbackLocalAddr(request)
 	response := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
+	if response.Code != http.StatusOK {
 		t.Fatalf("auto-join on same subnet returned %d: %s", response.Code, response.Body.String())
 	}
-	if identity.IsTrustedID(node.ID()) {
-		t.Fatal("same-subnet discovery bypassed PIN authentication")
+	if !identity.IsTrustedID(node.ID()) {
+		t.Fatal("same-subnet node was not admitted")
 	}
 
-	// The active pairing PIN must remain untouched so off-subnet nodes can still use it
 	if !identity.VerifyPairingPIN(activePIN) {
-		t.Fatal("active pairing PIN should not have been consumed by auto-join on same subnet")
+		t.Fatal("same-subnet pairing without a PIN must not consume the active PIN")
 	}
 }
 
@@ -958,6 +1023,7 @@ func TestSameSubnetWithInvalidPINIsRejected(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
 	request.TLS = trustTLS(t, node)
 	request.RemoteAddr = "127.0.0.1:54321" // loopback is on the same subnet
+	request = withLoopbackLocalAddr(request)
 	response := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
@@ -971,6 +1037,49 @@ func TestSameSubnetWithInvalidPINIsRejected(t *testing.T) {
 	if !identity.VerifyPairingPIN(activePIN) {
 		t.Fatal("active pairing PIN should still be valid")
 	}
+}
+
+func TestStrictPairingPolicyRequiresPINOnSameSubnet(t *testing.T) {
+	srv := newTestServer(t)
+	identity, err := peeridentity.Open(filepath.Join(t.TempDir(), "orchestrator.json"), srv.SelfID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.identity = identity
+	srv.SetPairingVerificationRequired(true)
+	activePIN, err := identity.NewPairingPIN()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node, err := peeridentity.Open(filepath.Join(t.TempDir(), "node.json"), "strict-subnet-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(pairingJoinRequest{
+		ID: node.ID(), Role: "node", CertificatePEM: node.CertificatePEM(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/pairing/join", bytes.NewReader(body))
+	request.TLS = trustTLS(t, node)
+	request.RemoteAddr = "127.0.0.1:54321"
+	request = withLoopbackLocalAddr(request)
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("strict same-subnet pairing returned %d, want 401: %s", response.Code, response.Body.String())
+	}
+	if identity.IsTrustedID(node.ID()) || !identity.VerifyPairingPIN(activePIN) {
+		t.Fatal("strict same-subnet rejection changed trust or consumed the active PIN")
+	}
+}
+
+func withLoopbackLocalAddr(request *http.Request) *http.Request {
+	localAddr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
+	return request.WithContext(context.WithValue(request.Context(), http.LocalAddrContextKey, localAddr))
 }
 
 func TestPairingFromDifferentSubnetRequiresPIN(t *testing.T) {

@@ -74,18 +74,33 @@ func TestEnrollmentRejectsCertificateSubstitutionWithoutConsumingPIN(t *testing.
 
 func TestRemotePairingStatusNeverExposesPIN(t *testing.T) {
 	fixture := newTrustFixture(t)
-	for _, remote := range []bool{false, true} {
-		request := httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil)
-		if remote {
-			request.TLS = trustTLS(t, trustNode(t, "reader"))
-		}
-		rec := httptest.NewRecorder()
-		fixture.srv.Mux().ServeHTTP(rec, request)
-		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), fixture.pin) == remote {
-			t.Fatalf("PIN visibility mismatch for remote=%v: %d %s", remote, rec.Code, rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), `"fingerprint"`) {
-			t.Fatal("operator cannot obtain the certificate fingerprint")
-		}
+	tests := []struct {
+		name       string
+		remoteAddr string
+		secure     bool
+		wantPIN    bool
+	}{
+		{name: "local HTTP dashboard", remoteAddr: "127.0.0.1:1234", wantPIN: true},
+		{name: "local HTTPS dashboard", remoteAddr: "127.0.0.1:1234", secure: true, wantPIN: true},
+		{name: "remote HTTP client", remoteAddr: "192.0.2.5:1234"},
+		{name: "remote HTTPS client", remoteAddr: "192.0.2.5:1234", secure: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/api/pairing/status", nil)
+			request.RemoteAddr = tt.remoteAddr
+			if tt.secure {
+				request.TLS = trustTLS(t, trustNode(t, "reader"))
+			}
+			rec := httptest.NewRecorder()
+			fixture.srv.Mux().ServeHTTP(rec, request)
+			hasPIN := strings.Contains(rec.Body.String(), fixture.pin)
+			if rec.Code != http.StatusOK || hasPIN != tt.wantPIN {
+				t.Fatalf("PIN visibility mismatch: %d %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), `"fingerprint"`) {
+				t.Fatal("operator cannot obtain the certificate fingerprint")
+			}
+		})
 	}
 }

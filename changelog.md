@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+- Added native macOS menu-bar and launchd support, with arm64 and amd64
+  downloads. macOS packages are unsigned and not notarized.
+- Bumped the release version to `0.1.1.15`.
+- Raised the default subtask dispatch timeout from 10 to 30 minutes for longer
+  model generations; `dispatch_timeout_seconds` remains configurable.
+- Trusted nodes no longer get a join prompt while retrying registration after
+  restart. Auto-opened prompts close when a node joins automatically; prompts
+  opened manually remain available.
+- Bumped the build version to `0.1.1.13` for testing.
+- Same-subnet auto-join now resolves configured and discovered hostnames before
+  checking local interface prefixes. The coordinator still validates the
+  actual connection addresses before accepting a join.
+- Bumped the build version to `0.1.1.11` for testing.
+- Bumped the build version to `0.1.1.12` for testing so the cluster sees this
+  pairing fix as newer than `0.1.1.11`.
+- The pairing-access pane now shows the active one-use PIN only to requests
+  originating from the local machine, including the local HTTPS dashboard.
+  Added a persisted dashboard theme toggle and removed OS-driven theme mixing.
+- Bumped the build version to `0.1.1.10` for testing.
+- Windows GPU/NPU telemetry and runtime-device probes now suppress child
+  console windows, preventing periodic hardware sampling from stealing focus.
+- Bumped the build version to `0.1.1.9` for testing.
+- Peer update checks now read the running executable's reported version after
+  startup and use it as the update baseline, so a restarted node only stages a
+  strictly newer peer release.
+- Peer update replacement now serializes helpers and checks the installed
+  executable's actual version before applying an update. The executable and
+  peer manifest are updated and rolled back together, preventing duplicate
+  restarts and stale update metadata.
+- Windows controller child processes and updater version probes no longer
+  create visible console windows.
+- Peer updates now compare reachable trusted manifests before downloading and
+  stage the highest available version, avoiding sequential restarts through
+  intermediate releases.
+- Routine HTTP request access records are kept in the application log file and
+  no longer printed to the console.
+- Bumped the build version to `0.1.1.8` for testing.
+- Pairing access now shows generated PINs in the dashboard and supports a
+  cluster-wide strict-verification setting. With strict mode off, nodes may
+  auto-join when their connection is on a prefix assigned to the orchestrator's
+  local interfaces; strict mode requires the verified fingerprint and one-use
+  PIN for new joins and re-pairs without changing existing trust.
+- Added persistent dashboard runtime settings, including opt-in
+  `allow_peer_updates`, and a single-binary controller mode for node Start,
+  Stop, Restart, and drain-before-stop controls. See
+  [node service controller](./docs/node-service-controller.md).
+- Task scheduling now treats ordinary text-model tags and agent-role
+  capabilities as preferences rather than hard exclusions, while preserving
+  explicit hardware requirements and vision-model checks. Automatic GGUF
+  recovery can plan one model across the available idle cluster devices
+  instead of requiring a single node to hold the full model; curated Ollama
+  and Hugging Face acquisition remains bounded to approved model sources.
+
 ## 0.1.1 (2026-10-26)
 
 Patch release adding opt-in update/discovery authentication and consolidating

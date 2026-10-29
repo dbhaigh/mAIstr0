@@ -6,11 +6,25 @@
   "required": ["version", "os", "arch", "sha256", "size"],
   "properties": {
     "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$" },
-    "os": { "enum": ["windows", "linux"] },
-    "arch": { "const": "amd64" },
+    "os": { "enum": ["windows", "linux", "darwin"] },
+    "arch": { "enum": ["amd64", "arm64"] },
     "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "size": { "type": "integer", "minimum": 1, "maximum": 134217728 },
     "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Optional base64 Ed25519 signature over the manifest fields other than signature." }
   },
+  "oneOf": [
+    {
+      "properties": {
+        "os": { "enum": ["windows", "linux"] },
+        "arch": { "const": "amd64" }
+      }
+    },
+    {
+      "properties": {
+        "os": { "const": "darwin" },
+        "arch": { "enum": ["amd64", "arm64"] }
+      }
+    }
+  ],
   "additionalProperties": false
 }

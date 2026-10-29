@@ -8,7 +8,7 @@ both release paths, and the native package verifier.
 
 - Contract generation and Go vulnerability scanning previously ran on both
   operating systems. They now run once in shared PR checks. Schema/HTTP contract
-  tests still execute inside the Windows and Linux Go suites.
+  tests still execute inside the Windows, Linux, and macOS Go suites.
 - Standalone fake-binary build jobs duplicated builds already performed by
   supervisor and shard-process tests. Full qualification still builds and runs
   those fakes, including Linux-only vLLM fixtures; the redundant jobs are removed.
@@ -22,7 +22,8 @@ both release paths, and the native package verifier.
 - Native package acceptance is independent of unit-test jobs. Failed unit tests
   do not prevent packaging from being tested, and neither can publish a release.
 
-The existing Windows/Linux matrix check names are retained. The former separate
+The Windows/Linux matrix check names are retained and macOS is added as a
+third native build/test target. The former separate
 lint check is incorporated into **Shared quality checks**. All PR events run
 without path filters; there is no `pull_request_target`, `continue-on-error`,
 ignored test exit code, or success-shaped missing-baseline fallback.
@@ -46,7 +47,7 @@ and reusable release call:
   dependency changes, including transitive licenses and redistribution duties,
   require explicit human review in the [PR checklist](../.github/PULL_REQUEST_TEMPLATE.md).
   There is no approved legal SPDX allowlist, so CI does not claim legal approval.
-- **Test and build (ubuntu-latest/windows-latest)**: `go build ./...`,
+- **Test and build (ubuntu-latest/windows-latest/macos-latest)**: `go build ./...`,
   `go vet ./...`, `go test -short -count=1 -timeout=120s ./...`, and
   `go test -short -shuffle=on -count=1 -timeout=120s ./...`.
 - **Required CI**: always evaluates both upstream job results and fails for
@@ -215,10 +216,11 @@ aggregate jobs have no permissions. Only the trusted tag-publication job gets
 `contents: write`; release tokens are scoped to publish steps, never PR jobs or
 test/package jobs. Protect release tags and review workflow/pin changes.
 
-Published targets remain Windows/Linux amd64. Default/scheduled tests use fake
+Published targets include Windows/Linux amd64 and macOS amd64/arm64. The macOS
+packages are unsigned and are not notarized. Default/scheduled tests use fake
 engines and processes, not accelerator inference or live downloads. Native
 Windows vLLM is explicitly unsupported. GPU/NPU combinations, real model
-throughput, historical-version upgrade migration, GUI installation and macOS
-binary support are not qualified by these jobs; follow the opt-in
+throughput, historical-version upgrade migration, signed/notarized distribution,
+and GUI installation are not qualified by these jobs; follow the opt-in
 [hardware checklist](./hardware-validation.md). Setup/download/API outages and
 unsupported environments must be reported as such, never as test passes.

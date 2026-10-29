@@ -1,13 +1,13 @@
 [Unit]
-Description=mAIstr0 local-first LLM orchestrator and worker
+Description=mAIstr0 node service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/maistr0 --role auto --no-browser
+ExecStart=%h/.local/bin/maistr0 controller --service-managed
 Restart=on-failure
-RestartSec=5
+RestartSec=30
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

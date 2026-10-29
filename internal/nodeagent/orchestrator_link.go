@@ -95,6 +95,18 @@ func (c *orchestratorLink) setOrchestratorAddr(addr string) {
 	c.orchMu.Unlock()
 }
 
+func (c *orchestratorLink) setPairingVerificationRequired(required bool) {
+	c.orchMu.Lock()
+	c.requirePairingVerification = required
+	c.orchMu.Unlock()
+}
+
+func (c *orchestratorLink) pairingVerificationRequired() bool {
+	c.orchMu.RLock()
+	defer c.orchMu.RUnlock()
+	return c.requirePairingVerification
+}
+
 func (c *orchestratorLink) setElectionCandidateAddr(addr string) {
 	c.orchMu.Lock()
 	c.electionCandidateAddr = addr
@@ -374,6 +386,28 @@ func (c *orchestratorLink) peerPollLoop(ctx context.Context) {
 						}
 					}
 				}
+			}
+		}
+		policyResp, err := getWithContext(ctx, c.peerClient, addr+"/api/pairing/policy")
+		if err != nil {
+			logging.Errorf("nodeagent", "nodeagent: cluster pairing policy refresh failed: %v", err)
+			return
+		}
+		defer closeutil.Discard(policyResp.Body)
+		if policyResp.StatusCode != http.StatusOK {
+			logging.Errorf("nodeagent", "nodeagent: cluster pairing policy refresh returned HTTP status %d", policyResp.StatusCode)
+			return
+		}
+		var policy struct {
+			RequirePairingVerification bool `json:"require_pairing_verification"`
+		}
+		if err := json.NewDecoder(policyResp.Body).Decode(&policy); err != nil {
+			logging.Errorf("nodeagent", "nodeagent: decode cluster pairing policy: %v", err)
+			return
+		}
+		if c.applyPairingPolicy != nil {
+			if err := c.applyPairingPolicy(policy.RequirePairingVerification); err != nil {
+				logging.Errorf("nodeagent", "nodeagent: persist cluster pairing policy: %v", err)
 			}
 		}
 	}

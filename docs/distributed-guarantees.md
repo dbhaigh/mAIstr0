@@ -129,8 +129,10 @@ The runtime does **not** provide:
 **Not guaranteed**
 
 - Discovery does not authenticate membership or leadership. New enrollment
-  requires a one-use PIN and an out-of-band verified certificate fingerprint,
-  including on the same subnet. Existing pinned relationships can reconnect.
+  can omit the PIN and fingerprint only when strict verification is disabled
+  and the accepted connection shares a prefix assigned to the orchestrator's
+  local interfaces. Discovery metadata alone never grants membership. Existing
+  pinned relationships can reconnect.
 - Requests without view headers are not fenced, for backward compatibility.
 - A node that cannot see the newer winner still treats the old orchestrator
   as current.

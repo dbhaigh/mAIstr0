@@ -97,7 +97,7 @@ func readWindowsNPUUsage(adapterLUIDs []string) (int, bool, error) {
 	script := fmt.Sprintf(windowsNPUCounterScript, strings.Join(quotedLUIDs, ","))
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, powershell, "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	output, err := newHardwareCommand(ctx, powershell, "-NoProfile", "-NonInteractive", "-Command", script).Output()
 	if err != nil {
 		return 0, false, err
 	}

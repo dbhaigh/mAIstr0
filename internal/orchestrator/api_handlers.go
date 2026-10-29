@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/maistr0/maistr0/internal/logging"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/netutil"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/version"
 )
@@ -92,11 +94,50 @@ func (s *Server) handlePairingStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status["fingerprint"] = fingerprint
-	if pin, expiresAt, ok := s.identity.ActivePairingPIN(); ok && r.TLS == nil {
-		status["pin"] = pin
+	status["require_pairing_verification"] = s.PairingVerificationRequired()
+	if pin, expiresAt, ok := s.identity.ActivePairingPIN(); ok {
 		status["expires_at"] = expiresAt
+		remoteAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
+		if err != nil {
+			logging.Errorf("orchestrator", "orchestrator: could not resolve pairing-status remote address %q: %v", r.RemoteAddr, err)
+		} else if local, err := netutil.IsLocalAddress(remoteAddr); err != nil {
+			logging.Errorf("orchestrator", "orchestrator: could not determine whether pairing-status request is local: %v", err)
+		} else if local {
+			status["pin"] = pin
+		}
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handlePairingPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]bool{
+			"require_pairing_verification": s.PairingVerificationRequired(),
+		})
+		return
+	}
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.TLS != nil {
+		http.Error(w, "pairing policy changes are available only from the local dashboard", http.StatusForbidden)
+		return
+	}
+	request, err := httpx.DecodeJSON[struct {
+		RequirePairingVerification bool `json:"require_pairing_verification"`
+	}](w, r, 4<<10)
+	if err != nil {
+		writeError(w, apperr.Invalid(err))
+		return
+	}
+	if err := s.updatePairingPolicy(request.RequirePairingVerification); err != nil {
+		writeError(w, apperr.UnavailableError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"require_pairing_verification": s.PairingVerificationRequired(),
+	})
 }
 
 func (s *Server) handlePairingPINRegenerate(w http.ResponseWriter, _ *http.Request) {
@@ -158,8 +199,29 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
-	pinValid := s.identity.ConsumePairingPIN(request.PIN)
-	if !pinValid {
+	localAddr, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	remoteAddr, addrErr := net.ResolveTCPAddr("tcp", r.RemoteAddr)
+	sameSubnet := false
+	if addrErr == nil {
+		var subnetErr error
+		sameSubnet, subnetErr = netutil.AreOnSameSubnet(localAddr, remoteAddr)
+		if subnetErr != nil {
+			logging.Errorf("orchestrator", "orchestrator: could not determine pairing subnet for %s: %v", r.RemoteAddr, subnetErr)
+			sameSubnet = false
+		}
+	}
+	if addrErr != nil {
+		logging.Errorf("orchestrator", "orchestrator: could not parse pairing remote address %q: %v", r.RemoteAddr, addrErr)
+	}
+	pinValid := false
+	if request.PIN != "" {
+		pinValid = s.identity.ConsumePairingPIN(request.PIN)
+		if !pinValid {
+			logging.Errorf("orchestrator", "orchestrator: rejected pairing request from %s: PIN invalid, expired, or already used", r.RemoteAddr)
+			http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
+			return
+		}
+	} else if s.PairingVerificationRequired() || !sameSubnet {
 		logging.Errorf("orchestrator", "orchestrator: rejected pairing request from %s: PIN invalid, expired, or already used", r.RemoteAddr)
 		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
 		return
@@ -184,6 +246,8 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logging.Infof("orchestrator", "orchestrator: successfully paired peer role=%s from %s using PIN", request.Role, r.RemoteAddr)
+	} else {
+		logging.Infof("orchestrator", "orchestrator: successfully paired peer role=%s from %s under the same-subnet pairing policy", request.Role, r.RemoteAddr)
 	}
 	s.metrics.recordPairingEvent()
 	writeJSON(w, http.StatusOK, pairingJoinResponse{

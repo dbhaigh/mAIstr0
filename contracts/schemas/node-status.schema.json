@@ -8,6 +8,8 @@
     "id": {"type": "string"},
     "version": {"type": "string"},
     "address": {"type": "string"},
+    "control_address": {"type": "string", "format": "uri"},
+    "draining": {"type": "boolean"},
     "hardware": {
       "type": "object",
       "required": ["os", "arch", "cpu_cores", "cpu_stats_available", "total_ram_mb", "memory_stats_available", "has_gpu", "gpu_stats_available", "gpu_utilization_percent", "has_npu", "npu_stats_available", "npu_utilization_percent", "score"],

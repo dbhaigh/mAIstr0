@@ -298,12 +298,15 @@ paths:
   /api/pairing/join:
     post:
       description: >-
-        Enroll with a valid one-use PIN on every subnet. The claimed certificate
-        and identity must match the client TLS leaf. Callers must authenticate
-        first-contact server TLS using an independently verified SHA-256 fingerprint.
+        Enroll with a valid one-use PIN and independently verified server
+        fingerprint unless the request is from the same prefix as an address on
+        the orchestrator's local interfaces and cluster strict verification is
+        disabled. The claimed certificate and identity must match the client
+        TLS leaf. Same-subnet admission trusts the connected local subnet rather
+        than discovery metadata.
       responses:
         "200": {description: Join a cluster}
-        "401": {description: Missing, expired, reused, or invalid PIN}
+        "401": {description: Missing, expired, reused, or invalid PIN when verification is required}
         "403": {description: Missing client TLS proof or certificate substitution}
   /api/pairing/status:
     get:
@@ -311,32 +314,72 @@ paths:
         "200":
           description: >-
             Pairing status includes the public 64-hex certificate fingerprint.
-            PIN and expiry are visible only on the local plaintext listener.
-            Node auto_join_available is retained for compatibility and always false.
-  /api/pairing/pin:
-    post:
-      responses: {"200": {description: Regenerate the pairing PIN}}
-  /api/pairing/connect:
-    post:
+            The active PIN is visible only on the local plaintext listener;
+            expiry is safe to show in remote TLS status responses.
+            require_pairing_verification is the cluster policy. For nodes,
+            auto_join_available is true only when an untrusted discovered
+            orchestrator is on a connected local interface prefix and strict
+            verification is disabled.
+  /api/pairing/policy:
+    get:
+      description: Read the cluster-wide policy for new joins and re-pairs.
+      responses:
+        "200":
+          description: Current pairing policy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [require_pairing_verification]
+                properties:
+                  require_pairing_verification: {type: boolean}
+                additionalProperties: false
+    patch:
       description: >-
-        Connect this node to an orchestrator using a one-use PIN. New or rotated
-        certificates require an independently verified fingerprint (or the
-        configured bootstrap orchestrator_fingerprint); existing pins reconnect
-        without reusing another leader's configured bootstrap anchor. Rotation
-        of an already selected pinned identity requires explicit fingerprint input.
-        When orchestrator_id is supplied it must identify a currently discovered
-        orchestrator at the supplied HTTPS address. Discovery is not authentication.
+        Change the cluster-wide pairing policy from the local dashboard only.
+        The coordinator enforces the new value immediately and propagates it to
+        joined nodes during their regular peer refresh. Existing trust is not
+        revoked.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [address, pin]
+              required: [require_pairing_verification]
+              properties:
+                require_pairing_verification: {type: boolean}
+              additionalProperties: false
+      responses:
+        "200": {description: Policy persisted and applied by this coordinator}
+        "403": {description: Policy changes are restricted to the local dashboard}
+        "503": {description: Policy could not be persisted}
+  /api/pairing/pin:
+    post:
+      responses: {"200": {description: Regenerate the pairing PIN}}
+  /api/pairing/connect:
+    post:
+      description: >-
+        Connect this node to an orchestrator using a one-use PIN and verified
+        fingerprint, unless strict verification is disabled and the selected
+        discovered orchestrator is on a prefix assigned to a local interface.
+        New or rotated certificates otherwise require an independently verified
+        fingerprint (or configured bootstrap orchestrator_fingerprint); existing
+        pins reconnect without reusing another leader's configured bootstrap
+        anchor. When orchestrator_id is supplied it must identify a currently
+        discovered orchestrator at the supplied HTTPS address. Discovery alone
+        is not authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
               properties:
                 address: {type: string, format: uri, description: Orchestrator HTTPS address}
-                pin: {type: string, pattern: '^[0-9]{6}$', description: One-use PIN required on every subnet}
-                fingerprint: {type: string, pattern: '^[a-fA-F0-9]{64}$', description: Out-of-band verified certificate SHA-256 for first contact or rotation}
+                pin: {type: string, pattern: '^[0-9]{6}$', description: One-use PIN required when strict mode is enabled or the selected orchestrator is off-subnet}
+                fingerprint: {type: string, pattern: '^[a-fA-F0-9]{64}$', description: Out-of-band verified certificate SHA-256 required for strict mode, off-subnet first contact, or rotation}
                 orchestrator_id: {type: string, description: Stable identity of the selected discovered orchestrator}
       responses:
         "200": {description: Connected to the orchestrator}
@@ -373,6 +416,25 @@ paths:
   /api/nodes:
     get:
       responses: {"200": {description: List cluster nodes}}
+  /api/runtime-settings:
+    get:
+      summary: Read this process's persistent runtime settings
+      responses:
+        "200":
+          description: Saved startup settings
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RuntimeSettings"}
+    patch:
+      summary: Save this process's persistent runtime settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RuntimeSettings"}
+      responses:
+        "200": {description: Settings saved; restart the host service to apply them}
+        "400": {description: Invalid runtime settings}
   /api/nodes/all:
     get:
       responses: {"200": {description: List all cluster nodes}}
@@ -406,6 +468,56 @@ paths:
       responses: {"200": {description: Get node properties}}
     patch:
       responses: {"200": {description: Update node properties}}
+  /api/nodes/{id}/runtime-settings:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Read persistent runtime settings for a node
+      responses:
+        "200":
+          description: Saved startup settings; changes take effect after restart
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RuntimeSettings"}
+        "502": {description: Node runtime settings are unavailable}
+    patch:
+      summary: Save persistent runtime settings for a node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RuntimeSettings"}
+      responses:
+        "200": {description: Settings saved; restart the node to apply them}
+        "400": {description: Invalid runtime settings}
+        "502": {description: Node runtime settings are unavailable}
+  /api/nodes/{id}/service:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Read node host service status
+      responses:
+        "200":
+          description: Host controller and node process status
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/NodeServiceStatus"}
+        "502": {description: Host controller is unavailable}
+  /api/nodes/{id}/service/{action}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+      - name: action
+        in: path
+        required: true
+        schema: {type: string, enum: [start, stop, restart, drain]}
+    post:
+      summary: Control a node host process
+      description: Drain rejects new inference work, waits for current work to finish, then stops the process. Restart drains before replacement.
+      responses:
+        "202": {description: Lifecycle operation accepted}
+        "400": {description: Unsupported lifecycle action}
+        "409": {description: Node is not running or another lifecycle operation is active}
+        "502": {description: Host controller is unavailable}
   /api/nodes/{id}/engines:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -698,10 +810,10 @@ paths:
   /api/updates/manifest:
     get:
       summary: Offer a newer executable directly to paired peers
-      description: Peer requests require pinned mutual TLS; local loopback access is allowed. Defaults to publisher platform; os and arch query parameters request packaged cross-platform assets. SHA256 protects transfer integrity, not publisher authenticity; artifacts are not release-signed.
+      description: Peer requests require pinned mutual TLS; local loopback access is allowed. Defaults to publisher platform; os and arch query parameters request packaged cross-platform assets. Windows and Linux support amd64; macOS supports amd64 and arm64. SHA256 protects transfer integrity, not publisher authenticity; artifacts are not release-signed.
       parameters:
-        - {name: os, in: query, schema: {type: string, enum: [windows, linux]}}
-        - {name: arch, in: query, schema: {type: string, enum: [amd64]}}
+        - {name: os, in: query, schema: {type: string, enum: [windows, linux, darwin]}}
+        - {name: arch, in: query, schema: {type: string, enum: [amd64, arm64]}}
       responses:
         "200":
           description: Executable metadata
@@ -714,8 +826,8 @@ paths:
     get:
       summary: Download a paired peer executable for the requested target
       parameters:
-        - {name: os, in: query, schema: {type: string, enum: [windows, linux]}}
-        - {name: arch, in: query, schema: {type: string, enum: [amd64]}}
+        - {name: os, in: query, schema: {type: string, enum: [windows, linux, darwin]}}
+        - {name: arch, in: query, schema: {type: string, enum: [amd64, arm64]}}
       responses:
         "200":
           description: Executable image matching the manifest size and SHA256
@@ -1451,6 +1563,10 @@ components:
       $ref: "./schemas/assignment-explanation.schema.json"
     NodeStatus:
       $ref: "./schemas/node-status.schema.json"
+    RuntimeSettings:
+      $ref: "./schemas/runtime-settings.schema.json"
+    NodeServiceStatus:
+      $ref: "./schemas/node-service-status.schema.json"
     StageAssignment:
       $ref: "./schemas/stage-assignment.schema.json"
     StageForwardFrame:
@@ -1544,6 +1660,8 @@ components:
 x-maistr0-registered-routes:
   - "orchestrator|POST /api/pairing/join"
   - "orchestrator|GET /api/pairing/status"
+  - "orchestrator|GET /api/pairing/policy"
+  - "orchestrator|PATCH /api/pairing/policy"
   - "orchestrator|GET /api/status"
   - "orchestrator|GET /api/metrics"
   - "orchestrator|GET /metrics"
@@ -1563,6 +1681,10 @@ x-maistr0-registered-routes:
   - "orchestrator|POST /api/nodes/{id}/pairing/connect"
   - "orchestrator|GET /api/nodes/{id}/properties"
   - "orchestrator|PATCH /api/nodes/{id}/properties"
+  - "orchestrator|GET /api/nodes/{id}/runtime-settings"
+  - "orchestrator|PATCH /api/nodes/{id}/runtime-settings"
+  - "orchestrator|GET /api/nodes/{id}/service"
+  - "orchestrator|POST /api/nodes/{id}/service/{action}"
   - "orchestrator|GET /api/nodes/{id}/engines"
   - "orchestrator|GET /api/nodes/{id}/engines/managed"
   - "orchestrator|POST /api/nodes/{id}/engines/managed/install-worker"
@@ -1702,11 +1824,17 @@ x-maistr0-registered-routes:
   - "node|POST /memory/facts"
   - "node|GET /api/nodes"
   - "node|GET /api/nodes/all"
+  - "node|GET /api/runtime-settings"
+  - "node|PATCH /api/runtime-settings"
   - "node|GET /api/nodes/{id}/models"
   - "node|PATCH /api/nodes/{id}/models"
   - "node|POST /api/nodes/{id}/pairing/connect"
   - "node|GET /api/nodes/{id}/properties"
   - "node|PATCH /api/nodes/{id}/properties"
+  - "node|GET /api/nodes/{id}/runtime-settings"
+  - "node|PATCH /api/nodes/{id}/runtime-settings"
+  - "node|GET /api/nodes/{id}/service"
+  - "node|POST /api/nodes/{id}/service/{action}"
   - "node|GET /api/nodes/{id}/engines"
   - "node|GET /api/nodes/{id}/engines/managed"
   - "node|POST /api/nodes/{id}/engines/managed/install-worker"

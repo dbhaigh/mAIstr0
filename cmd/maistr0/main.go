@@ -46,8 +46,16 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "controller" {
+		if err := runControllerMode(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "maistr0 controller: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	role := flag.String("role", "auto", "which component to run: auto, orchestrator, node, or both")
+	runtimeConfigPath := flag.String("runtime-config", config.DefaultRuntimeSettingsPath(), "path to persistent runtime settings")
 	nodeConfigPath := flag.String("node-config", "", "path to node JSON config file")
 	orchConfigPath := flag.String("orchestrator-config", "", "path to orchestrator JSON config file")
 	nodeListenAddr := flag.String("node-listen", "", "override node listen address, e.g. :7451")
@@ -58,7 +66,9 @@ func main() {
 	orchestratorFingerprint := flag.String("orchestrator-fingerprint", "", "out-of-band verified SHA-256 certificate fingerprint for first-contact pairing")
 	trayMode := flag.String("tray-mode", "", `override tray behavior: "taskbar" or "hidden"`)
 	noBrowser := flag.Bool("no-browser", false, "do not auto-open the dashboard in a browser on startup")
+	autoOpenBrowser := flag.Bool("auto-open-browser", false, "auto-open the dashboard in a browser on startup")
 	noDiscovery := flag.Bool("no-discovery", false, "disable LAN auto-discovery (node-only; orchestrator election requires discovery)")
+	enableDiscovery := flag.Bool("enable-discovery", false, "enable LAN auto-discovery")
 	harness := flag.String("harness", "", `override orchestrator agent backend: "deepseek" or "pi"`)
 	memoryPath := flag.String("memory-path", "", "override the cluster memory database file (empty = per-user data dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -68,7 +78,96 @@ func main() {
 	allowPeerUpdates := flag.Bool("allow-peer-updates", false, "allow paired peers to publish executable code that runs as this account (disabled by default)")
 	applyPeerUpdate := flag.String("apply-peer-update", "", "internal staged executable replacement job")
 	cleanupPeerUpdate := flag.String("cleanup-peer-update", "", "internal exited replacement-helper cleanup")
+	hostControlAddr := flag.String("host-control-addr", "", "internal host controller address")
+	hostControllerPID := flag.Int("host-controller-pid", 0, "internal host controller process ID")
+	hostControllerManaged := flag.Bool("host-controller-managed", false, "internal OS service-managed controller marker")
+	hostControllerRestartArgs := flag.String("host-controller-restart-args", "", "internal controller restart arguments")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("maistr0 %s\n", buildversion.String())
+		return
+	}
+	var controllerRestartArgs []string
+	if *hostControllerRestartArgs != "" {
+		if err := json.Unmarshal([]byte(*hostControllerRestartArgs), &controllerRestartArgs); err != nil {
+			fatalf("decode controller restart arguments: %v", err)
+		}
+		if len(controllerRestartArgs) == 0 || controllerRestartArgs[0] != "controller" {
+			fatal("invalid controller restart arguments")
+		}
+	}
+	runtimeSettings, err := config.LoadRuntimeSettings(*runtimeConfigPath)
+	if err != nil {
+		fatalf("failed to load runtime settings: %v", err)
+	}
+	savedAutoOpenBrowser := runtimeSettings.AutoOpenBrowser
+	savedDiscoveryEnabled := runtimeSettings.DiscoveryEnabled
+	explicitFlags := make(map[string]bool)
+	flag.Visit(func(parsed *flag.Flag) { explicitFlags[parsed.Name] = true })
+	if runtimeSettings.Role != nil && !explicitFlags["role"] {
+		*role = *runtimeSettings.Role
+	}
+	if runtimeSettings.NodeConfigPath != nil && !explicitFlags["node-config"] {
+		*nodeConfigPath = *runtimeSettings.NodeConfigPath
+	}
+	if runtimeSettings.OrchestratorConfigPath != nil && !explicitFlags["orchestrator-config"] {
+		*orchConfigPath = *runtimeSettings.OrchestratorConfigPath
+	}
+	if runtimeSettings.NodeListenAddr != nil && !explicitFlags["node-listen"] {
+		*nodeListenAddr = *runtimeSettings.NodeListenAddr
+	}
+	if runtimeSettings.OrchestratorListenAddr != nil && !explicitFlags["orchestrator-listen"] {
+		*orchListenAddr = *runtimeSettings.OrchestratorListenAddr
+	}
+	if runtimeSettings.OrchestratorAddr != nil && !explicitFlags["orchestrator-addr"] {
+		*orchestratorAddr = *runtimeSettings.OrchestratorAddr
+	}
+	if runtimeSettings.TrayMode != nil && !explicitFlags["tray-mode"] {
+		*trayMode = *runtimeSettings.TrayMode
+	}
+	if runtimeSettings.AutoOpenBrowser != nil && !explicitFlags["no-browser"] && !explicitFlags["auto-open-browser"] {
+		*noBrowser = !*runtimeSettings.AutoOpenBrowser
+	}
+	if explicitFlags["auto-open-browser"] && !explicitFlags["no-browser"] {
+		*noBrowser = !*autoOpenBrowser
+	}
+	if runtimeSettings.DiscoveryEnabled != nil && !explicitFlags["no-discovery"] && !explicitFlags["enable-discovery"] {
+		*noDiscovery = !*runtimeSettings.DiscoveryEnabled
+	}
+	if explicitFlags["enable-discovery"] && !explicitFlags["no-discovery"] {
+		*noDiscovery = !*enableDiscovery
+	}
+	if runtimeSettings.Harness != nil && !explicitFlags["harness"] {
+		*harness = *runtimeSettings.Harness
+	}
+	if runtimeSettings.MemoryPath != nil && !explicitFlags["memory-path"] {
+		*memoryPath = *runtimeSettings.MemoryPath
+	}
+	if runtimeSettings.AllowPeerUpdates != nil && !explicitFlags["allow-peer-updates"] {
+		*allowPeerUpdates = *runtimeSettings.AllowPeerUpdates
+	}
+	if runtimeSettings.NoPeerUpdates != nil && !explicitFlags["no-peer-updates"] {
+		*noPeerUpdates = *runtimeSettings.NoPeerUpdates
+	}
+	browserEnabledOverride := !*noBrowser && (explicitFlags["auto-open-browser"] ||
+		explicitFlags["no-browser"] ||
+		(savedAutoOpenBrowser != nil && *savedAutoOpenBrowser))
+	discoveryEnabledOverride := !*noDiscovery && (explicitFlags["enable-discovery"] ||
+		explicitFlags["no-discovery"] ||
+		(savedDiscoveryEnabled != nil && *savedDiscoveryEnabled))
+	runtimeSettings.Role = stringPointer(*role)
+	runtimeSettings.NodeConfigPath = stringPointer(*nodeConfigPath)
+	runtimeSettings.OrchestratorConfigPath = stringPointer(*orchConfigPath)
+	runtimeSettings.NodeListenAddr = stringPointer(*nodeListenAddr)
+	runtimeSettings.OrchestratorListenAddr = stringPointer(*orchListenAddr)
+	runtimeSettings.OrchestratorAddr = stringPointer(*orchestratorAddr)
+	runtimeSettings.TrayMode = stringPointer(*trayMode)
+	runtimeSettings.AutoOpenBrowser = boolPointer(!*noBrowser)
+	runtimeSettings.DiscoveryEnabled = boolPointer(!*noDiscovery)
+	runtimeSettings.Harness = stringPointer(*harness)
+	runtimeSettings.MemoryPath = stringPointer(*memoryPath)
+	runtimeSettings.AllowPeerUpdates = boolPointer(*allowPeerUpdates)
+	runtimeSettings.NoPeerUpdates = boolPointer(*noPeerUpdates)
 
 	if *applyPeerUpdate != "" {
 		if err := selfupdate.Apply(*applyPeerUpdate); err != nil {
@@ -82,16 +181,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "peer update cleanup failed: %v\n", err)
 		}
 	}
-	if *showVersion {
-		fmt.Printf("maistr0 %s\n", buildversion.String())
-		return
-	}
 	if *diagnostics {
 		if err := runDiagnostics(os.Stdout, configPrintOptions{
 			role: *role, nodeConfigPath: *nodeConfigPath, orchConfigPath: *orchConfigPath,
 			nodeListenAddr: *nodeListenAddr, orchListenAddr: *orchListenAddr,
 			orchestratorAddr: *orchestratorAddr, pairingPIN: *pairingPIN, orchestratorFingerprint: *orchestratorFingerprint,
-			trayMode: *trayMode, noBrowser: *noBrowser, noDiscovery: *noDiscovery,
+			trayMode: *trayMode, noBrowser: *noBrowser, autoOpenBrowser: browserEnabledOverride,
+			noDiscovery: *noDiscovery, enableDiscovery: discoveryEnabledOverride,
 			harness: *harness, memoryPath: *memoryPath,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "diagnostics failed: %v\n", err)
@@ -104,7 +200,8 @@ func main() {
 			role: *role, nodeConfigPath: *nodeConfigPath, orchConfigPath: *orchConfigPath,
 			nodeListenAddr: *nodeListenAddr, orchListenAddr: *orchListenAddr,
 			orchestratorAddr: *orchestratorAddr, pairingPIN: *pairingPIN, orchestratorFingerprint: *orchestratorFingerprint,
-			trayMode: *trayMode, noBrowser: *noBrowser, noDiscovery: *noDiscovery,
+			trayMode: *trayMode, noBrowser: *noBrowser, autoOpenBrowser: browserEnabledOverride,
+			noDiscovery: *noDiscovery, enableDiscovery: discoveryEnabledOverride,
 			harness: *harness, memoryPath: *memoryPath,
 		})
 		if err != nil {
@@ -141,6 +238,8 @@ func main() {
 			electionOrchCfg.TrayMode = *trayMode
 		}
 		electionOrchCfg.Normalize()
+		electionOrchCfg.AutoOpenBrowser = resolveAutoOpenBrowser(electionOrchCfg.AutoOpenBrowser, savedAutoOpenBrowser, explicitFlags, *noBrowser, *autoOpenBrowser)
+		electionOrchCfg.DiscoveryEnabled = resolveDiscoveryEnabled(electionOrchCfg.DiscoveryEnabled, savedDiscoveryEnabled, explicitFlags, *noDiscovery, *enableDiscovery)
 		if err := electionOrchCfg.Validate(); err != nil {
 			exitConfigValidation(err)
 		}
@@ -158,6 +257,8 @@ func main() {
 			electionNodeCfg.TrayMode = *trayMode
 		}
 		electionNodeCfg.Normalize()
+		electionNodeCfg.AutoOpenBrowser = resolveAutoOpenBrowser(electionNodeCfg.AutoOpenBrowser, savedAutoOpenBrowser, explicitFlags, *noBrowser, *autoOpenBrowser)
+		electionNodeCfg.DiscoveryEnabled = resolveDiscoveryEnabled(electionNodeCfg.DiscoveryEnabled, savedDiscoveryEnabled, explicitFlags, *noDiscovery, *enableDiscovery)
 		if err := electionNodeCfg.Validate(); err != nil {
 			exitConfigValidation(err)
 		}
@@ -230,9 +331,16 @@ func main() {
 			cfg.TrayMode = *trayMode
 		}
 		cfg.Normalize()
+		cfg.AutoOpenBrowser = resolveAutoOpenBrowser(cfg.AutoOpenBrowser, savedAutoOpenBrowser, explicitFlags, *noBrowser, *autoOpenBrowser)
+		cfg.DiscoveryEnabled = resolveDiscoveryEnabled(cfg.DiscoveryEnabled, savedDiscoveryEnabled, explicitFlags, *noDiscovery, *enableDiscovery)
+		cfg.ControlAddress = *hostControlAddr
 		if err := cfg.Validate(); err != nil {
 			exitConfigValidation(err)
 		}
+		runtimeSettings.AutoOpenBrowser = boolPointer(cfg.AutoOpenBrowser)
+		runtimeSettings.DiscoveryEnabled = boolPointer(cfg.DiscoveryEnabled)
+		runtimeSettings.TrayMode = stringPointer(cfg.TrayMode)
+		runtimeSettings.Harness = stringPointer(config.DefaultOrchestratorConfig().Harness)
 		updatePublisherKey = cfg.TrustedPeerUpdatePublicKey()
 		if err := logging.SetLevel(cfg.LogLevel); err != nil {
 			fatalf("configure log level: %v", err)
@@ -241,6 +349,8 @@ func main() {
 		if err != nil {
 			fatalf("failed to open node task history: %v", err)
 		}
+		agent.SetRuntimeSettings(*runtimeConfigPath, runtimeSettings)
+		agent.SetShutdownHandler(stopRuntime)
 		if err := agent.InitializeIdentity(); err != nil {
 			fatalf("failed to initialize node identity: %v", err)
 		}
@@ -262,6 +372,7 @@ func main() {
 				orchCfg.TrayMode = *trayMode
 			}
 			orchCfg.Normalize()
+			runtimeSettings.Harness = stringPointer(orchCfg.Harness)
 			if err := orchCfg.Validate(); err != nil {
 				exitConfigValidation(err)
 			}
@@ -292,11 +403,16 @@ func main() {
 	case "both":
 		orchCfg := electionOrchCfg
 		nodeCfg := electionNodeCfg
+		runtimeSettings.AutoOpenBrowser = boolPointer(orchCfg.AutoOpenBrowser)
+		runtimeSettings.DiscoveryEnabled = boolPointer(orchCfg.DiscoveryEnabled)
+		runtimeSettings.TrayMode = stringPointer(orchCfg.TrayMode)
+		runtimeSettings.Harness = stringPointer(orchCfg.Harness)
 		updatePublisherKey = nodeCfg.TrustedPeerUpdatePublicKey()
 
 		// The local worker must register with this process's orchestrator,
 		// regardless of any saved or command-line node address.
 		nodeCfg.OrchestratorAddr = "https://" + discovery.OutboundIP() + portSuffix(orchCfg.ListenAddr)
+		nodeCfg.ControlAddress = *hostControlAddr
 		nodeCfg.Normalize()
 		if err := nodeCfg.Validate(); err != nil {
 			exitConfigValidation(err)
@@ -305,6 +421,9 @@ func main() {
 		if err != nil {
 			fatalf("failed to configure orchestrator agent: %v", err)
 		}
+		requirePairingVerification := runtimeSettings.RequirePairingVerification != nil &&
+			*runtimeSettings.RequirePairingVerification
+		srv.SetPairingVerificationRequired(requirePairingVerification)
 		updateOrchestrator = srv
 		closeOrchestrator = func() {
 			if err := srv.Close(); err != nil {
@@ -319,6 +438,9 @@ func main() {
 		if err != nil {
 			fatalf("failed to open node task history: %v", err)
 		}
+		agent.SetRuntimeSettings(*runtimeConfigPath, runtimeSettings)
+		srv.SetPairingPolicyUpdater(agent.SetPairingVerificationRequired)
+		agent.SetShutdownHandler(stopRuntime)
 		updateNode = agent
 		closeNode = func() {
 			if err := agent.Close(); err != nil {
@@ -400,10 +522,10 @@ func main() {
 		os.Exit(0)
 	}
 	updaterDone := make(chan struct{})
-	if *allowPeerUpdates && !*noPeerUpdates {
+	if updateNode != nil && *allowPeerUpdates && !*noPeerUpdates {
 		go func() {
 			defer close(updaterDone)
-			selfupdate.Run(runCtx, func() selfupdate.Source {
+			selfupdate.RunWithControllerHandoff(runCtx, func() selfupdate.Source {
 				source := updateNode.UpdateSource()
 				source.PublisherPublicKey = updatePublisherKey
 				if updateOrchestrator != nil {
@@ -414,7 +536,11 @@ func main() {
 				return updateNode.UpdateIdle() &&
 					(updateOrchestrator == nil || updateOrchestrator.UpdateIdle()) &&
 					(updateFailover == nil || updateFailover.UpdateIdle())
-			}, shutdown)
+			}, shutdown, selfupdate.ControllerHandoff{
+				ControllerPID:  *hostControllerPID,
+				ServiceManaged: *hostControllerManaged,
+				RestartArgs:    controllerRestartArgs,
+			})
 		}()
 	} else {
 		close(updaterDone)
@@ -428,6 +554,10 @@ func main() {
 		<-runCtx.Done()
 		quit()
 	}()
+	if *hostControlAddr != "" {
+		<-runCtx.Done()
+		return
+	}
 	trayapp.Run(trayapp.Options{
 		Title:        "mAIstr0 (" + *role + ")",
 		Mode:         effectiveTrayMode,
@@ -446,6 +576,10 @@ func startupOrchestratorWinner(candidate discovery.Announcement, peers []discove
 	}
 	return discovery.BestOrchestratorCandidate(candidate, peers)
 }
+
+func stringPointer(value string) *string { return &value }
+
+func boolPointer(value bool) *bool { return &value }
 
 func configureLogging() (*logging.DailyFile, string, error) {
 	path, err := applicationLogPath()
@@ -529,9 +663,43 @@ type configPrintOptions struct {
 	orchestratorFingerprint string
 	trayMode                string
 	noBrowser               bool
+	autoOpenBrowser         bool
 	noDiscovery             bool
+	enableDiscovery         bool
 	harness                 string
 	memoryPath              string
+}
+
+func resolveAutoOpenBrowser(current bool, saved *bool, explicit map[string]bool, noBrowser, autoOpenBrowser bool) bool {
+	if explicit["no-browser"] {
+		return !noBrowser
+	}
+	if explicit["auto-open-browser"] {
+		return autoOpenBrowser
+	}
+	if saved != nil {
+		return *saved
+	}
+	if noBrowser {
+		return false
+	}
+	return current
+}
+
+func resolveDiscoveryEnabled(current bool, saved *bool, explicit map[string]bool, noDiscovery, enableDiscovery bool) bool {
+	if explicit["no-discovery"] {
+		return !noDiscovery
+	}
+	if explicit["enable-discovery"] {
+		return enableDiscovery
+	}
+	if saved != nil {
+		return *saved
+	}
+	if noDiscovery {
+		return false
+	}
+	return current
 }
 
 func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
@@ -565,8 +733,14 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 		if options.noDiscovery {
 			cfg.DiscoveryEnabled = false
 		}
+		if options.enableDiscovery {
+			cfg.DiscoveryEnabled = true
+		}
 		if options.noBrowser {
 			cfg.AutoOpenBrowser = false
+		}
+		if options.autoOpenBrowser {
+			cfg.AutoOpenBrowser = true
 		}
 		if cfg.NodeID == "" {
 			cfg.NodeID = nodeagent.DefaultNodeID()
@@ -613,8 +787,14 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 	if options.noBrowser {
 		orchCfg.AutoOpenBrowser = false
 	}
+	if options.autoOpenBrowser {
+		orchCfg.AutoOpenBrowser = true
+	}
 	if options.noDiscovery {
 		orchCfg.DiscoveryEnabled = false
+	}
+	if options.enableDiscovery {
+		orchCfg.DiscoveryEnabled = true
 	}
 	orchCfg.Normalize()
 	if err := orchCfg.Validate(); err != nil {
@@ -643,8 +823,14 @@ func printNormalizedConfig(out io.Writer, options configPrintOptions) error {
 	if options.noBrowser {
 		nodeCfg.AutoOpenBrowser = false
 	}
+	if options.autoOpenBrowser {
+		nodeCfg.AutoOpenBrowser = true
+	}
 	if options.noDiscovery {
 		nodeCfg.DiscoveryEnabled = false
+	}
+	if options.enableDiscovery {
+		nodeCfg.DiscoveryEnabled = true
 	}
 	nodeCfg.Normalize()
 	if err := nodeCfg.Validate(); err != nil {

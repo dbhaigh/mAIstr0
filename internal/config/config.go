@@ -23,7 +23,7 @@ const (
 	DefaultNodeConcurrency                = 2
 	DefaultLogLevel                       = "info"
 	DefaultDispatchConcurrency            = 16
-	DefaultDispatchTimeoutSeconds         = 600
+	DefaultDispatchTimeoutSeconds         = 1800
 	DefaultMaxConcurrentHedges            = 1
 	MaxAllowedConcurrentHedges            = 4
 	DefaultRouterRequestTimeoutSeconds    = 120
@@ -50,6 +50,8 @@ type EngineConfig struct {
 
 type NodeConfig struct {
 	NodeID                       string                `json:"node_id"`
+	ControlAddress               string                `json:"-"`
+	Draining                     bool                  `json:"-"`
 	ListenAddr                   string                `json:"listen_addr"`
 	RPCRelayListenAddr           string                `json:"rpc_relay_listen_addr"`
 	LogLevel                     string                `json:"log_level,omitempty"`
@@ -72,7 +74,7 @@ type NodeConfig struct {
 	DiscoveryHMACSecret          string                `json:"discovery_hmac_secret,omitempty"`
 	PeerUpdatePublisherKey       string                `json:"peer_update_publisher_key,omitempty"`
 	AutoOpenBrowser              bool                  `json:"auto_open_browser"`
-	TrayMode                     string                `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
+	TrayMode                     string                `json:"tray_mode"`   // "taskbar" or "hidden" (Windows console behavior)
 	MemoryPath                   string                `json:"memory_path"` // empty = default per-user data dir
 	explicitInvalidConcurrency   bool
 	SyncMaxBytes                 int64 `json:"sync_max_bytes,omitempty"`
@@ -250,7 +252,7 @@ type OrchestratorConfig struct {
 	DiscoveryEnabled                    bool                 `json:"discovery_enabled"`
 	DiscoveryHMACSecret                 string               `json:"discovery_hmac_secret,omitempty"`
 	AutoOpenBrowser                     bool                 `json:"auto_open_browser"`
-	TrayMode                            string               `json:"tray_mode"`   // "taskbar" or "hidden" (Windows only)
+	TrayMode                            string               `json:"tray_mode"`   // "taskbar" or "hidden" (Windows console behavior)
 	MemoryPath                          string               `json:"memory_path"` // empty = default per-user data dir
 	SyncMaxBytes                        int64                `json:"sync_max_bytes,omitempty"`
 	SyncTimeoutSeconds                  int                  `json:"sync_timeout_seconds,omitempty"`

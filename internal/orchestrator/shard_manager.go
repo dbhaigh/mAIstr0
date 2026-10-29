@@ -59,13 +59,14 @@ type ShardGroupMember struct {
 }
 
 type CreateShardGroupRequest struct {
-	Model           shard.ModelProfile `json:"model"`
-	Mode            shard.Mode         `json:"mode"`
-	PinnedNodes     []string           `json:"pinned_nodes,omitempty"`
-	HeadNodeID      string             `json:"head_node_id,omitempty"`
-	HeadEngineID    string             `json:"head_engine_id,omitempty"`
-	nodeSnapshots   map[string]cluster.NodeStatus
-	requireAllNodes bool
+	Model                 shard.ModelProfile `json:"model"`
+	Mode                  shard.Mode         `json:"mode"`
+	PinnedNodes           []string           `json:"pinned_nodes,omitempty"`
+	HeadNodeID            string             `json:"head_node_id,omitempty"`
+	HeadEngineID          string             `json:"head_engine_id,omitempty"`
+	nodeSnapshots         map[string]cluster.NodeStatus
+	requireAllNodes       bool
+	allowHeadlessPlanning bool
 }
 
 type ShardGroupStore interface {
