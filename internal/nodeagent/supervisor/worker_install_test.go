@@ -67,6 +67,9 @@ func workerTestArchive(t *testing.T) ([]byte, string) {
 }
 
 func TestEnsureWorkerInstallation(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
+		t.Skipf("managed worker installation is not supported on %s", runtime.GOOS)
+	}
 	for _, test := range []struct {
 		name    string
 		corrupt bool
@@ -169,6 +172,9 @@ func TestWorkerReleaseValidation(t *testing.T) {
 }
 
 func TestWorkerUpdatesPreserveActiveAndPreviousInstallations(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
+		t.Skipf("managed worker installation is not supported on %s", runtime.GOOS)
+	}
 	manager, err := New(config.NodeConfig{
 		NodeID: "update-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
 	}, Options{})

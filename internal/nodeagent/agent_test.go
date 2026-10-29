@@ -553,7 +553,7 @@ func TestFirstContactSameSubnetAutoPairsWithoutFingerprintOrPIN(t *testing.T) {
 	agent.setOrchestratorAddr(server.URL)
 	agent.setOrchestratorID(orchestrator.ID())
 	requestBody, _ := json.Marshal(map[string]string{
-		"address": server.URL, "pin": "", "orchestrator_id": orchestrator.ID(),
+		"address": server.URL, "pin": "123456", "orchestrator_id": orchestrator.ID(),
 	})
 	request := httptest.NewRequest(http.MethodPost, "/api/pairing/connect", bytes.NewReader(requestBody))
 	response := httptest.NewRecorder()

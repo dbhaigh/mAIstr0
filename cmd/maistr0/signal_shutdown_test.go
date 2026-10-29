@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,13 +19,6 @@ import (
 )
 
 func TestSignalShutdownClosesRunningNode(t *testing.T) {
-	if path := os.Getenv("MAISTR0_SIGNAL_CONFIG"); path != "" {
-		flag.CommandLine = flag.NewFlagSet("maistr0", flag.ExitOnError)
-		os.Args = []string{os.Args[0], "--role=node", "--node-config=" + path,
-			"--no-discovery", "--no-browser", "--no-peer-updates"}
-		main()
-		return
-	}
 	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"models":[]}`))
 	}))
@@ -51,8 +43,14 @@ func TestSignalShutdownClosesRunningNode(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(os.Args[0], "-test.run=^TestSignalShutdownClosesRunningNode$")
-	command.Env = append(os.Environ(), "MAISTR0_SIGNAL_CONFIG="+path, "PATH=",
+	executable := filepath.Join(dir, "maistr0")
+	build := exec.Command("go", "build", "-o", executable, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build node subprocess: %v\n%s", err, output)
+	}
+	command := exec.Command(executable, "--role=node", "--node-config="+path,
+		"--no-discovery", "--no-browser", "--no-peer-updates")
+	command.Env = append(os.Environ(), "HOME="+dir, "PATH=",
 		"XDG_STATE_HOME="+dir, "XDG_CONFIG_HOME="+dir, "XDG_CACHE_HOME="+dir)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output

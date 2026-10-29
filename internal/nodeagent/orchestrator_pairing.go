@@ -103,13 +103,6 @@ func (c *orchestratorLink) pairWithAddressContextAndSubnetPolicy(
 		logging.Infof("nodeagent", "nodeagent: starting pairing with orchestrator at %s", address)
 	}
 	cfg := c.configState.configSnapshot()
-	body, err := json.Marshal(nodePairingRequest{
-		ID: cfg.NodeID, Role: "node", PeerAddr: cfg.AdvertiseAddr, PIN: pin,
-		CertificatePEM: c.trust.CertificatePEM(),
-	})
-	if err != nil {
-		return fmt.Errorf("encode pairing request: %w", err)
-	}
 	transport := c.trust.BootstrapTransport()
 	if autoPairOnSubnet {
 		transport = c.trust.BootstrapTransportForLANID(expectedID)
@@ -125,6 +118,13 @@ func (c *orchestratorLink) pairWithAddressContextAndSubnetPolicy(
 	}
 	if autoPairOnSubnet && verifiedFingerprint == "" {
 		pin = ""
+	}
+	body, err := json.Marshal(nodePairingRequest{
+		ID: cfg.NodeID, Role: "node", PeerAddr: cfg.AdvertiseAddr, PIN: pin,
+		CertificatePEM: c.trust.CertificatePEM(),
+	})
+	if err != nil {
+		return fmt.Errorf("encode pairing request: %w", err)
 	}
 	if verifiedFingerprint != "" {
 		if err := peeridentity.ValidateFingerprint(verifiedFingerprint); err != nil {
