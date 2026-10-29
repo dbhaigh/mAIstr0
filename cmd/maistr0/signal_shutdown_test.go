@@ -43,7 +43,7 @@ func TestSignalShutdownClosesRunningNode(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	executable := filepath.Join(dir, "maistr0")
+	executable := filepath.Join(dir, "maistr0-bin")
 	build := exec.Command("go", "build", "-o", executable, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build node subprocess: %v\n%s", err, output)
