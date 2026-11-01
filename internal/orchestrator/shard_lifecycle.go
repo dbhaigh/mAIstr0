@@ -12,6 +12,14 @@ import (
 
 // Stop retains the group configuration and waits for active inference before
 // stopping the head and then its workers.
+//
+// Parameters: ctx (context.Context) bounds the wait and stop operations; id
+// (string) is the shard-group ID.
+// Returns: the updated group, or an error if another operation is active,
+// requests do not drain, or a member cannot be stopped.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_lifecycle_test.go](shard_lifecycle_test.go).
 func (m *ShardManager) Stop(ctx context.Context, id string) (ShardGroup, error) {
 	if err := m.beginOperation(id); err != nil {
 		return ShardGroup{}, err
@@ -54,10 +62,28 @@ func (m *ShardManager) stopGroup(ctx context.Context, id string) (ShardGroup, er
 	return result, errors.Join(stopErr, persistErr)
 }
 
+// Start starts a stopped or failed shard group. A group that is already ready
+// is returned unchanged.
+//
+// Parameters: ctx (context.Context) bounds provisioning and startup; id
+// (string) is the shard-group ID.
+// Returns: the updated group, or an error for an invalid state, unavailable
+// members, or a failed start.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_lifecycle_test.go](shard_lifecycle_test.go).
 func (m *ShardManager) Start(ctx context.Context, id string) (ShardGroup, error) {
 	return m.startOrRestart(ctx, id, false)
 }
 
+// Restart stops and starts the shard group identified by id.
+//
+// Parameters: ctx (context.Context) bounds drain, stop, and startup; id
+// (string) is the shard-group ID.
+// Returns: the updated group, or an error if stop or startup fails.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_lifecycle_test.go](shard_lifecycle_test.go).
 func (m *ShardManager) Restart(ctx context.Context, id string) (ShardGroup, error) {
 	return m.startOrRestart(ctx, id, true)
 }

@@ -41,6 +41,17 @@ func newDispatchCapacityGate(
 	}
 }
 
+// Reserve acquires capacity for one eligible node, waiting until capacity is
+// available or ctx is canceled. Each candidate must have a nonempty NodeID and
+// Address.
+//
+// Parameters: ctx (context.Context) controls waiting; candidates
+// ([]workpool.CapacityTarget) lists possible nodes.
+// Returns: a reservation for the selected node, or an error for invalid
+// candidates, node-probe failures, or cancellation.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [capacity_gate_test.go](capacity_gate_test.go).
 func (g *dispatchCapacityGate) Reserve(ctx context.Context, candidates []workpool.CapacityTarget) (workpool.CapacityReservation, error) {
 	if len(candidates) == 0 {
 		return nil, errors.New("capacity reservation requires at least one node")
@@ -145,6 +156,12 @@ func logNodeCapacityDecision(stage, reason string, status cluster.NodeStatus, ga
 	scheduler.LogDecision(stage, reason, status, "", 0, scheduler.ScoreFactors{})
 }
 
+// Active returns the number of global dispatch slots currently held.
+//
+// Returns: the number of active reservations.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [capacity_gate_test.go](capacity_gate_test.go).
 func (g *dispatchCapacityGate) Active() int {
 	return len(g.slots)
 }
@@ -246,10 +263,21 @@ type dispatchCapacityReservation struct {
 	once sync.Once
 }
 
+// Target returns the node selected for this reservation.
+//
+// Returns: the reserved node's ID and address.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [capacity_gate_test.go](capacity_gate_test.go).
 func (r *dispatchCapacityReservation) Target() workpool.CapacityTarget {
 	return r.target
 }
 
+// Release returns the node and global dispatch slots held by the reservation.
+// Repeated calls are safe and release capacity only once.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [capacity_gate_test.go](capacity_gate_test.go).
 func (r *dispatchCapacityReservation) Release() {
 	r.once.Do(func() {
 		r.nodeGate.release()

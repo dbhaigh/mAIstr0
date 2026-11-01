@@ -1,4 +1,4 @@
-import { activateDashboardTab, activateWorkspacePanel } from "../app.js";
+import { activateDashboardTab, activateWorkspacePanel } from "../app.ts";
 import { openPairingDialog } from "../components/pairing-dialog.js";
 import { catalogEngineSelect, catalogNodeSelect, catalogSearch, clusterWindows, clusterWorkspaceTabs, navTabs, overviewPanels, overviewTabs, pairingConnectCancelBtn, pairingConnectDialog, pairingConnectOpenBtn, setupCheckBtn, setupPanels, setupTabs, tabContents } from "./state.js";
 import { checkSetupReadiness, loadCatalogTarget, renderModelCatalog } from "../views/cluster-setup.js";

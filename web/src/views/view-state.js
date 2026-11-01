@@ -1,4 +1,4 @@
-import { markDashboardSynced, refresh, refreshDiscovery, refreshTaskHistory, resetDashboardSignatures } from "../app.js";
+import { markDashboardSynced, refresh, refreshDiscovery, refreshTaskHistory, resetDashboardSignatures } from "../app.ts";
 import { loadPairingStatus } from "../components/pairing-dialog.js";
 import {
   activeChatMode,

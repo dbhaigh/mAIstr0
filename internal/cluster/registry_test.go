@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -302,6 +303,159 @@ func TestAllUsesCachedSnapshotAndInvalidatesOnWrites(t *testing.T) {
 	}
 }
 
+func TestSnapshotSinceCoalescesChangesAndReportsRemovals(t *testing.T) {
+	r := NewRegistry()
+	for _, id := range []string{"alpha", "bravo", "charlie", "delta", "echo"} {
+		status := node(id, 10, 10)
+		status.Models = []engine.Model{{Name: id, Tags: []string{"original"}}}
+		r.Upsert(status)
+	}
+	base := r.SnapshotSince(0)
+	if !base.Full || len(base.Nodes) != 5 {
+		t.Fatalf("initial snapshot = %+v, want full snapshot with five nodes", base)
+	}
+
+	r.IncrementLoad("bravo", 1)
+	r.Remove("delta")
+	r.IncrementLoad("bravo", 1)
+
+	got := r.SnapshotSince(base.Revision)
+	if got.Full {
+		t.Fatal("small change set unexpectedly coalesced to a full snapshot")
+	}
+	if len(got.Nodes) != 1 || got.Nodes[0].ID != "bravo" || got.Nodes[0].ActiveTasks != 2 {
+		t.Fatalf("delta nodes = %+v, want only bravo with two active tasks", got.Nodes)
+	}
+	if !reflect.DeepEqual(got.Removed, []string{"delta"}) {
+		t.Fatalf("removed IDs = %v, want [delta]", got.Removed)
+	}
+
+	got.Nodes[0].Models[0].Tags[0] = "caller-mutation"
+	again := r.SnapshotSince(base.Revision)
+	if again.Nodes[0].Models[0].Tags[0] != "original" {
+		t.Fatal("mutating a delta changed registry state")
+	}
+}
+
+func TestSnapshotSinceIncludesLeadershipChanges(t *testing.T) {
+	r := NewRegistry()
+	r.Upsert(node("high", 50, 50))
+	r.Upsert(node("medium", 30, 30))
+	r.Upsert(node("low", 10, 10))
+	base := r.SnapshotSince(0)
+
+	r.MarkUnhealthy("high")
+	got := r.SnapshotSince(base.Revision)
+	if got.Full {
+		t.Fatal("leadership change unexpectedly coalesced to a full snapshot")
+	}
+	if len(got.Nodes) != 2 {
+		t.Fatalf("delta contains %d nodes, want the unhealthy former leader and new leader", len(got.Nodes))
+	}
+	statuses := make(map[string]NodeStatus, len(got.Nodes))
+	for _, status := range got.Nodes {
+		statuses[status.ID] = status
+	}
+	if statuses["high"].Healthy || statuses["high"].Leader {
+		t.Fatalf("former leader status = %+v, want unhealthy and not leader", statuses["high"])
+	}
+	if !statuses["medium"].Leader {
+		t.Fatalf("new leader status = %+v, want leader", statuses["medium"])
+	}
+}
+
+func TestSnapshotSinceCoalescesLargeDeltaIntoFullSnapshot(t *testing.T) {
+	r := NewRegistry()
+	for _, id := range []string{"one", "two", "three"} {
+		r.Upsert(node(id, 10, 10))
+	}
+	base := r.SnapshotSince(0)
+
+	for _, id := range []string{"one", "two", "three"} {
+		r.IncrementLoad(id, 1)
+	}
+
+	got := r.SnapshotSince(base.Revision)
+	if !got.Full || len(got.Nodes) != 3 || len(got.Removed) != 0 {
+		t.Fatalf("coalesced snapshot = %+v, want a full three-node snapshot", got)
+	}
+}
+
+func TestSnapshotSinceFallsBackWhenHistoryExpires(t *testing.T) {
+	r := NewRegistry()
+	r.Upsert(node("one", 10, 10))
+	r.Upsert(node("two", 20, 20))
+	base := r.SnapshotSince(0)
+
+	for i := 0; i <= snapshotChangeHistoryLimit; i++ {
+		r.IncrementLoad("one", 1)
+	}
+
+	got := r.SnapshotSince(base.Revision)
+	if !got.Full || len(got.Nodes) != 2 {
+		t.Fatalf("expired-revision snapshot = %+v, want full snapshot", got)
+	}
+}
+
+func TestSnapshotSinceReaddedNodeIsAnUpdate(t *testing.T) {
+	r := NewRegistry()
+	for _, id := range []string{"one", "two", "three"} {
+		r.Upsert(node(id, 10, 10))
+	}
+	base := r.SnapshotSince(0)
+
+	r.Remove("two")
+	r.Upsert(node("two", 5, 5))
+
+	got := r.SnapshotSince(base.Revision)
+	if got.Full {
+		t.Fatal("re-added node unexpectedly coalesced to a full snapshot")
+	}
+	if len(got.Nodes) != 1 || got.Nodes[0].ID != "two" || len(got.Removed) != 0 {
+		t.Fatalf("re-added node delta = %+v, want one update and no removals", got)
+	}
+}
+
+func TestSnapshotSinceReturnsEmptyDeltaAtCurrentRevision(t *testing.T) {
+	r := NewRegistry()
+	r.Upsert(node("one", 10, 10))
+	base := r.SnapshotSince(0)
+
+	got := r.SnapshotSince(base.Revision)
+	if got.Full || got.Revision != base.Revision || len(got.Nodes) != 0 || len(got.Removed) != 0 {
+		t.Fatalf("current-revision snapshot = %+v, want an empty delta", got)
+	}
+}
+
+func TestSnapshotSinceReportsVersionErrorUpdates(t *testing.T) {
+	r := NewRegistry()
+	old := node("old", 10, 10)
+	old.Version = "0.0001"
+	r.Upsert(old)
+	r.Upsert(node("unversioned-one", 20, 20))
+	r.Upsert(node("unversioned-two", 30, 30))
+	base := r.SnapshotSince(0)
+
+	newer := node("new", 5, 5)
+	newer.Version = "0.0002"
+	r.Upsert(newer)
+
+	got := r.SnapshotSince(base.Revision)
+	if got.Full || len(got.Nodes) != 2 {
+		t.Fatalf("version update delta = %+v, want two changed nodes", got)
+	}
+	statuses := make(map[string]NodeStatus, len(got.Nodes))
+	for _, status := range got.Nodes {
+		statuses[status.ID] = status
+	}
+	if statuses["old"].VersionError == "" {
+		t.Fatalf("older node was not included with its version error: %+v", statuses["old"])
+	}
+	if statuses["new"].VersionError != "" {
+		t.Fatalf("newer node has unexpected version error: %q", statuses["new"].VersionError)
+	}
+}
+
 func TestRegistryClonesHardwareInventory(t *testing.T) {
 	r := NewRegistry()
 	status := node("inventory", 10, 10)
@@ -337,4 +491,55 @@ func TestRegistryClonesHardwareInventory(t *testing.T) {
 		got.Engines[0].Capabilities.Devices[0] != "gpu" {
 		t.Fatalf("mutating returned device inventory or engine capabilities changed stored data: %+v", got)
 	}
+}
+
+func BenchmarkRegistrySnapshot100Nodes(b *testing.B) {
+	newRegistry := func() *Registry {
+		r := NewRegistry()
+		for i := 0; i < 100; i++ {
+			id := fmt.Sprintf("node-%03d", i)
+			status := node(id, float64(i+1), float64(i+1))
+			status.Models = []engine.Model{{
+				Name:      "model-" + id,
+				Tags:      []string{"text", "fast"},
+				Protocols: []string{"openai"},
+			}}
+			status.Hardware.Devices = []hardware.Device{{
+				Kind: "gpu", Backends: []string{"cuda", "vulkan"},
+			}}
+			r.Upsert(status)
+		}
+		_ = r.All()
+		return r
+	}
+
+	b.Run("All", func(b *testing.B) {
+		r := newRegistry()
+		var snapshot []NodeStatus
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			snapshot = r.All()
+		}
+		b.StopTimer()
+		if len(snapshot) != 100 {
+			b.Fatalf("snapshot contains %d nodes, want 100", len(snapshot))
+		}
+	})
+
+	b.Run("OneNodeDelta", func(b *testing.B) {
+		r := newRegistry()
+		base := r.SnapshotSince(0)
+		r.IncrementLoad("node-050", 1)
+		var snapshot RegistrySnapshot
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			snapshot = r.SnapshotSince(base.Revision)
+		}
+		b.StopTimer()
+		if snapshot.Full || len(snapshot.Nodes) != 1 {
+			b.Fatalf("delta contains full=%v, nodes=%d; want one changed node", snapshot.Full, len(snapshot.Nodes))
+		}
+	})
 }

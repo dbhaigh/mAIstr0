@@ -19,6 +19,7 @@ $ldflags = "-s -w -X github.com/maistr0/maistr0/internal/version.Value=$version"
 
 New-Item -ItemType Directory -Force -Path "dist/windows-amd64" | Out-Null
 New-Item -ItemType Directory -Force -Path "dist/linux-amd64" | Out-Null
+New-Item -ItemType Directory -Force -Path "dist/linux-arm64" | Out-Null
 New-Item -ItemType Directory -Force -Path "dist/linux-ubuntu-amd64" | Out-Null
 
 Write-Host "Building windows/amd64..."
@@ -36,6 +37,11 @@ try {
 	go build -trimpath -ldflags $ldflags -o "dist\linux-amd64\maistr0" .\cmd\maistr0
 	if ($LASTEXITCODE -ne 0) { throw "linux build failed" }
 
+	Write-Host "Building linux/arm64..."
+	$env:GOOS = "linux"; $env:GOARCH = "arm64"; $env:CGO_ENABLED = "0"; $env:GOFLAGS = ""
+	go build -trimpath -ldflags $ldflags -o "dist\linux-arm64\maistr0" .\cmd\maistr0
+	if ($LASTEXITCODE -ne 0) { throw "linux arm64 build failed" }
+
 	Write-Host "Building ubuntu linux/amd64..."
 	$env:GOOS = "linux"; $env:GOARCH = "amd64"; $env:CGO_ENABLED = "0"; $env:GOFLAGS = "-tags=ubuntu"
 	go build -trimpath -ldflags $ldflags -o "dist\linux-ubuntu-amd64\maistr0" .\cmd\maistr0
@@ -45,6 +51,16 @@ try {
 		[Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], "Process")
 	}
 }
+if (Get-Command upx -ErrorAction SilentlyContinue) {
+	& upx --best --lzma `
+		"dist\windows-amd64\$WindowsBinary" `
+		"dist\linux-amd64\maistr0" `
+		"dist\linux-arm64\maistr0" `
+		"dist\linux-ubuntu-amd64\maistr0"
+	if ($LASTEXITCODE -ne 0) { throw "UPX compression failed" }
+} elseif ($env:MAISTR0_REQUIRE_UPX -eq "1") {
+	throw "UPX is required for this release build but was not found in PATH"
+}
 go run .\cmd\updatebundle -root .\dist -version $version -windows-binary $WindowsBinary
 if ($LASTEXITCODE -ne 0) { throw "peer bundle metadata generation failed" }
-Write-Host "Done. Binaries in dist/windows-amd64, dist/linux-amd64, and dist/linux-ubuntu-amd64"
+Write-Host "Done. Binaries in dist/windows-amd64, dist/linux-amd64, dist/linux-arm64, and dist/linux-ubuntu-amd64"

@@ -20,6 +20,14 @@ type syncerAPI interface {
 }
 
 type taskHistoryClient interface {
+	// Do sends a task-history synchronization request to a peer.
+	//
+	// Parameters: request (*http.Request) is the outbound synchronization
+	// request.
+	// Returns: the response, or a transport error.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [task_history_sync_test.go](task_history_sync_test.go).
 	Do(*http.Request) (*http.Response, error)
 }
 

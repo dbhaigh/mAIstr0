@@ -18,7 +18,21 @@ Retry delays are deterministic exponential backoff: 100, 200, 400, then 800
 ms, capped at 800 ms. There is no jitter or `Retry-After` handling.
 Unhealthy-node checks and capacity reservation can cause reassignment before a
 worker request is sent; those preflight moves are not worker attempts and do
-not create dispatch-attempt rows.
+not create dispatch-attempt rows, but still consume a dispatch-loop iteration.
+If the configured budget is exhausted before a worker request, the subtask now
+completes with an attempt-limit error instead of remaining unfinished.
+
+## Failure tracing
+
+Terminal dispatch failures emit a structured `dispatch_error` log event with
+the request, task, subtask, phase, assignment, failure class, retryability, and
+error type. The event records error types rather than raw error messages.
+Attempt-completion records use the `dispatch_attempt` event type and include
+the same request and attempt identifiers. Task errors include the failing
+phase, while the in-process error preserves its cause for `errors.Is` and
+`errors.As`; task history stores the enriched error text. These records do not
+change retry classification, assignment exclusions, attempt limits, or
+backoff.
 
 Transport errors and network timeouts are retryable. So are HTTP 408, 429, 500,
 502, 503, and 504; a 404 whose response body contains “model” (case

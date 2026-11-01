@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -198,9 +199,54 @@ func TestOrchestratorProcessAPI(t *testing.T) {
 
 	process.stop(t)
 	process = startOrchestratorProcess(t, address, memoryPath)
-	response, err = pairedClient.Get("https://" + address + "/api/agent/sessions/" + url.PathEscape(session.ID))
+	var restartedPairing struct {
+		ID          string `json:"orchestrator_id"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	pairingResponse, err = localClient.Get("http://" + address + "/api/pairing/status")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := json.NewDecoder(pairingResponse.Body).Decode(&restartedPairing); err != nil {
+		_ = pairingResponse.Body.Close()
+		t.Fatal(err)
+	}
+	_ = pairingResponse.Body.Close()
+	if restartedPairing.ID != pairing.ID || restartedPairing.Fingerprint == "" ||
+		restartedPairing.Fingerprint == pairing.Fingerprint {
+		t.Fatalf("unexpected identity after process restart: before=%+v after=%+v", pairing, restartedPairing)
+	}
+
+	response, err = pairedClient.Get("https://" + address + "/api/agent/sessions/" + url.PathEscape(session.ID))
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("paired client accepted the previous process's certificate pin")
+	}
+
+	recoveryTransport := node.BootstrapTransportForFingerprint(restartedPairing.ID, restartedPairing.Fingerprint)
+	t.Cleanup(recoveryTransport.CloseIdleConnections)
+	recoveryClient := &http.Client{Timeout: 5 * time.Second, Transport: recoveryTransport}
+	response, err = recoveryClient.Get("https://" + address + "/api/agent/sessions/" + url.PathEscape(session.ID))
+	if err != nil {
+		t.Fatalf("verified re-pair request failed after process restart: %v", err)
+	}
+	if response.StatusCode != http.StatusOK || response.TLS == nil || len(response.TLS.PeerCertificates) == 0 {
+		_ = response.Body.Close()
+		t.Fatalf("verified re-pair response is incomplete: status=%d", response.StatusCode)
+	}
+	certificatePEM := string(pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: response.TLS.PeerCertificates[0].Raw,
+	}))
+	_ = response.Body.Close()
+	if err := node.TrustPeerDetails(restartedPairing.ID, certificatePEM, "orchestrator", "https://"+address); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err = pairedClient.Get("https://" + address + "/api/agent/sessions/" + url.PathEscape(session.ID))
+	if err != nil {
+		t.Fatalf("paired client failed after the new fingerprint was trusted: %v", err)
 	}
 	defer closeutil.Discard(response.Body)
 	var restored struct {

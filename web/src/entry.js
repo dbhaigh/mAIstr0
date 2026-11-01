@@ -21,5 +21,5 @@ import "./views/pipelines.js";
 import "./views/shards.js";
 import "./views/routing.js";
 import "./components/task-list.js";
-import "./app.js";
+import "./app.ts";
 import "./views/view-state.js";

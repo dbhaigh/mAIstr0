@@ -18,6 +18,11 @@ type deepSeekRequest struct {
 	prompt string
 }
 
+var (
+	_ agent.LoopHarness[deepSeekRequest] = (*Harness)(nil)
+	_ agent.LoopPolicy                   = (*Harness)(nil)
+)
+
 type coordinatorSelectionError struct {
 	err error
 }
@@ -103,13 +108,9 @@ func (h *Harness) FormatMessages(session agent.Session, tools []agent.ToolDef) (
 	if err != nil {
 		return deepSeekRequest{}, coordinatorSelectionError{err: err}
 	}
-	deepSeekTools := make([]ToolDef, 0, len(tools))
-	for _, tool := range tools {
-		deepSeekTools = append(deepSeekTools, ToolDef(tool))
-	}
 	return deepSeekRequest{
 		node: node, model: model,
-		prompt: h.buildPromptWithTools(current, deepSeekTools),
+		prompt: h.buildPromptWithTools(current, tools),
 	}, nil
 }
 
@@ -188,12 +189,7 @@ func (h *Harness) executeLoopTool(ctx context.Context, sessionID, name string, a
 
 func (h *Harness) newAgentLoop() *agent.AgentLoop[deepSeekRequest] {
 	listTools := func() []agent.ToolDef {
-		definitions := h.ListTools()
-		out := make([]agent.ToolDef, 0, len(definitions))
-		for _, definition := range definitions {
-			out = append(out, agent.ToolDef(definition))
-		}
-		return out
+		return h.ListTools()
 	}
 	return agent.NewAgentLoop(h, h, listTools, h.executeLoopTool)
 }
@@ -201,7 +197,7 @@ func (h *Harness) newAgentLoop() *agent.AgentLoop[deepSeekRequest] {
 func sessionFromAgent(session agent.Session) *Session {
 	out := &Session{
 		ID: session.ID, Title: session.Title, CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt,
-		Memory: make(map[string]string, len(session.Memory)), Config: SessionConfig(session.Config),
+		Memory: make(map[string]string, len(session.Memory)), Config: session.Config,
 		Active: session.Active, Messages: make([]Message, 0, len(session.Messages)),
 	}
 	for key, value := range session.Memory {

@@ -135,18 +135,7 @@ func (h *Harness) ExecuteTool(ctx context.Context, sessionID, name string, args 
 }
 
 // ModelInfo describes an LLM model available on a specific cluster node.
-type ModelInfo struct {
-	NodeID        string   `json:"node_id"`
-	NodeAddr      string   `json:"node_address"`
-	Name          string   `json:"name"`
-	Engine        string   `json:"engine"`
-	Tags          []string `json:"tags"`
-	SizeGB        float64  `json:"size_gb,omitempty"`
-	ContextLength int      `json:"context_length,omitempty"`
-	Members       []string `json:"members,omitempty"`
-	Default       bool     `json:"default"`
-	Healthy       bool     `json:"healthy"`
-}
+type ModelInfo = agent.ModelInfo
 
 // ListClusterModels returns every available model across all healthy nodes.
 func (h *Harness) ListClusterModels() []ModelInfo {

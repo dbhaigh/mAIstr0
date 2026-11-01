@@ -45,6 +45,24 @@ type NodeStatus struct {
 	VersionError              string                       `json:"version_error,omitempty"`
 }
 
+// RegistrySnapshot is either a full registry view or a delta from a prior
+// revision. When Full is false, Nodes contains changed or added nodes and
+// Removed contains node IDs removed since the requested revision.
+type RegistrySnapshot struct {
+	Revision uint64       `json:"revision"`
+	Full     bool         `json:"full"`
+	Nodes    []NodeStatus `json:"nodes"`
+	Removed  []string     `json:"removed,omitempty"`
+}
+
+const snapshotChangeHistoryLimit = 256
+
+type registrySnapshotChange struct {
+	revision uint64
+	changed  []string
+	removed  []string
+}
+
 func (n NodeStatus) EngineReady(name string) bool {
 	if len(n.Engines) == 0 {
 		return true
@@ -137,13 +155,18 @@ func (n NodeStatus) AppendEffectiveCapabilities(dst []string) []string {
 
 // Registry is a thread-safe store of known nodes.
 type Registry struct {
-	// mu protects nodes and the snapshot cache; every mutation invalidates the
-	// cache before unlocking. It is a leaf lock: callers use copied snapshots
-	// before invoking other components or doing I/O.
-	mu            sync.RWMutex
-	nodes         map[string]*NodeStatus
-	allCache      []NodeStatus
-	allCacheValid bool
+	// mu protects nodes, the full-snapshot cache, delta history, and leader ID.
+	// Mutations update them before unlocking. It is a leaf lock: callers use
+	// copied snapshots before invoking other components or doing I/O.
+	mu                  sync.RWMutex
+	nodes               map[string]*NodeStatus
+	allCache            []NodeStatus
+	allCacheValid       bool
+	snapshotRevision    uint64
+	snapshotChanges     [snapshotChangeHistoryLimit]registrySnapshotChange
+	snapshotChangeStart int
+	snapshotChangeCount int
+	leaderID            string
 }
 
 func NewRegistry() *Registry {
@@ -159,6 +182,7 @@ func (r *Registry) Upsert(status NodeStatus) {
 	status.Healthy = true
 	status.QueuedTasks = 0
 	status.VersionError = ""
+	changedIDs := []string{status.ID}
 	for _, existing := range r.nodes {
 		if existing.Version == "" || status.Version == "" || existing.Version == status.Version {
 			continue
@@ -168,11 +192,15 @@ func (r *Registry) Upsert(status NodeStatus) {
 			break
 		}
 		if version.Compare(existing.Version, status.Version) < 0 {
-			existing.VersionError = "node version " + existing.Version + " is older than cluster version " + status.Version
+			versionError := "node version " + existing.Version + " is older than cluster version " + status.Version
+			if existing.VersionError != versionError {
+				existing.VersionError = versionError
+				changedIDs = append(changedIDs, existing.ID)
+			}
 		}
 	}
 	r.nodes[status.ID] = &status
-	r.invalidateSnapshotLocked()
+	r.recordSnapshotChangesLocked(changedIDs, nil, true)
 }
 
 // MarkUnhealthy flags a node as unreachable without removing it, so it's
@@ -187,7 +215,7 @@ func (r *Registry) UpdateDevices(id, address string, devices []hardware.Device) 
 		return false
 	}
 	node.Hardware.Devices = snapshot
-	r.invalidateSnapshotLocked()
+	r.recordSnapshotChangesLocked([]string{id}, nil, true)
 	return true
 }
 
@@ -195,8 +223,12 @@ func (r *Registry) MarkUnhealthy(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[id]; ok {
-		n.Healthy = false
-		r.invalidateSnapshotLocked()
+		if n.Healthy {
+			n.Healthy = false
+			r.recordSnapshotChangesLocked([]string{id}, nil, true)
+		} else {
+			r.invalidateSnapshotLocked()
+		}
 	}
 }
 
@@ -206,7 +238,7 @@ func (r *Registry) Remove(id string) {
 	defer r.mu.Unlock()
 	if _, ok := r.nodes[id]; ok {
 		delete(r.nodes, id)
-		r.invalidateSnapshotLocked()
+		r.recordSnapshotChangesLocked(nil, []string{id}, true)
 	}
 }
 
@@ -241,6 +273,108 @@ func (r *Registry) All() []NodeStatus {
 	return cloneNodeStatuses(r.allCache)
 }
 
+// SnapshotSince coalesces registry changes after revision into one delta.
+// Revision zero, a future or expired revision, or a delta at least as large as
+// the current membership returns a full snapshot instead. Returned node data
+// is deep-copied, like All.
+func (r *Registry) SnapshotSince(revision uint64) RegistrySnapshot {
+	r.mu.RLock()
+	if r.snapshotNeedsFullLocked(revision) {
+		r.mu.RUnlock()
+		return r.fullSnapshot()
+	}
+	if revision == r.snapshotRevision {
+		snapshot := RegistrySnapshot{Revision: r.snapshotRevision}
+		r.mu.RUnlock()
+		return snapshot
+	}
+
+	changed := make(map[string]struct{})
+	removed := make(map[string]struct{})
+	for offset := 0; offset < r.snapshotChangeCount; offset++ {
+		index := (r.snapshotChangeStart + offset) % snapshotChangeHistoryLimit
+		change := r.snapshotChanges[index]
+		if change.revision <= revision {
+			continue
+		}
+		for _, id := range change.removed {
+			delete(changed, id)
+			removed[id] = struct{}{}
+		}
+		for _, id := range change.changed {
+			delete(removed, id)
+			changed[id] = struct{}{}
+		}
+	}
+
+	for id := range changed {
+		if _, ok := r.nodes[id]; !ok {
+			delete(changed, id)
+			removed[id] = struct{}{}
+		}
+	}
+	for id := range removed {
+		if _, ok := r.nodes[id]; ok {
+			delete(removed, id)
+			changed[id] = struct{}{}
+		}
+	}
+	if len(changed)+len(removed) >= len(r.nodes) {
+		r.mu.RUnlock()
+		return r.fullSnapshot()
+	}
+
+	nodes := make([]NodeStatus, 0, len(changed))
+	for id := range changed {
+		status := cloneNodeStatus(*r.nodes[id])
+		status.Leader = id == r.leaderID
+		nodes = append(nodes, status)
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+
+	removedIDs := make([]string, 0, len(removed))
+	for id := range removed {
+		removedIDs = append(removedIDs, id)
+	}
+	sort.Strings(removedIDs)
+
+	snapshot := RegistrySnapshot{
+		Revision: r.snapshotRevision,
+		Nodes:    nodes,
+		Removed:  removedIDs,
+	}
+	r.mu.RUnlock()
+	return snapshot
+}
+
+func (r *Registry) snapshotNeedsFullLocked(revision uint64) bool {
+	if revision == 0 || revision > r.snapshotRevision {
+		return true
+	}
+	if revision == r.snapshotRevision {
+		return false
+	}
+	if r.snapshotChangeCount == 0 {
+		return true
+	}
+	oldestRevision := r.snapshotChanges[r.snapshotChangeStart].revision
+	return revision < oldestRevision-1
+}
+
+func (r *Registry) fullSnapshot() RegistrySnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.allCacheValid {
+		r.allCache = r.buildSnapshotLocked()
+		r.allCacheValid = true
+	}
+	return RegistrySnapshot{
+		Revision: r.snapshotRevision,
+		Full:     true,
+		Nodes:    cloneNodeStatuses(r.allCache),
+	}
+}
+
 func cloneNodeStatuses(statuses []NodeStatus) []NodeStatus {
 	out := make([]NodeStatus, len(statuses))
 	for i := range statuses {
@@ -255,32 +389,94 @@ func (r *Registry) buildSnapshotLocked() []NodeStatus {
 		out = append(out, cloneNodeStatus(*n))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-
-	healthy := 0
 	for i := range out {
-		out[i].Leader = false
-		if out[i].Healthy {
+		out[i].Leader = out[i].ID == r.leaderID
+	}
+	return out
+}
+
+func (r *Registry) leaderIDLocked() string {
+	healthy := 0
+	for _, n := range r.nodes {
+		if n.Healthy {
 			healthy++
 		}
 	}
 	if healthy < 2 {
-		return out
+		return ""
 	}
 
-	leader := -1
-	for i := range out {
-		if !out[i].Healthy {
+	var leader *NodeStatus
+	var leaderScore float64
+	for _, n := range r.nodes {
+		if !n.Healthy {
 			continue
 		}
-		if leader < 0 || CapabilityScore(out[i]) > CapabilityScore(out[leader]) ||
-			(CapabilityScore(out[i]) == CapabilityScore(out[leader]) && out[i].ID < out[leader].ID) {
-			leader = i
+		score := CapabilityScore(*n)
+		if leader == nil || score > leaderScore || (score == leaderScore && n.ID < leader.ID) {
+			leader = n
+			leaderScore = score
 		}
 	}
-	if leader >= 0 {
-		out[leader].Leader = true
+	if leader == nil {
+		return ""
 	}
-	return out
+	return leader.ID
+}
+
+func (r *Registry) recordSnapshotChangesLocked(changedIDs, removedIDs []string, leaderMayChange bool) {
+	if leaderMayChange {
+		newLeaderID := r.leaderIDLocked()
+		if newLeaderID != r.leaderID {
+			if r.leaderID != "" {
+				if _, ok := r.nodes[r.leaderID]; ok {
+					changedIDs = append(changedIDs, r.leaderID)
+				}
+			}
+			if newLeaderID != "" {
+				changedIDs = append(changedIDs, newLeaderID)
+			}
+			r.leaderID = newLeaderID
+		}
+	}
+
+	changedIDs = sortedUniqueSnapshotIDs(changedIDs)
+	removedIDs = sortedUniqueSnapshotIDs(removedIDs)
+	if len(changedIDs) == 0 && len(removedIDs) == 0 {
+		return
+	}
+
+	r.snapshotRevision++
+	change := registrySnapshotChange{
+		revision: r.snapshotRevision,
+		changed:  changedIDs,
+		removed:  removedIDs,
+	}
+	index := (r.snapshotChangeStart + r.snapshotChangeCount) % snapshotChangeHistoryLimit
+	if r.snapshotChangeCount == snapshotChangeHistoryLimit {
+		index = r.snapshotChangeStart
+		r.snapshotChangeStart = (r.snapshotChangeStart + 1) % snapshotChangeHistoryLimit
+	} else {
+		r.snapshotChangeCount++
+	}
+	r.snapshotChanges[index] = change
+	r.invalidateSnapshotLocked()
+}
+
+func sortedUniqueSnapshotIDs(ids []string) []string {
+	if len(ids) < 2 {
+		return ids
+	}
+	sort.Strings(ids)
+	unique := 1
+	for i := 1; i < len(ids); i++ {
+		if ids[i] == ids[unique-1] {
+			continue
+		}
+		ids[unique] = ids[i]
+		unique++
+	}
+	return ids[:unique]
 }
 
 func (r *Registry) invalidateSnapshotLocked() {
@@ -443,12 +639,16 @@ func (r *Registry) IncrementLoad(id string, delta int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[id]; ok {
+		previous := n.ActiveTasks
 		n.ActiveTasks += delta
 		if n.ActiveTasks < 0 {
 			n.ActiveTasks = 0
 		}
 		if delta != 0 {
 			r.invalidateSnapshotLocked()
+			if n.ActiveTasks != previous {
+				r.recordSnapshotChangesLocked([]string{id}, nil, false)
+			}
 		}
 	}
 }

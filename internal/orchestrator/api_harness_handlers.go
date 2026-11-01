@@ -12,6 +12,7 @@ import (
 
 	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/handler_utils"
 	"github.com/maistr0/maistr0/internal/httpx"
 )
 
@@ -121,11 +122,10 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
 		return
 	}
-	req, err := httpx.DecodeJSON[agentMessageRequest](
+	req, ok := handler_utils.DecodeJSON[agentMessageRequest](
 		w, r, httpx.InferenceJSONBodyBytes,
 	)
-	if err != nil {
-		writeError(w, apperr.Invalid(err))
+	if !ok {
 		return
 	}
 	content := strings.TrimSpace(req.Content)
@@ -236,9 +236,10 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleAgentSessionInterrupt(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, apperr.Invalid(errors.New("session ID is required")))
+	id, ok := handler_utils.RequirePathValue(
+		w, r, "id", "session ID is required", handler_utils.RespondInvalid,
+	)
+	if !ok {
 		return
 	}
 	_, _, exists := s.agentForSession(id)
@@ -261,7 +262,7 @@ func (s *Server) handleAgentToolsList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgentModelsList(w http.ResponseWriter, r *http.Request) {
 	_, backend := s.currentAgent()
-	writeJSON(w, http.StatusOK, s.listClusterModels(backend))
+	s.handleClusterModelInfoList(w, r, backend, "agent-models")
 }
 
 func (s *Server) handleAgentStatsGet(w http.ResponseWriter, r *http.Request) {
@@ -280,11 +281,10 @@ func (s *Server) handleAgentBackendPatch(w http.ResponseWriter, r *http.Request)
 	type harnessRequest struct {
 		Harness string `json:"harness"`
 	}
-	request, err := httpx.DecodeJSON[harnessRequest](
+	request, ok := handler_utils.DecodeJSON[harnessRequest](
 		w, r, httpx.SmallJSONBodyBytes,
 	)
-	if err != nil {
-		writeError(w, apperr.Invalid(err))
+	if !ok {
 		return
 	}
 	request.Harness = strings.ToLower(strings.TrimSpace(request.Harness))

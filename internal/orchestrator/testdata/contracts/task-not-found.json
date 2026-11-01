@@ -1,5 +1,9 @@
 {
   "status": 404,
-  "content_type": "text/plain; charset=utf-8",
-  "body": "task not found\n"
+  "content_type": "application/json",
+  "body": {
+    "code": "not_found",
+    "error": "task not found",
+    "retryable": false
+  }
 }

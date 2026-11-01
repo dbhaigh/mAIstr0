@@ -52,7 +52,7 @@
               "status": "failed"
             }
           ],
-          "error": "node returned 500 Internal Server Error",
+          "error": "dispatch retry_assignment phase failed: node returned 500 Internal Server Error",
           "model": "general-model",
           "node_id": "failed-worker",
           "score": 0,

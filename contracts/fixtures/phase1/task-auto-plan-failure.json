@@ -10,8 +10,12 @@
   },
   "expected_response": {
     "status": 502,
-    "content_type": "text/plain; charset=utf-8",
-    "body": "create structured task plan: planning model returned invalid JSON: no JSON object found\n"
+    "content_type": "application/json",
+    "body": {
+      "code": "upstream_error",
+      "error": "create structured task plan: planning model returned invalid JSON: no JSON object found",
+      "retryable": true
+    }
   },
   "normalization_rules": [
     "Replace timestamps with \u003cTIME\u003e.",

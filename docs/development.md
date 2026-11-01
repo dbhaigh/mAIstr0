@@ -143,6 +143,20 @@ Benchmark actual snapshot construction separately from the idle/queued fast path
 go test -run '^$' -bench 'BenchmarkBuildSnapshot|BenchmarkPublishSnapshotRequests|BenchmarkPublisherRequest' -benchmem ./internal/orchestrator ./internal/hub
 ```
 
+### Cluster registry snapshots
+
+`Registry.All` continues to return a deep-copied full view. Consumers that keep a
+revision can use `Registry.SnapshotSince` to coalesce retained changes into one
+delta, including removed node IDs. The first request, an expired or future
+revision, and a delta at least as large as current membership return a full
+snapshot; change history is bounded to 256 revisions.
+
+Benchmark full copies against a one-node delta with:
+
+```sh
+go test -run '^$' -bench '^BenchmarkRegistrySnapshot100Nodes$' -benchmem ./internal/cluster
+```
+
 The [scheduled benchmark workflow](../.github/workflows/benchmarks.yml) runs weekly
 and manually. It compares six interleaved baseline/candidate rounds on the same
 runner, retaining JSON events and comparisons for 90 days. Conservative timing
@@ -204,8 +218,8 @@ The local cross-build scripts are available for both shells:
 ./build/build.sh
 ```
 
-The scripts produce Windows and Linux amd64 binaries under `dist/`. Build
-macOS packages on macOS with Xcode command line tools:
+The scripts produce Windows amd64 and Linux amd64/arm64 binaries under
+`dist/`. Build macOS packages on macOS with Xcode command line tools:
 
 ```sh
 bash build/build-macos.sh
@@ -216,8 +230,10 @@ a menu-bar `.app` ZIP, and a CLI `.tar.gz` with the LaunchAgent installer under
 `dist/macos/<tag>/`. The packages are unsigned and not notarized. Tagged releases use
 [GoReleaser](../.goreleaser.yaml) and the
 [release workflow](../.github/workflows/release.yml) to publish platform
-archives and SHA-256 checksums. The macOS release job runs on a macOS host
-because the native tray backend uses cgo. Before a release, update
+archives and SHA-256 checksums. Linux/Windows release executables are stripped
+and UPX-compressed; Windows also gets a self-extracting `.exe` package. Darwin
+arm64/amd64 packages remain native cgo builds on macOS so they retain the
+menu-bar backend. Before a release, update
 `internal/version/version.go` and its version test, move the completed
 `Unreleased` changelog entries to a dated release section, run the required
 checks and cross-build script, then push a matching `v<version>` tag. The

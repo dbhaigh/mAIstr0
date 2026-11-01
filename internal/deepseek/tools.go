@@ -5,15 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/scheduler"
 	"strings"
+
+	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
-type ToolDef struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
-}
+type ToolDef = agent.ToolDef
 
 // Tool represents an executable tool callable by the DeepSeek agent harness.
 type Tool interface {

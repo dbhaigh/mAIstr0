@@ -29,6 +29,12 @@ type pipelineStageWriteResult struct {
 	err      error
 }
 
+// Error formats the non-success HTTP response from a pipeline stage node.
+//
+// Returns: the node ID, status, and response body when present.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [pipeline_dispatch_test.go](pipeline_dispatch_test.go).
 func (err *pipelineStageHTTPError) Error() string {
 	if err.body == "" {
 		return fmt.Sprintf("pipeline stage on node %s returned %s", err.nodeID, err.status)

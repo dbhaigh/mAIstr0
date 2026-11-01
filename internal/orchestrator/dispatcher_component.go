@@ -23,6 +23,13 @@ type dispatchJob struct {
 }
 
 type dispatchHTTPClient interface {
+	// Do sends an HTTP request to the selected dispatch node.
+	//
+	// Parameters: request (*http.Request) is the outbound request.
+	// Returns: the response, or a transport error.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [dispatcher_execution_test.go](dispatcher_execution_test.go).
 	Do(*http.Request) (*http.Response, error)
 }
 

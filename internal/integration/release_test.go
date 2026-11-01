@@ -113,10 +113,11 @@ func TestReleaseCandidateInstallUpgrade(t *testing.T) {
 	}
 	first := startReleaseCandidate(t, installed, directory, args, address)
 	var pairing struct {
+		ID          string `json:"node_id"`
 		Fingerprint string `json:"fingerprint"`
 	}
 	requestJSON(http.MethodGet, "/api/pairing/status", "", &pairing)
-	if pairing.Fingerprint == "" {
+	if pairing.ID == "" || pairing.Fingerprint == "" {
 		t.Fatal("clean install has no identity")
 	}
 	var fact map[string]any
@@ -141,11 +142,15 @@ func TestReleaseCandidateInstallUpgrade(t *testing.T) {
 	}
 	second := startReleaseCandidate(t, installed, directory, args, address)
 	var after struct {
+		ID          string `json:"node_id"`
 		Fingerprint string `json:"fingerprint"`
 	}
 	requestJSON(http.MethodGet, "/api/pairing/status", "", &after)
-	if after.Fingerprint != pairing.Fingerprint {
-		t.Fatal("upgrade changed identity fingerprint")
+	if after.ID != pairing.ID {
+		t.Fatal("upgrade changed stable identity ID")
+	}
+	if after.Fingerprint == "" || after.Fingerprint == pairing.Fingerprint {
+		t.Fatal("upgrade did not create a fresh process-local certificate")
 	}
 	var facts []struct {
 		Key   string `json:"key"`

@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/cluster"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/syncinterval"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/maistr0/maistr0/internal/tasksync"
 )
 
 type syncerComponent struct {
@@ -90,7 +91,7 @@ func (s *syncerComponent) syncPeerTaskHistoryWithContext(ctx context.Context) {
 	}
 	peers := s.peers()
 	client := s.memorySyncClient()
-	remoteSnapshots := make(map[string]taskSyncSnapshot)
+	remoteSnapshots := make(map[string]tasksync.Snapshot)
 	for _, peer := range peers {
 		if ctx.Err() != nil {
 			return
@@ -117,7 +118,7 @@ func (s *syncerComponent) syncPeerTaskHistoryWithContext(ctx context.Context) {
 			logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: task history import from %s failed: %v", peer.ID, err)
 			continue
 		}
-		remoteSnapshots[peer.ID] = taskSyncSnapshot{version: version, watermarks: watermarks}
+		remoteSnapshots[peer.ID] = tasksync.Snapshot{Version: version, Watermarks: watermarks}
 		if s.memory != nil {
 			if err := s.memory.SetPeerWatermarks(peer.ID, watermarks); err != nil {
 				logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: task history watermark persistence for %s failed: %v", peer.ID, err)
@@ -136,8 +137,8 @@ func (s *syncerComponent) syncPeerTaskHistoryWithContext(ctx context.Context) {
 		version := 0
 		var watermarks map[string]uint64
 		if fetched {
-			version = remote.version
-			watermarks = remote.watermarks
+			version = remote.Version
+			watermarks = remote.Watermarks
 		}
 		tasks := s.tasks.SnapshotForPeer(version, watermarks)
 		err := postTaskSnapshotPagesWithContext(

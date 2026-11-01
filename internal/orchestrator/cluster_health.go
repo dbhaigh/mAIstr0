@@ -10,8 +10,13 @@ import (
 
 const clusterTelemetryFreshnessWindow = 30 * time.Second
 
-// ClusterHealth is the single source of truth for cluster capacity and
-// readiness in both the SSE snapshot and GET /api/cluster/health.
+// ClusterHealth is the Server-owned projection of cluster capacity and
+// readiness used by the SSE snapshot and GET /api/cluster/health. It combines
+// [NodeCapacityHealth], [GlobalDispatchHealth], [EngineReadinessSummary], and
+// [TelemetryFreshnessSummary].
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [cluster_health_test.go](cluster_health_test.go).
 type ClusterHealth struct {
 	Nodes              []NodeCapacityHealth      `json:"nodes"`
 	GlobalDispatch     GlobalDispatchHealth      `json:"global_dispatch"`
@@ -20,6 +25,11 @@ type ClusterHealth struct {
 	Warnings           []string                  `json:"warnings"`
 }
 
+// NodeCapacityHealth is a per-node record owned by [ClusterHealth], describing
+// health, dispatch capacity, and telemetry freshness.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [cluster_health_test.go](cluster_health_test.go).
 type NodeCapacityHealth struct {
 	NodeID         string `json:"node_id"`
 	Healthy        bool   `json:"healthy"`
@@ -31,6 +41,12 @@ type NodeCapacityHealth struct {
 	TelemetryAgeMs int64  `json:"telemetry_age_ms,omitempty"`
 }
 
+// GlobalDispatchHealth is the dispatch-capacity summary owned by
+// [ClusterHealth], including the global limit, active slots, queue depth, and
+// active workers.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [cluster_health_test.go](cluster_health_test.go).
 type GlobalDispatchHealth struct {
 	GlobalLimit   int `json:"global_limit"`
 	ActiveSlots   int `json:"active_slots"`
@@ -38,6 +54,11 @@ type GlobalDispatchHealth struct {
 	ActiveWorkers int `json:"active_workers"`
 }
 
+// EngineReadinessSummary is the engine-readiness summary owned by
+// [ClusterHealth], counting configured engines and nodes with ready engines.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [cluster_health_test.go](cluster_health_test.go).
 type EngineReadinessSummary struct {
 	ReadyEngines         int `json:"ready_engines"`
 	TotalEngines         int `json:"total_engines"`
@@ -45,6 +66,11 @@ type EngineReadinessSummary struct {
 	NodesWithReadyEngine int `json:"nodes_with_ready_engine"`
 }
 
+// TelemetryFreshnessSummary is the telemetry summary owned by [ClusterHealth],
+// counting nodes by availability and freshness within the observation window.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [cluster_health_test.go](cluster_health_test.go).
 type TelemetryFreshnessSummary struct {
 	FreshNodes        int   `json:"fresh_nodes"`
 	StaleNodes        int   `json:"stale_nodes"`

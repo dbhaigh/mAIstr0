@@ -29,13 +29,58 @@ type createTaskRequest struct {
 }
 
 type taskScheduler interface {
+	// AssignWithExperience assigns subtasks to eligible nodes using routing
+	// history.
+	//
+	// Parameters: subtasks ([]scheduler.Subtask) are the work items; nodes
+	// ([]cluster.NodeStatus) are eligible candidates; experience
+	// (scheduler.Experience) supplies historical routing data.
+	// Returns: one assignment per schedulable subtask, or an assignment error.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [task_planning_test.go](task_planning_test.go).
 	AssignWithExperience([]scheduler.Subtask, []cluster.NodeStatus, scheduler.Experience) ([]scheduler.Assignment, error)
 }
 
 type taskStore interface {
+	// CreateWithGraphAndOptionsChecked creates a task with its plan,
+	// assignments, and approval requirement after validating the task state.
+	//
+	// Parameters: description (string) is the task description; graph
+	// (*scheduler.TaskGraph) is the dependency graph; assignments
+	// ([]scheduler.Assignment) are the scheduled subtasks; requireApproval (bool)
+	// requires task approval before completion.
+	// Returns: the created task, or an error for invalid input or persistence
+	// failure.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [task_planning_test.go](task_planning_test.go).
 	CreateWithGraphAndOptionsChecked(string, *scheduler.TaskGraph, []scheduler.Assignment, bool) (*taskmgr.Task, error)
+	// CompleteSubtask records a subtask's output or failure.
+	//
+	// Parameters: taskID and subtaskID (string) identify the work; output
+	// (string) is its result; err (error) is nil on success or the failure cause.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [task_planning_test.go](task_planning_test.go).
 	CompleteSubtask(string, string, string, error)
+	// Wait blocks until the task reaches a terminal state or ctx is canceled.
+	//
+	// Parameters: ctx (context.Context) controls waiting; taskID (string)
+	// identifies the task.
+	// Returns: the terminal task, or an error if the task is missing or the
+	// context is canceled.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [task_planning_test.go](task_planning_test.go).
 	Wait(context.Context, string) (*taskmgr.Task, error)
+	// Cancel requests cancellation of the identified task.
+	//
+	// Parameters: taskID (string) identifies the task to cancel.
+	// Returns: true when cancellation was accepted.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [task_planning_test.go](task_planning_test.go).
 	Cancel(string) bool
 }
 
@@ -71,6 +116,16 @@ type taskPlannerAPI interface {
 
 type schedulerAdapter struct{}
 
+// AssignWithExperience delegates task assignment to scheduler's shared
+// experience-aware implementation.
+//
+// Parameters: subtasks ([]scheduler.Subtask) are the work items; nodes
+// ([]cluster.NodeStatus) are the eligible candidates; experience
+// (scheduler.Experience) supplies historical routing data.
+// Returns: the assignments, or an error when scheduling fails.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [task_planning_test.go](task_planning_test.go).
 func (schedulerAdapter) AssignWithExperience(subtasks []scheduler.Subtask, nodes []cluster.NodeStatus, experience scheduler.Experience) ([]scheduler.Assignment, error) {
 	return scheduler.AssignWithExperience(subtasks, nodes, experience)
 }
@@ -231,10 +286,15 @@ func (p *taskPlanner) createTask(ctx context.Context, req createTaskRequest) (*t
 		return nil, apperr.InternalError(fmt.Errorf("could not persist task: %w", err))
 	}
 	var admissionErr error
-	for _, assignment := range assignments {
-		if err := p.dispatch.submitDispatch(task.ID, assignment); err != nil {
+	synchronization := taskmgr.TaskSynchronization{
+		Dispatch: p.dispatch.submitDispatch,
+		OnDispatchFailure: func(assignment scheduler.Assignment, err error) {
 			logging.Errorf("orchestrator", "orchestrator: could not queue subtask %s: %v", assignment.Subtask.ID, err)
-			p.tasks.CompleteSubtask(task.ID, assignment.Subtask.ID, "", err)
+		},
+		Complete: p.tasks.CompleteSubtask,
+	}
+	for _, assignment := range assignments {
+		if err := synchronization.DispatchAssignment(task.ID, assignment); err != nil {
 			admissionErr = errors.Join(admissionErr, err)
 		}
 	}

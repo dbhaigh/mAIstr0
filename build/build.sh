@@ -14,7 +14,7 @@ mkdir -p dist
 printf '%s' "$version" > "$version_file"
 ldflags="-s -w -X github.com/maistr0/maistr0/internal/version.Value=${version}"
 
-mkdir -p dist/windows-amd64 dist/linux-amd64 dist/linux-ubuntu-amd64
+mkdir -p dist/windows-amd64 dist/linux-amd64 dist/linux-arm64 dist/linux-ubuntu-amd64
 
 echo "Building windows/amd64..."
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/windows-amd64/maistr0.exe ./cmd/maistr0
@@ -22,9 +22,24 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -
 echo "Building linux/amd64..."
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/linux-amd64/maistr0 ./cmd/maistr0
 
+echo "Building linux/arm64..."
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/linux-arm64/maistr0 ./cmd/maistr0
+
 echo "Building ubuntu linux/amd64..."
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOFLAGS='-tags=ubuntu' go build -trimpath -ldflags "$ldflags" -o dist/linux-ubuntu-amd64/maistr0 ./cmd/maistr0
 
+if command -v upx >/dev/null 2>&1; then
+	echo "Compressing release binaries with UPX..."
+	upx --best --lzma \
+		dist/windows-amd64/maistr0.exe \
+		dist/linux-amd64/maistr0 \
+		dist/linux-arm64/maistr0 \
+		dist/linux-ubuntu-amd64/maistr0
+elif [[ "${MAISTR0_REQUIRE_UPX:-0}" == "1" ]]; then
+	echo "UPX is required for this release build but was not found in PATH." >&2
+	exit 1
+fi
+
 go run ./cmd/updatebundle -root ./dist -version "$version"
 
-echo "Done. Binaries in dist/windows-amd64, dist/linux-amd64, and dist/linux-ubuntu-amd64"
+echo "Done. Binaries in dist/windows-amd64, dist/linux-amd64, dist/linux-arm64, and dist/linux-ubuntu-amd64"

@@ -248,6 +248,9 @@ func TestDispatchRetriesAreBoundedByConfiguredAttempts(t *testing.T) {
 			if final.Status != taskmgr.StatusFailed || final.Subtasks[0].Status != taskmgr.StatusFailed {
 				t.Fatalf("exhausted task = %s/%s", final.Status, final.Subtasks[0].Status)
 			}
+			if !strings.Contains(final.Subtasks[0].Error, "execution phase failed") {
+				t.Fatalf("terminal dispatch error lacks phase context: %q", final.Subtasks[0].Error)
+			}
 			attempts := final.Subtasks[0].Attempts
 			if len(attempts) != maxAttempts {
 				t.Fatalf("attempts = %d, want %d: %+v", len(attempts), maxAttempts, attempts)
@@ -277,6 +280,42 @@ func TestDispatchRetriesAreBoundedByConfiguredAttempts(t *testing.T) {
 			}
 			assertDispatchCapacityReleased(t, srv, testCapacityGate(t, srv), nodeIDs...)
 		})
+	}
+}
+
+func TestDispatchFailsWhenPreflightReassignmentExhaustsAttemptBudget(t *testing.T) {
+	var workerCalls atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		workerCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "unexpected"})
+	}))
+	defer worker.Close()
+
+	srv := newTestServer(t)
+	srv.dispatcher.retryPolicy.maxAttempts = 1
+	initialNode := characterizationNode("node-a", "http://unregistered-worker", "model-a", 2)
+	retryNode := characterizationNode("node-b", worker.URL, "model-b", 2)
+	srv.registry.Upsert(initialNode)
+	srv.registry.Upsert(retryNode)
+	task, err := srv.tasks.CreateChecked(
+		"preflight attempt budget",
+		[]scheduler.Assignment{characterizationAssignment("work", initialNode)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.registry.Remove(initialNode.ID)
+
+	awaitSignal(t, runDispatch(srv, task.ID, task.Subtasks[0].Assignment), "dispatch return")
+
+	final, ok := srv.tasks.Get(task.ID)
+	if !ok || final.Status != taskmgr.StatusFailed ||
+		!strings.Contains(final.Subtasks[0].Error, "attempt limit reached") {
+		t.Fatalf("preflight-exhausted task = %+v", final)
+	}
+	if len(final.Subtasks[0].Attempts) != 0 || workerCalls.Load() != 0 {
+		t.Fatalf("preflight-only retry created worker attempts: calls=%d attempts=%+v",
+			workerCalls.Load(), final.Subtasks[0].Attempts)
 	}
 }
 

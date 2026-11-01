@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/error-response.schema.json",
+  "title": "ErrorResponse",
+  "type": "object",
+  "required": ["error", "code", "retryable"],
+  "properties": {
+    "error": {
+      "oneOf": [
+        {"type": "string"},
+        {"type": "object"}
+      ]
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "invalid_input",
+        "not_found",
+        "conflict",
+        "unavailable",
+        "upstream_error",
+        "internal_error",
+        "unauthorized",
+        "forbidden",
+        "method_not_allowed",
+        "request_timeout",
+        "payload_too_large",
+        "upgrade_required",
+        "rate_limited",
+        "not_implemented",
+        "gateway_timeout"
+      ]
+    },
+    "retryable": {"type": "boolean"},
+    "request_id": {"type": "string"},
+    "node_id": {"type": "string"},
+    "operation": {"type": "string"}
+  },
+  "additionalProperties": true
+}

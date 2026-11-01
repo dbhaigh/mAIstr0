@@ -33,6 +33,13 @@ import (
 	"github.com/maistr0/maistr0/web"
 )
 
+// Server owns the orchestrator's control-plane components and coordinates
+// request handling, background work, node dispatch, and shutdown. It is
+// constructed and run by the application composition root. Related contracts
+// include [SessionStore] and [ShardManager].
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 type Server struct {
 	background         background.Group
 	publisherOnce      sync.Once
@@ -57,6 +64,8 @@ type Server struct {
 	routerClients      *routerClientLimiter
 	mem                memory.Store
 	shards             *ShardManager
+	modelCache         modelInventoryCache
+	modelPageCache     modelPageCache
 	identityPath       string
 	identity           *peeridentity.Identity
 	orchestratorEpoch  string
@@ -73,23 +82,66 @@ type Server struct {
 	pairingPolicyUpdater       func(bool) error
 }
 
+// SessionStore is the persistence boundary owned by [Server] for serialized
+// agent sessions used during harness startup and session lifecycle operations.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 type SessionStore interface {
+	// AgentSessions loads all saved agent-session payloads.
+	//
+	// Returns: serialized session records, or a storage error.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 	AgentSessions() ([][]byte, error)
+	// SaveAgentSession stores one serialized agent session under its harness and ID.
+	//
+	// Parameters: harness and id (string) identify the session; payload ([]byte)
+	// is its serialized representation.
+	// Returns: a storage error, if the record cannot be saved.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 	SaveAgentSession(harness, id string, payload []byte) error
+	// DeleteAgentSession removes the saved session identified by harness and ID.
+	//
+	// Parameters: harness and id (string) identify the saved session.
+	// Returns: a storage error, if the record cannot be deleted.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 	DeleteAgentSession(harness, id string) error
 }
 
 const discoveryRequestTimeout = 5 * time.Second
 const nodeCapacityFreshnessWindow = 6 * time.Second
 
-// NewWithMemory builds an orchestrator backed by a persistent memory
-// database at memoryPath (empty selects the default per-user location).
+// NewWithMemory builds an orchestrator using the default Pi harness and a
+// persistent memory database at memoryPath.
+//
+// Parameters: memoryPath (string) selects the database path; an empty path
+// uses the default per-user location.
+// Returns: the configured Server, or an error opening or validating its
+// configuration and dependencies.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 func NewWithMemory(memoryPath string) (*Server, error) {
 	return NewWithMemoryAndHarness(memoryPath, "pi")
 }
 
 // NewWithMemoryAndHarness builds an orchestrator using the requested agent
-// backend. The returned error identifies unsupported backend names.
+// backend and persistent memory database.
+//
+// Parameters: memoryPath (string) selects the database path; an empty path
+// uses the default per-user location; harnessName (string) selects a supported
+// agent backend.
+// Returns: the configured Server, or an error for invalid configuration,
+// unsupported backends, or initialization failures.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 	cfg := config.DefaultOrchestratorConfig()
 	cfg.MemoryPath = memoryPath
@@ -108,7 +160,16 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 	return srv, nil
 }
 
-// NewWithConfig creates an orchestrator from its JSON configuration.
+// NewWithConfig normalizes and validates cfg before constructing an
+// orchestrator from it.
+//
+// Parameters: cfg (config.OrchestratorConfig) contains the orchestrator,
+// memory, dispatch, and harness settings.
+// Returns: the configured Server, or an error for invalid configuration or
+// initialization failures.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
@@ -276,6 +337,13 @@ func newWithMemoryHarnessAndConcurrency(
 	return srv, nil
 }
 
+// Close stops background work and shuts down the orchestrator's owned
+// components, including active tasks, shard groups, harness, and stores.
+//
+// Returns: the first component shutdown error, if any.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 func (s *Server) Close() error {
 	s.background.Stop()
 	if s.election != nil {
@@ -313,22 +381,53 @@ func (s *Server) Close() error {
 	return agentErr
 }
 
-// Memory exposes the orchestrator's persistent knowledge store (nil when
-// unavailable or disabled by minimal mode).
+// Memory returns the orchestrator's persistent knowledge store, when enabled.
+//
+// Returns: the memory.Store, or nil when unavailable or disabled by minimal
+// mode.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 func (s *Server) Memory() memory.Store { return s.mem }
 
+// SetPairingVerificationRequired updates the in-memory cluster enrollment
+// policy.
+//
+// Parameters: required (bool) enables mandatory pairing verification when true.
+//
+// References: [startup and trust](../../docs/architecture.md#startup-and-trust),
+// [server_test.go](server_test.go).
 func (s *Server) SetPairingVerificationRequired(required bool) {
 	s.pairingPolicyMu.Lock()
+	changed := s.requirePairingVerification != required
 	s.requirePairingVerification = required
 	s.pairingPolicyMu.Unlock()
+	if changed {
+		logging.Infof("orchestrator", "security audit event=pairing.policy.updated required=%t", required)
+	}
 }
 
+// PairingVerificationRequired reports whether cluster enrollment currently
+// requires pairing verification.
+//
+// Returns: the current in-memory pairing policy.
+//
+// References: [startup and trust](../../docs/architecture.md#startup-and-trust),
+// [server_test.go](server_test.go).
 func (s *Server) PairingVerificationRequired() bool {
 	s.pairingPolicyMu.RLock()
 	defer s.pairingPolicyMu.RUnlock()
 	return s.requirePairingVerification
 }
 
+// SetPairingPolicyUpdater installs the persistence callback used before a
+// pairing-policy change takes effect.
+//
+// Parameters: updater (func(bool) error) persists the requested policy; nil
+// leaves persistence unavailable.
+//
+// References: [startup and trust](../../docs/architecture.md#startup-and-trust),
+// [server_test.go](server_test.go).
 func (s *Server) SetPairingPolicyUpdater(updater func(bool) error) {
 	s.pairingPolicyUpdater = updater
 }
@@ -344,6 +443,13 @@ func (s *Server) updatePairingPolicy(required bool) error {
 	return nil
 }
 
+// Mux builds the orchestrator's HTTP route mux. Run adds the server's runtime
+// middleware and listener lifecycle around the routes.
+//
+// Returns: a newly constructed HTTP mux.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/updates/manifest", s.handlePeerUpdate)
@@ -467,7 +573,15 @@ func (s *Server) Mux() *http.ServeMux {
 	return mux
 }
 
-// Run starts the health-sweep loop and the HTTP server. It blocks.
+// Run starts the health-sweep loop and HTTP server, and blocks until the
+// server exits.
+//
+// Parameters: listenAddr (string) is the HTTP listener address in host:port
+// form.
+// Returns: a listener or server error, if startup or serving fails.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 func (s *Server) Run(listenAddr string) error {
 	defer func() {
 		s.background.Stop()
@@ -520,7 +634,14 @@ func (s *Server) run(ctx context.Context, listenAddr string) error {
 		return fmt.Errorf("orchestrator: configure HTTP request limit: %w", err)
 	}
 	withMiddleware := func(next http.Handler) http.Handler {
-		return selfupdate.Admission.Wrap(httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit))
+		return httpx.Chain(
+			selfupdate.Admission.Wrap(next),
+			httpx.RequestLogger(nil),
+			httpx.RequestID,
+			bodyLimit,
+			httpx.CompressJSON,
+			httpx.FormatErrors,
+		)
 	}
 	return peeridentity.ServeDualContext(ctx,
 		listenAddr,

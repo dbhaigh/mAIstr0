@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/logging"
 	"io"
 	"log/slog"
 	"net"
@@ -17,9 +16,85 @@ import (
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/taskmgr"
 )
+
+type dispatchPhase string
+
+const (
+	dispatchPhaseDependencyWait       dispatchPhase = "dependency_wait"
+	dispatchPhaseAttemptBudget        dispatchPhase = "attempt_budget"
+	dispatchPhaseRetryAssignment      dispatchPhase = "retry_assignment"
+	dispatchPhaseRetryPersistence     dispatchPhase = "retry_persistence"
+	dispatchPhaseDispatchContext      dispatchPhase = "dispatch_context"
+	dispatchPhaseNodeSelection        dispatchPhase = "node_selection"
+	dispatchPhaseCapacityReservation  dispatchPhase = "capacity_reservation"
+	dispatchPhaseSubtaskStart         dispatchPhase = "subtask_start"
+	dispatchPhaseSubtaskInput         dispatchPhase = "subtask_input"
+	dispatchPhaseExecution            dispatchPhase = "execution"
+	dispatchPhaseRetryBackoff         dispatchPhase = "retry_backoff"
+)
+
+type dispatchFailure struct {
+	phase         dispatchPhase
+	cause         error
+	relatedErr    error
+	assignment    scheduler.Assignment
+	retryable     bool
+	failureClass  string
+	policyAttempt int
+	httpStatus    int
+}
+
+// Error formats the dispatch phase and underlying cause for logs and callers.
+//
+// Returns: an empty string for a nil receiver; otherwise the phase-specific
+// failure message.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [dispatcher_execution_test.go](dispatcher_execution_test.go).
+func (e *dispatchFailure) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("dispatch %s phase failed: %v", e.phase, e.cause)
+}
+
+// Unwrap exposes the underlying cause for errors.Is and errors.As.
+//
+// Returns: the cause, or nil for a nil receiver.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [dispatcher_execution_test.go](dispatcher_execution_test.go).
+func (e *dispatchFailure) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func newDispatchFailure(phase dispatchPhase, cause error) *dispatchFailure {
+	if cause == nil {
+		return nil
+	}
+	return &dispatchFailure{phase: phase, cause: cause, failureClass: string(phase)}
+}
+
+type dispatchPlan struct {
+	assignment   scheduler.Assignment
+	attemptCount int
+	alreadyTried map[string]bool
+	failure      *dispatchFailure
+}
+
+type dispatchAttemptResult struct {
+	assignment scheduler.Assignment
+	completed  bool
+	failure    *dispatchFailure
+}
 
 func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID string, assignment scheduler.Assignment) {
 	ctx, ok := d.tasks.Context(taskID)
@@ -35,168 +110,366 @@ func (d *dispatcherComponent) dispatchWithContext(parent context.Context, taskID
 		cancel(context.Canceled)
 	}()
 
+	failure := d.waitForDispatchDependencies(dispatchCtx, taskID, assignment)
+	if failure == nil {
+		boundedCtx, cancelDeadline := context.WithTimeout(dispatchCtx, d.dispatchTimeout)
+		defer cancelDeadline()
+		dispatchCtx = boundedCtx
+		failure = d.dispatchWithRetries(dispatchCtx, taskID, assignment)
+	}
+	if failure != nil {
+		if failure.assignment.Subtask.ID == "" {
+			failure.assignment = assignment
+		}
+		d.recordDispatchFailure(dispatchCtx, taskID, assignment.Subtask.ID, failure)
+		d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
+	}
+}
+
+func (d *dispatcherComponent) waitForDispatchDependencies(
+	ctx context.Context,
+	taskID string,
+	assignment scheduler.Assignment,
+) *dispatchFailure {
 	dependencyStarted := time.Now()
 	d.dependencyWaiters.Add(1)
-	if !d.tasks.WaitForDependencies(dispatchCtx, taskID, assignment.Subtask.ID) {
-		d.dependencyWaiters.Add(-1)
-		elapsed := time.Since(dependencyStarted)
-		d.dependencyWaitNanos.Add(elapsed.Nanoseconds())
-		failure := dispatchContextFailure(dispatchCtx)
-		if failure == nil {
-			failure = errors.New("a required subtask did not complete")
-		}
-		d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
-		return
-	}
+	completed := d.tasks.WaitForDependencies(ctx, taskID, assignment.Subtask.ID)
 	d.dependencyWaiters.Add(-1)
-	dependencyElapsed := time.Since(dependencyStarted)
-	d.dependencyWaitNanos.Add(dependencyElapsed.Nanoseconds())
-	if dependencyElapsed > 0 {
-		logging.Infof("orchestrator", "orchestrator: dependency wait task=%s subtask=%s duration_ms=%d", taskID, assignment.Subtask.ID, dependencyElapsed.Milliseconds())
-	}
+	elapsed := time.Since(dependencyStarted)
+	d.dependencyWaitNanos.Add(elapsed.Nanoseconds())
 
-	boundedCtx, cancelDeadline := context.WithTimeout(dispatchCtx, d.dispatchTimeout)
-	defer cancelDeadline()
-	dispatchCtx = boundedCtx
-	current := assignment
-	alreadyTried := make(map[string]bool)
-	attemptCount := 0
+	var failure *dispatchFailure
+	if !completed {
+		cause := dispatchContextFailure(ctx)
+		if cause == nil {
+			cause = errors.New("a required subtask did not complete")
+		}
+		failure = newDispatchFailure(dispatchPhaseDependencyWait, cause)
+		failure.failureClass = dispatchContextClass(ctx)
+		if failure.failureClass == "" {
+			failure.failureClass = "dependency_failure"
+		}
+		failure.assignment = assignment
+	} else if elapsed > 0 {
+		logging.Infof("orchestrator", "orchestrator: dependency wait task=%s subtask=%s duration_ms=%d",
+			taskID, assignment.Subtask.ID, elapsed.Milliseconds())
+	}
+	return failure
+}
+
+func (d *dispatcherComponent) prepareDispatchPlan(
+	ctx context.Context,
+	taskID string,
+	assignment scheduler.Assignment,
+) dispatchPlan {
+	plan := dispatchPlan{
+		assignment:   assignment,
+		alreadyTried: make(map[string]bool),
+	}
 	if task, ok := d.tasks.Get(taskID); ok {
 		for _, result := range task.Subtasks {
 			if result.Subtask.ID != assignment.Subtask.ID {
 				continue
 			}
-			attemptCount = len(result.Attempts)
+			plan.attemptCount = len(result.Attempts)
 			for _, prior := range result.Attempts {
-				alreadyTried[routerPairKey(prior.NodeID, prior.Model)] = true
+				plan.alreadyTried[routerPairKey(prior.NodeID, prior.Model)] = true
 			}
 			break
 		}
 	}
-	if attemptCount >= d.retryPolicy.maxAttempts {
-		d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("subtask dispatch attempt limit reached"))
-		return
+	if plan.attemptCount >= d.retryPolicy.maxAttempts {
+		plan.failure = newDispatchFailure(
+			dispatchPhaseAttemptBudget,
+			errors.New("subtask dispatch attempt limit reached"),
+		)
+		plan.failure.failureClass = "attempt_limit"
 	}
-	if alreadyTried[routerPairKey(current.NodeID, current.Model)] {
-		retry, err := d.retryAssignment(dispatchCtx, current.Subtask, alreadyTried)
-		if err != nil {
-			if failure := dispatchContextFailure(dispatchCtx); failure != nil {
-				d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
-				return
+	if plan.failure == nil && plan.alreadyTried[routerPairKey(plan.assignment.NodeID, plan.assignment.Model)] {
+		retry, retryErr := d.retryAssignment(ctx, plan.assignment.Subtask, plan.alreadyTried)
+		if retryErr != nil {
+			cause := dispatchContextFailure(ctx)
+			if cause == nil {
+				cause = errors.New("no untried node/model pair is available")
 			}
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("no untried node/model pair is available"))
-			return
+			plan.failure = newDispatchFailure(dispatchPhaseRetryAssignment, cause)
+			plan.failure.relatedErr = retryErr
+			plan.failure.failureClass = dispatchContextClass(ctx)
+			if plan.failure.failureClass == "" {
+				plan.failure.failureClass = "no_retry_assignment"
+			}
+		} else if err := d.reassignForRetry(taskID, assignment.Subtask.ID, retry); err != nil {
+			plan.failure = newDispatchFailure(dispatchPhaseRetryPersistence, err)
+			plan.failure.failureClass = "persistence"
+		} else {
+			plan.assignment = retry
 		}
-		if err := d.reassignForRetry(taskID, assignment.Subtask.ID, retry); err != nil {
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
-			return
-		}
-		current = retry
 	}
-	for attempt := attemptCount; attempt < d.retryPolicy.maxAttempts; attempt++ {
-		if dispatchCtx.Err() != nil {
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", dispatchContextFailure(dispatchCtx))
-			return
-		}
+	if plan.failure != nil {
+		plan.failure.assignment = plan.assignment
+	}
+	return plan
+}
+
+func (d *dispatcherComponent) dispatchWithRetries(
+	ctx context.Context,
+	taskID string,
+	assignment scheduler.Assignment,
+) *dispatchFailure {
+	plan := d.prepareDispatchPlan(ctx, taskID, assignment)
+	current := plan.assignment
+	failure := plan.failure
+	completed := false
+
+	for attempt := plan.attemptCount; attempt < d.retryPolicy.maxAttempts && failure == nil && !completed; attempt++ {
+		result := d.runDispatchAttempt(ctx, taskID, current, attempt, plan.alreadyTried)
+		current = result.assignment
+		completed = result.completed
+		failure = result.failure
+	}
+
+	if failure == nil && !completed {
+		failure = newDispatchFailure(
+			dispatchPhaseAttemptBudget,
+			errors.New("subtask dispatch attempt limit reached"),
+		)
+		failure.failureClass = "attempt_limit"
+		failure.assignment = current
+	}
+	if failure != nil && failure.assignment.Subtask.ID == "" {
+		failure.assignment = current
+	}
+	return failure
+}
+
+func (d *dispatcherComponent) runDispatchAttempt(
+	ctx context.Context,
+	taskID string,
+	current scheduler.Assignment,
+	attempt int,
+	alreadyTried map[string]bool,
+) dispatchAttemptResult {
+	result := dispatchAttemptResult{assignment: current}
+	if ctx.Err() != nil {
+		result.failure = contextDispatchFailure(ctx, dispatchPhaseDispatchContext, ctx.Err())
+	} else {
 		node, healthy := d.registry.Get(current.NodeID)
 		if !healthy || !node.Healthy || node.Address != current.Address {
-			alreadyTried[routerPairKey(current.NodeID, current.Model)] = true
-			retry, err := d.retryAssignment(dispatchCtx, current.Subtask, alreadyTried)
-			if err == nil && dispatchCtx.Err() == nil {
-				if persistErr := d.reassignForRetry(taskID, assignment.Subtask.ID, retry); persistErr != nil {
-					d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", persistErr)
-					return
+			result = d.retryBeforeDispatch(
+				ctx, taskID, current, alreadyTried,
+				errors.New("node was ejected before dispatch"),
+				dispatchPhaseNodeSelection, true, attempt,
+			)
+		} else {
+			reservation, err := d.reserveTaskCapacity(ctx, current)
+			if err != nil {
+				if ctx.Err() != nil {
+					result.failure = contextDispatchFailure(ctx, dispatchPhaseCapacityReservation, err)
+				} else {
+					result = d.retryBeforeDispatch(
+						ctx, taskID, current, alreadyTried, err,
+						dispatchPhaseCapacityReservation, false, attempt,
+					)
 				}
-				current = retry
-				continue
+			} else {
+				result = d.executeReservedDispatch(ctx, taskID, current, reservation, attempt, alreadyTried)
 			}
-			failure := dispatchContextFailure(dispatchCtx)
-			if failure == nil {
-				failure = errors.New("node was ejected before dispatch")
-			}
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
-			return
 		}
-		reservation, err := d.reserveTaskCapacity(dispatchCtx, current)
-		if err != nil {
-			if dispatchCtx.Err() != nil {
-				d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", dispatchContextFailure(dispatchCtx))
-				return
-			}
-			alreadyTried[routerPairKey(current.NodeID, current.Model)] = true
-			retry, retryErr := d.retryAssignment(dispatchCtx, current.Subtask, alreadyTried)
-			if retryErr == nil {
-				if persistErr := d.reassignForRetry(taskID, assignment.Subtask.ID, retry); persistErr != nil {
-					d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", persistErr)
-					return
-				}
-				current = retry
-				continue
-			}
-			failure := dispatchContextFailure(dispatchCtx)
-			if failure == nil {
-				failure = err
-			}
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
-			return
+	}
+	if result.failure != nil {
+		result.failure.assignment = result.assignment
+	}
+	return result
+}
+
+func (d *dispatcherComponent) retryBeforeDispatch(
+	ctx context.Context,
+	taskID string,
+	current scheduler.Assignment,
+	alreadyTried map[string]bool,
+	fallback error,
+	phase dispatchPhase,
+	requireActiveContext bool,
+	attempt int,
+) dispatchAttemptResult {
+	result := dispatchAttemptResult{assignment: current}
+	alreadyTried[routerPairKey(current.NodeID, current.Model)] = true
+	retry, retryErr := d.retryAssignment(ctx, current.Subtask, alreadyTried)
+	retryAllowed := retryErr == nil && (!requireActiveContext || ctx.Err() == nil)
+	if retryAllowed {
+		if err := d.reassignForRetry(taskID, current.Subtask.ID, retry); err != nil {
+			result.failure = newDispatchFailure(dispatchPhaseRetryPersistence, err)
+			result.failure.failureClass = "persistence"
+			result.failure.policyAttempt = attempt + 1
+		} else {
+			result.assignment = retry
 		}
-		d.metrics.recordCapacityReservation()
-		defer reservation.Release()
-		if err := d.tasks.StartSubtaskChecked(taskID, assignment.Subtask.ID); err != nil {
-			logging.Errorf("orchestrator", "orchestrator: could not persist start of subtask %s: %v", assignment.Subtask.ID, err)
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
-			return
+	} else {
+		cause := dispatchContextFailure(ctx)
+		if cause == nil {
+			cause = fallback
 		}
-		prompt, ok := d.tasks.InputForSubtask(taskID, assignment.Subtask.ID)
-		if !ok {
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", errors.New("subtask prerequisites are not available"))
-			return
+		result.failure = newDispatchFailure(phase, cause)
+		result.failure.relatedErr = retryErr
+		result.failure.policyAttempt = attempt + 1
+		if contextClass := dispatchContextClass(ctx); contextClass != "" {
+			result.failure.failureClass = contextClass
 		}
+	}
+	return result
+}
+
+func (d *dispatcherComponent) executeReservedDispatch(
+	ctx context.Context,
+	taskID string,
+	current scheduler.Assignment,
+	reservation *dispatchReservation,
+	attempt int,
+	alreadyTried map[string]bool,
+) dispatchAttemptResult {
+	result := dispatchAttemptResult{assignment: current}
+	defer reservation.Release()
+	d.metrics.recordCapacityReservation()
+
+	if err := d.tasks.StartSubtaskChecked(taskID, current.Subtask.ID); err != nil {
+		result.failure = newDispatchFailure(dispatchPhaseSubtaskStart, err)
+		result.failure.failureClass = "persistence"
+		result.failure.policyAttempt = attempt + 1
+	} else if prompt, ok := d.tasks.InputForSubtask(taskID, current.Subtask.ID); !ok {
+		result.failure = newDispatchFailure(
+			dispatchPhaseSubtaskInput,
+			errors.New("subtask prerequisites are not available"),
+		)
+		result.failure.failureClass = "dependency_failure"
+		result.failure.policyAttempt = attempt + 1
+	} else {
 		reservation.Start()
-		candidateResult := d.executeCandidateWithHedge(dispatchCtx, taskID, current, prompt, attempt, alreadyTried)
+		candidateResult := d.executeCandidateWithHedge(ctx, taskID, current, prompt, attempt, alreadyTried)
 		reservation.Release()
 		for _, attempted := range candidateResult.attempted {
 			alreadyTried[routerPairKey(attempted.NodeID, attempted.Model)] = true
 		}
+
 		attemptErr, retryable := candidateResult.err, candidateResult.retryable
-
 		if attemptErr == nil || candidateResult.won {
-			return
-		}
-		if !d.retryPolicy.canRetry(retryable, attempt+1, dispatchCtx) {
-			failure := dispatchContextFailure(dispatchCtx)
-			if failure == nil {
-				failure = attemptErr
+			result.completed = true
+		} else if !d.retryPolicy.canRetry(retryable, attempt+1, ctx) {
+			result.failure = contextDispatchFailure(ctx, dispatchPhaseExecution, attemptErr)
+			result.failure.retryable = retryable
+			result.failure.failureClass = candidateFailureClass(candidateResult.failureClass)
+			result.failure.httpStatus = candidateResult.httpStatus
+			result.failure.policyAttempt = attempt + 1
+		} else {
+			alreadyTried[routerPairKey(current.NodeID, current.Model)] = true
+			if !sleepWithContext(ctx, d.retryPolicy.delay(attempt)) {
+				result.failure = contextDispatchFailure(ctx, dispatchPhaseRetryBackoff, context.Canceled)
+				result.failure.policyAttempt = attempt + 1
+			} else {
+				retry, retryErr := d.retryAssignment(ctx, current.Subtask, alreadyTried)
+				if retryErr != nil {
+					result.failure = contextDispatchFailure(ctx, dispatchPhaseRetryAssignment, attemptErr)
+					result.failure.relatedErr = retryErr
+					result.failure.retryable = retryable
+					result.failure.failureClass = candidateFailureClass(candidateResult.failureClass)
+					result.failure.httpStatus = candidateResult.httpStatus
+					result.failure.policyAttempt = attempt + 1
+				} else if err := d.reassignForRetry(taskID, current.Subtask.ID, retry); err != nil {
+					result.failure = newDispatchFailure(dispatchPhaseRetryPersistence, err)
+					result.failure.failureClass = "persistence"
+					result.failure.policyAttempt = attempt + 1
+				} else {
+					logging.Errorf("orchestrator", "orchestrator: retrying subtask %s on node %s after node %s failed: %v",
+						current.Subtask.ID, retry.NodeID, current.NodeID, attemptErr)
+					result.assignment = retry
+				}
 			}
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
-			return
 		}
-
-		alreadyTried[routerPairKey(current.NodeID, current.Model)] = true
-		delay := d.retryPolicy.delay(attempt)
-		if !sleepWithContext(dispatchCtx, delay) {
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", dispatchContextFailure(dispatchCtx))
-			return
-		}
-		retry, err := d.retryAssignment(dispatchCtx, assignment.Subtask, alreadyTried)
-		if err != nil {
-			logging.Errorf("orchestrator", "orchestrator: subtask %s retry unavailable after %v: %v", assignment.Subtask.ID, attemptErr, err)
-			failure := dispatchContextFailure(dispatchCtx)
-			if failure == nil {
-				failure = attemptErr
-			}
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", failure)
-			return
-		}
-		logging.Errorf("orchestrator", "orchestrator: retrying subtask %s on node %s after node %s failed: %v",
-			assignment.Subtask.ID, retry.NodeID, current.NodeID, attemptErr)
-		if err := d.reassignForRetry(taskID, assignment.Subtask.ID, retry); err != nil {
-			logging.Errorf("orchestrator", "orchestrator: could not persist retry assignment for subtask %s: %v", assignment.Subtask.ID, err)
-			d.tasks.CompleteSubtask(taskID, assignment.Subtask.ID, "", err)
-			return
-		}
-		current = retry
 	}
+	if result.failure != nil {
+		result.failure.assignment = result.assignment
+	}
+	return result
+}
+
+func contextDispatchFailure(ctx context.Context, phase dispatchPhase, fallback error) *dispatchFailure {
+	cause := dispatchContextFailure(ctx)
+	if cause == nil {
+		cause = fallback
+	}
+	failure := newDispatchFailure(phase, cause)
+	if failure != nil {
+		if contextClass := dispatchContextClass(ctx); contextClass != "" {
+			failure.failureClass = contextClass
+		}
+	}
+	return failure
+}
+
+func dispatchContextClass(ctx context.Context) string {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "timeout"
+	case ctx.Err() != nil:
+		return "cancelled"
+	default:
+		return ""
+	}
+}
+
+func candidateFailureClass(failureClass string) string {
+	if failureClass == "" {
+		return "dispatch_error"
+	}
+	return failureClass
+}
+
+func (d *dispatcherComponent) recordDispatchFailure(
+	ctx context.Context,
+	taskID string,
+	subtaskID string,
+	failure *dispatchFailure,
+) {
+	if failure == nil {
+		return
+	}
+	assignment := failure.assignment
+	failureClass := failure.failureClass
+	if failureClass == "" {
+		failureClass = string(failure.phase)
+	}
+	attrs := []any{
+		"component", "orchestrator",
+		"event_type", "dispatch_error",
+		"request_id", taskmgr.DispatchRequestID(taskID, subtaskID),
+		"task_id", taskID,
+		"subtask_id", subtaskID,
+		"phase", string(failure.phase),
+		"node_id", assignment.NodeID,
+		"model", assignment.Model,
+		"engine", assignment.Engine,
+		"failure_class", failureClass,
+		"retryable", failure.retryable,
+	}
+	if failure.cause != nil {
+		attrs = append(attrs, "error_type", dispatchErrorType(failure.cause))
+	}
+	if failure.relatedErr != nil {
+		attrs = append(attrs, "related_error_type", dispatchErrorType(failure.relatedErr))
+	}
+	if failure.policyAttempt > 0 {
+		attrs = append(attrs, "policy_attempt", failure.policyAttempt)
+	}
+	if failure.httpStatus > 0 {
+		attrs = append(attrs, "http_status", failure.httpStatus)
+	}
+	slog.Default().Log(ctx, slog.LevelError, "dispatch phase failed", attrs...)
+}
+
+func dispatchErrorType(err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("%T", err)
 }
 
 func (d *dispatcherComponent) reassignForRetry(taskID, subtaskID string, assignment scheduler.Assignment) error {
@@ -366,8 +639,10 @@ func (d *dispatcherComponent) recordDispatchWithAttemptID(
 	if dispatchErr != nil {
 		level = slog.LevelError
 	}
-	slog.Default().Log(context.Background(), level, "dispatch completed",
+	attrs := []any{
 		"component", "orchestrator",
+		"event_type", "dispatch_attempt",
+		"phase", string(dispatchPhaseExecution),
 		"request_id", requestID,
 		"attempt_id", attemptID,
 		"task_id", taskID,
@@ -380,7 +655,11 @@ func (d *dispatcherComponent) recordDispatchWithAttemptID(
 		"http_status", httpStatus,
 		"failure_class", failureClass,
 		"success", dispatchErr == nil,
-	)
+	}
+	if errorType := dispatchErrorType(dispatchErr); errorType != "" {
+		attrs = append(attrs, "error_type", errorType)
+	}
+	slog.Default().Log(context.Background(), level, "dispatch completed", attrs...)
 	if d.memory == nil || failureClass == "hedge_loser" {
 		return
 	}

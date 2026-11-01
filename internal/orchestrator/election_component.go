@@ -19,7 +19,20 @@ type electionComponent struct {
 	}
 	identity  interface{ IsTrustedID(string) bool }
 	discovery interface {
+		// Snapshot returns the peers currently known to discovery.
+		//
+		// Returns: a point-in-time peer snapshot.
+		//
+		// References: [startup and trust](../../docs/architecture.md#startup-and-trust),
+		// [server_election_test.go](server_election_test.go).
 		Snapshot() []discovery.Peer
+		// WaitReady waits until discovery has completed initial readiness checks.
+		//
+		// Parameters: timeout (time.Duration) bounds the readiness wait.
+		// Returns: an error if discovery is not ready before the timeout.
+		//
+		// References: [startup and trust](../../docs/architecture.md#startup-and-trust),
+		// [server_election_test.go](server_election_test.go).
 		WaitReady(time.Duration) error
 	}
 	selfID           string

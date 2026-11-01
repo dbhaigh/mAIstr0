@@ -3,14 +3,15 @@ package nodeagent
 import (
 	"context"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/logging"
 	"io/fs"
 	"net/http"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/selfupdate"
 	"github.com/maistr0/maistr0/internal/version"
@@ -231,7 +232,15 @@ func (a *Agent) run(ctx context.Context) error {
 		return fmt.Errorf("nodeagent: configure HTTP request limit: %w", err)
 	}
 	withMiddleware := func(next http.Handler) http.Handler {
-		return selfupdate.Admission.Wrap(httpx.Chain(next, httpx.RequestLogger(nil), httpx.RequestID, bodyLimit))
+		return httpx.Chain(
+			selfupdate.Admission.Wrap(next),
+			httpx.RequestLogger(nil),
+			httpx.RequestID,
+			bodyLimit,
+			httpx.WithErrorContext(apperr.ErrorContext{NodeID: cfg.NodeID}),
+			httpx.CompressJSON,
+			httpx.FormatErrors,
+		)
 	}
 	return peeridentity.ServeDualContext(ctx,
 		cfg.ListenAddr,

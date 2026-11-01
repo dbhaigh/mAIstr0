@@ -15,17 +15,17 @@ import (
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/engine"
+	"github.com/maistr0/maistr0/internal/handler_utils"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/version"
 )
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	status, err := httpx.DecodeJSON[cluster.NodeStatus](
+	status, ok := handler_utils.DecodeJSON[cluster.NodeStatus](
 		w, r, httpx.NodeStatusJSONBodyBytes,
 	)
-	if err != nil {
-		writeError(w, apperr.Invalid(err))
+	if !ok {
 		return
 	}
 	if status.ID == "" || status.Address == "" {
@@ -49,9 +49,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEject(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, apperr.Invalid(errors.New("node id is required")))
+	id, ok := handler_utils.RequirePathValue(
+		w, r, "id", "node id is required", handler_utils.RespondInvalid,
+	)
+	if !ok {
 		return
 	}
 	if s.identity != nil {
@@ -226,6 +227,14 @@ func (s *Server) handleNodeControl(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	if path == "/api/engines/managed/install-worker" || path == "/api/engines/managed/download-model" {
 		client, ok := s.nodeClientPort().(interface {
+			// DoModelPull sends the potentially long-running installation or
+			// model-download request using its dedicated transport.
+			//
+			// Parameters: request (*http.Request) is the outbound node request.
+			// Returns: the response, or a transport error.
+			//
+			// References: [request paths](../../docs/architecture.md#request-paths),
+			// [api_worker_install_test.go](api_worker_install_test.go).
 			DoModelPull(*http.Request) (*http.Response, error)
 		})
 		if !ok {

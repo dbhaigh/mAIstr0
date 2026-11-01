@@ -6,6 +6,8 @@ info:
     HTTP routes exposed by both the orchestrator and node agent. Server-specific
     route registrations are listed in x-maistr0-registered-routes and checked
     against the Go mux registration source by contracts/contracts_test.go.
+    API error responses use the shared ErrorResponse metadata; provider-compatible
+    routes retain their nested error envelopes.
     Node engine configuration accepts an optional api_key for bearer
     authentication; that secret is write-only and is never returned by APIs.
 servers:
@@ -1386,7 +1388,12 @@ paths:
       responses: {"200": {description: List agent tools}}
   /api/agent/models:
     get:
-      responses: {"200": {description: List agent models}}
+      parameters:
+        - $ref: "#/components/parameters/ModelSource"
+        - $ref: "#/components/parameters/ModelEngine"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+      responses: {"200": {description: List agent models; paging is opt-in and returns an items/next_cursor envelope}}
   /api/agent/stats:
     get:
       responses: {"200": {description: Get agent statistics}}
@@ -1397,13 +1404,23 @@ paths:
       responses: {"200": {description: Update agent backend}}
   /api/models:
     get:
-      responses: {"200": {description: List cluster models}}
+      parameters:
+        - $ref: "#/components/parameters/ModelSource"
+        - $ref: "#/components/parameters/ModelEngine"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+      responses: {"200": {description: List cluster models; paging is opt-in and returns an items/next_cursor envelope}}
   /api/generate:
     post:
       responses: {"200": {description: Generate text through the cluster}}
   /api/tags:
     get:
-      responses: {"200": {description: List model tags}}
+      parameters:
+        - $ref: "#/components/parameters/ModelSource"
+        - $ref: "#/components/parameters/ModelEngine"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+      responses: {"200": {description: List model tags; paging is opt-in and returns an items/next_cursor envelope}}
   /api/chat:
     post:
       responses: {"200": {description: Chat through the cluster}}
@@ -1412,7 +1429,12 @@ paths:
       responses: {"200": {description: List model catalog}}
   /v1/models:
     get:
-      responses: {"200": {description: OpenAI-compatible model list}}
+      parameters:
+        - $ref: "#/components/parameters/ModelSource"
+        - $ref: "#/components/parameters/ModelEngine"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+      responses: {"200": {description: OpenAI-compatible model list; paging is opt-in and returns an items/next_cursor envelope}}
   /v1/chat/completions:
     post:
       responses: {"200": {description: OpenAI-compatible chat completion}}
@@ -1446,11 +1468,29 @@ paths:
     post:
       responses: {"200": {description: Route an Ollama-compatible generate request}}
 components:
+  responses:
+    APIError:
+      description: Standard error metadata for HTTP 4xx and 5xx responses.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
   securitySchemes:
     PairedOrchestrator:
       type: mutualTLS
       description: The node verifies the client certificate fingerprint, paired orchestrator role, and current election authority.
   parameters:
+    ModelSource:
+      name: source
+      in: query
+      required: false
+      description: Case-insensitive exact match for the model's node_id; entries without one do not match.
+      schema: {type: string}
+    ModelEngine:
+      name: engine
+      in: query
+      required: false
+      description: Case-insensitive exact match for the model's engine; entries without one do not match.
+      schema: {type: string}
     PageSize:
       name: page_size
       in: query
@@ -1461,7 +1501,7 @@ components:
       name: cursor
       in: query
       required: false
-      description: Opaque continuation token bound to the list resource and filters.
+      description: Opaque continuation token bound to the list resource and filters; keyset paging may reflect inventory changes between requests.
       schema: {type: string}
     ID:
       name: id
@@ -1479,6 +1519,8 @@ components:
       required: true
       schema: {type: string}
   schemas:
+    ErrorResponse:
+      $ref: "./schemas/error-response.schema.json"
     NodeConfig:
       description: Node configuration; configured engine api_key values are write-only.
       allOf:

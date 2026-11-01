@@ -1,4 +1,4 @@
-import { refresh } from "../app.js";
+import { refresh } from "../app.ts";
 import { loadPairingStatus } from "../components/pairing-dialog.js";
 import { fetchJSON } from "../shared/api.js";
 import {

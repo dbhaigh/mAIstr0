@@ -20,6 +20,17 @@ type pipelineCapacityReservation struct {
 	once    sync.Once
 }
 
+// ReservePipeline atomically reserves dispatch capacity for every pipeline
+// candidate. At least two candidates with unique, nonempty node IDs and
+// addresses are required.
+//
+// Parameters: ctx (context.Context) controls waiting; candidates
+// ([]workpool.CapacityTarget) lists all pipeline nodes.
+// Returns: a reservation for all candidates, or an error for invalid input,
+// unavailable nodes, or cancellation.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [pipeline_capacity_test.go](pipeline_capacity_test.go).
 func (g *dispatchCapacityGate) ReservePipeline(
 	ctx context.Context,
 	candidates []workpool.CapacityTarget,
@@ -136,6 +147,11 @@ func (g *dispatchCapacityGate) ReservePipeline(
 	}
 }
 
+// Release returns every node gate and the global pipeline slot. Repeated calls
+// are safe and release capacity only once.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [pipeline_capacity_test.go](pipeline_capacity_test.go).
 func (reservation *pipelineCapacityReservation) Release() {
 	if reservation == nil {
 		return

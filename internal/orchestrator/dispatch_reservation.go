@@ -34,6 +34,11 @@ func reserveDispatchCapacity(
 	}, nil
 }
 
+// Start records the reserved node as active in the registry once dispatch
+// begins. A nil or already-started reservation is unchanged.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [capacity_gate_test.go](capacity_gate_test.go).
 func (r *dispatchReservation) Start() {
 	if r == nil || r.loaded {
 		return
@@ -42,6 +47,11 @@ func (r *dispatchReservation) Start() {
 	r.loaded = true
 }
 
+// Release removes the active registry load, when started, and returns reserved
+// capacity. Repeated calls are safe.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [capacity_gate_test.go](capacity_gate_test.go).
 func (r *dispatchReservation) Release() {
 	if r == nil {
 		return

@@ -106,7 +106,7 @@ func TestManagerReadinessTimeoutStopsProcess(t *testing.T) {
 	t.Setenv("MAISTR0_FAKE_ENGINE_MODE", "never-ready")
 	t.Setenv("MAISTR0_FAKE_ENGINE_PID_FILE", pidFile)
 	manager, err := New(testConfig(binary, config.ManagedEngineLlamaServer, freePort(t)), Options{
-		ReadinessTimeout: 120 * time.Millisecond,
+		ReadinessTimeout: time.Second,
 		ProbeInterval:    10 * time.Millisecond,
 		StopTimeout:      time.Second,
 		Restart:          RestartPolicy{MaxAttempts: 2, InitialBackoff: 10 * time.Millisecond, MaxBackoff: 20 * time.Millisecond},
@@ -115,11 +115,15 @@ func TestManagerReadinessTimeoutStopsProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeutil.Discard(manager)
-	err = manager.Start(context.Background(), "test-engine", nil)
+	startResult := make(chan error, 1)
+	go func() {
+		startResult <- manager.Start(context.Background(), "test-engine", nil)
+	}()
+	pid := waitPIDFile(t, pidFile)
+	err = <-startResult
 	if !errors.Is(err, ErrReadinessTimeout) {
 		t.Fatalf("start error = %v, want readiness timeout", err)
 	}
-	pid := readPID(t, pidFile)
 	waitProcessDead(t, pid)
 	status, err := manager.Status("test-engine")
 	if err != nil || status.State != stateFailed || status.PID != 0 {

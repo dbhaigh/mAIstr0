@@ -3,16 +3,17 @@ package orchestrator
 import (
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/logging"
 	"net/http"
 	"sort"
-	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/handler_utils"
 	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/maistr0/maistr0/internal/tasksync"
 )
 
 type assignmentExplanationResponse struct {
@@ -49,11 +50,10 @@ type taskDependencyEdge struct {
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
-	req, err := httpx.DecodeJSON[createTaskRequest](
+	req, ok := handler_utils.DecodeJSON[createTaskRequest](
 		w, r, httpx.ControlJSONBodyBytes,
 	)
-	if err != nil {
-		writeError(w, apperr.Invalid(err))
+	if !ok {
 		return
 	}
 	s.recoverTaskHistory()
@@ -67,19 +67,9 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.recoverTaskHistory()
-	hadCursor := r.Header.Get(memory.SyncPageCursorHeader) != ""
-	version, watermarks, err := memory.ReadSyncRequestHeaders(r)
+	syncRequest, err := tasksync.ParseSnapshotRequest(r)
 	if err != nil {
-		http.Error(w, "invalid task sync headers: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	cursor, upper, err := memory.ReadSyncPageRequestHeaders(r)
-	if err != nil {
-		http.Error(w, "invalid task sync page headers: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if cursor != nil && !memory.SupportsSyncPages(version) {
-		http.Error(w, "task sync pagination requires protocol version 2", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if !isTaskSyncRequest(r) {
@@ -123,39 +113,12 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	tasks, currentWatermarks := s.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
-	if memory.SupportsSyncPages(version) {
-		pageStarted := time.Now()
-		if cursor == nil {
-			cursor = make(map[string]uint64)
-			upper = currentWatermarks
-		}
-		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, s.maxSyncBytes())
-		if err != nil {
-			http.Error(w, "could not page task history: "+err.Error(), http.StatusRequestEntityTooLarge)
-			return
-		}
-		tasks = page
-		currentWatermarks = upper
-		if more {
-			if err := memory.SetSyncPageResponseHeader(w, nextCursor); err != nil {
-				http.Error(w, "could not encode task sync page cursor: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
+	transfer := tasksync.Transfer{MaxBytes: s.maxSyncBytes()}
+	if err := transfer.ServeSnapshotRequest(w, r, syncRequest, s.tasks, func(page tasksync.PageResult) {
 		s.metrics.recordSyncPage()
 		logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: task history sync event=page_served %s records=%d more=%t",
-			syncLogFields(syncLogRequestID(r), syncLogNodeID(r), time.Since(pageStarted), "none"), len(tasks), more)
-	}
-	if err := memory.SetSyncResponseHeadersForPeer(w, currentWatermarks, version); err != nil {
-		http.Error(w, "could not encode task sync watermarks: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if memory.SupportsEmptySync(version) && !hadCursor && len(tasks) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if _, err := memory.WriteSyncJSON(w, http.StatusOK, tasks, version, memory.AcceptsSyncCompression(r)); err != nil {
+			syncLogFields(syncLogRequestID(r), syncLogNodeID(r), page.Duration, "none"), page.Records, page.More)
+	}); err != nil {
 		logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: task sync response encoding failed: %v", err)
 	}
 }
@@ -356,11 +319,16 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var admissionErr error
+	synchronization := taskmgr.TaskSynchronization{
+		Dispatch: s.submitDispatch,
+		OnDispatchFailure: func(assignment scheduler.Assignment, err error) {
+			logging.Errorf("orchestrator", "orchestrator: could not queue resumed subtask %s: %v", assignment.Subtask.ID, err)
+		},
+		Complete: s.tasks.CompleteSubtask,
+	}
 	for _, subtask := range resumed.Subtasks {
 		if subtask.Status == taskmgr.StatusPending {
-			if err := s.submitDispatch(resumed.ID, subtask.Assignment); err != nil {
-				logging.Errorf("orchestrator", "orchestrator: could not queue resumed subtask %s: %v", subtask.Subtask.ID, err)
-				s.tasks.CompleteSubtask(resumed.ID, subtask.Subtask.ID, "", err)
+			if err := synchronization.DispatchAssignment(resumed.ID, subtask.Assignment); err != nil {
 				admissionErr = errors.Join(admissionErr, err)
 			}
 		}

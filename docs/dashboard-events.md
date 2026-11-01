@@ -11,6 +11,15 @@ and flushes after each event; HTTP decompression restores the same SSE frame.
 Actual publication rate depends on state changes and subscriber behavior; the
 backstop is not a periodic event guarantee.
 
+The hub sends a separate `event: heartbeat` / `data: ping` frame every 15
+seconds. It is not a snapshot and is ignored by node-agent consumers. The
+dashboard uses heartbeat silence to detect a stalled stream, closes an errored
+`EventSource` to disable its built-in retry, and reconnects with capped
+exponential backoff and jitter. While disconnected, it polls node, discovery,
+version, and recent-task APIs every 15 seconds only while the cluster tab is
+active. Each new subscription triggers a fresh full snapshot, so the client
+does not replay stale snapshots or queue HTTP actions.
+
 The browser coalesces incoming snapshots into animation frames. It also keeps
 signatures for the status header and the overview, nodes/setup, routing,
 pipeline, discovery, and task sections, so unchanged sections do not trigger

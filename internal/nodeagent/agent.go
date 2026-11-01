@@ -64,7 +64,7 @@ type pairingInvitation struct {
 	Fingerprint    string    `json:"fingerprint"`
 	OrchestratorID string    `json:"orchestrator_id"`
 	Address        string    `json:"address"`
-	PIN            string    `json:"pin"`
+	PIN            string    `json:"-"`
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 

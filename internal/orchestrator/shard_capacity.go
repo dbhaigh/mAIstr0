@@ -17,6 +17,16 @@ type persistentNodeCapacityReservation struct {
 	once    sync.Once
 }
 
+// ReserveShardNodes atomically reserves dispatch capacity for every shard
+// candidate. Each candidate must have a unique, nonempty node ID and address.
+//
+// Parameters: ctx (context.Context) controls waiting; candidates
+// ([]workpool.CapacityTarget) lists all shard members.
+// Returns: a reservation for all candidates, or an error for invalid input,
+// unavailable nodes, or cancellation.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_manager_test.go](shard_manager_test.go).
 func (g *dispatchCapacityGate) ReserveShardNodes(
 	ctx context.Context,
 	candidates []workpool.CapacityTarget,
@@ -121,6 +131,10 @@ func (g *dispatchCapacityGate) ReserveShardNodes(
 	}
 }
 
+// Release returns every node-capacity gate held by the reservation.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_manager_test.go](shard_manager_test.go).
 func (reservation *persistentNodeCapacityReservation) Release() {
 	if reservation == nil {
 		return

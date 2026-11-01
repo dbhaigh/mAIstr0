@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/logging"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,8 +15,10 @@ import (
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/handler_utils"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/netutil"
 	"github.com/maistr0/maistr0/internal/peeridentity"
@@ -124,11 +125,10 @@ func (s *Server) handlePairingPolicy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "pairing policy changes are available only from the local dashboard", http.StatusForbidden)
 		return
 	}
-	request, err := httpx.DecodeJSON[struct {
+	request, ok := handler_utils.DecodeJSON[struct {
 		RequirePairingVerification bool `json:"require_pairing_verification"`
 	}](w, r, 4<<10)
-	if err != nil {
-		writeError(w, apperr.Invalid(err))
+	if !ok {
 		return
 	}
 	if err := s.updatePairingPolicy(request.RequirePairingVerification); err != nil {
@@ -271,9 +271,10 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UnavailableError(errors.New("pairing is not initialized")))
 		return
 	}
-	nodeID := r.PathValue("id")
-	if nodeID == "" {
-		writeError(w, apperr.Invalid(errors.New("node id is required")))
+	nodeID, ok := handler_utils.RequirePathValue(
+		w, r, "id", "node id is required", handler_utils.RespondInvalid,
+	)
+	if !ok {
 		return
 	}
 	if _, paired := s.registry.Get(nodeID); paired {
@@ -289,12 +290,14 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := peeridentity.ValidateFingerprint(request.Fingerprint); err != nil {
+		logging.Warnf("orchestrator", "security audit event=pairing.invitation.rejected node=%q reason=fingerprint_not_verified", nodeID)
 		writeError(w, apperr.Invalid(errors.New("the out-of-band verified destination fingerprint is required")))
 		return
 	}
 	activePIN, expiresAt, active := s.identity.ActivePairingPIN()
 	if !active || len(request.PIN) != len(activePIN) ||
 		subtle.ConstantTimeCompare([]byte(request.PIN), []byte(activePIN)) != 1 {
+		logging.Warnf("orchestrator", "security audit event=pairing.invitation.rejected node=%q reason=pin_invalid_or_expired", nodeID)
 		http.Error(w, "pairing PIN is invalid or expired", http.StatusUnauthorized)
 		return
 	}
@@ -368,9 +371,11 @@ func (s *Server) handlePairingInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	defer closeutil.Discard(response.Body)
 	if response.StatusCode != http.StatusAccepted {
+		logging.Warnf("orchestrator", "security audit event=pairing.invitation.rejected node=%q reason=node_rejected status=%d", nodeID, response.StatusCode)
 		writeError(w, apperr.UpstreamError(fmt.Errorf("node rejected pairing invitation with HTTP status %d", response.StatusCode)))
 		return
 	}
+	logging.Infof("orchestrator", "security audit event=pairing.invitation.accepted node=%q fingerprint=%q", nodeID, request.Fingerprint)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"node_id":    nodeID,
 		"address":    nodePeer.PeerAddr,

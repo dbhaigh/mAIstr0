@@ -2,6 +2,8 @@
   "status": 400,
   "content_type": "application/json",
   "body": {
-    "error": "messages is required"
+    "code": "invalid_input",
+    "error": "messages is required",
+    "retryable": false
   }
 }

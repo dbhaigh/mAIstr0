@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"math"
 	"sort"
@@ -287,9 +288,13 @@ func TestRoutingQualityFixtures(t *testing.T) {
 	if len(qualityFixtures) != 40 {
 		t.Fatalf("quality fixture count = %d, want 40", len(qualityFixtures))
 	}
-	previousLogger := slog.Default()
+	previousLogger, previousOutput, previousFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})))
-	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	t.Cleanup(func() {
+		slog.SetDefault(previousLogger)
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
 
 	nodes, err := qualityCluster()
 	if err != nil {

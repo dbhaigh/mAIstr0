@@ -12,10 +12,12 @@ and the [documentation index](./docs/README.md).
 
 Download and extract the matching archive from
 [GitHub Releases](https://github.com/dbhaigh/mAIstr0/releases).
-macOS releases include Apple Silicon and Intel builds, a menu-bar app ZIP, and
-a command-line archive. The app is currently unsigned and unnotarized; macOS
-will show a Gatekeeper warning on first launch. Control-click the app, choose
-**Open**, and confirm if you trust this download. See the
+Linux releases include amd64 and arm64 archives. Windows amd64 releases include
+a ZIP and a self-extracting `.exe` package. macOS releases include Apple
+Silicon and Intel builds, a menu-bar app ZIP, and a command-line archive. The
+app is currently unsigned and unnotarized; macOS will show a Gatekeeper warning
+on first launch. Control-click the app, choose **Open**, and confirm if you
+trust this download. See the
 [macOS installation guide](./docs/node-service-controller.md#macos-launchagent)
 for the optional background service.
 
@@ -87,6 +89,8 @@ service to manage stopped nodes from the dashboard; see
 - Pair only machines you trust. Verify the orchestrator's 64-hex-character
   SHA-256 certificate fingerprint through an authenticated out-of-band channel
   and supply it for first-contact pairing, together with the one-time PIN.
+- Private keys stay in memory and are not written to disk. A fresh certificate
+  is created at every process start, so peers must be re-paired after restart.
 - Discovery and election do not authenticate peers or provide partition-safe
   consensus. Mutating cluster requests still require current authority and
   authenticated trust.

@@ -169,6 +169,15 @@ uses port `7451`. Plain HTTP is loopback-only. Remote cluster clients must use
 HTTPS and a paired mutual-TLS identity. Pairing and the trust boundary are
 described in [Pairing and security](./pairing-and-security.md).
 
+## Response compression
+
+The orchestrator and node-agent APIs gzip JSON responses larger than 10 KiB
+when the request's `Accept-Encoding` permits gzip. JSON responses include
+`Vary: Accept-Encoding`; small responses, responses with `Set-Cookie`, and
+already encoded responses are not compressed. Responses with non-JSON content
+types (including SSE and NDJSON) and protocol upgrades bypass this middleware.
+The existing SSE compression behavior is unchanged.
+
 ## Tasks and workflows
 
 - `POST /api/tasks` submits a description or an explicit subtask/dependency

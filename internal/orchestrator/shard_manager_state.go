@@ -13,6 +13,16 @@ import (
 	"github.com/maistr0/maistr0/internal/shard"
 )
 
+// AcquireRequest reserves the single in-flight request slot for a ready group.
+// The returned release function is safe to call more than once.
+//
+// Parameters: ctx (context.Context) controls waiting; id (string) is the
+// shard-group ID.
+// Returns: a release function, or an error if the group is missing, unavailable,
+// or the context is canceled.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_manager_test.go](shard_manager_test.go).
 func (m *ShardManager) AcquireRequest(ctx context.Context, id string) (func(), error) {
 	m.mu.RLock()
 	group, exists := m.groups[id]

@@ -1,62 +1,42 @@
 package orchestrator
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"time"
-
-	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 type ollamaStreamWriter struct {
-	target http.ResponseWriter
+	compatStreamResponse
 	model  string
 	chat   bool
-	status int
 	parser compatStreamParser
-	stream *httpx.StreamWriter
 }
 
 func newOllamaStreamWriter(target http.ResponseWriter, model string, chat bool) *ollamaStreamWriter {
 	return &ollamaStreamWriter{
-		target: target, model: model, chat: chat, stream: httpx.NewStreamWriter(target),
+		compatStreamResponse: newCompatStreamResponse(target, nil, "application/x-ndjson", ""),
+		model:                model,
+		chat:                 chat,
 	}
 }
 
-func (w *ollamaStreamWriter) Header() http.Header { return w.target.Header() }
-
-func (w *ollamaStreamWriter) WriteHeader(status int) {
-	if w.status != 0 {
-		return
-	}
-	w.status = status
-	if status < 400 {
-		w.target.Header().Set("Content-Type", "application/x-ndjson")
-		w.target.Header().Set("Cache-Control", "no-cache")
-	}
-	w.target.WriteHeader(status)
-}
-
+// Write parses upstream stream bytes and emits the corresponding Ollama
+// newline-delimited JSON response.
+//
+// Parameters: data ([]byte) is the next upstream chunk.
+// Returns: the number of input bytes consumed, or an error encoding or writing
+// the compatibility response.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [compat_streaming_test.go](compat_streaming_test.go).
 func (w *ollamaStreamWriter) Write(data []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.status >= 400 {
-		return w.target.Write(data)
-	}
-	if err := w.parser.write(data, w.consume); err != nil {
-		return len(data), err
-	}
-	return len(data), nil
+	return w.compatStreamResponse.write(data, &w.parser, w.consume)
 }
 
 func (w *ollamaStreamWriter) consume(payload []byte) error {
-	var event struct {
-		Output string `json:"output"`
-		Error  string `json:"error"`
-	}
-	if err := json.Unmarshal(payload, &event); err != nil {
+	event, err := decodeCompatStreamEvent(payload)
+	if err != nil {
 		return err
 	}
 	if event.Error != "" {
@@ -84,9 +64,7 @@ func (w *ollamaStreamWriter) finish() {
 	if w.status >= 400 {
 		return
 	}
-	if rest := bytes.TrimSpace(w.parser.buffer); bytes.HasPrefix(rest, []byte("data:")) {
-		_ = w.consume(bytes.TrimSpace(bytes.TrimPrefix(rest, []byte("data:"))))
-	}
+	_ = w.parser.flushPending(w.consume)
 	value := map[string]any{"model": w.model, "created_at": time.Now().UTC(), "done": true, "done_reason": "stop"}
 	if w.chat {
 		value["message"] = ollamaMessage{Role: "assistant", Content: ""}
@@ -97,53 +75,35 @@ func (w *ollamaStreamWriter) finish() {
 }
 
 type anthropicStreamWriter struct {
-	target  http.ResponseWriter
+	compatStreamResponse
 	model   string
-	status  int
 	parser  compatStreamParser
-	stream  *httpx.StreamWriter
 	started bool
 }
 
 func newAnthropicStreamWriter(target http.ResponseWriter, model string) *anthropicStreamWriter {
 	return &anthropicStreamWriter{
-		target: target, model: model, stream: httpx.NewStreamWriter(target),
+		compatStreamResponse: newCompatStreamResponse(target, nil, "text/event-stream", ""),
+		model:                model,
 	}
 }
 
-func (w *anthropicStreamWriter) Header() http.Header { return w.target.Header() }
-
-func (w *anthropicStreamWriter) WriteHeader(status int) {
-	if w.status != 0 {
-		return
-	}
-	w.status = status
-	if status < 400 {
-		w.target.Header().Set("Content-Type", "text/event-stream")
-		w.target.Header().Set("Cache-Control", "no-cache")
-	}
-	w.target.WriteHeader(status)
-}
-
+// Write parses upstream stream bytes and emits the corresponding Anthropic
+// server-sent events.
+//
+// Parameters: data ([]byte) is the next upstream chunk.
+// Returns: the number of input bytes consumed, or an error encoding or writing
+// the compatibility response.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [compat_streaming_test.go](compat_streaming_test.go).
 func (w *anthropicStreamWriter) Write(data []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.status >= 400 {
-		return w.target.Write(data)
-	}
-	if err := w.parser.write(data, w.consume); err != nil {
-		return len(data), err
-	}
-	return len(data), nil
+	return w.compatStreamResponse.write(data, &w.parser, w.consume)
 }
 
 func (w *anthropicStreamWriter) consume(payload []byte) error {
-	var event struct {
-		Output string `json:"output"`
-		Error  string `json:"error"`
-	}
-	if err := json.Unmarshal(payload, &event); err != nil {
+	event, err := decodeCompatStreamEvent(payload)
+	if err != nil {
 		return err
 	}
 	if event.Error != "" {
@@ -189,9 +149,7 @@ func (w *anthropicStreamWriter) finish() {
 	if w.status >= 400 {
 		return
 	}
-	if rest := bytes.TrimSpace(w.parser.buffer); bytes.HasPrefix(rest, []byte("data:")) {
-		_ = w.consume(bytes.TrimSpace(bytes.TrimPrefix(rest, []byte("data:"))))
-	}
+	_ = w.parser.flushPending(w.consume)
 	if !w.started {
 		w.started = true
 		_ = w.writeEvent("message_start", map[string]any{
@@ -213,10 +171,18 @@ func (w *anthropicStreamWriter) finish() {
 	_ = w.writeEvent("message_stop", map[string]string{"type": "message_stop"})
 }
 
+// Flush sends any buffered compatibility response data to the client.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [compat_streaming_test.go](compat_streaming_test.go).
 func (w *anthropicStreamWriter) Flush() {
-	w.stream.Flush()
+	w.compatStreamResponse.flush()
 }
 
+// Flush sends any buffered compatibility response data to the client.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [compat_streaming_test.go](compat_streaming_test.go).
 func (w *ollamaStreamWriter) Flush() {
-	w.stream.Flush()
+	w.compatStreamResponse.flush()
 }

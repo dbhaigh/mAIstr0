@@ -11,12 +11,27 @@ import (
 	"github.com/maistr0/maistr0/internal/shard"
 )
 
+// ShardMembershipRequest is the membership input consumed by [ShardManager]
+// when selecting a shard group's next placement. NodeIDs must be nonempty and
+// unique.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_membership_test.go](shard_membership_test.go).
 type ShardMembershipRequest struct {
 	NodeIDs []string `json:"node_ids"`
 }
 
-// Reconfigure drains the existing group before replacing its placement.
+// Reconfigure validates and drains a group before replacing its placement.
 // Failed reloads retain the requested membership for an explicit Start retry.
+//
+// Parameters: ctx (context.Context) bounds validation, drain, and restart; id
+// (string) is the shard-group ID; request (ShardMembershipRequest) must select
+// at least one unique node ID, each with a healthy managed worker.
+// Returns: the updated group, or an error for invalid membership, conflicts,
+// unavailable workers, or failed reconfiguration.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_membership_test.go](shard_membership_test.go).
 func (m *ShardManager) Reconfigure(ctx context.Context, id string, request ShardMembershipRequest) (ShardGroup, error) {
 	if err := m.beginOperation(id); err != nil {
 		return ShardGroup{}, err

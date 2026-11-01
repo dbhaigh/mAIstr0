@@ -3,7 +3,27 @@ import { copyText, renderTasks, taskText } from "./components/task-list.js";
 import { fetchJSON, refreshPersistenceStatus, updateClusterTitle } from "./shared/api.js";
 import { formatRelativeTime } from "./shared/format.js";
 import { dashboardSnapshot } from "./shared/snapshot.js";
-import { clusterWorkspaceTabs, connectionStatus, copyTasksBtn, dashboardState, overviewNodes, statLoad, statMemory, statModels, statNodes, statVersion, submitBtn, submitStatus, taskAutoPlan, taskHistoryPage, taskHistorySearch, taskHistoryStatus, taskInput, taskRequireApproval, taskRequireReview } from "./shared/state.js";
+import {
+  clusterWorkspaceTabs,
+  connectionStatus,
+  copyTasksBtn,
+  dashboardState as rawDashboardState,
+  overviewNodes,
+  statLoad,
+  statMemory,
+  statModels,
+  statNodes,
+  statVersion,
+  submitBtn,
+  submitStatus,
+  taskAutoPlan,
+  taskHistoryPage as rawTaskHistoryPage,
+  taskHistorySearch as rawTaskHistorySearch,
+  taskHistoryStatus as rawTaskHistoryStatus,
+  taskInput,
+  taskRequireApproval,
+  taskRequireReview,
+} from "./shared/state.js";
 import { dashboardViewModel } from "./shared/view-model.js";
 import { checkSetupReadiness, loadModelCatalog } from "./views/cluster-setup.js";
 import { renderOverview } from "./views/cluster.js";
@@ -12,44 +32,93 @@ import { renderNodes, renderSetupNodes } from "./views/nodes.js";
 import { renderPipelineDashboard } from "./views/pipelines.js";
 import { renderDiscovery, renderRouting } from "./views/routing.js";
 import { refreshShardGroups } from "./views/shards.js";
+import type {
+  DashboardActionHandlers,
+  DashboardSnapshot,
+  DashboardState,
+  DashboardTabID,
+  DiscoveryAuthentication,
+  NormalizedTaskHistoryPage,
+  Task,
+  TaskHistoryPageState,
+  TaskHistoryResponse,
+} from "./shared/types";
 
-function updateConnectionStatus() {
+const dashboardState = rawDashboardState as DashboardState;
+const taskHistoryPage = rawTaskHistoryPage as TaskHistoryPageState<Task>;
+const taskHistorySearch = rawTaskHistorySearch as HTMLInputElement | null;
+const taskHistoryStatus = rawTaskHistoryStatus as HTMLSelectElement | null;
+const taskInputElement = taskInput as HTMLTextAreaElement | null;
+const taskAutoPlanCheckbox = taskAutoPlan as HTMLInputElement | null;
+const taskRequireReviewCheckbox = taskRequireReview as HTMLInputElement | null;
+const taskRequireApprovalCheckbox = taskRequireApproval as HTMLInputElement | null;
+let refreshInFlight = false;
+let connectionGeneration = 0;
+let syncGeneration = 0;
+let pollingFallbackActive = false;
+
+function clusterTabIsActive(): boolean {
+  return Boolean(document.getElementById("cluster-tab")?.classList.contains("active"));
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error &&
+      typeof error.message === "string") {
+    return error.message;
+  }
+  return String(error);
+}
+
+function updateConnectionStatus(): void {
   if (!connectionStatus) return;
   const state = dashboardState.connection;
   const lastSync = state.lastSyncAt
     ? new Date(state.lastSyncAt).toLocaleTimeString()
     : "not yet";
+  const mode = state.connected ? "Connected" : pollingFallbackActive ? "Polling fallback" : "Reconnecting";
   connectionStatus.dataset.connected = String(state.connected);
-  connectionStatus.textContent = `${state.connected ? "Connected" : "Reconnecting"} · Last sync ${lastSync}`;
+  connectionStatus.dataset.mode = state.connected ? "live" : pollingFallbackActive ? "polling" : "reconnecting";
+  connectionStatus.textContent = `${mode} · Last sync ${lastSync}`;
 }
 
 const loadedDashboardPanels = new Set(["agent-tab"]);
 
-export function resetDashboardSignatures() {
+export function resetDashboardSignatures(): void {
   dashboardState.renderSignatures = {};
 }
 
-export function markDashboardSynced() {
+export function markDashboardSynced(): void {
+  syncGeneration += 1;
   dashboardState.connection.lastSyncAt = Date.now();
   updateConnectionStatus();
 }
 
-export async function refresh() {
-  if (!document.getElementById("cluster-tab")?.classList.contains("active")) return;
+export async function refresh(): Promise<void> {
+  if (!clusterTabIsActive() || refreshInFlight) return;
+  refreshInFlight = true;
+  const requestedConnectionGeneration = connectionGeneration;
+  const requestedSyncGeneration = syncGeneration;
   try {
-    const [nodes, peers, build] = await Promise.all([
+    const [nodes, peers, build, taskResponse] = await Promise.all([
       fetchJSON("/api/nodes/all"),
       fetchJSON("/api/discovery"),
       fetchJSON("/api/version"),
+      fetchJSON("/api/tasks?page_size=50"),
     ]);
-    applySnapshot({ nodes, tasks: dashboardState.tasks || [], discovery: peers, build_version: build.version });
+    if (requestedConnectionGeneration !== connectionGeneration ||
+        requestedSyncGeneration !== syncGeneration) return;
+    const tasks = normalizeHistoryPage(taskResponse).items;
+    applySnapshot({ nodes, tasks, discovery: peers, build_version: build.version });
     markDashboardSynced();
   } catch (err) {
     console.error(err);
+  } finally {
+    refreshInFlight = false;
   }
 }
 
-function taskHistoryURL(cursor = "") {
+function taskHistoryURL(cursor = ""): string {
   const params = new URLSearchParams({ page_size: "50" });
   const query = (taskHistorySearch?.value || "").trim();
   const status = taskHistoryStatus?.value || "all";
@@ -59,7 +128,7 @@ function taskHistoryURL(cursor = "") {
   return `/api/tasks?${params}`;
 }
 
-function normalizeHistoryPage(response) {
+function normalizeHistoryPage(response: TaskHistoryResponse): NormalizedTaskHistoryPage {
   return Array.isArray(response)
     ? { items: response, next_cursor: "", has_more: false }
     : {
@@ -69,13 +138,14 @@ function normalizeHistoryPage(response) {
     };
 }
 
-function sortTaskHistory(items) {
+function sortTaskHistory(items: Task[]): Task[] {
   return items.sort((a, b) =>
-    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+    new Date(b.updated_at || b.created_at || 0).getTime() -
+    new Date(a.updated_at || a.created_at || 0).getTime()
   );
 }
 
-export async function refreshTaskHistory(reset = false) {
+export async function refreshTaskHistory(reset = false): Promise<void> {
   const query = (taskHistorySearch?.value || "").trim();
   const status = taskHistoryStatus?.value || "all";
   const filterKey = JSON.stringify([query, status]);
@@ -101,7 +171,7 @@ export async function refreshTaskHistory(reset = false) {
       taskHistoryPage.nextCursor = page.next_cursor;
       taskHistoryPage.hasMore = page.has_more;
     } else {
-      const updated = new Map(taskHistoryPage.items.map((task) => [task.id, task]));
+      const updated = new Map(taskHistoryPage.items.map((task): [string, Task] => [task.id, task]));
       for (const task of page.items) updated.set(task.id, task);
       taskHistoryPage.items = sortTaskHistory([...updated.values()]);
       taskHistoryPage.hasMore ||= page.has_more;
@@ -117,7 +187,7 @@ export async function refreshTaskHistory(reset = false) {
   }
 }
 
-export async function loadMoreTaskHistory() {
+export async function loadMoreTaskHistory(): Promise<void> {
   const filterKey = JSON.stringify([
     (taskHistorySearch?.value || "").trim(),
     taskHistoryStatus?.value || "all",
@@ -133,7 +203,7 @@ export async function loadMoreTaskHistory() {
   try {
     const page = normalizeHistoryPage(await fetchJSON(taskHistoryURL(taskHistoryPage.nextCursor)));
     if (generation !== taskHistoryPage.generation) return;
-    const updated = new Map(taskHistoryPage.items.map((task) => [task.id, task]));
+    const updated = new Map(taskHistoryPage.items.map((task): [string, Task] => [task.id, task]));
     for (const task of page.items) updated.set(task.id, task);
     taskHistoryPage.items = sortTaskHistory([...updated.values()]);
     taskHistoryPage.nextCursor = page.next_cursor;
@@ -148,9 +218,9 @@ export async function loadMoreTaskHistory() {
   }
 }
 
-export async function copyAllTaskResults() {
+export async function copyAllTaskResults(): Promise<void> {
   try {
-    const tasks = [];
+    const tasks: Task[] = [];
     let cursor = "";
     do {
       const params = new URLSearchParams({ page_size: "100" });
@@ -161,25 +231,26 @@ export async function copyAllTaskResults() {
       cursor = page.next_cursor;
     } while (cursor);
     await copyText(taskText(tasks), copyTasksBtn);
-  } catch (err) {
-    console.error("copying task history failed", err);
-    if (submitStatus) submitStatus.textContent = `Unable to copy task history: ${err.message}`;
+  } catch (error: unknown) {
+    console.error("copying task history failed", error);
+    if (submitStatus) submitStatus.textContent = `Unable to copy task history: ${errorMessage(error)}`;
   }
 }
 
-function mergeLiveTaskHistory(tasks) {
+function mergeLiveTaskHistory(tasks: Task[]): void {
   if (!taskHistoryPage.initialized || !taskHistoryPage.items.length) return;
-  const updates = new Map((tasks || []).map((task) => [task.id, task]));
+  const updates = new Map((tasks || []).map((task): [string, Task] => [task.id, task]));
   taskHistoryPage.items = sortTaskHistory(taskHistoryPage.items.map((task) => updates.get(task.id) || task));
 }
 
-export async function refreshDiscovery() {
+export async function refreshDiscovery(): Promise<void> {
   try {
-    const discovery = await fetchJSON("/api/discovery");
-    let discoveryAuthentication = "unavailable";
+    const discovery: DashboardSnapshot["discovery"] = await fetchJSON("/api/discovery");
+    let discoveryAuthentication: DiscoveryAuthentication = "unavailable";
     try {
-      const status = await fetchJSON("/api/security/status");
-      if (["unauthenticated", "hmac-sha256"].includes(status.discovery_authentication)) {
+      const status: { discovery_authentication?: string } = await fetchJSON("/api/security/status");
+      if (status.discovery_authentication === "unauthenticated" ||
+          status.discovery_authentication === "hmac-sha256") {
         discoveryAuthentication = status.discovery_authentication;
       } else {
         throw new Error("security status response omitted a recognized discovery authentication mode");
@@ -206,7 +277,7 @@ setInterval(() => {
   }
 }, 5000);
 
-function applySnapshot(snap) {
+function applySnapshot(snap: DashboardSnapshot): void {
   const signatures = dashboardState.renderSignatures || (dashboardState.renderSignatures = {});
   const taskSnapshot = dashboardSnapshot.mergeTaskSnapshot(
     dashboardState.tasks, snap.tasks, snap.complete_tasks, dashboardState.fullTaskHistoryLoaded,
@@ -224,7 +295,7 @@ function applySnapshot(snap) {
   if (Array.isArray(snap.pipeline_plans)) dashboardState.pipelinePlans = snap.pipeline_plans;
   if (snap.cluster_health) dashboardState.capacity = snap.cluster_health;
   const capacityByNode = new Map(
-    (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node]),
+    (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node] as const),
   );
   const status = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState.nodes, dashboardState.capacity);
   const statusSignature = JSON.stringify(status);
@@ -372,7 +443,8 @@ function applySnapshot(snap) {
   if (overviewChanged) refreshOverviewTimes();
 }
 
-export function activateDashboardTab(tabID) {
+export function activateDashboardTab(tabID: DashboardTabID): void {
+  syncPollingFallback();
   if (tabID === "memory-tab") {
     loadedDashboardPanels.add(tabID);
     void refreshMemory();
@@ -385,7 +457,7 @@ export function activateDashboardTab(tabID) {
   void refresh();
 }
 
-export function activateWorkspacePanel(panelID) {
+export function activateWorkspacePanel(panelID: string): void {
   if (panelID.startsWith("overview-")) loadedDashboardPanels.add("cluster-overview-panel");
   if (panelID.startsWith("setup-")) loadedDashboardPanels.add("setup-panel");
   loadedDashboardPanels.add(panelID);
@@ -406,48 +478,78 @@ export function activateWorkspacePanel(panelID) {
   if (panelID === "routing-panel") void refreshShardGroups();
 }
 
-function refreshOverviewTimes() {
-  overviewNodes?.querySelectorAll("[data-last-seen]").forEach((label) => {
+function refreshOverviewTimes(): void {
+  overviewNodes?.querySelectorAll<HTMLElement>("[data-last-seen]").forEach((label) => {
     label.textContent = `Last seen ${formatRelativeTime(label.dataset.lastSeen)}`;
   });
 }
 
 setInterval(refreshOverviewTimes, 15000);
 
-function connectEvents() {
-  dashboardSnapshot.connectDashboardEvents((snapshot) => {
-    markDashboardSynced();
-    applySnapshot(snapshot);
-  }, {
-    onConnectionChange: (connected) => {
-      dashboardState.connection.connected = connected;
-      updateConnectionStatus();
-    },
-  });
+function updateConnectionState(connected: boolean): void {
+  if (dashboardState.connection.connected !== connected) connectionGeneration += 1;
+  dashboardState.connection.connected = connected;
+  if (connected) {
+    pollingFallbackActive = false;
+    updateConnectionStatus();
+  } else {
+    syncPollingFallback();
+  }
 }
 
-submitBtn?.addEventListener("click", async () => {
-  const description = taskInput.value.trim();
+function syncPollingFallback(): void {
+  const shouldPoll = !dashboardState.connection.connected && clusterTabIsActive();
+  const becameActive = shouldPoll && !pollingFallbackActive;
+  pollingFallbackActive = shouldPoll;
+  updateConnectionStatus();
+  if (becameActive) void refresh();
+}
+
+async function submitTask(): Promise<void> {
+  const description = taskInputElement?.value.trim() || "";
   if (!description) return;
-  submitStatus.textContent = "Submitting...";
+  if (submitStatus) submitStatus.textContent = "Submitting...";
   try {
-    const task = await fetchJSON("/api/tasks", {
+    const task: { id: string } = await fetchJSON("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         description,
-        plan_mode: taskAutoPlan?.checked ? "auto" : "heuristic",
-        require_review: taskRequireReview?.checked || false,
-        require_approval: taskRequireApproval?.checked || false,
+        plan_mode: taskAutoPlanCheckbox?.checked ? "auto" : "heuristic",
+        require_review: taskRequireReviewCheckbox?.checked || false,
+        require_approval: taskRequireApprovalCheckbox?.checked || false,
       }),
     });
-    submitStatus.textContent = `Submitted as ${task.id}`;
-    taskInput.value = "";
-    refresh();
-  } catch (err) {
-    submitStatus.textContent = "Error: " + err.message;
+    if (submitStatus) submitStatus.textContent = `Submitted as ${task.id}`;
+    if (taskInputElement) taskInputElement.value = "";
+    void refresh();
+  } catch (error: unknown) {
+    if (submitStatus) submitStatus.textContent = `Error: ${errorMessage(error)}`;
   }
-});
+}
+
+const dashboardActions: DashboardActionHandlers = {
+  refresh,
+  refreshTaskHistory,
+  loadMoreTaskHistory,
+  applySnapshot,
+  connectionChange: updateConnectionState,
+  activateDashboardTab,
+  activateWorkspacePanel,
+  submitTask,
+};
+
+function connectEvents() {
+  dashboardSnapshot.connectDashboardEvents((snapshot: DashboardSnapshot) => {
+    markDashboardSynced();
+    applySnapshot(snapshot);
+  }, {
+    onConnectionChange: dashboardActions.connectionChange,
+  });
+  syncPollingFallback();
+}
+
+submitBtn?.addEventListener("click", dashboardActions.submitTask);
 
 // Initialization
 loadPairingStatus();
@@ -455,8 +557,8 @@ refreshPersistenceStatus();
 setInterval(loadPairingStatus, 5000);
 setInterval(refreshPersistenceStatus, 30000);
 setInterval(() => {
-  if (document.getElementById("cluster-tab")?.classList.contains("active")) {
-    void refresh();
+  if (clusterTabIsActive()) {
+    if (!dashboardState.connection.connected) void refresh();
     if (document.getElementById("routing-panel")?.classList.contains("active")) {
       void refreshShardGroups();
     }

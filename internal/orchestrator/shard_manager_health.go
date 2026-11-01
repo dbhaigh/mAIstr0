@@ -9,6 +9,15 @@ import (
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 )
 
+// Recover verifies persisted groups against current node and supervisor state
+// before restoring readiness and member-capacity reservations.
+//
+// Parameters: ctx (context.Context) bounds verification, cleanup, and capacity
+// reservation requests.
+// Returns: joined errors for groups that could not be verified or recovered.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_manager_test.go](shard_manager_test.go).
 func (m *ShardManager) Recover(ctx context.Context) error {
 	var result error
 	for _, group := range m.List() {
@@ -93,9 +102,15 @@ func (m *ShardManager) Recover(ctx context.Context) error {
 	return result
 }
 
-// CheckHealth makes a member loss visible as degraded first. The next sweep
-// tears down the group and marks it failed, allowing clients to observe the
-// unavailable state without treating a lost worker as a ready model.
+// CheckHealth verifies ready groups and makes a member loss visible as
+// degraded first. A later sweep tears down the group and marks it failed.
+//
+// Parameters: ctx (context.Context) bounds node and engine health checks and
+// cleanup operations.
+// Returns: joined errors from health checks and teardown operations.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_manager_test.go](shard_manager_test.go).
 func (m *ShardManager) CheckHealth(ctx context.Context) error {
 	var result error
 	for _, group := range m.List() {

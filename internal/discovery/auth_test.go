@@ -55,6 +55,41 @@ func TestAuthenticatedAnnouncementsRejectForgedAndReplayedPackets(t *testing.T) 
 	}
 }
 
+func TestAuthenticatedAnnouncementsRejectOlderFreshReplay(t *testing.T) {
+	now := time.Now()
+	secret := []byte("test-only-cluster-secret-32-bytes")
+	listener := &Listener{
+		authKey:  secret,
+		peers:    make(map[string]Peer),
+		excluded: make(map[string]bool),
+		lastSeen: make(map[string]int64),
+	}
+
+	current, err := signAnnouncement(Announcement{
+		Role: "node", ID: "replayed-peer", PeerAddr: "https://current.invalid",
+	}, secret, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listener.acceptAnnouncement(current, now.Add(time.Second)) {
+		t.Fatal("current authenticated announcement was rejected")
+	}
+
+	older, err := signAnnouncement(Announcement{
+		Role: "node", ID: "replayed-peer", PeerAddr: "https://replayed.invalid",
+	}, secret, now.Add(500*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listener.acceptAnnouncement(older, now.Add(time.Second)) {
+		t.Fatal("older but still fresh authenticated announcement was accepted")
+	}
+	peers := listener.Snapshot()
+	if len(peers) != 1 || peers[0].PeerAddr != "https://current.invalid" {
+		t.Fatalf("replayed packet replaced the current peer announcement: %#v", peers)
+	}
+}
+
 func TestUnauthenticatedAnnouncementCompatibilityRemainsEnabledByDefault(t *testing.T) {
 	now := time.Now()
 	listener := &Listener{

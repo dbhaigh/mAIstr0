@@ -1,4 +1,4 @@
-import { refresh } from "../app.js";
+import { refresh } from "../app.ts";
 import { fetchJSON } from "../shared/api.js";
 import { escapeHtml } from "../shared/format.js";
 import {

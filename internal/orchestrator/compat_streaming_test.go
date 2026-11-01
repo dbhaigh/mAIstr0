@@ -44,6 +44,13 @@ func compatibilityStreamWriterCases() []compatibilityStreamWriterCase {
 	}
 }
 
+func TestOpenAIStreamWriterDoesNotExposeFlusher(t *testing.T) {
+	writer := newOpenAIStreamWriter(httptest.NewRecorder(), "test-model")
+	if _, ok := any(writer).(http.Flusher); ok {
+		t.Fatal("OpenAI stream writer unexpectedly exposes Flush")
+	}
+}
+
 func TestCompatStreamWritersPreserveChunkBoundariesAndTerminalOutput(t *testing.T) {
 	input := []byte("data: {\"output\":\"café\"}\n")
 	utf8Start := bytes.Index(input, []byte("é"))

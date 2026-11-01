@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Certificate fingerprint comparisons are now case-insensitive. Structured
+  security audit events record identity lifecycle, PIN operations, certificate
+  validation, trust changes, and rejected peer authentication without logging
+  PIN or private-key values.
+- Identity private keys are now process-local and never written to disk. The
+  stable node ID and trust roster persist, but each startup creates a new
+  certificate, so peers must be re-paired after a restart.
+- Bumped the release version to `0.1.1.16`.
+- Dashboard event streams now reconnect with capped exponential backoff and
+  heartbeat monitoring, and fall back to polling while the cluster tab is
+  active. Reconnection receives a fresh snapshot; HTTP actions are not queued.
+- The orchestrator and node-agent APIs gzip JSON responses larger than 10 KiB
+  when accepted by the client, while leaving non-JSON and protocol-upgrade
+  responses unchanged.
+- Cluster and compatibility model lists now support case-insensitive source and
+  engine filters, opt-in keyset pagination that materializes only the requested
+  page, and a bounded cache of recent pages. Legacy response shapes remain
+  unchanged unless pagination is requested.
+- Dispatcher failures now include phase context and structured trace events.
+  Preflight-only exhaustion now completes with an attempt-limit error rather
+  than leaving a subtask unfinished; retry eligibility and backoff are
+  unchanged.
+- Legacy plain-text HTTP errors now use a shared JSON response with a stable
+  error code, retryability, and available request, node, and operation context.
+  Provider-compatible JSON envelopes and streaming error bodies are preserved.
+- Linux releases now include amd64 and arm64 builds. Linux/Windows executables
+  are UPX-compressed, and Windows amd64 releases also include a
+  self-extracting `.exe` package.
 - Added native macOS menu-bar and launchd support, with arm64 and amd64
   downloads. macOS packages are unsigned and not notarized.
 - Bumped the release version to `0.1.1.15`.

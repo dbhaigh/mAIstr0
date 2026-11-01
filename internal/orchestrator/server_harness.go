@@ -6,6 +6,13 @@ import (
 	"github.com/maistr0/maistr0/internal/agent"
 )
 
+// HarnessName returns the name of the active agent harness, if enabled.
+//
+// Returns: the selected harness name, or an empty string when no harness is
+// configured.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [server_test.go](server_test.go).
 func (s *Server) HarnessName() string {
 	if s.harness == nil {
 		return ""
@@ -56,6 +63,12 @@ func (s *Server) agentStats() agent.AgentStats {
 }
 
 // InterruptSession cancels an in-flight message turn for the given session ID.
+//
+// Parameters: id (string) identifies the agent session.
+// Returns: true if an active turn was interrupted.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 func (s *Server) InterruptSession(id string) bool {
 	if s.harness == nil {
 		return false

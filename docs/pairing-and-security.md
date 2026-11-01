@@ -5,9 +5,13 @@ and cluster nodes; a cloud service is not required. Cluster peers authenticate
 with self-signed certificates whose SHA-256 fingerprints are pinned during
 pairing. Normal HTTP control-plane and RPC-relay traffic requires mutual TLS 1.3 or later and a
 currently valid, explicitly trusted peer certificate. The trust roster is
-stored with the node identity. POSIX identity and log files are restricted to
-mode 0600, including existing files reopened by the application. On Windows
-startup checks the identity file, current log, and retained log archives for
+stored with the node identity. Private keys are generated in memory at process
+startup and are never written to disk. Legacy identity files are migrated on
+successful startup: any previously stored private key is ignored and removed.
+The identity file retains the stable node ID, public certificate, and trust
+roster; POSIX identity and log files are restricted to mode 0600, including
+existing files reopened by the application. On Windows startup checks the
+identity file, current log, and retained log archives for
 allow entries granted to broad principals. It warns but does not change ACLs.
 Review the file and parent-directory Security settings; remove broad grants
 such as Everyone, Authenticated Users, Users, Guests, Interactive, Network,
@@ -71,12 +75,15 @@ validation.
 
 ### Migration
 
-Existing stored pins and identities do not need conversion. By default,
-same-subnet auto-pairing is enabled for new joins and re-pairs; turn on strict
-mode in the coordinator's **Pairing access** panel to require the verified
-fingerprint and a valid PIN on every subnet. The global policy is stored in
-each node's runtime settings as peers refresh and is used if a node becomes the
-coordinator. Existing trust remains unchanged when strict mode is enabled.
+Existing identity files retain their stable node ID and trusted peer roster;
+legacy private-key fields are ignored and removed on the first successful
+startup. Because certificates are regenerated on every process start, peers
+must re-pair with the node after each restart. By default, same-subnet
+auto-pairing is enabled for new joins and re-pairs; turn on strict mode in the
+coordinator's **Pairing access** panel to require the verified fingerprint and
+a valid PIN on every subnet. The global policy is stored in each node's runtime
+settings as peers refresh and is used if a node becomes the coordinator.
+Existing trust remains unchanged when strict mode is enabled.
 Invitation-accept clients continue to send JSON
 `{"fingerprint":"<verified 64-hex SHA-256>"}`. The compatibility status field
 `auto_join_available` now reports whether a discovered candidate is on a local
@@ -86,11 +93,24 @@ present.
 
 ## Certificates and pin changes
 
-Identity certificates are checked for validity when loaded and during TLS
-handshakes. An expired local identity certificate rotates automatically while
-preserving the stable node ID and trusted peer roster. Because peer trust is
-fingerprint-pinned, a rotated certificate is not implicitly trusted; the
-affected peer relationship must be paired again.
+Fingerprint generation is deterministic for the same certificate, and
+fingerprint comparisons are case-insensitive. Each process startup creates a
+fresh local key and certificate while preserving the stable node ID and trusted
+peer roster. The certificate fingerprint therefore changes on every restart;
+peers that pin the previous certificate must be re-paired before accepting the
+new one.
+
+Structured security audit events record identity lifecycle, PIN
+generation/verification/consumption, certificate validation, trust changes and
+revocations, and rejected peer authentication. Events include relevant
+identity or peer IDs and certificate fingerprints, but never PIN or private-key
+values.
+
+Certificate fingerprint comparisons are case-insensitive. Structured security
+audit events record identity lifecycle, PIN generation/verification/consumption,
+certificate validation, trust changes and revocations, and rejected peer
+authentication. Events include relevant identity or peer IDs and certificate
+fingerprints, but never PIN or private-key values.
 
 Changing or removing a peer pin closes pooled connections authenticated with
 the old pin. If a peer certificate changes unexpectedly, verify the peer out

@@ -1,3 +1,4 @@
+"use strict";
 (() => {
   // src/shared/state.js
   var nodesList = document.getElementById("nodes-list");
@@ -395,6 +396,17 @@
       const onError = options.onError || ((error) => root2.console.error(error));
       const onConnectionChange = options.onConnectionChange || (() => {
       });
+      const reconnectBaseDelayMs = Math.max(0, options.reconnectBaseDelayMs ?? 1e3);
+      const reconnectMaxDelayMs = Math.max(reconnectBaseDelayMs, options.reconnectMaxDelayMs ?? 3e4);
+      const stableConnectionMs = Math.max(0, options.stableConnectionMs ?? 3e4);
+      const heartbeatTimeoutMs = Math.max(1, options.heartbeatTimeoutMs ?? 45e3);
+      const heartbeatCheckIntervalMs = Math.max(1, options.heartbeatCheckIntervalMs ?? 5e3);
+      const setTimeoutImpl = options.setTimeoutImpl || root2.setTimeout.bind(root2);
+      const clearTimeoutImpl = options.clearTimeoutImpl || root2.clearTimeout.bind(root2);
+      const setIntervalImpl = options.setIntervalImpl || root2.setInterval.bind(root2);
+      const clearIntervalImpl = options.clearIntervalImpl || root2.clearInterval.bind(root2);
+      const nowImpl = options.nowImpl || Date.now;
+      const randomImpl = options.randomImpl || Math.random;
       const scheduler = createSnapshotScheduler((snapshot) => {
         try {
           onSnapshot(snapshot);
@@ -402,17 +414,130 @@
           onError(error);
         }
       }, options);
-      const eventSource = new EventSourceImpl("/api/events");
-      eventSource.onopen = () => onConnectionChange(true);
-      eventSource.onerror = () => onConnectionChange(false);
-      eventSource.onmessage = (event) => {
+      let eventSource = null;
+      let reconnectTimer = null;
+      let stableTimer = null;
+      let healthTimer = null;
+      let retryAttempt = 0;
+      let lastHeartbeatAt = 0;
+      let heartbeatSeen = false;
+      let connected = false;
+      let closed = false;
+      function setConnected(next) {
+        if (connected === next) return;
+        connected = next;
+        onConnectionChange(next);
+      }
+      function clearStableTimer() {
+        if (stableTimer === null) return;
+        clearTimeoutImpl(stableTimer);
+        stableTimer = null;
+      }
+      function stopHealthMonitor() {
+        if (healthTimer === null) return;
+        clearIntervalImpl(healthTimer);
+        healthTimer = null;
+      }
+      function scheduleReconnect() {
+        if (closed || reconnectTimer !== null) return;
+        const exponentialDelay = Math.min(
+          reconnectMaxDelayMs,
+          reconnectBaseDelayMs * 2 ** Math.min(retryAttempt, 30)
+        );
+        const jitter = 0.8 + Math.max(0, Math.min(1, randomImpl())) * 0.4;
+        const delay = Math.min(reconnectMaxDelayMs, Math.round(exponentialDelay * jitter));
+        retryAttempt = Math.min(retryAttempt + 1, 30);
+        reconnectTimer = setTimeoutImpl(() => {
+          reconnectTimer = null;
+          open();
+        }, delay);
+      }
+      function disconnect(source) {
+        if (closed || source !== eventSource) return;
+        eventSource = null;
+        source.close?.();
+        clearStableTimer();
+        stopHealthMonitor();
+        heartbeatSeen = false;
+        lastHeartbeatAt = 0;
+        setConnected(false);
+        scheduleReconnect();
+      }
+      function checkHealth(source) {
+        if (closed || source !== eventSource) return;
+        if (source.readyState === 2 || connected && source.readyState === 0) {
+          disconnect(source);
+          return;
+        }
+        if (heartbeatSeen && nowImpl() - lastHeartbeatAt >= heartbeatTimeoutMs) {
+          onError(new Error("dashboard event stream heartbeat timed out"));
+          disconnect(source);
+        }
+      }
+      function open() {
+        if (closed) return;
+        let source;
         try {
-          scheduler.enqueue(JSON.parse(event.data));
+          source = new EventSourceImpl("/api/events");
         } catch (error) {
           onError(error);
+          setConnected(false);
+          scheduleReconnect();
+          return;
         }
-      };
-      return eventSource;
+        eventSource = source;
+        source.onopen = () => {
+          if (closed || source !== eventSource) return;
+          setConnected(true);
+          clearStableTimer();
+          stableTimer = setTimeoutImpl(() => {
+            stableTimer = null;
+            if (source === eventSource && connected) retryAttempt = 0;
+          }, stableConnectionMs);
+        };
+        source.onerror = () => disconnect(source);
+        source.onmessage = (event) => {
+          if (closed || source !== eventSource) return;
+          try {
+            scheduler.enqueue(JSON.parse(event.data));
+          } catch (error) {
+            onError(error);
+          }
+        };
+        source.addEventListener?.("heartbeat", () => {
+          if (closed || source !== eventSource) return;
+          heartbeatSeen = true;
+          lastHeartbeatAt = nowImpl();
+        });
+        healthTimer = setIntervalImpl(
+          () => checkHealth(source),
+          heartbeatCheckIntervalMs
+        );
+      }
+      function close() {
+        if (closed) return;
+        closed = true;
+        scheduler.cancel();
+        if (reconnectTimer !== null) {
+          clearTimeoutImpl(reconnectTimer);
+          reconnectTimer = null;
+        }
+        clearStableTimer();
+        stopHealthMonitor();
+        if (eventSource) {
+          const source = eventSource;
+          eventSource = null;
+          source.close?.();
+        }
+        setConnected(false);
+      }
+      open();
+      return Object.freeze({
+        close,
+        get currentSource() {
+          return eventSource;
+        }
+      });
     }
     return Object.freeze({ connectDashboardEvents, createSnapshotScheduler, hashSnapshot, mergeTaskSnapshot });
   })(globalThis);
@@ -4169,40 +4294,73 @@ ${s.output || s.error || ""}`)
     });
   }
 
-  // src/app.js
+  // src/app.ts
+  var dashboardState2 = dashboardState;
+  var taskHistoryPage2 = taskHistoryPage;
+  var taskHistorySearch2 = taskHistorySearch;
+  var taskHistoryStatus2 = taskHistoryStatus;
+  var taskInputElement = taskInput;
+  var taskAutoPlanCheckbox = taskAutoPlan;
+  var taskRequireReviewCheckbox = taskRequireReview;
+  var taskRequireApprovalCheckbox = taskRequireApproval;
+  var refreshInFlight = false;
+  var connectionGeneration = 0;
+  var syncGeneration = 0;
+  var pollingFallbackActive = false;
+  function clusterTabIsActive() {
+    return Boolean(document.getElementById("cluster-tab")?.classList.contains("active"));
+  }
+  function errorMessage(error) {
+    if (error instanceof Error) return error.message;
+    if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
+      return error.message;
+    }
+    return String(error);
+  }
   function updateConnectionStatus() {
     if (!connectionStatus) return;
-    const state = dashboardState.connection;
+    const state = dashboardState2.connection;
     const lastSync = state.lastSyncAt ? new Date(state.lastSyncAt).toLocaleTimeString() : "not yet";
+    const mode = state.connected ? "Connected" : pollingFallbackActive ? "Polling fallback" : "Reconnecting";
     connectionStatus.dataset.connected = String(state.connected);
-    connectionStatus.textContent = `${state.connected ? "Connected" : "Reconnecting"} · Last sync ${lastSync}`;
+    connectionStatus.dataset.mode = state.connected ? "live" : pollingFallbackActive ? "polling" : "reconnecting";
+    connectionStatus.textContent = `${mode} · Last sync ${lastSync}`;
   }
   var loadedDashboardPanels = /* @__PURE__ */ new Set(["agent-tab"]);
   function resetDashboardSignatures() {
-    dashboardState.renderSignatures = {};
+    dashboardState2.renderSignatures = {};
   }
   function markDashboardSynced() {
-    dashboardState.connection.lastSyncAt = Date.now();
+    syncGeneration += 1;
+    dashboardState2.connection.lastSyncAt = Date.now();
     updateConnectionStatus();
   }
   async function refresh() {
-    if (!document.getElementById("cluster-tab")?.classList.contains("active")) return;
+    if (!clusterTabIsActive() || refreshInFlight) return;
+    refreshInFlight = true;
+    const requestedConnectionGeneration = connectionGeneration;
+    const requestedSyncGeneration = syncGeneration;
     try {
-      const [nodes, peers, build] = await Promise.all([
+      const [nodes, peers, build, taskResponse] = await Promise.all([
         fetchJSON("/api/nodes/all"),
         fetchJSON("/api/discovery"),
-        fetchJSON("/api/version")
+        fetchJSON("/api/version"),
+        fetchJSON("/api/tasks?page_size=50")
       ]);
-      applySnapshot({ nodes, tasks: dashboardState.tasks || [], discovery: peers, build_version: build.version });
+      if (requestedConnectionGeneration !== connectionGeneration || requestedSyncGeneration !== syncGeneration) return;
+      const tasks = normalizeHistoryPage(taskResponse).items;
+      applySnapshot({ nodes, tasks, discovery: peers, build_version: build.version });
       markDashboardSynced();
     } catch (err) {
       console.error(err);
+    } finally {
+      refreshInFlight = false;
     }
   }
   function taskHistoryURL(cursor = "") {
     const params = new URLSearchParams({ page_size: "50" });
-    const query = (taskHistorySearch?.value || "").trim();
-    const status = taskHistoryStatus?.value || "all";
+    const query = (taskHistorySearch2?.value || "").trim();
+    const status = taskHistoryStatus2?.value || "all";
     if (query) params.set("q", query);
     if (status !== "all") params.set("status", status);
     if (cursor) params.set("cursor", cursor);
@@ -4217,77 +4375,77 @@ ${s.output || s.error || ""}`)
   }
   function sortTaskHistory(items) {
     return items.sort(
-      (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+      (a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime()
     );
   }
   async function refreshTaskHistory(reset = false) {
-    const query = (taskHistorySearch?.value || "").trim();
-    const status = taskHistoryStatus?.value || "all";
+    const query = (taskHistorySearch2?.value || "").trim();
+    const status = taskHistoryStatus2?.value || "all";
     const filterKey = JSON.stringify([query, status]);
-    if (reset || !taskHistoryPage.initialized || filterKey !== taskHistoryPage.filterKey) {
-      taskHistoryPage.generation++;
-      taskHistoryPage.items = [];
-      taskHistoryPage.nextCursor = "";
-      taskHistoryPage.hasMore = false;
-      taskHistoryPage.loading = false;
-      taskHistoryPage.initialized = false;
-      taskHistoryPage.filterKey = filterKey;
+    if (reset || !taskHistoryPage2.initialized || filterKey !== taskHistoryPage2.filterKey) {
+      taskHistoryPage2.generation++;
+      taskHistoryPage2.items = [];
+      taskHistoryPage2.nextCursor = "";
+      taskHistoryPage2.hasMore = false;
+      taskHistoryPage2.loading = false;
+      taskHistoryPage2.initialized = false;
+      taskHistoryPage2.filterKey = filterKey;
       reset = true;
     }
-    if (taskHistoryPage.loading) return;
-    const generation = taskHistoryPage.generation;
-    taskHistoryPage.loading = true;
-    renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, true);
+    if (taskHistoryPage2.loading) return;
+    const generation = taskHistoryPage2.generation;
+    taskHistoryPage2.loading = true;
+    renderTasks(taskHistoryPage2.items, taskHistoryPage2.hasMore, true);
     try {
       const page = normalizeHistoryPage(await fetchJSON(taskHistoryURL()));
-      if (generation !== taskHistoryPage.generation) return;
+      if (generation !== taskHistoryPage2.generation) return;
       if (reset) {
-        taskHistoryPage.items = page.items;
-        taskHistoryPage.nextCursor = page.next_cursor;
-        taskHistoryPage.hasMore = page.has_more;
+        taskHistoryPage2.items = page.items;
+        taskHistoryPage2.nextCursor = page.next_cursor;
+        taskHistoryPage2.hasMore = page.has_more;
       } else {
-        const updated = new Map(taskHistoryPage.items.map((task) => [task.id, task]));
+        const updated = new Map(taskHistoryPage2.items.map((task) => [task.id, task]));
         for (const task of page.items) updated.set(task.id, task);
-        taskHistoryPage.items = sortTaskHistory([...updated.values()]);
-        taskHistoryPage.hasMore ||= page.has_more;
+        taskHistoryPage2.items = sortTaskHistory([...updated.values()]);
+        taskHistoryPage2.hasMore ||= page.has_more;
       }
-      taskHistoryPage.initialized = true;
+      taskHistoryPage2.initialized = true;
     } catch (err) {
       console.error("task history refresh failed", err);
     } finally {
-      if (generation === taskHistoryPage.generation) {
-        taskHistoryPage.loading = false;
-        renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, false);
+      if (generation === taskHistoryPage2.generation) {
+        taskHistoryPage2.loading = false;
+        renderTasks(taskHistoryPage2.items, taskHistoryPage2.hasMore, false);
       }
     }
   }
   async function loadMoreTaskHistory() {
     const filterKey = JSON.stringify([
-      (taskHistorySearch?.value || "").trim(),
-      taskHistoryStatus?.value || "all"
+      (taskHistorySearch2?.value || "").trim(),
+      taskHistoryStatus2?.value || "all"
     ]);
-    if (filterKey !== taskHistoryPage.filterKey) {
+    if (filterKey !== taskHistoryPage2.filterKey) {
       await refreshTaskHistory(true);
       return;
     }
-    if (taskHistoryPage.loading || !taskHistoryPage.hasMore || !taskHistoryPage.nextCursor) return;
-    const generation = taskHistoryPage.generation;
-    taskHistoryPage.loading = true;
-    renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, true);
+    if (taskHistoryPage2.loading || !taskHistoryPage2.hasMore || !taskHistoryPage2.nextCursor) return;
+    const generation = taskHistoryPage2.generation;
+    taskHistoryPage2.loading = true;
+    renderTasks(taskHistoryPage2.items, taskHistoryPage2.hasMore, true);
     try {
-      const page = normalizeHistoryPage(await fetchJSON(taskHistoryURL(taskHistoryPage.nextCursor)));
-      if (generation !== taskHistoryPage.generation) return;
-      const updated = new Map(taskHistoryPage.items.map((task) => [task.id, task]));
+      const page = normalizeHistoryPage(await fetchJSON(taskHistoryURL(taskHistoryPage2.nextCursor)));
+      if (generation !== taskHistoryPage2.generation) return;
+      const updated = new Map(taskHistoryPage2.items.map((task) => [task.id, task]));
       for (const task of page.items) updated.set(task.id, task);
-      taskHistoryPage.items = sortTaskHistory([...updated.values()]);
-      taskHistoryPage.nextCursor = page.next_cursor;
-      taskHistoryPage.hasMore = page.has_more;
+      taskHistoryPage2.items = sortTaskHistory([...updated.values()]);
+      taskHistoryPage2.nextCursor = page.next_cursor;
+      taskHistoryPage2.hasMore = page.has_more;
     } catch (err) {
       console.error("loading more task history failed", err);
     } finally {
-      if (generation === taskHistoryPage.generation) {
-        taskHistoryPage.loading = false;
-        renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, false);
+      if (generation === taskHistoryPage2.generation) {
+        taskHistoryPage2.loading = false;
+        renderTasks(taskHistoryPage2.items, taskHistoryPage2.hasMore, false);
       }
     }
   }
@@ -4304,15 +4462,15 @@ ${s.output || s.error || ""}`)
         cursor = page.next_cursor;
       } while (cursor);
       await copyText(taskText(tasks), copyTasksBtn);
-    } catch (err) {
-      console.error("copying task history failed", err);
-      if (submitStatus) submitStatus.textContent = `Unable to copy task history: ${err.message}`;
+    } catch (error) {
+      console.error("copying task history failed", error);
+      if (submitStatus) submitStatus.textContent = `Unable to copy task history: ${errorMessage(error)}`;
     }
   }
   function mergeLiveTaskHistory(tasks) {
-    if (!taskHistoryPage.initialized || !taskHistoryPage.items.length) return;
+    if (!taskHistoryPage2.initialized || !taskHistoryPage2.items.length) return;
     const updates = new Map((tasks || []).map((task) => [task.id, task]));
-    taskHistoryPage.items = sortTaskHistory(taskHistoryPage.items.map((task) => updates.get(task.id) || task));
+    taskHistoryPage2.items = sortTaskHistory(taskHistoryPage2.items.map((task) => updates.get(task.id) || task));
   }
   async function refreshDiscovery() {
     try {
@@ -4320,7 +4478,7 @@ ${s.output || s.error || ""}`)
       let discoveryAuthentication = "unavailable";
       try {
         const status = await fetchJSON("/api/security/status");
-        if (["unauthenticated", "hmac-sha256"].includes(status.discovery_authentication)) {
+        if (status.discovery_authentication === "unauthenticated" || status.discovery_authentication === "hmac-sha256") {
           discoveryAuthentication = status.discovery_authentication;
         } else {
           throw new Error("security status response omitted a recognized discovery authentication mode");
@@ -4329,8 +4487,8 @@ ${s.output || s.error || ""}`)
         console.error("local network security status refresh failed", err);
       }
       applySnapshot({
-        nodes: dashboardState.nodes || [],
-        tasks: dashboardState.tasks || [],
+        nodes: dashboardState2.nodes || [],
+        tasks: dashboardState2.tasks || [],
         discovery,
         discovery_authentication: discoveryAuthentication
       });
@@ -4344,29 +4502,29 @@ ${s.output || s.error || ""}`)
     }
   }, 5e3);
   function applySnapshot(snap) {
-    const signatures = dashboardState.renderSignatures || (dashboardState.renderSignatures = {});
+    const signatures = dashboardState2.renderSignatures || (dashboardState2.renderSignatures = {});
     const taskSnapshot = dashboardSnapshot.mergeTaskSnapshot(
-      dashboardState.tasks,
+      dashboardState2.tasks,
       snap.tasks,
       snap.complete_tasks,
-      dashboardState.fullTaskHistoryLoaded
+      dashboardState2.fullTaskHistoryLoaded
     );
-    dashboardState.tasks = taskSnapshot.tasks;
-    dashboardState.fullTaskHistoryLoaded = taskSnapshot.fullTaskHistoryLoaded;
+    dashboardState2.tasks = taskSnapshot.tasks;
+    dashboardState2.fullTaskHistoryLoaded = taskSnapshot.fullTaskHistoryLoaded;
     mergeLiveTaskHistory(snap.tasks || []);
-    dashboardState.nodes = snap.nodes || [];
-    if (Array.isArray(snap.discovery)) dashboardState.discovery = snap.discovery;
+    dashboardState2.nodes = snap.nodes || [];
+    if (Array.isArray(snap.discovery)) dashboardState2.discovery = snap.discovery;
     if (typeof snap.discovery_authentication === "string") {
-      dashboardState.discoveryAuthentication = snap.discovery_authentication;
+      dashboardState2.discoveryAuthentication = snap.discovery_authentication;
     }
-    if (snap.build_version) dashboardState.buildVersion = snap.build_version;
-    if (Array.isArray(snap.model_inventory)) dashboardState.modelInventory = snap.model_inventory;
-    if (Array.isArray(snap.pipeline_plans)) dashboardState.pipelinePlans = snap.pipeline_plans;
-    if (snap.cluster_health) dashboardState.capacity = snap.cluster_health;
+    if (snap.build_version) dashboardState2.buildVersion = snap.build_version;
+    if (Array.isArray(snap.model_inventory)) dashboardState2.modelInventory = snap.model_inventory;
+    if (Array.isArray(snap.pipeline_plans)) dashboardState2.pipelinePlans = snap.pipeline_plans;
+    if (snap.cluster_health) dashboardState2.capacity = snap.cluster_health;
     const capacityByNode = new Map(
-      (dashboardState.capacity?.nodes || []).map((node) => [node.node_id, node])
+      (dashboardState2.capacity?.nodes || []).map((node) => [node.node_id, node])
     );
-    const status = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState.nodes, dashboardState.capacity);
+    const status = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState2.nodes, dashboardState2.capacity);
     const statusSignature = JSON.stringify(status);
     if (statusSignature !== signatures.status) {
       updateClusterTitle(status.nodeCount);
@@ -4377,7 +4535,7 @@ ${s.output || s.error || ""}`)
       if (statVersion && status.buildVersion) statVersion.textContent = status.buildVersion;
       signatures.status = statusSignature;
     }
-    const nodeState = dashboardState.nodes.map((node) => ({
+    const nodeState = dashboardState2.nodes.map((node) => ({
       id: node.id,
       version: node.version,
       address: node.address,
@@ -4395,7 +4553,7 @@ ${s.output || s.error || ""}`)
       system_sample: node.system_history?.at(-1)?.timestamp
     }));
     const nodeSignature = JSON.stringify(nodeState);
-    const overviewNodeState = dashboardState.nodes.map((node) => {
+    const overviewNodeState = dashboardState2.nodes.map((node) => {
       const capacity = capacityByNode.get(node.id);
       return {
         id: node.id,
@@ -4447,7 +4605,7 @@ ${s.output || s.error || ""}`)
         }))
       };
     });
-    const taskState = dashboardState.tasks.map((task) => ({
+    const taskState = dashboardState2.tasks.map((task) => ({
       id: task.id,
       description: task.description,
       status: task.status,
@@ -4460,7 +4618,7 @@ ${s.output || s.error || ""}`)
         model: item.model
       }))
     }));
-    const taskSignature = JSON.stringify(dashboardState.tasks.map((task) => [task.id, task.updated_at]));
+    const taskSignature = JSON.stringify(dashboardState2.tasks.map((task) => [task.id, task.updated_at]));
     const activitySignature = JSON.stringify(taskState);
     const peerState = (snap.discovery || []).map((peer) => ({
       id: peer.id,
@@ -4470,12 +4628,12 @@ ${s.output || s.error || ""}`)
       last_seen: peer.last_seen,
       orchestrator_id: peer.orchestrator_id
     }));
-    const peerSignature = JSON.stringify({ peers: peerState, discoveryAuthentication: dashboardState.discoveryAuthentication, nodes: nodeState.map((node) => ({
+    const peerSignature = JSON.stringify({ peers: peerState, discoveryAuthentication: dashboardState2.discoveryAuthentication, nodes: nodeState.map((node) => ({
       id: node.id,
       address: node.address,
       healthy: node.healthy,
       last_seen: node.last_seen
-    })), pairing: dashboardState.pairing.status });
+    })), pairing: dashboardState2.pairing.status });
     const discoveredNodeState = (snap.discovery || []).filter((peer) => peer.role === "node").map((peer) => ({ id: peer.id, address: peer.peer_addr || peer.http_addr, last_seen: peer.last_seen }));
     const overviewNodeSignature = JSON.stringify({ members: overviewNodeState, discovered: discoveredNodeState });
     let overviewChanged = false;
@@ -4485,18 +4643,18 @@ ${s.output || s.error || ""}`)
       peers: peerSignature !== signatures.overviewPeers
     };
     if (loadedDashboardPanels.has("cluster-overview-panel") && (overviewParts.activity || overviewParts.nodes || overviewParts.peers)) {
-      renderOverview(dashboardState.nodes, dashboardState.tasks, snap.discovery || [], overviewParts);
+      renderOverview(dashboardState2.nodes, dashboardState2.tasks, snap.discovery || [], overviewParts);
       signatures.activity = activitySignature;
       signatures.overviewNodes = overviewNodeSignature;
       signatures.overviewPeers = peerSignature;
       overviewChanged = true;
     }
     if (loadedDashboardPanels.has("nodes-panel") && nodeSignature !== signatures.nodes) {
-      renderNodes(dashboardState.nodes);
+      renderNodes(dashboardState2.nodes);
       signatures.nodes = nodeSignature;
     }
     if (loadedDashboardPanels.has("setup-nodes-panel") && nodeSignature !== signatures.setupNodes) {
-      renderSetupNodes(dashboardState.nodes);
+      renderSetupNodes(dashboardState2.nodes);
       signatures.setupNodes = nodeSignature;
     }
     const routingSignature = JSON.stringify({
@@ -4508,28 +4666,29 @@ ${s.output || s.error || ""}`)
       }))
     });
     if (loadedDashboardPanels.has("routing-panel") && routingSignature !== signatures.routing) {
-      renderRouting(dashboardState.nodes, dashboardState.tasks);
+      renderRouting(dashboardState2.nodes, dashboardState2.tasks);
       signatures.routing = routingSignature;
     }
     const pipelineSignature = JSON.stringify({
-      models: dashboardState.modelInventory,
-      plans: dashboardState.pipelinePlans
+      models: dashboardState2.modelInventory,
+      plans: dashboardState2.pipelinePlans
     });
     if (loadedDashboardPanels.has("routing-panel") && pipelineSignature !== signatures.pipeline) {
-      renderPipelineDashboard(dashboardState.modelInventory, dashboardState.pipelinePlans);
+      renderPipelineDashboard(dashboardState2.modelInventory, dashboardState2.pipelinePlans);
       signatures.pipeline = pipelineSignature;
     }
     if (loadedDashboardPanels.has("discovery-panel") && peerSignature !== signatures.discovery) {
-      renderDiscovery(snap.discovery || [], dashboardState.discoveryAuthentication);
+      renderDiscovery(snap.discovery || [], dashboardState2.discoveryAuthentication);
       signatures.discovery = peerSignature;
     }
     if (loadedDashboardPanels.has("tasks-panel") && taskSignature !== signatures.tasks) {
-      renderTasks(taskHistoryPage.items, taskHistoryPage.hasMore, taskHistoryPage.loading);
+      renderTasks(taskHistoryPage2.items, taskHistoryPage2.hasMore, taskHistoryPage2.loading);
       signatures.tasks = taskSignature;
     }
     if (overviewChanged) refreshOverviewTimes();
   }
   function activateDashboardTab(tabID) {
+    syncPollingFallback();
     if (tabID === "memory-tab") {
       loadedDashboardPanels.add(tabID);
       void refreshMemory();
@@ -4545,14 +4704,14 @@ ${s.output || s.error || ""}`)
     if (panelID.startsWith("setup-")) loadedDashboardPanels.add("setup-panel");
     loadedDashboardPanels.add(panelID);
     applySnapshot({
-      nodes: dashboardState.nodes,
-      tasks: dashboardState.tasks,
-      discovery: dashboardState.discovery,
-      discovery_authentication: dashboardState.discoveryAuthentication,
-      model_inventory: dashboardState.modelInventory,
-      pipeline_plans: dashboardState.pipelinePlans,
-      cluster_health: dashboardState.capacity,
-      build_version: dashboardState.buildVersion
+      nodes: dashboardState2.nodes,
+      tasks: dashboardState2.tasks,
+      discovery: dashboardState2.discovery,
+      discovery_authentication: dashboardState2.discoveryAuthentication,
+      model_inventory: dashboardState2.modelInventory,
+      pipeline_plans: dashboardState2.pipelinePlans,
+      cluster_health: dashboardState2.capacity,
+      build_version: dashboardState2.buildVersion
     });
     if (panelID === "setup-readiness-panel") void checkSetupReadiness();
     if (panelID === "setup-catalog-panel") void loadModelCatalog();
@@ -4566,46 +4725,72 @@ ${s.output || s.error || ""}`)
     });
   }
   setInterval(refreshOverviewTimes, 15e3);
-  function connectEvents() {
-    dashboardSnapshot.connectDashboardEvents((snapshot) => {
-      markDashboardSynced();
-      applySnapshot(snapshot);
-    }, {
-      onConnectionChange: (connected) => {
-        dashboardState.connection.connected = connected;
-        updateConnectionStatus();
-      }
-    });
+  function updateConnectionState(connected) {
+    if (dashboardState2.connection.connected !== connected) connectionGeneration += 1;
+    dashboardState2.connection.connected = connected;
+    if (connected) {
+      pollingFallbackActive = false;
+      updateConnectionStatus();
+    } else {
+      syncPollingFallback();
+    }
   }
-  submitBtn?.addEventListener("click", async () => {
-    const description = taskInput.value.trim();
+  function syncPollingFallback() {
+    const shouldPoll = !dashboardState2.connection.connected && clusterTabIsActive();
+    const becameActive = shouldPoll && !pollingFallbackActive;
+    pollingFallbackActive = shouldPoll;
+    updateConnectionStatus();
+    if (becameActive) void refresh();
+  }
+  async function submitTask() {
+    const description = taskInputElement?.value.trim() || "";
     if (!description) return;
-    submitStatus.textContent = "Submitting...";
+    if (submitStatus) submitStatus.textContent = "Submitting...";
     try {
       const task = await fetchJSON("/api/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description,
-          plan_mode: taskAutoPlan?.checked ? "auto" : "heuristic",
-          require_review: taskRequireReview?.checked || false,
-          require_approval: taskRequireApproval?.checked || false
+          plan_mode: taskAutoPlanCheckbox?.checked ? "auto" : "heuristic",
+          require_review: taskRequireReviewCheckbox?.checked || false,
+          require_approval: taskRequireApprovalCheckbox?.checked || false
         })
       });
-      submitStatus.textContent = `Submitted as ${task.id}`;
-      taskInput.value = "";
-      refresh();
-    } catch (err) {
-      submitStatus.textContent = "Error: " + err.message;
+      if (submitStatus) submitStatus.textContent = `Submitted as ${task.id}`;
+      if (taskInputElement) taskInputElement.value = "";
+      void refresh();
+    } catch (error) {
+      if (submitStatus) submitStatus.textContent = `Error: ${errorMessage(error)}`;
     }
-  });
+  }
+  var dashboardActions = {
+    refresh,
+    refreshTaskHistory,
+    loadMoreTaskHistory,
+    applySnapshot,
+    connectionChange: updateConnectionState,
+    activateDashboardTab,
+    activateWorkspacePanel,
+    submitTask
+  };
+  function connectEvents() {
+    dashboardSnapshot.connectDashboardEvents((snapshot) => {
+      markDashboardSynced();
+      applySnapshot(snapshot);
+    }, {
+      onConnectionChange: dashboardActions.connectionChange
+    });
+    syncPollingFallback();
+  }
+  submitBtn?.addEventListener("click", dashboardActions.submitTask);
   loadPairingStatus();
   refreshPersistenceStatus();
   setInterval(loadPairingStatus, 5e3);
   setInterval(refreshPersistenceStatus, 3e4);
   setInterval(() => {
-    if (document.getElementById("cluster-tab")?.classList.contains("active")) {
-      void refresh();
+    if (clusterTabIsActive()) {
+      if (!dashboardState2.connection.connected) void refresh();
       if (document.getElementById("routing-panel")?.classList.contains("active")) {
         void refreshShardGroups();
       }

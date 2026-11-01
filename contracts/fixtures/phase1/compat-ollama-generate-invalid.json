@@ -12,7 +12,9 @@
     "status": 400,
     "content_type": "application/json",
     "body": {
-      "error": "prompt is required"
+      "code": "invalid_input",
+      "error": "prompt is required",
+      "retryable": false
     }
   },
   "normalization_rules": [

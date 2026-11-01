@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/maistr0/maistr0/internal/config"
 )
 
 func TestManifestSignatureRejectsTamperingAndWrongPublisher(t *testing.T) {
@@ -64,10 +67,14 @@ func TestDownloadRequiresConfiguredPublisherSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	publisherKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
+	nodeConfig := config.NodeConfig{
+		PeerUpdatePublisherKey: base64.StdEncoding.EncodeToString(publisherKey),
+	}
+	publicKey := nodeConfig.TrustedPeerUpdatePublicKey()
 	if err := manifest.Sign(privateKey); err != nil {
 		t.Fatal(err)
 	}

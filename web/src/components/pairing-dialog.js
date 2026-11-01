@@ -1,4 +1,4 @@
-import { refresh } from "../app.js";
+import { refresh } from "../app.ts";
 import { fetchJSON } from "../shared/api.js";
 import { dashboardState, pairingAddress, pairingAddressDisplay, pairingAddressField, pairingCode, pairingConnectButton, pairingConnectDialog, pairingConnectOpenBtn, pairingFingerprint, pairingFingerprintDisplay, pairingInstructions, pairingInvitationAcceptBtn, pairingInvitationDeclineBtn, pairingInvitationDetails, pairingInvitationDialog, pairingInvitationFingerprint, pairingInvitationStatus, pairingNodeConnect, pairingPin, pairingPinExpiry, pairingPinRegenerateBtn, pairingPinView, pairingPolicyState, pairingRequireVerification, pairingState, pairingStatus } from "../shared/state.js";
 import { dashboardViewModel } from "../shared/view-model.js";

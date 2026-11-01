@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maistr0/maistr0/internal/logging"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,6 +21,7 @@ import (
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/workpool"
 )
@@ -658,7 +658,18 @@ type staticRouterReservation struct {
 	release func()
 }
 
+// Target returns the fixed node selected by this router reservation.
+//
+// Returns: the reserved node's ID and address.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [router_handlers_test.go](router_handlers_test.go).
 func (r staticRouterReservation) Target() workpool.CapacityTarget { return r.target }
+
+// Release invokes the callback that returns capacity held by the reservation.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [router_handlers_test.go](router_handlers_test.go).
 func (r staticRouterReservation) Release() {
 	if r.release != nil {
 		r.release()
@@ -714,9 +725,7 @@ func (s *Server) recordRouterEvent(event routerRequestEvent) {
 func routerPairKey(nodeID, model string) string { return nodeID + "\x00" + model }
 
 func writeRouterError(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": message}})
+	writeJSON(w, status, map[string]any{"error": map[string]string{"message": message}})
 }
 
 func writeRouterContextError(w http.ResponseWriter, r *http.Request, ctx context.Context) {

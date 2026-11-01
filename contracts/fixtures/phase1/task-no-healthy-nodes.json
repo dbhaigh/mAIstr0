@@ -16,8 +16,12 @@
   },
   "expected_response": {
     "status": 503,
-    "content_type": "text/plain; charset=utf-8",
-    "body": "scheduler: no healthy nodes available\n"
+    "content_type": "application/json",
+    "body": {
+      "code": "unavailable",
+      "error": "scheduler: no healthy nodes available",
+      "retryable": true
+    }
   },
   "normalization_rules": [
     "Replace timestamps with \u003cTIME\u003e.",

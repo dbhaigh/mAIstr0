@@ -149,11 +149,13 @@ PowerShell 7 on Windows or Ubuntu with Go and native archive tooling:
 Use a new native Linux path on Ubuntu. The script builds twice with trimpath and
 fixed source version, normalizes archive metadata, compares executable/archive
 SHA-256, then extracts and runs the packaged binary under an isolated home.
-It checks version/configuration, loopback startup, fingerprint stability, memory
-fact persistence, replacement/restart, and diagnostics. Discovery, peer updates,
-browser and tray UI are disabled; no live model is downloaded. Windows exercises
-crash/restart recovery; Linux requests cooperative shutdown. The replacement is
-the same-source second build, **not an old-version upgrade migration**.
+It checks version/configuration, loopback startup, stable identity IDs with
+fresh process-local certificate fingerprints, memory fact persistence,
+replacement/restart, and diagnostics. Peers must re-pair after each restart.
+Discovery, peer updates, browser and tray UI are disabled; no live model is
+downloaded. Windows exercises crash/restart recovery; Linux requests
+cooperative shutdown. The replacement is the same-source second build, **not an
+old-version upgrade migration**.
 
 Release tags must equal the source version, and both numeric-iteration and
 SemVer publication depend on reusable fast CI plus full qualification: contracts/bundle drift, ordinary

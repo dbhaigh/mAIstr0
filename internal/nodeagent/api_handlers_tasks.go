@@ -3,15 +3,16 @@ package nodeagent
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/logging"
-	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/maistr0/maistr0/internal/tasksync"
 	"github.com/maistr0/maistr0/internal/workpool"
-	"net/http"
-	"net/url"
 )
 
 // handleSubmit lets this node accept a task directly and share the work
@@ -67,16 +68,22 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var admissionErr error
+	synchronization := taskmgr.TaskSynchronization{
+		Dispatch: func(taskID string, assignment scheduler.Assignment) error {
+			if a.peerComponent.dispatchPool == nil {
+				return workpool.ErrClosed
+			}
+			return a.peerComponent.dispatchPool.TrySubmit(
+				taskCtx, peerDispatchJob{taskID: taskID, assignment: assignment},
+			)
+		},
+		OnDispatchFailure: func(assignment scheduler.Assignment, err error) {
+			logging.Errorf("nodeagent", "nodeagent: could not queue subtask %s: %v", assignment.Subtask.ID, err)
+		},
+		Complete: a.orchestratorLink.tasks.CompleteSubtask,
+	}
 	for _, asg := range assignments {
-		var err error
-		if a.peerComponent.dispatchPool == nil {
-			err = workpool.ErrClosed
-		} else {
-			err = a.peerComponent.dispatchPool.TrySubmit(taskCtx, peerDispatchJob{taskID: task.ID, assignment: asg})
-		}
-		if err != nil {
-			logging.Errorf("nodeagent", "nodeagent: could not queue subtask %s: %v", asg.Subtask.ID, err)
-			a.orchestratorLink.tasks.CompleteSubtask(task.ID, asg.Subtask.ID, "", err)
+		if err := synchronization.DispatchAssignment(task.ID, asg); err != nil {
 			admissionErr = errors.Join(admissionErr, err)
 		}
 	}
@@ -88,49 +95,10 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleTasksList(w http.ResponseWriter, r *http.Request) {
-	version, watermarks, err := memory.ReadSyncRequestHeaders(r)
+	err := (tasksync.Transfer{MaxBytes: a.cfg.SyncMaxBytes}).ServeSnapshot(
+		w, r, a.orchestratorLink.tasks, nil,
+	)
 	if err != nil {
-		http.Error(w, "invalid task sync headers: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	cursor, upper, err := memory.ReadSyncPageRequestHeaders(r)
-	if err != nil {
-		http.Error(w, "invalid task sync page headers: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if cursor != nil && !memory.SupportsSyncPages(version) {
-		http.Error(w, "task sync pagination requires protocol version 2", http.StatusBadRequest)
-		return
-	}
-	tasks, currentWatermarks := a.orchestratorLink.tasks.SnapshotAndWatermarksForPeer(version, taskmgr.FilterTaskWatermarks(watermarks))
-	if memory.SupportsSyncPages(version) {
-		if cursor == nil {
-			cursor = make(map[string]uint64)
-			upper = currentWatermarks
-		}
-		page, nextCursor, more, err := taskmgr.PageTasks(tasks, cursor, upper, a.cfg.SyncMaxBytes)
-		if err != nil {
-			http.Error(w, "could not page task history: "+err.Error(), http.StatusRequestEntityTooLarge)
-			return
-		}
-		tasks = page
-		currentWatermarks = upper
-		if more {
-			if err := memory.SetSyncPageResponseHeader(w, nextCursor); err != nil {
-				http.Error(w, "could not encode task sync page cursor: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-	}
-	if err := memory.SetSyncResponseHeadersForPeer(w, currentWatermarks, version); err != nil {
-		http.Error(w, "could not encode task sync watermarks: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if memory.SupportsEmptySync(version) && r.Header.Get(memory.SyncPageCursorHeader) == "" && len(tasks) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if _, err := memory.WriteSyncJSON(w, http.StatusOK, tasks, version, memory.AcceptsSyncCompression(r)); err != nil {
 		logging.FileErrorf("nodeagent", "FILE_ONLY: nodeagent: task sync response encoding failed: %v", err)
 	}
 }

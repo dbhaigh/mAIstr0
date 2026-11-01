@@ -1,6 +1,7 @@
 package syncpage
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -12,12 +13,44 @@ type Record[T any] struct {
 	Key      string
 }
 
+// KeyFuncs compares values by their ordering key and formats the key for errors.
+type KeyFuncs[T any] struct {
+	Compare func(T, T) int
+	Format  func(T) string
+}
+
 func Next[T any](
 	records []Record[T],
 	cursor, upper map[string]uint64,
 	maxBytes int64,
 	baseBytes int,
 	encode func(T) ([]byte, error),
+) ([]T, map[string]uint64, bool, error) {
+	return next(records, cursor, upper, maxBytes, baseBytes, encode, nil)
+}
+
+// NextWithKey pages records using value-based key comparison instead of stored key strings.
+func NextWithKey[T any](
+	records []Record[T],
+	cursor, upper map[string]uint64,
+	maxBytes int64,
+	baseBytes int,
+	encode func(T) ([]byte, error),
+	key KeyFuncs[T],
+) ([]T, map[string]uint64, bool, error) {
+	if key.Compare == nil || key.Format == nil {
+		return nil, nil, false, errors.New("syncpage: key comparison and formatting are required")
+	}
+	return next(records, cursor, upper, maxBytes, baseBytes, encode, &key)
+}
+
+func next[T any](
+	records []Record[T],
+	cursor, upper map[string]uint64,
+	maxBytes int64,
+	baseBytes int,
+	encode func(T) ([]byte, error),
+	key *KeyFuncs[T],
 ) ([]T, map[string]uint64, bool, error) {
 	eligible := make([]Record[T], 0, len(records))
 	legacyRecords := make([]Record[T], 0)
@@ -29,7 +62,7 @@ func Next[T any](
 		}
 	}
 	sort.Slice(legacyRecords, func(i, j int) bool {
-		return legacyRecords[i].Key < legacyRecords[j].Key
+		return compareKeys(legacyRecords[i], legacyRecords[j], key) < 0
 	})
 	legacyUpper := upper["legacy"]
 	for index, record := range legacyRecords {
@@ -48,7 +81,7 @@ func Next[T any](
 		if left.Sequence != right.Sequence {
 			return left.Sequence < right.Sequence
 		}
-		return left.Key < right.Key
+		return compareKeys(left, right, key) < 0
 	})
 
 	nextCursor := make(map[string]uint64, len(cursor)+len(upper))
@@ -75,7 +108,11 @@ func Next[T any](
 		recordSize := int64(len(data) + 1)
 		if size+recordSize > maxBytes {
 			if len(page) == 0 {
-				return nil, nil, false, fmt.Errorf("sync record %q from %q exceeds the %d-byte page limit", record.Key, record.Origin, maxBytes)
+				recordKey := record.Key
+				if key != nil {
+					recordKey = key.Format(record.Value)
+				}
+				return nil, nil, false, fmt.Errorf("sync record %q from %q exceeds the %d-byte page limit", recordKey, record.Origin, maxBytes)
 			}
 			return page, nextCursor, true, nil
 		}
@@ -89,4 +126,17 @@ func Next[T any](
 		}
 	}
 	return page, nextCursor, false, nil
+}
+
+func compareKeys[T any](left, right Record[T], key *KeyFuncs[T]) int {
+	if key != nil {
+		return key.Compare(left.Value, right.Value)
+	}
+	if left.Key < right.Key {
+		return -1
+	}
+	if left.Key > right.Key {
+		return 1
+	}
+	return 0
 }

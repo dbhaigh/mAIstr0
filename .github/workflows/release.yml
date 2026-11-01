@@ -78,6 +78,15 @@ jobs:
           else
             echo "iteration=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Install release packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nsis unzip upx-ucl
+          sudo ln -sf /usr/bin/upx-ucl /usr/local/bin/upx
+          upx --version
+          command -v makensis
       - name: Build and publish semantic release
         if: steps.version.outputs.iteration != 'true'
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
@@ -95,11 +104,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          bash build/build.sh
+          MAISTR0_REQUIRE_UPX=1 bash build/build.sh
           mkdir -p dist/packages
-          for target in windows-amd64 linux-amd64 linux-ubuntu-amd64; do
-            os="${target%-amd64}"
-            name="maistr0_${version}_${os}_amd64"
+          for target in windows-amd64 linux-amd64 linux-arm64 linux-ubuntu-amd64; do
+            os="${target%-*}"
+            arch="${target##*-}"
+            name="maistr0_${version}_${os}_${arch}"
             folder="dist/packages/$name"
             mkdir -p "$folder/docs" "$folder/examples"
             cp LICENSE README.md changelog.md SECURITY.md "$folder/"
@@ -116,6 +126,32 @@ jobs:
           done
           (cd dist/packages && sha256sum *.zip *.tar.gz > checksums.txt)
           gh release create "$GITHUB_REF_NAME" dist/packages/*.zip dist/packages/*.tar.gz dist/packages/checksums.txt --verify-tag --generate-notes
+      - name: Create and attach Windows self-extracting archive
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ITERATION: ${{ steps.version.outputs.iteration }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$ITERATION" == "true" ]]; then
+            archive="dist/packages/maistr0_${version}_windows_amd64.zip"
+            sfx="dist/packages/maistr0_${version}_windows_amd64_sfx.exe"
+            checksums="dist/packages/checksums.txt"
+          else
+            archive="dist/maistr0_${version}_windows_amd64.zip"
+            sfx="dist/maistr0_${version}_windows_amd64_sfx.exe"
+            checksums="dist/checksums.txt"
+          fi
+          bash build/create-windows-sfx.sh "$version" "$archive" "$sfx"
+          if [[ ! -f "$checksums" ]]; then
+            echo "Release checksum file not found: $checksums" >&2
+            exit 1
+          fi
+          printf '%s  %s\n' \
+            "$(sha256sum "$sfx" | awk '{ print $1 }')" \
+            "$(basename "$sfx")" >> "$checksums"
+          gh release upload "$GITHUB_REF_NAME" "$sfx" "$checksums" --clobber
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-release-packages

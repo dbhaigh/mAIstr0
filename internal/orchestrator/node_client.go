@@ -38,9 +38,38 @@ type nodeClientAPI interface {
 	callNodeGenerateWithOptions(string, string, string, float64, int) (string, error)
 	callNodeGenerateWithOptionsContext(context.Context, string, string, string, float64, int) (string, error)
 	callNodeGenerateWithOptionsContextAndIdempotency(context.Context, string, string, string, float64, int, string) (string, error)
+	// Do sends a request using the node client's standard HTTP transport.
+	//
+	// Parameters: request (*http.Request) is the request to send.
+	// Returns: the HTTP response, or a transport error.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [node_client_test.go](node_client_test.go).
 	Do(*http.Request) (*http.Response, error)
+	// DoDispatch sends a request using the dispatcher transport and timeout.
+	//
+	// Parameters: request (*http.Request) is the dispatch request to send.
+	// Returns: the HTTP response, or a transport error.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [node_client_test.go](node_client_test.go).
 	DoDispatch(*http.Request) (*http.Response, error)
+	// Get sends an HTTP GET request using the standard node-client transport.
+	//
+	// Parameters: url (string) is the complete request URL.
+	// Returns: the HTTP response, or a transport error.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [node_client_test.go](node_client_test.go).
 	Get(string) (*http.Response, error)
+	// PostDispatch sends a POST request using the dispatcher transport.
+	//
+	// Parameters: url (string) is the complete request URL; contentType (string)
+	// is the request media type; body (io.Reader) supplies the request body.
+	// Returns: the HTTP response, or a transport error.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [node_client_test.go](node_client_test.go).
 	PostDispatch(string, string, io.Reader) (*http.Response, error)
 }
 
@@ -63,6 +92,14 @@ type requestIDTransport struct {
 	next http.RoundTripper
 }
 
+// RoundTrip adds request-ID headers before delegating to the wrapped transport.
+//
+// Parameters: request (*http.Request) is the outbound request.
+// Returns: the response from the wrapped transport, or an error preparing or
+// sending the request.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [node_client_test.go](node_client_test.go).
 func (t *requestIDTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	var err error
 	request, err = withRequestIDHeaders(request)
@@ -116,14 +153,37 @@ func withRequestIDHeaders(request *http.Request) (*http.Request, error) {
 	return request, nil
 }
 
+// Do sends a request using the node client's standard HTTP transport.
+//
+// Parameters: request (*http.Request) is the request to send.
+// Returns: the HTTP response, or a transport error.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [node_client_test.go](node_client_test.go).
 func (c *nodeClient) Do(request *http.Request) (*http.Response, error) {
 	return c.client.Do(request)
 }
 
+// DoDispatch sends a request using the dispatcher transport and timeout.
+//
+// Parameters: request (*http.Request) is the dispatch request to send.
+// Returns: the HTTP response, or a transport error.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [node_client_test.go](node_client_test.go).
 func (c *nodeClient) DoDispatch(request *http.Request) (*http.Response, error) {
 	return c.dispatcher.Do(request)
 }
 
+// DoModelPull sends a model-pull request using the long-running model-pull
+// transport.
+//
+// Parameters: request (*http.Request) is the model-pull request to send.
+// Returns: the HTTP response, or an error if that transport is unavailable or
+// the request fails.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [api_worker_install_test.go](api_worker_install_test.go).
 func (c *nodeClient) DoModelPull(request *http.Request) (*http.Response, error) {
 	if c.modelPull == nil {
 		return nil, errors.New("model pull client is unavailable")
@@ -131,10 +191,25 @@ func (c *nodeClient) DoModelPull(request *http.Request) (*http.Response, error) 
 	return c.modelPull.Do(request)
 }
 
+// Get sends an HTTP GET request using the standard node-client transport.
+//
+// Parameters: url (string) is the complete request URL.
+// Returns: the HTTP response, or a transport error.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [node_client_test.go](node_client_test.go).
 func (c *nodeClient) Get(url string) (*http.Response, error) {
 	return c.client.Get(url)
 }
 
+// PostDispatch sends a POST request using the dispatcher transport.
+//
+// Parameters: url (string) is the complete request URL; contentType (string)
+// is the request media type; body (io.Reader) supplies the request body.
+// Returns: the HTTP response, or a transport error.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [node_client_test.go](node_client_test.go).
 func (c *nodeClient) PostDispatch(url, contentType string, body io.Reader) (*http.Response, error) {
 	return c.dispatcher.Post(url, contentType, body)
 }
@@ -398,6 +473,12 @@ type nodeResponseError struct {
 	body       string
 }
 
+// Error formats a non-success response returned by a node.
+//
+// Returns: the response status and, when present, its body.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [node_client_test.go](node_client_test.go).
 func (e *nodeResponseError) Error() string {
 	if e.body == "" {
 		return "node returned " + e.status

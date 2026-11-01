@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -69,8 +70,185 @@ func TestWriteJSONAndWriteError(t *testing.T) {
 
 	response = httptest.NewRecorder()
 	WriteError(response, apperr.Invalid(errors.New("invalid input")))
-	if response.Code != http.StatusBadRequest || response.Body.String() != "invalid input\n" {
+	var errorBody apperr.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &errorBody); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if response.Code != http.StatusBadRequest ||
+		response.Header().Get("Content-Type") != "application/json" ||
+		errorBody.Error != "invalid input" ||
+		errorBody.Code != "invalid_input" ||
+		errorBody.Retryable {
 		t.Fatalf("error response = status %d, body %q", response.Code, response.Body.String())
+	}
+}
+
+func TestWriteJSONEnrichesExistingErrorEnvelope(t *testing.T) {
+	response := httptest.NewRecorder()
+	body := map[string]any{
+		"type":  "error",
+		"error": map[string]string{"type": "api_error", "message": "upstream failed"},
+	}
+	if err := WriteJSON(response, http.StatusBadGateway, body); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode error envelope: %v", err)
+	}
+	var nested map[string]string
+	if err := json.Unmarshal(decoded["error"], &nested); err != nil {
+		t.Fatalf("decode provider error: %v", err)
+	}
+	var code string
+	if err := json.Unmarshal(decoded["code"], &code); err != nil {
+		t.Fatalf("decode error code: %v", err)
+	}
+	var retryable bool
+	if err := json.Unmarshal(decoded["retryable"], &retryable); err != nil {
+		t.Fatalf("decode retryability: %v", err)
+	}
+	if nested["message"] != "upstream failed" || code != "upstream_error" || !retryable {
+		t.Fatalf("enriched error response = %s", response.Body.String())
+	}
+}
+
+func TestWriteJSONErrorUsesTypedContextAndRetryability(t *testing.T) {
+	response := httptest.NewRecorder()
+	response.Header().Set(RequestIDHeader, "request-456")
+	err := apperr.WithContext(
+		apperr.WithRetryable(apperr.UnavailableError(errors.New("peer is busy")), false),
+		apperr.ErrorContext{NodeID: "node-8", Operation: "POST /api/tasks"},
+	)
+	if writeErr := WriteJSONError(response, err, map[string]string{"error": err.Error()}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	var body apperr.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode typed error response: %v", err)
+	}
+	if response.Code != http.StatusServiceUnavailable ||
+		body.Error != "peer is busy" ||
+		body.Code != "unavailable" ||
+		body.Retryable ||
+		body.RequestID != "request-456" ||
+		body.NodeID != "node-8" ||
+		body.Operation != "POST /api/tasks" {
+		t.Fatalf("typed error response = status %d, body %+v", response.Code, body)
+	}
+}
+
+func TestFormatErrorsAddsRequestAndRouteContext(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/nodes/{id}/task", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "node unavailable", http.StatusServiceUnavailable)
+	})
+	handler := Chain(
+		mux,
+		RequestID,
+		WithErrorContext(apperr.ErrorContext{NodeID: "fallback-node"}),
+		FormatErrors,
+	)
+	request := httptest.NewRequest(http.MethodPost, "/api/nodes/node-7/task", nil)
+	request.Header.Set(RequestIDHeader, "request-123")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	var body apperr.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode formatted response: %v", err)
+	}
+	if response.Code != http.StatusServiceUnavailable ||
+		response.Header().Get("Content-Type") != "application/json" ||
+		body.Error != "node unavailable" ||
+		body.Code != "unavailable" ||
+		!body.Retryable ||
+		body.RequestID != "request-123" ||
+		body.NodeID != "node-7" ||
+		body.Operation != "POST /api/nodes/{id}/task" {
+		t.Fatalf("formatted error response = status %d, body %+v", response.Code, body)
+	}
+}
+
+func TestFormatErrorsAddsDiscoveryNodeContext(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/discovery/{id}/pairing/invite", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "fingerprint required", http.StatusBadRequest)
+	})
+	response := httptest.NewRecorder()
+
+	FormatErrors(mux).ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, "/api/discovery/node-7/pairing/invite", nil),
+	)
+
+	var body apperr.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode formatted response: %v", err)
+	}
+	if body.NodeID != "node-7" || body.Operation != "POST /api/discovery/{id}/pairing/invite" {
+		t.Fatalf("formatted discovery error context = %+v", body)
+	}
+}
+
+func TestFormatErrorsUsesStaticNodeContextWithoutNodeRoute(t *testing.T) {
+	handler := Chain(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "node failure", http.StatusInternalServerError)
+		}),
+		RequestID,
+		WithErrorContext(apperr.ErrorContext{NodeID: "node-local"}),
+		FormatErrors,
+	)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status", nil))
+
+	var body apperr.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode formatted response: %v", err)
+	}
+	if body.NodeID != "node-local" || body.Operation != http.MethodGet {
+		t.Fatalf("formatted error context = %+v", body)
+	}
+}
+
+func TestFormatErrorsPreservesProviderJSONErrorBodies(t *testing.T) {
+	const errorBody = `{"type":"error","error":{"message":"upstream failed","type":"api_error"}}`
+	handler := FormatErrors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, errorBody)
+	}))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/provider", nil))
+
+	if response.Code != http.StatusBadGateway ||
+		response.Header().Get("Content-Type") != "application/json" ||
+		response.Body.String() != errorBody {
+		t.Fatalf("provider JSON error response = status %d, headers %v, body %q",
+			response.Code, response.Header(), response.Body.String())
+	}
+}
+
+func TestFormatErrorsPreservesStreamingErrorBodies(t *testing.T) {
+	const streamBody = "event: error\ndata: {\"error\":\"upstream failed\"}\n\n"
+	handler := FormatErrors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, streamBody)
+	}))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/stream", nil))
+
+	if response.Code != http.StatusBadGateway ||
+		response.Header().Get("Content-Type") != "text/event-stream" ||
+		response.Body.String() != streamBody {
+		t.Fatalf("streaming error response = status %d, headers %v, body %q",
+			response.Code, response.Header(), response.Body.String())
 	}
 }
 

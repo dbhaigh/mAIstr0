@@ -15,6 +15,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -36,7 +38,6 @@ type trustedPeer struct {
 type identityFile struct {
 	ID          string                 `json:"id"`
 	Certificate string                 `json:"certificate"`
-	PrivateKey  string                 `json:"private_key"`
 	Trusted     map[string]trustedPeer `json:"trusted"`
 }
 
@@ -67,6 +68,31 @@ type identityConn struct {
 	once     sync.Once
 }
 
+func auditTrustBoundary(level slog.Level, event string, attributes ...any) {
+	fields := make([]any, 0, len(attributes)+4)
+	fields = append(fields, "component", "security", "event", event)
+	fields = append(fields, attributes...)
+	slog.Default().Log(context.Background(), level, "trust boundary operation", fields...)
+}
+
+func peerCertificateAuditFields(certificates []*x509.Certificate) (string, string) {
+	if len(certificates) == 0 || certificates[0] == nil {
+		return "", ""
+	}
+	certificate := certificates[0]
+	return certificate.Subject.CommonName, certificateFingerprint(certificate)
+}
+
+func bootstrapVerificationMode(fingerprint string, allowUntrusted bool) string {
+	if fingerprint != "" {
+		return "out_of_band_fingerprint"
+	}
+	if allowUntrusted {
+		return "local_subnet_identity"
+	}
+	return "existing_trust"
+}
+
 func (c *identityConn) Close() error {
 	var err error
 	c.once.Do(func() {
@@ -78,7 +104,31 @@ func (c *identityConn) Close() error {
 	return err
 }
 
-// Open loads or creates a persistent certificate for id.
+func readIdentityFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.Join(errors.New("peeridentity: identity path is not a regular file"), file.Close())
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return nil, errors.Join(fmt.Errorf("peeridentity: restrict identity permissions: %w", err), file.Close())
+	}
+	raw, readErr := io.ReadAll(file)
+	if err := errors.Join(readErr, file.Close()); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// Open loads the stable ID and peer roster and creates a fresh process-local
+// certificate for id. The private key is never persisted, so peers must accept
+// the new certificate fingerprint after each restart.
 func Open(path, id string) (*Identity, error) {
 	if strings.TrimSpace(path) == "" || strings.TrimSpace(id) == "" {
 		return nil, errors.New("peeridentity: identity path and id are required")
@@ -87,7 +137,8 @@ func Open(path, id string) (*Identity, error) {
 		return nil, fmt.Errorf("peeridentity: create identity directory: %w", err)
 	}
 	identity := &Identity{id: id, path: path, trusted: make(map[string]trustedPeer)}
-	raw, err := os.ReadFile(path)
+	created := false
+	raw, err := readIdentityFile(path)
 	if err == nil {
 		var saved identityFile
 		if err := json.Unmarshal(raw, &saved); err != nil {
@@ -96,18 +147,20 @@ func Open(path, id string) (*Identity, error) {
 		if saved.ID != id {
 			return nil, fmt.Errorf("peeridentity: identity file belongs to %q, not %q", saved.ID, id)
 		}
-		identity.certificatePEM = saved.Certificate
-		identity.privateKeyPEM = saved.PrivateKey
 		identity.trusted = saved.Trusted
 		if identity.trusted == nil {
 			identity.trusted = make(map[string]trustedPeer)
 		}
-	} else if !os.IsNotExist(err) {
+		if err := identity.createCertificate(); err != nil {
+			return nil, fmt.Errorf("peeridentity: create ephemeral TLS identity: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("peeridentity: read identity file: %w", err)
 	} else {
 		if err := identity.createCertificate(); err != nil {
 			return nil, err
 		}
+		created = true
 	}
 	certificate, err := tls.X509KeyPair([]byte(identity.certificatePEM), []byte(identity.privateKeyPEM))
 	if err != nil {
@@ -124,21 +177,20 @@ func Open(path, id string) (*Identity, error) {
 	if now.Before(leaf.NotBefore) {
 		return nil, errors.New("peeridentity: identity certificate is not valid yet")
 	}
-	if !now.Before(leaf.NotAfter) {
-		if err := identity.createCertificate(); err != nil {
-			return nil, fmt.Errorf("peeridentity: rotate expired identity certificate: %w", err)
-		}
-		certificate = identity.certificate
-		leaf, err = x509.ParseCertificate(certificate.Certificate[0])
-		if err != nil {
-			return nil, fmt.Errorf("peeridentity: parse rotated TLS certificate: %w", err)
-		}
-	}
 	certificate.Leaf = leaf
 	identity.certificate = certificate
 	if err := identity.persistLocked(); err != nil {
 		return nil, err
 	}
+	event := "identity.ephemeral_certificate_created"
+	if created {
+		event = "identity.created"
+	}
+	auditTrustBoundary(slog.LevelInfo, event,
+		"identity_id", id,
+		"certificate_fingerprint", certificateFingerprint(leaf),
+		"outcome", "success",
+	)
 	return identity, nil
 }
 
@@ -252,7 +304,18 @@ func (i *Identity) PinnedPeerServerTLSConfig() *tls.Config {
 		return current, nil
 	}
 	config.VerifyConnection = func(state tls.ConnectionState) error {
+		peerID, fingerprint := peerCertificateAuditFields(state.PeerCertificates)
+		outcome := "accepted"
+		defer func() {
+			level := slog.LevelInfo
+			if outcome != "accepted" {
+				level = slog.LevelWarn
+			}
+			auditTrustBoundary(level, "peer.server_tls_verification",
+				"identity_id", i.id, "peer_id", peerID, "certificate_fingerprint", fingerprint, "outcome", outcome)
+		}()
 		if len(state.PeerCertificates) == 0 || !i.IsTrustedCertificate(state.PeerCertificates[0]) {
+			outcome = "rejected"
 			return errors.New("peeridentity: client certificate is not pinned to a paired cluster member")
 		}
 		return nil
@@ -263,26 +326,41 @@ func (i *Identity) PinnedPeerServerTLSConfig() *tls.Config {
 // PinnedClientTLSConfig authenticates this identity and accepts only a
 // currently pinned server certificate with the requested stable peer ID.
 func (i *Identity) PinnedClientTLSConfig(expectedID string) *tls.Config {
-	return &tls.Config{
+	config := &tls.Config{
 		InsecureSkipVerify: true, // The self-signed certificate is verified by its pin below.
 		MinVersion:         tls.VersionTLS13,
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			return i.currentIdentityCertificate()
 		},
-		VerifyConnection: func(state tls.ConnectionState) error {
-			if len(state.PeerCertificates) == 0 {
-				return errors.New("peeridentity: relay server did not present a certificate")
-			}
-			certificate := state.PeerCertificates[0]
-			if certificate.Subject.CommonName != expectedID {
-				return fmt.Errorf("peeridentity: relay server identity does not match expected peer %q", expectedID)
-			}
-			if !i.IsTrustedCertificate(certificate) {
-				return errors.New("peeridentity: relay server certificate is not pinned to a paired cluster member")
-			}
-			return nil
-		},
 	}
+	config.VerifyConnection = func(state tls.ConnectionState) (verifyErr error) {
+		peerID, fingerprint := peerCertificateAuditFields(state.PeerCertificates)
+		outcome := "accepted"
+		defer func() {
+			level := slog.LevelInfo
+			if outcome != "accepted" {
+				level = slog.LevelWarn
+			}
+			auditTrustBoundary(level, "peer.client_tls_verification",
+				"identity_id", i.id, "expected_peer_id", expectedID, "peer_id", peerID,
+				"certificate_fingerprint", fingerprint, "outcome", outcome)
+		}()
+		if len(state.PeerCertificates) == 0 {
+			outcome = "rejected"
+			return errors.New("peeridentity: relay server did not present a certificate")
+		}
+		certificate := state.PeerCertificates[0]
+		if certificate.Subject.CommonName != expectedID {
+			outcome = "rejected"
+			return fmt.Errorf("peeridentity: relay server identity does not match expected peer %q", expectedID)
+		}
+		if !i.IsTrustedCertificate(certificate) {
+			outcome = "rejected"
+			return errors.New("peeridentity: relay server certificate is not pinned to a paired cluster member")
+		}
+		return nil
+	}
+	return config
 }
 
 // DialPinned establishes an mTLS connection to a currently paired peer.
@@ -311,10 +389,13 @@ func (i *Identity) DialPinned(ctx context.Context, network, address, expectedID 
 	peerCertificate := state.PeerCertificates[0]
 	i.mu.Lock()
 	peer, exists := i.trusted[expectedID]
-	if !exists || peer.Fingerprint != certificateFingerprint(peerCertificate) ||
+	if !exists || !strings.EqualFold(peer.Fingerprint, certificateFingerprint(peerCertificate)) ||
 		!certificateCurrentlyValid(peerCertificate, time.Now()) {
 		i.mu.Unlock()
 		_ = connection.Close()
+		auditTrustBoundary(slog.LevelWarn, "peer.dial_rejected",
+			"identity_id", i.id, "peer_id", expectedID,
+			"certificate_fingerprint", certificateFingerprint(peerCertificate), "outcome", "rejected")
 		return nil, errors.New("peeridentity: relay server certificate is no longer pinned")
 	}
 	if i.activeConns == nil {
@@ -323,12 +404,31 @@ func (i *Identity) DialPinned(ctx context.Context, network, address, expectedID 
 	tracked := &identityConn{Conn: connection, identity: i}
 	i.activeConns[tracked] = struct{}{}
 	i.mu.Unlock()
+	auditTrustBoundary(slog.LevelInfo, "peer.dial_authenticated",
+		"identity_id", i.id, "peer_id", expectedID,
+		"certificate_fingerprint", certificateFingerprint(peerCertificate), "outcome", "accepted")
 	return tracked, nil
 }
 
 // TrackPinnedPeerConnection registers an authenticated inbound or outbound
 // connection so pin changes can terminate traffic using a stale identity.
-func (i *Identity) TrackPinnedPeerConnection(certificate *x509.Certificate, connection net.Conn) (net.Conn, error) {
+func (i *Identity) TrackPinnedPeerConnection(certificate *x509.Certificate, connection net.Conn) (result net.Conn, resultErr error) {
+	peerID, fingerprint := "", ""
+	if certificate != nil {
+		peerID = certificate.Subject.CommonName
+		fingerprint = certificateFingerprint(certificate)
+	}
+	outcome := "rejected"
+	defer func() {
+		level := slog.LevelInfo
+		if resultErr != nil {
+			level = slog.LevelWarn
+		} else {
+			outcome = "accepted"
+		}
+		auditTrustBoundary(level, "peer.connection_track",
+			"identity_id", i.id, "peer_id", peerID, "certificate_fingerprint", fingerprint, "outcome", outcome)
+	}()
 	if certificate == nil || connection == nil {
 		return nil, errors.New("peeridentity: a pinned certificate and connection are required")
 	}
@@ -341,7 +441,7 @@ func (i *Identity) TrackPinnedPeerConnection(certificate *x509.Certificate, conn
 	}
 	i.mu.Lock()
 	peer, exists := i.trusted[id]
-	if !exists || peer.Fingerprint != certificateFingerprint(certificate) {
+	if !exists || !strings.EqualFold(peer.Fingerprint, fingerprint) {
 		i.mu.Unlock()
 		return nil, errors.New("peeridentity: peer connection certificate is not currently pinned")
 	}
@@ -514,24 +614,42 @@ func (i *Identity) bootstrapTransport(expectedID, fingerprint string, allowUntru
 		MinVersion:         tls.VersionTLS13,
 	}
 	config.VerifyConnection = func(state tls.ConnectionState) error {
+		peerID, peerFingerprint := peerCertificateAuditFields(state.PeerCertificates)
+		outcome := "accepted"
+		defer func() {
+			level := slog.LevelInfo
+			if outcome != "accepted" {
+				level = slog.LevelWarn
+			}
+			auditTrustBoundary(level, "peer.bootstrap_tls_verification",
+				"identity_id", i.id, "expected_peer_id", expectedID, "peer_id", peerID,
+				"certificate_fingerprint", peerFingerprint, "verification_mode", bootstrapVerificationMode(fingerprint, allowUntrusted),
+				"outcome", outcome)
+		}()
 		if len(state.PeerCertificates) == 0 {
+			outcome = "rejected"
 			return errors.New("peeridentity: bootstrap server did not present a certificate")
 		}
 		certificate := state.PeerCertificates[0]
 		if !certificateCurrentlyValid(certificate, time.Now()) {
+			outcome = "rejected"
 			return errors.New("peeridentity: bootstrap server certificate is outside its validity period")
 		}
 		if expectedID != "" && certificate.Subject.CommonName != expectedID {
+			outcome = "rejected"
 			return fmt.Errorf("peeridentity: bootstrap server identity does not match expected peer %q", expectedID)
 		}
 		if fingerprint != "" {
 			if err := ValidateFingerprint(fingerprint); err != nil {
+				outcome = "rejected"
 				return err
 			}
 			if !strings.EqualFold(certificateFingerprint(certificate), fingerprint) {
+				outcome = "rejected"
 				return errors.New("peeridentity: bootstrap server certificate fingerprint does not match the verified fingerprint")
 			}
 		} else if !allowUntrusted && !i.IsTrustedCertificate(certificate) {
+			outcome = "rejected"
 			return errors.New("peeridentity: first-contact pairing requires an out-of-band verified certificate fingerprint")
 		}
 		return nil
@@ -544,25 +662,39 @@ func (i *Identity) bootstrapTransport(expectedID, fingerprint string, allowUntru
 func (i *Identity) NewPairingPIN() (string, error) {
 	var random [4]byte
 	if _, err := rand.Read(random[:]); err != nil {
+		auditTrustBoundary(slog.LevelError, "pairing.pin_generation",
+			"identity_id", i.id, "outcome", "failed")
 		return "", fmt.Errorf("peeridentity: generate pairing PIN: %w", err)
 	}
 	value := uint32(random[0])<<24 | uint32(random[1])<<16 | uint32(random[2])<<8 | uint32(random[3])
 	pin := fmt.Sprintf("%06d", value%900000+100000)
+	expiresAt := i.pairingNow().Add(30 * time.Minute)
 	i.mu.Lock()
 	i.pairingPIN = pin
-	i.pairingExpires = i.pairingNow().Add(30 * time.Minute)
+	i.pairingExpires = expiresAt
 	i.pairingAttempts = 0
 	i.mu.Unlock()
+	auditTrustBoundary(slog.LevelInfo, "pairing.pin_generation",
+		"identity_id", i.id, "expires_at", expiresAt, "outcome", "generated")
 	return pin, nil
 }
 
 // VerifyPairingPIN checks the active short-lived pairing code.
 func (i *Identity) VerifyPairingPIN(pin string) bool {
 	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return i.pairingPINActiveLocked(i.pairingNow()) &&
+	valid := i.pairingPINActiveLocked(i.pairingNow()) &&
 		len(pin) == len(i.pairingPIN) &&
 		subtle.ConstantTimeCompare([]byte(pin), []byte(i.pairingPIN)) == 1
+	i.mu.RUnlock()
+	outcome := "rejected"
+	level := slog.LevelWarn
+	if valid {
+		outcome = "accepted"
+		level = slog.LevelInfo
+	}
+	auditTrustBoundary(level, "pairing.pin_verification",
+		"identity_id", i.id, "outcome", outcome)
+	return valid
 }
 
 // ActivePairingPIN returns the current pairing code only while it can still
@@ -590,8 +722,10 @@ func (i *Identity) pairingNow() time.Time {
 // ConsumePairingPIN atomically accepts a valid code once.
 func (i *Identity) ConsumePairingPIN(pin string) bool {
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if !i.pairingPINActiveLocked(i.pairingNow()) {
+		i.mu.Unlock()
+		auditTrustBoundary(slog.LevelWarn, "pairing.pin_consumption",
+			"identity_id", i.id, "outcome", "inactive")
 		return false
 	}
 	if len(pin) != len(i.pairingPIN) || subtle.ConstantTimeCompare([]byte(pin), []byte(i.pairingPIN)) != 1 {
@@ -599,10 +733,16 @@ func (i *Identity) ConsumePairingPIN(pin string) bool {
 		if i.pairingAttempts >= 20 {
 			i.pairingPIN = ""
 		}
+		i.mu.Unlock()
+		auditTrustBoundary(slog.LevelWarn, "pairing.pin_consumption",
+			"identity_id", i.id, "outcome", "rejected")
 		return false
 	}
 	i.pairingPIN = ""
 	i.pairingExpires = time.Time{}
+	i.mu.Unlock()
+	auditTrustBoundary(slog.LevelInfo, "pairing.pin_consumption",
+		"identity_id", i.id, "outcome", "accepted")
 	return true
 }
 
@@ -614,7 +754,17 @@ func (i *Identity) TrustPeer(id, certificatePEM string) error {
 
 // TrustPeerDetails pins a peer certificate and stores its role and optional
 // HTTPS address for reconnecting to paired orchestrators after restart.
-func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) error {
+func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) (resultErr error) {
+	fingerprint := ""
+	outcome := "rejected"
+	defer func() {
+		level := slog.LevelInfo
+		if outcome == "rejected" || outcome == "persistence_failed" {
+			level = slog.LevelWarn
+		}
+		auditTrustBoundary(level, "peer.trust_update",
+			"identity_id", i.id, "peer_id", id, "certificate_fingerprint", fingerprint, "outcome", outcome)
+	}()
 	if role != "" && role != "node" && role != "orchestrator" {
 		return fmt.Errorf("peeridentity: invalid peer role %q", role)
 	}
@@ -633,8 +783,8 @@ func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) er
 	i.mu.Lock()
 	previous, existed := i.trusted[id]
 	peer := previous
-	fingerprint := certificateFingerprint(cert)
-	changed := peer.Fingerprint != fingerprint
+	fingerprint = certificateFingerprint(cert)
+	changed := !strings.EqualFold(peer.Fingerprint, fingerprint)
 	peer.Fingerprint = fingerprint
 	peer.Certificate = certificatePEM
 	if role != "" {
@@ -648,10 +798,21 @@ func (i *Identity) TrustPeerDetails(id, certificatePEM, role, address string) er
 	if err != nil {
 		i.restoreTrustLocked(id, previous, existed)
 		changed = false
+		outcome = "persistence_failed"
 	}
 	i.mu.Unlock()
 	if changed {
 		i.invalidateConnections()
+	}
+	if err == nil {
+		switch {
+		case !existed:
+			outcome = "added"
+		case changed:
+			outcome = "updated"
+		default:
+			outcome = "refreshed"
+		}
 	}
 	return err
 }
@@ -671,10 +832,12 @@ func (i *Identity) restoreTrustLocked(id string, previous trustedPeer, existed b
 func (i *Identity) RemovePairedOrchestrators() error {
 	i.mu.Lock()
 	changed := false
+	removedCount := 0
 	for id, peer := range i.trusted {
 		if peer.Role == "orchestrator" {
 			delete(i.trusted, id)
 			changed = true
+			removedCount++
 		}
 	}
 	var err error
@@ -685,11 +848,32 @@ func (i *Identity) RemovePairedOrchestrators() error {
 	if changed {
 		i.invalidateConnections()
 	}
+	outcome := "unchanged"
+	if changed {
+		outcome = "removed"
+	}
+	if err != nil {
+		outcome = "persistence_failed"
+	}
+	auditTrustBoundary(slog.LevelInfo, "peer.trust_remove_orchestrators",
+		"identity_id", i.id, "removed_count", removedCount, "outcome", outcome)
 	return err
 }
 
-func (i *Identity) ValidatePeer(id, certificatePEM string) error {
-	_, err := validatePeerCertificate(id, certificatePEM)
+func (i *Identity) ValidatePeer(id, certificatePEM string) (resultErr error) {
+	fingerprint := ""
+	certificate, err := validatePeerCertificate(id, certificatePEM)
+	if err == nil {
+		fingerprint = certificateFingerprint(certificate)
+	}
+	outcome := "accepted"
+	level := slog.LevelInfo
+	if err != nil {
+		outcome = "rejected"
+		level = slog.LevelWarn
+	}
+	auditTrustBoundary(level, "peer.certificate_validation",
+		"identity_id", i.id, "peer_id", id, "certificate_fingerprint", fingerprint, "outcome", outcome)
 	return err
 }
 
@@ -720,8 +904,18 @@ func (i *Identity) IsTrustedID(id string) bool {
 }
 
 // ReloadTrustedPeers refreshes the paired roster from the shared identity file.
-// It supports a companion process sharing identity material with the node.
-func (i *Identity) ReloadTrustedPeers() error {
+// Private keys remain process-local and are never shared through this file.
+func (i *Identity) ReloadTrustedPeers() (resultErr error) {
+	defer func() {
+		outcome := "success"
+		level := slog.LevelInfo
+		if resultErr != nil {
+			outcome = "failed"
+			level = slog.LevelWarn
+		}
+		auditTrustBoundary(level, "peer.trust_reload",
+			"identity_id", i.id, "outcome", outcome)
+	}()
 	raw, err := os.ReadFile(i.path)
 	if err != nil {
 		return fmt.Errorf("peeridentity: reload trust roster: %w", err)
@@ -771,6 +965,17 @@ func (i *Identity) RemovePeer(id string) error {
 	if exists {
 		i.invalidateConnections()
 	}
+	outcome := "not_found"
+	level := slog.LevelInfo
+	if exists {
+		outcome = "revoked"
+	}
+	if err != nil {
+		outcome = "persistence_failed"
+		level = slog.LevelError
+	}
+	auditTrustBoundary(level, "peer.trust_revoke",
+		"identity_id", i.id, "peer_id", id, "outcome", outcome)
 	return err
 }
 
@@ -782,7 +987,7 @@ func (i *Identity) IsTrustedCertificate(cert *x509.Certificate) bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	peer, ok := i.trusted[cert.Subject.CommonName]
-	return ok && peer.Fingerprint == certificateFingerprint(cert)
+	return ok && strings.EqualFold(peer.Fingerprint, certificateFingerprint(cert))
 }
 
 // RequireTrustedPeer rejects requests that did not present a currently pinned
@@ -791,6 +996,13 @@ func (i *Identity) RequireTrustedPeer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 ||
 			!i.IsTrustedCertificate(r.TLS.PeerCertificates[0]) {
+			peerID, fingerprint := "", ""
+			if r.TLS != nil {
+				peerID, fingerprint = peerCertificateAuditFields(r.TLS.PeerCertificates)
+			}
+			auditTrustBoundary(slog.LevelWarn, "peer.request_authentication",
+				"identity_id", i.id, "peer_id", peerID,
+				"certificate_fingerprint", fingerprint, "outcome", "rejected")
 			http.Error(w, "request requires a paired cluster identity", http.StatusForbidden)
 			return
 		}
@@ -903,7 +1115,7 @@ func (i *Identity) TrustedPeers() map[string]string {
 
 func (i *Identity) persistLocked() error {
 	saved := identityFile{
-		ID: i.id, Certificate: i.certificatePEM, PrivateKey: i.privateKeyPEM, Trusted: i.trusted,
+		ID: i.id, Certificate: i.certificatePEM, Trusted: i.trusted,
 	}
 	raw, err := json.Marshal(saved)
 	if err != nil {

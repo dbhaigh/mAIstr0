@@ -27,6 +27,14 @@ const modelMemoryReserve = 1.2
 var modelParameterCount = regexp.MustCompile(`(?i)(?:^|[^0-9.])(\d+(?:\.\d+)?)b(?:$|[^a-z])`)
 
 type modelProvisionNodeClient interface {
+	// DoModelPull sends a long-running model-pull request to a node.
+	//
+	// Parameters: request (*http.Request) is the model download or installation
+	// request.
+	// Returns: the response, or an error if the request fails.
+	//
+	// References: [request paths](../../docs/architecture.md#request-paths),
+	// [model_provisioning_test.go](model_provisioning_test.go).
 	DoModelPull(*http.Request) (*http.Response, error)
 	discoveredNodeStatusContext(context.Context, string) (cluster.NodeStatus, error)
 }

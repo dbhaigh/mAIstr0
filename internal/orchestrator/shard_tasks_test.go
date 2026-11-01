@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/quick"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
@@ -22,6 +24,7 @@ import (
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/shard"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/stretchr/testify/assert"
 )
 
 func addTaskTestShardGroup(s *Server, address string) ShardGroup {
@@ -380,5 +383,147 @@ func BenchmarkShardSchedulerNodes(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		shardSchedulerNodes([]cluster.NodeStatus{node}, groups)
+	}
+}
+
+func TestShardGroupHardwareCapabilitiesProperties(t *testing.T) {
+	err := quick.Check(func(rawKinds []byte) bool {
+		devices := make([]shard.DeviceAllocation, len(rawKinds))
+		hasGPU, hasNPU := false, false
+		for i, raw := range rawKinds {
+			switch raw % 6 {
+			case 0:
+				devices[i].Kind, hasGPU = "GPU", true
+			case 1:
+				devices[i].Kind, hasGPU = "gpu", true
+			case 2:
+				devices[i].Kind, hasNPU = "NPU", true
+			case 3:
+				devices[i].Kind, hasNPU = "npu", true
+			case 4:
+				devices[i].Kind = "cpu"
+			default:
+				devices[i].Kind = "unknown"
+			}
+		}
+		group := ShardGroup{Plan: shard.ShardPlan{Nodes: []shard.NodePlan{{Devices: devices}}}}
+		want := make([]string, 0, 3)
+		if hasGPU {
+			want = append(want, "gpu")
+		}
+		if hasNPU {
+			want = append(want, "npu")
+		}
+		if hasGPU || hasNPU {
+			want = append(want, "fast")
+		}
+		return assert.ElementsMatch(t, want, shardGroupHardwareCapabilities(group))
+	}, &quick.Config{MaxCount: 500, Rand: rand.New(rand.NewSource(17))})
+	assert.NoError(t, err)
+}
+
+func TestShardTextTagsProperties(t *testing.T) {
+	base := []string{"general", "sharded", "creative", "summarize", "translate"}
+	check := func(name string) bool {
+		tags := shardTextTags(name)
+		if !assert.GreaterOrEqual(t, len(tags), len(base)) || !assert.Equal(t, base, tags[:len(base)]) {
+			return false
+		}
+		lower := strings.ToLower(name)
+		wantsCode := strings.Contains(lower, "qwen") || strings.Contains(lower, "coder") || strings.Contains(lower, "phi4")
+		if wantsCode {
+			return assert.Equal(t, []string{"code", "math"}, tags[len(base):])
+		}
+		return assert.Empty(t, tags[len(base):])
+	}
+	err := quick.Check(func(name string) bool {
+		for _, candidate := range []string{name, "QWEN-" + name, "prefix-CODER-" + name, "prefix-PHI4-" + name} {
+			if !check(candidate) {
+				return false
+			}
+		}
+		return true
+	}, &quick.Config{MaxCount: 300, Rand: rand.New(rand.NewSource(29))})
+	assert.NoError(t, err)
+}
+
+func TestContainsCapabilityProperties(t *testing.T) {
+	err := quick.Check(func(capabilities []string, target string) bool {
+		want := false
+		for _, capability := range capabilities {
+			if strings.EqualFold(capability, target) {
+				want = true
+				break
+			}
+		}
+		got := containsCapability(capabilities, target)
+		return assert.Equal(t, want, got) && assert.Equal(t, got, containsCapability(capabilities, strings.ToUpper(target)))
+	}, &quick.Config{MaxCount: 500, Rand: rand.New(rand.NewSource(43))})
+	assert.NoError(t, err)
+}
+
+func TestShardSchedulerNodesUsesWeightOverrideAndExactHead(t *testing.T) {
+	nodes := []cluster.NodeStatus{
+		{
+			ID: "head", Address: "http://head", Healthy: true,
+			Models:  []engine.Model{{Name: "CLUSTER-MODEL"}, {Name: "local-model"}},
+			Engines: []engine.Status{{Name: "local-engine", Ready: true}},
+		},
+		{ID: "head", Address: "http://stale", Healthy: true, Models: []engine.Model{{Name: "cluster-model"}}},
+		{ID: "offline", Address: "http://offline", Healthy: false, Models: []engine.Model{{Name: "cluster-model"}}},
+	}
+	group := ShardGroup{
+		ID: "placement", State: ShardGroupReady,
+		Model: shard.ModelProfile{
+			Name: "cluster-model", FileSizeBytes: 8 << 30, WeightsSizeBytes: 3 << 30,
+			RequestedContext: 4096, Quantization: "Q4_K_M",
+		},
+		Plan: shard.ShardPlan{Nodes: []shard.NodePlan{{
+			Devices: []shard.DeviceAllocation{{Kind: "GPU"}, {Kind: "NPU"}},
+		}}},
+		Members: []ShardGroupMember{{NodeID: "head", Address: "http://head", Role: "head"}},
+	}
+
+	got := shardSchedulerNodes(nodes, []ShardGroup{group})
+	if len(got[0].Models) != 2 || got[0].Models[0].Name != "local-model" {
+		t.Fatalf("head models after filtering = %+v", got[0].Models)
+	}
+	model := got[0].Models[1]
+	if model.Name != group.Model.Name || model.Engine != "shard-group:placement" ||
+		model.SizeGB != 3 || model.ContextLength != group.Model.RequestedContext ||
+		model.Quantization != group.Model.Quantization {
+		t.Fatalf("derived shard model = %+v", model)
+	}
+	if len(got[0].Engines) != 2 || !got[0].Engines[1].Ready {
+		t.Fatalf("head engines = %+v", got[0].Engines)
+	}
+	for _, capability := range []string{"gpu", "npu", "fast"} {
+		if !containsCapability(got[0].Capabilities, capability) {
+			t.Errorf("head capabilities %v omit %q", got[0].Capabilities, capability)
+		}
+	}
+	for i := 1; i < len(got); i++ {
+		for _, model := range got[i].Models {
+			if model.Name == group.Model.Name {
+				t.Errorf("non-head node %q retained sharded model: %+v", got[i].ID, model)
+			}
+		}
+	}
+}
+
+func BenchmarkShardGenerationStreamManyChunks(b *testing.B) {
+	var stream strings.Builder
+	const chunkCount = 64
+	for i := 0; i < chunkCount; i++ {
+		fmt.Fprintf(&stream, "data: {\"choices\":[{\"delta\":{\"content\":\"chunk-%02d \"}}]}\n\n", i)
+	}
+	stream.WriteString("data: [DONE]\n\n")
+	payload := stream.String()
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := readShardGenerationStream(strings.NewReader(payload), func(int, int, int, bool) {}); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

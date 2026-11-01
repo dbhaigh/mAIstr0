@@ -12,6 +12,16 @@ import (
 	"github.com/maistr0/maistr0/internal/shard"
 )
 
+// Create validates request, plans placement, and starts a managed shard group.
+//
+// Parameters: ctx (context.Context) bounds planning, capacity waits, and
+// engine operations; request (CreateShardGroupRequest) must include a
+// nonempty model name and valid mode and placement constraints.
+// Returns: the created group, or an error for invalid or conflicting input,
+// unavailable nodes, persistence failures, or startup failures.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_manager_test.go](shard_manager_test.go).
 func (m *ShardManager) Create(ctx context.Context, request CreateShardGroupRequest) (ShardGroup, error) {
 	if strings.TrimSpace(request.Model.Name) == "" {
 		return ShardGroup{}, fmt.Errorf("%w: model.name is required", errShardGroupInvalid)
@@ -168,6 +178,16 @@ func (m *ShardManager) startGroup(ctx context.Context, id string, request Create
 	return result, nil
 }
 
+// Delete drains active requests, stops group members, and removes the
+// persisted and in-memory group.
+//
+// Parameters: ctx (context.Context) bounds request draining and engine stops;
+// id (string) is the shard-group ID.
+// Returns: an error if the group is missing, operations conflict, members
+// cannot stop, or persistence fails.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_manager_test.go](shard_manager_test.go).
 func (m *ShardManager) Delete(ctx context.Context, id string) error {
 	if err := m.beginOperation(id); err != nil {
 		return err
@@ -206,8 +226,15 @@ func (m *ShardManager) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// Recover verifies every persisted member against the current node and supervisor
-// state before restoring readiness and member-capacity reservations.
+// Close drains active requests and stops every running shard group before
+// orchestrator shutdown.
+//
+// Parameters: ctx (context.Context) bounds request draining and engine stops.
+// Returns: joined errors from state changes, request draining, and member
+// teardown.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [shard_manager_test.go](shard_manager_test.go).
 func (m *ShardManager) Close(ctx context.Context) error {
 	var result error
 	for _, group := range m.List() {

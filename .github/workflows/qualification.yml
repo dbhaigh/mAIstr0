@@ -71,6 +71,22 @@ jobs:
       - name: Verify independent native packaging, installation and replacement
         shell: pwsh
         run: ./build/verify-release.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP "release-acceptance")
+      - name: Validate Linux arm64 build and Windows self-extractor
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" \
+            -o "$RUNNER_TEMP/maistr0-linux-arm64" ./cmd/maistr0
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends file nsis unzip zip
+          stage="$RUNNER_TEMP/maistr0-sfx-input"
+          mkdir -p "$stage"
+          printf 'smoke test\n' > "$stage/maistr0.exe"
+          (cd "$stage" && zip -q "$RUNNER_TEMP/maistr0-sfx-input.zip" maistr0.exe)
+          bash build/create-windows-sfx.sh 0.0.0 \
+            "$RUNNER_TEMP/maistr0-sfx-input.zip" "$RUNNER_TEMP/maistr0-sfx.exe"
+          file -b "$RUNNER_TEMP/maistr0-sfx.exe" | grep -Eq '^PE32(\+)? executable'
       - name: Upload native acceptance
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

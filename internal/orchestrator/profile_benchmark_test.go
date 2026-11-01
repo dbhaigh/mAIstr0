@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -189,9 +190,13 @@ func BenchmarkProfileHeterogeneousRouting(b *testing.B) {
 }
 
 func BenchmarkRouterCandidateSelection(b *testing.B) {
-	previousLogger := slog.Default()
+	previousLogger, previousOutput, previousFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})))
-	b.Cleanup(func() { slog.SetDefault(previousLogger) })
+	b.Cleanup(func() {
+		slog.SetDefault(previousLogger)
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
 	server := newPerformanceOrchestrator(b, nil, 16)
 	server.routerBreakers = newRouterCircuitBreakers()
 	for nodeIndex := range 32 {

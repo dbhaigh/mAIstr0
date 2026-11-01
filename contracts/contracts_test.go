@@ -259,7 +259,16 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		"created_at":   now, "updated_at": now,
 	}
 
+	errorResponseFixture, err := os.ReadFile(filepath.Join("fixtures", "error-response.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errorResponse any
+	if err := json.Unmarshal(errorResponseFixture, &errorResponse); err != nil {
+		t.Fatalf("parse error response fixture: %v", err)
+	}
 	values := map[string]any{
+		"error-response.schema.json":  errorResponse,
 		"shard-membership.schema.json": map[string]any{"node_ids": []string{"worker-1", "worker-2"}},
 		"peer-update.schema.json":      map[string]any{"version": "0.0.24.1", "os": "darwin", "arch": "arm64", "sha256": strings.Repeat("a", 64), "size": 14000000},
 		"dashboard-pipeline.schema.json": map[string]any{
@@ -600,6 +609,7 @@ func TestDashboardRouterPropertiesAreTopLevel(t *testing.T) {
 func TestSchemaSetIsComplete(t *testing.T) {
 	expected := []string{
 		"announcement.schema.json", "assignment-explanation.schema.json", "assignment.schema.json", "cluster-health.schema.json", "dashboard-pipeline.schema.json", "dialogue-record.schema.json",
+		"error-response.schema.json",
 		"activation-tensor.schema.json", "dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
 		"fact.schema.json", "node-config.schema.json", "create-shard-group.schema.json",
 		"managed-engine-start.schema.json", "managed-engine-status.schema.json",

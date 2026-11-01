@@ -58,6 +58,10 @@ type stageReadinessSnapshot struct {
 	Assignments        int
 }
 
+type stageReadinessProvider interface {
+	readinessSnapshot() stageReadinessSnapshot
+}
+
 type stageLease struct {
 	component *stageComponent
 	entry     *loadedStage

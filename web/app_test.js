@@ -11,6 +11,7 @@ import { dashboardSnapshot } from "./src/shared/snapshot.js";
 import { dashboardViewModel } from "./src/shared/view-model.js";
 
 const require = createRequire(import.meta.url);
+const typescript = require("typescript");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const stripModuleSyntax = (source) =>
   source
@@ -18,8 +19,19 @@ const stripModuleSyntax = (source) =>
     .replace(/^\s*import\s*["'][^"']+["'];?\s*/gm, "")
     .replace(/^\s*export\s*\{[^}]*\};?\s*$/gm, "")
     .replace(/^export\s+/gm, "");
-const readModuleSource = (...parts) =>
-  stripModuleSyntax(fs.readFileSync(path.join(__dirname, ...parts), "utf8"));
+const readModuleSource = (...parts) => {
+  const filename = path.join(__dirname, ...parts);
+  const source = fs.readFileSync(filename, "utf8");
+  const javascript = filename.endsWith(".ts")
+    ? typescript.transpileModule(source, {
+      compilerOptions: {
+        module: typescript.ModuleKind.ESNext,
+        target: typescript.ScriptTarget.ES2022,
+      },
+    }).outputText
+    : source;
+  return stripModuleSyntax(javascript);
+};
 const writableStateSetters = [
   ["modelCatalogEntries", "setModelCatalogEntries"],
   ["catalogEngines", "setCatalogEngines"],
@@ -767,31 +779,55 @@ test("SSE snapshots parse safely and merge live task updates without losing hist
   const connectionChanges = [];
   const frames = [];
   class FakeEventSource {
+    static instances = [];
+
     constructor(url) {
       this.url = url;
+      this.readyState = 0;
+      this.listeners = new Map();
+      FakeEventSource.instances.push(this);
+    }
+
+    addEventListener(name, callback) {
+      this.listeners.set(name, callback);
+    }
+
+    close() {
+      this.readyState = 2;
+    }
+
+    open() {
+      this.readyState = 1;
+      this.onopen();
     }
   }
-  const eventSource = dashboardSnapshot.connectDashboardEvents(
+  const connection = dashboardSnapshot.connectDashboardEvents(
     (snapshot) => snapshots.push(snapshot),
     {
       EventSourceImpl: FakeEventSource,
       onError: (error) => errors.push(error),
       onConnectionChange: (connected) => connectionChanges.push(connected),
+      setTimeoutImpl: () => 1,
+      clearTimeoutImpl: () => {},
+      setIntervalImpl: () => 1,
+      clearIntervalImpl: () => {},
       requestAnimationFrameImpl: (callback) => {
         frames.push(callback);
         return frames.length;
       },
     },
   );
+  const eventSource = connection.currentSource;
   assert.equal(eventSource.url, "/api/events");
-  eventSource.onopen();
-  eventSource.onerror();
-  assert.deepEqual(connectionChanges, [true, false]);
+  eventSource.open();
   eventSource.onmessage({ data: '{"nodes":[{"id":"node-a"}]}' });
   eventSource.onmessage({ data: "{" });
+  eventSource.onerror();
+  assert.deepEqual(connectionChanges, [true, false]);
   frames.shift()();
   assert.deepEqual(snapshots, [{ nodes: [{ id: "node-a" }] }]);
   assert.equal(errors.length, 1);
+  connection.close();
 
   const merged = dashboardSnapshot.mergeTaskSnapshot(
     [
@@ -808,6 +844,167 @@ test("SSE snapshots parse safely and merge live task updates without losing hist
   assert.deepEqual(merged.tasks.map((task) => task.id), ["new", "same", "old"]);
   assert.equal(merged.tasks[1].status, "completed");
   assert.equal(merged.fullTaskHistoryLoaded, true);
+});
+
+test("SSE reconnects with capped exponential backoff and stops on close", () => {
+  let now = 0;
+  let nextTimerID = 0;
+  const timers = new Map();
+  const schedule = (callback, delay, interval = 0) => {
+    const id = ++nextTimerID;
+    timers.set(id, { callback, due: now + delay, interval });
+    return id;
+  };
+  const clear = (id) => timers.delete(id);
+  const advance = (duration) => {
+    const target = now + duration;
+    while (true) {
+      let nextID = null;
+      let nextTimer = null;
+      for (const [id, timer] of timers) {
+        if (timer.due <= target && (!nextTimer || timer.due < nextTimer.due)) {
+          nextID = id;
+          nextTimer = timer;
+        }
+      }
+      if (!nextTimer) break;
+      now = nextTimer.due;
+      if (nextTimer.interval > 0) nextTimer.due += nextTimer.interval;
+      else timers.delete(nextID);
+      nextTimer.callback();
+    }
+    now = target;
+  };
+  class FakeEventSource {
+    static instances = [];
+
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      FakeEventSource.instances.push(this);
+    }
+
+    addEventListener() {}
+
+    close() {
+      this.readyState = 2;
+    }
+  }
+  const connection = dashboardSnapshot.connectDashboardEvents(() => {}, {
+    EventSourceImpl: FakeEventSource,
+    setTimeoutImpl: (callback, delay) => schedule(callback, delay),
+    clearTimeoutImpl: clear,
+    setIntervalImpl: (callback, delay) => schedule(callback, delay, delay),
+    clearIntervalImpl: clear,
+    nowImpl: () => now,
+    randomImpl: () => 0.5,
+    reconnectBaseDelayMs: 1000,
+    reconnectMaxDelayMs: 3000,
+  });
+
+  FakeEventSource.instances[0].onerror();
+  advance(999);
+  assert.equal(FakeEventSource.instances.length, 1);
+  advance(1);
+  assert.equal(FakeEventSource.instances.length, 2);
+  FakeEventSource.instances[1].onerror();
+  advance(1999);
+  assert.equal(FakeEventSource.instances.length, 2);
+  advance(1);
+  assert.equal(FakeEventSource.instances.length, 3);
+  FakeEventSource.instances[2].onerror();
+  advance(2999);
+  assert.equal(FakeEventSource.instances.length, 3);
+  advance(1);
+  assert.equal(FakeEventSource.instances.length, 4);
+
+  connection.close();
+  advance(10000);
+  assert.equal(FakeEventSource.instances.length, 4);
+  assert.equal(FakeEventSource.instances[3].readyState, 2);
+});
+
+test("SSE heartbeat timeout marks a silent connection unavailable", () => {
+  let now = 0;
+  let nextTimerID = 0;
+  const timers = new Map();
+  const schedule = (callback, delay, interval = 0) => {
+    const id = ++nextTimerID;
+    timers.set(id, { callback, due: now + delay, interval });
+    return id;
+  };
+  const clear = (id) => timers.delete(id);
+  const advance = (duration) => {
+    const target = now + duration;
+    while (true) {
+      let nextID = null;
+      let nextTimer = null;
+      for (const [id, timer] of timers) {
+        if (timer.due <= target && (!nextTimer || timer.due < nextTimer.due)) {
+          nextID = id;
+          nextTimer = timer;
+        }
+      }
+      if (!nextTimer) break;
+      now = nextTimer.due;
+      if (nextTimer.interval > 0) nextTimer.due += nextTimer.interval;
+      else timers.delete(nextID);
+      nextTimer.callback();
+    }
+    now = target;
+  };
+  class FakeEventSource {
+    static instances = [];
+
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      this.listeners = new Map();
+      FakeEventSource.instances.push(this);
+    }
+
+    addEventListener(name, callback) {
+      this.listeners.set(name, callback);
+    }
+
+    close() {
+      this.readyState = 2;
+    }
+
+    open() {
+      this.readyState = 1;
+      this.onopen();
+    }
+
+    emit(name, event) {
+      this.listeners.get(name)?.(event);
+    }
+  }
+  const connectionChanges = [];
+  const errors = [];
+  const connection = dashboardSnapshot.connectDashboardEvents(() => {}, {
+    EventSourceImpl: FakeEventSource,
+    onError: (error) => errors.push(error),
+    onConnectionChange: (connected) => connectionChanges.push(connected),
+    setTimeoutImpl: (callback, delay) => schedule(callback, delay),
+    clearTimeoutImpl: clear,
+    setIntervalImpl: (callback, delay) => schedule(callback, delay, delay),
+    clearIntervalImpl: clear,
+    nowImpl: () => now,
+    randomImpl: () => 0.5,
+    heartbeatTimeoutMs: 10000,
+    heartbeatCheckIntervalMs: 1000,
+  });
+  const source = connection.currentSource;
+  source.open();
+  source.emit("heartbeat", { data: "ping" });
+  advance(10000);
+
+  assert.deepEqual(connectionChanges, [true, false]);
+  assert.equal(source.readyState, 2);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /heartbeat timed out/);
+  connection.close();
 });
 
 test("Snapshot scheduling coalesces frames and skips identical snapshots", () => {
@@ -1007,7 +1204,7 @@ test("Live node context is expandable from cluster overview node cards", () => {
 });
 
 test("Dashboard capacity display uses the shared cluster health view", () => {
-  assert.match(source, /if \(snap\.cluster_health\) dashboardState\.capacity = snap\.cluster_health/);
+  assert.match(source, /if \(snap\.cluster_health\)\s+dashboardState\.capacity = snap\.cluster_health/);
   assert.match(source, /Dispatch \$\{dispatch\.active_slots\}\/\$\{dispatch\.global_limit\} · Queue \$\{dispatch\.queue_depth\}/);
   assert.match(source, /\$\{capacity\.remaining\}\/\$\{capacity\.max\} slots free/);
 });

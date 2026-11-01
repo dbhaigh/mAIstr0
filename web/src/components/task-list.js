@@ -1,4 +1,4 @@
-import { copyAllTaskResults, loadMoreTaskHistory, refreshTaskHistory } from "../app.js";
+import { copyAllTaskResults, loadMoreTaskHistory, refreshTaskHistory } from "../app.ts";
 import { fetchJSON } from "../shared/api.js";
 import { dashboardDOM } from "../shared/dom.js";
 import { escapeHtml, formatTimestamp } from "../shared/format.js";

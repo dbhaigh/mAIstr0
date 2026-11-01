@@ -23,8 +23,24 @@ type localPiProvider struct {
 	defaultModel string
 }
 
+// Name returns the display name for the local-cluster Pi completion provider.
+//
+// Returns: the provider name shown to Pi clients.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 func (p *localPiProvider) Name() string { return "mAIstr0 local cluster" }
 
+// Complete runs a Pi completion request through the local generation handler.
+//
+// Parameters: ctx (context.Context) controls the request; request
+// (piagent.CompletionRequest) carries the prompt and optional model settings;
+// onDelta (func(string)) receives generated text as it arrives.
+// Returns: the completed response, or an error for cancellation, request
+// construction, generation, or response decoding.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 func (p *localPiProvider) Complete(ctx context.Context, request piagent.CompletionRequest, onDelta func(string)) (*piagent.Completion, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -177,14 +193,35 @@ type localPiResponseWriter struct {
 	onDelta    func(string)
 }
 
+// Header returns the response headers captured for the local generation call.
+//
+// Returns: the captured HTTP header map.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 func (w *localPiResponseWriter) Header() http.Header { return w.header }
 
+// WriteHeader records the first status code written by the local handler.
+//
+// Parameters: status (int) is the HTTP status code to capture.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 func (w *localPiResponseWriter) WriteHeader(status int) {
 	if w.status == 0 {
 		w.status = status
 	}
 }
 
+// Write consumes streamed response bytes, parses complete JSON lines, and
+// forwards generated deltas to the completion callback.
+//
+// Parameters: data ([]byte) is the next response chunk.
+// Returns: the number of input bytes accepted; captured stream writes do not
+// return an error.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 func (w *localPiResponseWriter) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
@@ -204,6 +241,11 @@ func (w *localPiResponseWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// Flush satisfies http.Flusher; the local handler's response is captured in
+// memory and forwarded through the completion callback instead.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [harness_turn_ownership_test.go](harness_turn_ownership_test.go).
 func (w *localPiResponseWriter) Flush() {}
 
 func (w *localPiResponseWriter) finish() {

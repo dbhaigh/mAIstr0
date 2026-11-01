@@ -17,6 +17,8 @@ type DeepSeek struct {
 	harness *deepseek.Harness
 }
 
+var _ agent.Backend = (*DeepSeek)(nil)
+
 func NewDeepSeek(registry *cluster.Registry, dispatcher *http.Client, store memory.Store, events *hub.Hub) *DeepSeek {
 	h := deepseek.New(registry, dispatcher)
 	h.SetMemory(store)
@@ -33,12 +35,7 @@ func (d *DeepSeek) SetWorkflowExecutor(executor func(context.Context, string, []
 }
 
 func (d *DeepSeek) CreateSession(title string, cfg agent.SessionConfig) (*agent.Session, error) {
-	return fromDeepSeekSession(d.harness.CreateSession(title, deepseek.SessionConfig{
-		CoordinatorModel: cfg.CoordinatorModel,
-		MaxSteps:         cfg.MaxSteps,
-		Temperature:      cfg.Temperature,
-		SystemPrompt:     cfg.SystemPrompt,
-	})), nil
+	return fromDeepSeekSession(d.harness.CreateSession(title, cfg)), nil
 }
 
 func (d *DeepSeek) GetSession(id string) (*agent.Session, bool) {
@@ -99,24 +96,14 @@ func (d *DeepSeek) SendMessage(ctx context.Context, id, text string, events chan
 }
 
 func (d *DeepSeek) ListTools() []agent.ToolDef {
-	defs := d.harness.ListTools()
-	out := make([]agent.ToolDef, 0, len(defs))
-	for _, def := range defs {
-		out = append(out, agent.ToolDef(def))
-	}
-	return out
+	return d.harness.ListTools()
 }
 
 func (d *DeepSeek) ListClusterModels() []agent.ModelInfo {
-	models := d.harness.ListClusterModels()
-	out := make([]agent.ModelInfo, 0, len(models))
-	for _, model := range models {
-		out = append(out, agent.ModelInfo(model))
-	}
-	return out
+	return d.harness.ListClusterModels()
 }
 
-func (d *DeepSeek) Stats() agent.AgentStats { return agent.AgentStats(d.harness.Stats()) }
+func (d *DeepSeek) Stats() agent.AgentStats { return d.harness.Stats() }
 
 func (d *DeepSeek) ExecuteTool(ctx context.Context, sessionID, name string, args map[string]any) (agent.ToolResult, error) {
 	result, err := d.harness.ExecuteTool(ctx, sessionID, name, args)

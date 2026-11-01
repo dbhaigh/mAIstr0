@@ -11,8 +11,8 @@
   "precondition": "The dispatch worker and its bounded queue are occupied.",
   "expected_response": {
     "status": 503,
-    "content_type": "text/plain; charset=utf-8",
-    "body": "task <TASK_ID> was persisted but dispatch admission failed: workpool: queue is full\n"
+    "content_type": "application/json",
+    "body": "{\"error\":\"task <TASK_ID> was persisted but dispatch admission failed: workpool: queue is full\",\"code\":\"unavailable\",\"retryable\":true}\n"
   },
   "normalization_rules": ["Replace the persisted task ID with <TASK_ID>."],
   "side_effects": [

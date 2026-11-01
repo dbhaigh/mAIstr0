@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
-
-	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 type openAIModelObj struct {
@@ -42,70 +40,67 @@ type responseCapture struct {
 	status int
 }
 
+// Header returns the headers captured from a compatibility handler.
+//
+// Returns: the captured HTTP header map.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [compat_streaming_test.go](compat_streaming_test.go).
 func (r *responseCapture) Header() http.Header { return r.header }
+
+// Write appends response bytes to the capture buffer and defaults status to
+// HTTP 200 if no status has been set.
+//
+// Parameters: b ([]byte) contains the bytes to capture.
+// Returns: the number of bytes written and the buffer's write error.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [compat_streaming_test.go](compat_streaming_test.go).
 func (r *responseCapture) Write(b []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
 	}
 	return r.body.Write(b)
 }
+// WriteHeader records the status code produced by a compatibility handler.
+//
+// Parameters: status (int) is the HTTP status code to capture.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [compat_streaming_test.go](compat_streaming_test.go).
 func (r *responseCapture) WriteHeader(status int) { r.status = status }
 
 type openAIStreamWriter struct {
-	target http.ResponseWriter
-	header http.Header
+	compatStreamResponse
 	model  string
-	status int
 	parser compatStreamParser
-	stream *httpx.StreamWriter
 }
 
 func newOpenAIStreamWriter(target http.ResponseWriter, model string) *openAIStreamWriter {
 	return &openAIStreamWriter{
-		target: target, header: make(http.Header), model: model,
-		stream: httpx.NewStreamWriter(target),
+		compatStreamResponse: newCompatStreamResponse(
+			target, make(http.Header), "text/event-stream", "keep-alive",
+		),
+		model: model,
 	}
 }
 
-func (w *openAIStreamWriter) Header() http.Header { return w.header }
-
-func (w *openAIStreamWriter) WriteHeader(status int) {
-	if w.status != 0 {
-		return
-	}
-	w.status = status
-	for key, values := range w.header {
-		for _, value := range values {
-			w.target.Header().Add(key, value)
-		}
-	}
-	if status < 400 {
-		w.target.Header().Set("Content-Type", "text/event-stream")
-		w.target.Header().Set("Cache-Control", "no-cache")
-		w.target.Header().Set("Connection", "keep-alive")
-	}
-	w.target.WriteHeader(status)
-}
-
+// Write parses upstream stream bytes and emits OpenAI-compatible chat
+// completion chunks.
+//
+// Parameters: data ([]byte) is the next upstream chunk.
+// Returns: the number of input bytes consumed, or an error parsing the event
+// or writing the compatibility response.
+//
+// References: [request paths](../../docs/architecture.md#request-paths),
+// [compat_streaming_test.go](compat_streaming_test.go).
 func (w *openAIStreamWriter) Write(data []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.status >= 400 {
-		return w.target.Write(data)
-	}
-	if err := w.parser.write(data, w.consume); err != nil {
-		return len(data), err
-	}
-	return len(data), nil
+	return w.compatStreamResponse.write(data, &w.parser, w.consume)
 }
 
 func (w *openAIStreamWriter) consume(payload []byte) error {
-	var event struct {
-		Output string `json:"output"`
-		Error  string `json:"error"`
-	}
-	if err := json.Unmarshal(payload, &event); err != nil {
+	event, err := decodeCompatStreamEvent(payload)
+	if err != nil {
 		return err
 	}
 	if event.Error != "" {

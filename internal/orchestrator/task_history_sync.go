@@ -1,21 +1,16 @@
 package orchestrator
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"github.com/maistr0/maistr0/internal/logging"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
-	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
+	"github.com/maistr0/maistr0/internal/logging"
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/syncinterval"
 	"github.com/maistr0/maistr0/internal/taskmgr"
+	"github.com/maistr0/maistr0/internal/tasksync"
 )
 
 const maxReplicatedTaskHistoryBytes int64 = config.DefaultSyncMaxBytes
@@ -76,7 +71,7 @@ func (s *syncerComponent) syncTaskHistoryWithContext(ctx context.Context) {
 	}
 
 	nodes := s.registry.Active()
-	remoteSnapshots := make(map[string]taskSyncSnapshot)
+	remoteSnapshots := make(map[string]tasksync.Snapshot)
 	for _, node := range nodes {
 		if ctx.Err() != nil || !s.shouldSync() {
 			return
@@ -90,18 +85,19 @@ func (s *syncerComponent) syncTaskHistoryWithContext(ctx context.Context) {
 		}
 		requestID := syncLogRequestID(nil)
 		started := time.Now()
-		tasks, version, watermarks, err := fetchReplicatedTaskHistoryWithContext(
+		tasks, snapshot, err := (tasksync.Transfer{MaxBytes: s.maxBytes, RemoteName: "node"}).Fetch(
 			ctx,
 			s.client,
 			strings.TrimRight(node.Address, "/")+"/tasks",
 			watermarks,
-			s.maxBytes,
 		)
 		if err != nil {
 			logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: task history sync event=fetch_failed %s error=%v",
 				syncLogFields(requestID, node.ID, time.Since(started), "fetch"), err)
 			continue
 		}
+		version := snapshot.Version
+		watermarks = snapshot.Watermarks
 		if err := s.tasks.MergeFromReplicaFrom(tasks, "task:"+node.ID); err != nil {
 			logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: task history sync event=import_failed %s error=%v",
 				syncLogFields(requestID, node.ID, time.Since(started), "import"), err)
@@ -109,7 +105,7 @@ func (s *syncerComponent) syncTaskHistoryWithContext(ctx context.Context) {
 		}
 		logging.FileInfof("orchestrator", "FILE_ONLY: orchestrator: task history sync event=fetch_complete %s records=%d version=%d",
 			syncLogFields(requestID, node.ID, time.Since(started), "none"), len(tasks), version)
-		remoteSnapshots[node.ID] = taskSyncSnapshot{version: version, watermarks: watermarks}
+		remoteSnapshots[node.ID] = snapshot
 		if s.memory != nil {
 			if err := s.memory.SetPeerWatermarks(node.ID, watermarks); err != nil {
 				logging.FileErrorf("orchestrator", "FILE_ONLY: orchestrator: task history sync event=watermark_persist_failed %s error=%v",
@@ -129,8 +125,8 @@ func (s *syncerComponent) syncTaskHistoryWithContext(ctx context.Context) {
 		version := 0
 		var watermarks map[string]uint64
 		if fetched {
-			version = remote.version
-			watermarks = remote.watermarks
+			version = remote.Version
+			watermarks = remote.Watermarks
 		}
 		tasks := s.tasks.SnapshotForPeer(version, watermarks)
 		requestID := syncLogRequestID(nil)
@@ -169,139 +165,29 @@ func (s *syncerComponent) recoverTaskHistory() {
 	})
 }
 
-type taskSyncSnapshot struct {
-	version    int
-	watermarks map[string]uint64
+func fetchReplicatedTaskHistoryWithContext(
+	ctx context.Context,
+	client tasksync.Client,
+	endpoint string,
+	requestWatermarks map[string]uint64,
+	maxBytes int64,
+) ([]*taskmgr.Task, int, map[string]uint64, error) {
+	tasks, snapshot, err := (tasksync.Transfer{MaxBytes: maxBytes, RemoteName: "node"}).Fetch(
+		ctx, client, endpoint, requestWatermarks,
+	)
+	return tasks, snapshot.Version, snapshot.Watermarks, err
 }
 
-func fetchReplicatedTaskHistoryWithContext(ctx context.Context, client interface {
-	Do(*http.Request) (*http.Response, error)
-}, endpoint string, requestWatermarks map[string]uint64, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, error) {
-	tasks := make([]*taskmgr.Task, 0)
-	var cursor, upper map[string]uint64
-	var responseWatermarks map[string]uint64
-	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return nil, 0, nil, err
-		}
-		if err := memory.SetSyncRequestHeaders(request, requestWatermarks); err != nil {
-			return nil, 0, nil, err
-		}
-		memory.SetSyncCompressionRequestHeader(request)
-		if cursor != nil {
-			if err := memory.SetSyncPageRequestHeaders(request, cursor, upper); err != nil {
-				return nil, 0, nil, err
-			}
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			return nil, 0, nil, err
-		}
-		page, pageVersion, watermarks, nextCursor, more, err := decodeReplicatedTaskHistory(response, maxBytes)
-		if err != nil {
-			return nil, 0, nil, err
-		}
-		if more && !memory.SupportsSyncPages(pageVersion) {
-			return nil, 0, nil, fmt.Errorf("node paginated task history without protocol version 2")
-		}
-		if more && len(nextCursor) == 0 {
-			return nil, 0, nil, fmt.Errorf("node returned an empty task sync page cursor")
-		}
-		if more && len(watermarks) == 0 {
-			return nil, 0, nil, fmt.Errorf("node omitted task sync watermarks during pagination")
-		}
-		tasks = append(tasks, page...)
-		responseWatermarks = watermarks
-		if !more {
-			return tasks, pageVersion, responseWatermarks, nil
-		}
-		cursor = nextCursor
-		upper = watermarks
-	}
-}
-
-func decodeReplicatedTaskHistory(resp *http.Response, maxBytes int64) ([]*taskmgr.Task, int, map[string]uint64, map[string]uint64, bool, error) {
-	defer closeutil.Discard(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		response, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, 0, nil, nil, false, fmt.Errorf("node returned %s: %s", resp.Status, strings.TrimSpace(string(response)))
-	}
-	version, watermarks, err := memory.ReadSyncResponseHeaders(resp)
-	if err != nil {
-		return nil, 0, nil, nil, false, fmt.Errorf("read task sync response headers: %w", err)
-	}
-	cursor, more, err := memory.ReadSyncPageResponseHeader(resp)
-	if err != nil {
-		return nil, 0, nil, nil, false, fmt.Errorf("read task sync page header: %w", err)
-	}
-	if resp.StatusCode == http.StatusNoContent {
-		if !memory.SupportsEmptySync(version) {
-			return nil, 0, nil, nil, false, fmt.Errorf("node returned an empty task response without protocol version %d", memory.SyncCompressionProtocolVersion)
-		}
-		return []*taskmgr.Task{}, version, watermarks, cursor, false, nil
-	}
-	var tasks []*taskmgr.Task
-	body, err := memory.DecodeSyncBody(resp.Body, resp.Header.Get("Content-Encoding"), version, maxBytes)
-	if err != nil {
-		return nil, 0, nil, nil, false, err
-	}
-	if err := json.Unmarshal(body, &tasks); err != nil {
-		return nil, 0, nil, nil, false, err
-	}
-	return tasks, version, watermarks, cursor, more, nil
-}
-
-func postTaskHistoryPagesWithContext(ctx context.Context, client interface {
-	Do(*http.Request) (*http.Response, error)
-}, endpoint string, tasks []*taskmgr.Task, watermarks map[string]uint64, maxBytes int64, peerVersion int) error {
-	if len(tasks) == 0 {
-		return nil
-	}
-	pages, err := taskmgr.SplitTasks(tasks, maxBytes)
-	if err != nil {
-		return err
-	}
-	for _, page := range pages {
-		body, err := json.Marshal(page)
-		if err != nil {
-			return err
-		}
-		if int64(len(body)) > maxBytes {
-			return fmt.Errorf("task history page exceeds the %d-byte sync limit", maxBytes)
-		}
-		body, compressed, err := memory.EncodeSyncBody(body, peerVersion, true)
-		if err != nil {
-			return err
-		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return err
-		}
-		request.Header.Set("Content-Type", "application/json")
-		if compressed {
-			request.Header.Set("Content-Encoding", "gzip")
-		}
-		if err := memory.SetSyncRequestHeaders(request, watermarks); err != nil {
-			return err
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			return err
-		}
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			_ = response.Body.Close()
-			return fmt.Errorf("node returned %s: %s", response.Status, strings.TrimSpace(string(message)))
-		}
-		_, copyErr := io.Copy(io.Discard, response.Body)
-		closeErr := response.Body.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-	}
-	return nil
+func postTaskHistoryPagesWithContext(
+	ctx context.Context,
+	client tasksync.Client,
+	endpoint string,
+	tasks []*taskmgr.Task,
+	watermarks map[string]uint64,
+	maxBytes int64,
+	peerVersion int,
+) error {
+	return (tasksync.Transfer{MaxBytes: maxBytes, RemoteName: "node"}).Dispatch(
+		ctx, client, endpoint, tasks, watermarks, peerVersion,
+	)
 }

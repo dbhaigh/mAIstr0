@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -70,6 +71,43 @@ func startHTTP() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		state := struct {
+			Models      []string `json:"models"`
+			Unavailable bool     `json:"unavailable,omitempty"`
+		}{}
+		if path := os.Getenv("MAISTR0_FAKE_ENGINE_MODELS_FILE"); path != "" {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				http.Error(w, "model inventory unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err := json.Unmarshal(data, &state); err != nil {
+				http.Error(w, "invalid model inventory", http.StatusInternalServerError)
+				return
+			}
+		}
+		if state.Unavailable {
+			http.Error(w, "model inventory unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		models := make([]struct {
+			ID string `json:"id"`
+		}, 0, len(state.Models))
+		for _, model := range state.Models {
+			models = append(models, struct {
+				ID string `json:"id"`
+			}{ID: model})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}{Data: models}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	})
 	go func() {
 		_ = http.Serve(listener, mux)

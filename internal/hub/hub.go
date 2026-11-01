@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/maistr0/maistr0/internal/httpx"
 )
+
+const defaultHeartbeatInterval = 15 * time.Second
 
 // Hub fans a stream of JSON snapshots out to any number of subscribed HTTP
 // clients (typically browser EventSource connections).
@@ -23,13 +26,18 @@ type Hub struct {
 	clients map[chan []byte]bool
 	// subscribers mirrors len(clients) so publishers can skip building
 	// snapshots without taking mu.
-	subscribers atomic.Int64
-	generation  atomic.Uint64
-	subscribed  chan struct{}
+	subscribers       atomic.Int64
+	generation        atomic.Uint64
+	subscribed        chan struct{}
+	heartbeatInterval time.Duration
 }
 
 func New() *Hub {
-	return &Hub{clients: make(map[chan []byte]bool), subscribed: make(chan struct{}, 1)}
+	return &Hub{
+		clients:           make(map[chan []byte]bool),
+		subscribed:        make(chan struct{}, 1),
+		heartbeatInterval: defaultHeartbeatInterval,
+	}
 }
 
 // HasSubscribers reports whether any client is currently subscribed.
@@ -96,7 +104,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Add("Vary", "Accept-Encoding")
 	var compressed *gzip.Writer
-	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+	if httpx.AcceptsGzip(r.Header) {
 		w.Header().Set("Content-Encoding", "gzip")
 		compressed = gzip.NewWriter(w)
 		defer func() {
@@ -110,6 +118,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ch := h.subscribe()
 	defer h.unsubscribe(ch)
+	heartbeatInterval := h.heartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = defaultHeartbeatInterval
+	}
+	heartbeat := time.NewTicker(heartbeatInterval)
+	defer heartbeat.Stop()
 
 	for {
 		select {
@@ -130,34 +144,19 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
-		}
-	}
-}
-
-func acceptsGzip(header string) bool {
-	wildcardQuality := -1.0
-	for _, value := range strings.Split(header, ",") {
-		parts := strings.Split(strings.TrimSpace(value), ";")
-		name := strings.TrimSpace(parts[0])
-		quality := 1.0
-		for _, parameter := range parts[1:] {
-			parameterName, parameterValue, ok := strings.Cut(strings.TrimSpace(parameter), "=")
-			if ok && strings.EqualFold(parameterName, "q") {
-				parsed, err := strconv.ParseFloat(parameterValue, 64)
-				if err != nil || parsed < 0 || parsed > 1 {
-					quality = 0
-				} else {
-					quality = parsed
+		case <-heartbeat.C:
+			const frame = "event: heartbeat\ndata: ping\n\n"
+			if compressed != nil {
+				if _, err := fmt.Fprint(compressed, frame); err != nil {
+					return
 				}
-				break
+				if err := compressed.Flush(); err != nil {
+					return
+				}
+			} else if _, err := fmt.Fprint(w, frame); err != nil {
+				return
 			}
-		}
-		if strings.EqualFold(name, "gzip") {
-			return quality > 0
-		}
-		if name == "*" {
-			wildcardQuality = quality
+			flusher.Flush()
 		}
 	}
-	return wildcardQuality > 0
 }

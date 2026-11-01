@@ -1,9 +1,25 @@
 package orchestrator
 
-import "bytes"
+import (
+	"bytes"
+	"encoding/json"
+)
+
+type compatStreamEvent struct {
+	Output string `json:"output"`
+	Error  string `json:"error"`
+}
 
 type compatStreamParser struct {
 	buffer []byte
+}
+
+func decodeCompatStreamEvent(payload []byte) (compatStreamEvent, error) {
+	var event compatStreamEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return compatStreamEvent{}, err
+	}
+	return event, nil
 }
 
 func (p *compatStreamParser) write(data []byte, consume func([]byte) error) error {
@@ -26,6 +42,14 @@ func (p *compatStreamParser) write(data []byte, consume func([]byte) error) erro
 	}
 	p.discard(consumed)
 	return nil
+}
+
+func (p *compatStreamParser) flushPending(consume func([]byte) error) error {
+	rest := bytes.TrimSpace(p.buffer)
+	if !bytes.HasPrefix(rest, []byte("data:")) {
+		return nil
+	}
+	return consume(bytes.TrimSpace(bytes.TrimPrefix(rest, []byte("data:"))))
 }
 
 func (p *compatStreamParser) discard(consumed int) {

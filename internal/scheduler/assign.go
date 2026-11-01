@@ -12,17 +12,37 @@ import (
 	"github.com/maistr0/maistr0/internal/scheduler/score"
 )
 
-// ScoreFactors and ScoringConfig remain aliases so callers of the scheduler
-// package keep their existing public type names.
+// ScoreFactors aliases score.ScoreFactors and exposes the score components
+// explaining an Assignment.
 type ScoreFactors = score.ScoreFactors
+
+// ScoringConfig aliases score.ScoringConfig and configures the additive
+// weights used by AssignWithConfig. A nil config selects the defaults.
 type ScoringConfig = score.ScoringConfig
 
-// DefaultScoringConfig returns the established scheduler defaults.
+// DefaultScoringConfig returns a value populated with the scheduler's default
+// scoring weights. Callers may customize the value before passing its address
+// to AssignWithConfig.
+//
+// Input contract: this function takes no input.
+// Output contract: a caller-owned ScoringConfig value; no shared config is
+// mutated.
+// Failure modes: none.
+//
+// Example:
+//
+//     cfg := scheduler.DefaultScoringConfig()
+//     cfg.LatencyPreferenceWeight = 20
+//     assignments, err := scheduler.AssignWithConfig(subtasks, nodes, &cfg, nil)
+//
+// See [assign_test.go](assign_test.go) and [contracts_test.go](contracts_test.go).
 func DefaultScoringConfig() ScoringConfig {
 	return score.DefaultScoringConfig()
 }
 
-// Assignment pairs a subtask with the node and model chosen to run it.
+// Assignment is the scheduler's result for one Subtask. It identifies the
+// selected node, address, model, and engine and includes the score and its
+// explanatory ScoreFactors.
 type Assignment struct {
 	Subtask Subtask      `json:"subtask"`
 	NodeID  string       `json:"node_id"`
@@ -33,18 +53,34 @@ type Assignment struct {
 	Factors ScoreFactors `json:"score_factors"`
 }
 
-// ErrNoHealthyNodes is returned when the cluster has no node available to
-// take on any work.
+// ErrNoHealthyNodes is returned when no supplied node is both healthy and
+// non-draining. Callers can test it with errors.Is.
 var ErrNoHealthyNodes = errors.New("scheduler: no healthy nodes available")
 
-// UnassignableSubtasksError reports work for which no healthy node advertises
-// a compatible model. Assign is all-or-nothing so callers cannot silently
-// report a partially executed task as complete.
+// UnassignableSubtasksError reports subtasks for which no eligible node has a
+// ready model satisfying the task's model and capability constraints.
+// Assignment is all-or-nothing: assignment functions return no partial results
+// when this error occurs. Use errors.As to inspect SubtaskIDs and any
+// ModelRejections.
 type UnassignableSubtasksError struct {
 	SubtaskIDs      []string
 	ModelRejections []score.ModelEligibilityRejection
 }
 
+// Error formats the unassignable subtask IDs and available model-rejection
+// details.
+//
+// Output contract: a human-readable, non-empty error message for a non-nil
+// receiver. NPU rejection details are included when present.
+// Failure modes: none.
+//
+// Example:
+//
+//     var unassignable *scheduler.UnassignableSubtasksError
+//     if errors.As(err, &unassignable) {
+//         message := unassignable.Error()
+//         _ = message
+//     }
 func (e *UnassignableSubtasksError) Error() string {
 	message := "scheduler: no compatible model for subtasks: " + strings.Join(e.SubtaskIDs, ", ")
 	if len(e.ModelRejections) == 0 {
@@ -57,28 +93,143 @@ func (e *UnassignableSubtasksError) Error() string {
 	return message + "; NPU model rejections: " + strings.Join(details, "; ")
 }
 
-// Experience supplies a learned routing adjustment for a node+model+task
-// pairing, derived from the cluster's recorded history.
+// Experience supplies learned routing adjustments for a node, model, and task
+// pairing. It is optional; pass nil when no history is available. An
+// implementation may also satisfy CostExperience to provide throughput data.
 type Experience interface {
+	// LearnedBias returns the learned additive adjustment for the specified
+	// node, model, and task type.
+	//
+	// Caller contract: use identifiers consistent with the supplied node and
+	// subtask snapshots; return zero when no history is available.
+	// Output contract: the value is weighted by ScoringConfig.LearnedBiasWeight.
+	// Failure modes: the method has no error return.
+	//
+	// Example:
+	//
+	//     bias := history.LearnedBias("worker-a", "general-model", "code")
+	//     _ = bias
 	LearnedBias(nodeID, model, taskType string) float64
 }
 
+// CostExperience is an optional Experience extension that supplies historical
+// generation throughput for scoring latency preferences.
 type CostExperience interface {
+	// TokensPerSecond returns the historical generation rate for a node, model,
+	// and task type.
+	//
+	// Caller contract: use identifiers consistent with the supplied node and
+	// subtask snapshots; return a nonpositive value when no usable history
+	// exists.
+	// Output contract: nonpositive values use the scheduler's model-size
+	// fallback estimate.
+	// Failure modes: the method has no error return.
+	//
+	// Example:
+	//
+	//     rate := history.TokensPerSecond("worker-a", "general-model", "code")
+	//     _ = rate
 	TokensPerSecond(nodeID, model, taskType string) float64
 }
 
-// Assign picks the best node+model for each subtask.
+// Assign chooses the best node and model for each subtask using default scoring
+// and no learned experience.
+//
+// Caller contract: subtasks describe the intended work, and nodes is a
+// consistent point-in-time NodeStatus snapshot with current health, endpoint,
+// engine/model inventory, load, and telemetry. The scheduler filters unhealthy
+// and draining nodes and models that are not ready or do not satisfy the
+// subtask's constraints; it does not refresh node state. Provide a valid
+// dependency plan when dependency order matters. If flat-plan normalization
+// fails, Assign falls back to the original subtask order without graph-aware
+// scheduling.
+// Output contract: one Assignment per subtask, in dependency order when the
+// plan is valid. On any error, no partial assignments are returned.
+// Failure modes: ErrNoHealthyNodes when every supplied node is unhealthy or
+// draining; *UnassignableSubtasksError when any subtask has no eligible
+// node/model.
+//
+// Example:
+//
+//     assignments, err := scheduler.Assign(subtasks, nodeSnapshot)
+//     if errors.Is(err, scheduler.ErrNoHealthyNodes) {
+//         return err
+//     }
+//     var unassignable *scheduler.UnassignableSubtasksError
+//     if errors.As(err, &unassignable) {
+//         return fmt.Errorf("cannot schedule %v: %w", unassignable.SubtaskIDs, err)
+//     }
+//     if err != nil {
+//         return err
+//     }
+//     _ = assignments
+//
+// Performance note: scoring examines each subtask against healthy nodes and
+// their advertised models, approximately O(S×(N+M)) for S subtasks, N nodes,
+// and M total models.
+//
+// See [assign_test.go](assign_test.go) and [contracts_test.go](contracts_test.go).
 func Assign(subtasks []Subtask, nodes []cluster.NodeStatus) ([]Assignment, error) {
 	return AssignWithExperience(subtasks, nodes, nil)
 }
 
-// AssignWithExperience is Assign biased by what the cluster has learned.
+// AssignWithExperience chooses assignments using default scoring adjusted by
+// optional learned routing history.
+//
+// Caller contract: subtasks and nodes follow Assign's contract; exp may be nil,
+// otherwise it must return useful learned bias for the supplied identifiers.
+// If exp also implements CostExperience, its throughput values inform latency
+// scoring.
+// Output contract: the same all-or-nothing assignments and ordering as Assign.
+// Failure modes: ErrNoHealthyNodes or *UnassignableSubtasksError, with no
+// partial assignments.
+//
+// Example:
+//
+//     assignments, err := scheduler.AssignWithExperience(subtasks, nodeSnapshot, history)
+//     if err != nil {
+//         return err
+//     }
+//     _ = assignments
+//
+// Performance note: the candidate scan has the same O(S×(N+M)) cost as Assign;
+// experience lookups are performed for eligible node/model/subtask candidates.
+//
+// See [assign_test.go](assign_test.go) and [contracts_test.go](contracts_test.go).
 func AssignWithExperience(subtasks []Subtask, nodes []cluster.NodeStatus, exp Experience) ([]Assignment, error) {
 	cfg := DefaultScoringConfig()
 	return AssignWithConfig(subtasks, nodes, &cfg, exp)
 }
 
-// AssignWithConfig runs assignment using a custom scoring configuration.
+// AssignWithConfig chooses assignments using cfg and optional learned
+// experience. A nil cfg selects DefaultScoringConfig; non-nil values are used
+// as supplied and are not range-validated.
+//
+// Caller contract: subtasks and nodes follow Assign's contract; cfg must remain
+// stable during the call; exp may be nil. Supply a valid acyclic dependency
+// plan for graph-aware ordering. If flat-plan normalization fails, the
+// scheduler falls back to the original subtask order rather than returning
+// that normalization error.
+// Output contract: one Assignment per subtask in dependency order when
+// normalization succeeds; errors never include partial assignments.
+// Failure modes: ErrNoHealthyNodes or *UnassignableSubtasksError. Invalid
+// scoring weights are accepted and can produce undesirable ranking rather
+// than an error.
+//
+// Example:
+//
+//     cfg := scheduler.DefaultScoringConfig()
+//     cfg.LearnedBiasWeight = 0.5
+//     assignments, err := scheduler.AssignWithConfig(subtasks, nodeSnapshot, &cfg, history)
+//     if err != nil {
+//         return err
+//     }
+//     _ = assignments
+//
+// Performance note: candidate scoring is approximately O(S×(N+M)) for S
+// subtasks, N nodes, and M total advertised models.
+//
+// See [assign_test.go](assign_test.go) and [contracts_test.go](contracts_test.go).
 func AssignWithConfig(subtasks []Subtask, nodes []cluster.NodeStatus, cfg *ScoringConfig, exp Experience) ([]Assignment, error) {
 	g, err := TaskGraphFromSubtasks(subtasks)
 	if err != nil {
@@ -88,7 +239,40 @@ func AssignWithConfig(subtasks []Subtask, nodes []cluster.NodeStatus, cfg *Scori
 	return AssignGraph(g, nodes, cfg, exp)
 }
 
-// AssignGraph assigns subtasks using full graph topology to inform scheduling decisions.
+// AssignGraph assigns subtasks from a non-nil TaskGraph using its full
+// dependency topology. A nil cfg selects default scoring; exp is optional.
+//
+// Caller contract: g must be a valid graph containing 1–64 nodes, with
+// dependencies referring to existing nodes and no self-dependencies or cycles.
+// nodes must be a consistent point-in-time NodeStatus snapshot; the scheduler
+// filters unhealthy, draining, and model-ineligible nodes. Topological ordering
+// synchronizes node DependsOn values into graph edges, so pass a graph that may
+// be normalized in place.
+// Output contract: one Assignment per graph node in topological order; no
+// partial assignments are returned on error.
+// Failure modes: graph-validation errors (plain error), ErrNoHealthyNodes, or
+// *UnassignableSubtasksError.
+//
+// Example:
+//
+//     graph := scheduler.NewTaskGraph()
+//     if err := graph.AddNode(scheduler.Subtask{
+//         ID: "summarize", Description: "Summarize the report", TaskType: "general",
+//     }); err != nil {
+//         return err
+//     }
+//     assignments, err := scheduler.AssignGraph(graph, nodeSnapshot, nil, nil)
+//     if err != nil {
+//         return err
+//     }
+//     _ = assignments
+//
+// Performance note: candidate scoring is approximately O(S×(N+M)) for S
+// graph nodes, N nodes, and M total advertised models, plus graph validation
+// and topological ordering.
+//
+// See [graph_test.go](graph_test.go), [assign_test.go](assign_test.go), and
+// [contracts_test.go](contracts_test.go).
 func AssignGraph(g *TaskGraph, nodes []cluster.NodeStatus, cfg *ScoringConfig, exp Experience) ([]Assignment, error) {
 	if cfg == nil {
 		c := DefaultScoringConfig()

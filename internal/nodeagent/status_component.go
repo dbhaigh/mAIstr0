@@ -32,9 +32,7 @@ type statusComponent struct {
 		activeTaskCount() int
 		availableCapacity(int) int
 	}
-	stages interface {
-		readinessSnapshot() stageReadinessSnapshot
-	}
+	stages stageReadinessProvider
 }
 
 type statusResponse struct {
@@ -82,9 +80,7 @@ func newStatusComponent(
 		activeTaskCount() int
 		availableCapacity(int) int
 	},
-	stages interface {
-		readinessSnapshot() stageReadinessSnapshot
-	},
+	stages stageReadinessProvider,
 ) *statusComponent {
 	return &statusComponent{
 		state: state, telemetry: telemetry, models: models, executor: executor, stages: stages,

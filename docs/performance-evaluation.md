@@ -383,6 +383,24 @@ artifacts or temporary binaries are committed.
   forwarding tests cover dynamic connection-specific fields and fixed
   hop-by-hop fields.
 
+### Memory-page key follow-up (2026-10-31)
+
+The 100K allocation profile still showed repeated `experiencePageKey`
+formatting while `PageSnapshot` rebuilt sort records for each page. The shared
+pager now accepts value-based key comparison; memory pages compare the existing
+lexical keys without allocating strings, and format a key only for an
+oversized-record error. Tests compare typed key ordering against the original
+formatted keys, including embedded separators, while page parity and error
+behavior remain covered.
+
+On Darwin/arm64 (Apple M6, Go 1.27.3), ten samples with `-benchtime=3x`
+measured `MemoryHistoryPageTransfer/100K` at **152.6 -> 122.9 ms/op
+(-19.43%, p<0.001)**, **2.4019M -> 101.9K allocs/op (-95.76%, p<0.001)**,
+and **570.7 -> 500.5 MiB/op (-12.30%, p<0.001)**. The encoded snapshot
+remained **23,666,798 bytes**. These before/after samples were collected on
+the same host; they are not directly comparable to the earlier Windows
+measurements above.
+
 ### Measured, not changed
 
 - **Dashboard snapshot construction/encoding and publication:** the CPU

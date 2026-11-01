@@ -17,12 +17,30 @@ import (
 	"github.com/maistr0/maistr0/internal/shard"
 )
 
+// NodeStatus fetches the latest status snapshot from the node at address.
+//
+// Parameters: ctx (context.Context) controls the request; address (string)
+// identifies the node's base URL.
+// Returns: the decoded node status, or an error from the request or decoding.
+//
+// References: [node ownership boundaries](../../docs/architecture.md#node-ownership-boundaries),
+// [managed_engine_client_test.go](managed_engine_client_test.go).
 func (c *nodeClient) NodeStatus(ctx context.Context, address string) (cluster.NodeStatus, error) {
 	return c.discoveredNodeStatusContext(ctx, address)
 }
 
-// Automatic heads can be reconfigured while stopped. Operator-defined engine
-// configurations are immutable for the lifetime of their supervisor.
+// VerifyModel checks that an automatic managed head matches expected and can
+// restore its saved profile when restore is true. Operator-defined engines are
+// immutable for the lifetime of their supervisor.
+//
+// Parameters: ctx (context.Context) controls node requests; address and id
+// (string) identify the node and engine; expected (shard.ModelProfile) is the
+// required profile; restore (bool) permits restoring the saved automatic-head
+// profile.
+// Returns: an error when the profile cannot be verified or restored.
+//
+// References: [node ownership boundaries](../../docs/architecture.md#node-ownership-boundaries),
+// [managed_engine_client_test.go](managed_engine_client_test.go).
 func (c *nodeClient) VerifyModel(ctx context.Context, address, id string, expected shard.ModelProfile, restore bool) error {
 	if id != "maistr0-auto-head" {
 		return nil
@@ -117,6 +135,15 @@ func matchingShardModel(expected, actual shard.ModelProfile) bool {
 	return true
 }
 
+// List retrieves the managed-engine statuses exposed by one node.
+//
+// Parameters: ctx (context.Context) controls the request; address (string)
+// identifies the node's base URL.
+// Returns: the decoded statuses, or an error for request, status, or decode
+// failures.
+//
+// References: [node ownership boundaries](../../docs/architecture.md#node-ownership-boundaries),
+// [managed_engine_client_test.go](managed_engine_client_test.go).
 func (c *nodeClient) List(ctx context.Context, address string) ([]supervisor.Status, error) {
 	response, err := c.managedRequest(ctx, http.MethodGet, address+"/api/engines/managed", nil)
 	if err != nil {
@@ -133,6 +160,16 @@ func (c *nodeClient) List(ctx context.Context, address string) ([]supervisor.Sta
 	return statuses, nil
 }
 
+// Start starts a managed engine on a node, optionally with a shard plan.
+//
+// Parameters: ctx (context.Context) controls the request; address and id
+// (string) identify the node and engine; plan (*supervisor.ShardPlan) supplies
+// optional distributed-placement settings.
+// Returns: the resulting engine status, or an error for request or response
+// failures.
+//
+// References: [node ownership boundaries](../../docs/architecture.md#node-ownership-boundaries),
+// [managed_engine_client_test.go](managed_engine_client_test.go).
 func (c *nodeClient) Start(
 	ctx context.Context,
 	address, id string,
@@ -152,6 +189,15 @@ func (c *nodeClient) Start(
 	return decodeManagedEngineStatus(response)
 }
 
+// Stop stops a managed engine on a node.
+//
+// Parameters: ctx (context.Context) controls the request; address and id
+// (string) identify the node and engine.
+// Returns: the resulting engine status, or an error for request or response
+// failures.
+//
+// References: [node ownership boundaries](../../docs/architecture.md#node-ownership-boundaries),
+// [managed_engine_client_test.go](managed_engine_client_test.go).
 func (c *nodeClient) Stop(ctx context.Context, address, id string) (supervisor.Status, error) {
 	endpoint := managedEngineURL(address, id, "stop")
 	response, err := c.managedRequest(ctx, http.MethodPost, endpoint, nil)

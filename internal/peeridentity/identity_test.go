@@ -1,6 +1,7 @@
 package peeridentity
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/tls"
@@ -129,7 +130,7 @@ func TestExpiredPeerCertificateIsRejected(t *testing.T) {
 	}
 }
 
-func TestOpenRotatesExpiredCertificateAndPreservesTrust(t *testing.T) {
+func TestOpenRegeneratesCertificateAndPreservesTrust(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "identity.json")
 	identity, err := Open(path, "rotating-node")
 	if err != nil {
@@ -148,8 +149,7 @@ func TestOpenRotatesExpiredCertificateAndPreservesTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, err := json.Marshal(identityFile{
-		ID: identity.ID(), Certificate: expiredPEM,
-		PrivateKey: identity.privateKeyPEM, Trusted: identity.trusted,
+		ID: identity.ID(), Certificate: expiredPEM, Trusted: identity.trusted,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -158,18 +158,18 @@ func TestOpenRotatesExpiredCertificateAndPreservesTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rotated, err := Open(path, identity.ID())
+	reopened, err := Open(path, identity.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
-	newCert := rotated.certificate.Leaf
+	newCert := reopened.certificate.Leaf
 	if newCert == nil || !certificateCurrentlyValid(newCert, time.Now()) {
-		t.Fatal("rotated identity certificate is not currently valid")
+		t.Fatal("regenerated identity certificate is not currently valid")
 	}
 	if certificateFingerprint(newCert) == certificateFingerprint(expiredCert) {
-		t.Fatal("expired certificate fingerprint was retained after rotation")
+		t.Fatal("expired certificate fingerprint was retained after startup")
 	}
-	if !rotated.IsTrustedID(peer.ID()) {
+	if !reopened.IsTrustedID(peer.ID()) {
 		t.Fatal("certificate rotation discarded the trusted peer roster")
 	}
 
@@ -181,8 +181,88 @@ func TestOpenRotatesExpiredCertificateAndPreservesTrust(t *testing.T) {
 	if err := json.Unmarshal(persisted, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved.Certificate != rotated.CertificatePEM() {
-		t.Fatal("rotated certificate was not persisted")
+	if saved.Certificate != reopened.CertificatePEM() {
+		t.Fatal("regenerated certificate was not persisted")
+	}
+}
+
+func TestOpenDoesNotPersistPrivateKeyAndMigratesLegacyIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.json")
+	identity, err := Open(path, "ephemeral-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := Open(filepath.Join(t.TempDir(), "peer.json"), "paired-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.TrustPeer(peer.ID(), peer.CertificatePEM()); err != nil {
+		t.Fatal(err)
+	}
+	oldCertificate := identity.CertificatePEM()
+	oldPrivateKey := identity.privateKeyPEM
+
+	legacy, err := json.Marshal(struct {
+		ID          string                 `json:"id"`
+		Certificate string                 `json:"certificate"`
+		PrivateKey  string                 `json:"private_key"`
+		Trusted     map[string]trustedPeer `json:"trusted"`
+	}{
+		ID: identity.ID(), Certificate: oldCertificate,
+		PrivateKey: oldPrivateKey, Trusted: identity.trusted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path, identity.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.ID() != identity.ID() {
+		t.Fatalf("reopened identity ID = %q, want %q", reopened.ID(), identity.ID())
+	}
+	if reopened.CertificatePEM() == oldCertificate {
+		t.Fatal("reopening reused the previous process's certificate")
+	}
+	if reopened.privateKeyPEM == oldPrivateKey {
+		t.Fatal("reopening reused the previous process's private key")
+	}
+	if !reopened.IsTrustedID(peer.ID()) {
+		t.Fatal("reopening discarded the trusted peer roster")
+	}
+
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte(`"private_key"`)) ||
+		bytes.Contains(persisted, []byte("PRIVATE KEY")) {
+		t.Fatal("private-key data remained in the identity file after migration")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("identity file permissions = %o, want 600", info.Mode().Perm())
+	}
+
+	nextProcess, err := Open(path, identity.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextProcess.CertificatePEM() == reopened.CertificatePEM() {
+		t.Fatal("a new process reused the previous process's certificate")
+	}
+	if !nextProcess.IsTrustedID(peer.ID()) {
+		t.Fatal("a subsequent reopen discarded the trusted peer roster")
 	}
 }
 

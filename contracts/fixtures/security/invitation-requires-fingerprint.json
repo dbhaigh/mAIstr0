@@ -8,8 +8,8 @@
   "precondition": "The local coordinator is initialized and the destination is not already paired.",
   "expected_response": {
     "status": 400,
-    "content_type": "text/plain; charset=utf-8",
-    "body": "the out-of-band verified destination fingerprint is required\n"
+    "content_type": "application/json",
+    "body": "{\"error\":\"the out-of-band verified destination fingerprint is required\",\"code\":\"invalid_input\",\"retryable\":false}\n"
   },
   "normalization_rules": [],
   "side_effects": [

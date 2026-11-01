@@ -453,12 +453,25 @@ func (c *orchestratorLink) subscribeOnceContext(ctx context.Context, addr string
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	eventName := "message"
 	for scanner.Scan() {
 		if c.getOrchestratorAddr() != addr {
 			return errors.New("orchestrator changed, resubscribing")
 		}
-		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if line == "" {
+			eventName = "message"
+			continue
+		}
+		if name, ok := strings.CutPrefix(line, "event: "); ok {
+			eventName = name
+			continue
+		}
+		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
+			continue
+		}
+		if eventName == "heartbeat" {
 			continue
 		}
 		var snap struct {

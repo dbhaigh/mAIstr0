@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
+	"github.com/maistr0/maistr0/internal/httpx"
 )
 
 func waitForSubscribers(t *testing.T, h *Hub, want bool) {
@@ -68,6 +69,40 @@ func TestHubTracksSubscribersAndDeliversEvents(t *testing.T) {
 	}
 	if terminator, err := reader.ReadString('\n'); err != nil || terminator != "\n" {
 		t.Fatalf("SSE event terminator = %q, error = %v", terminator, err)
+	}
+
+	cancel()
+	waitForSubscribers(t, h, false)
+}
+
+func TestHubSendsHeartbeatEvents(t *testing.T) {
+	t.Parallel()
+	h := New()
+	h.heartbeatInterval = 10 * time.Millisecond
+	server := httptest.NewServer(h)
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeutil.Discard(response.Body)
+	waitForSubscribers(t, h, true)
+
+	reader := bufio.NewReader(response.Body)
+	for _, want := range []string{"event: heartbeat\n", "data: ping\n", "\n"} {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line != want {
+			t.Fatalf("heartbeat line = %q, want %q", line, want)
+		}
 	}
 
 	cancel()
@@ -142,8 +177,8 @@ func TestAcceptsGzip(t *testing.T) {
 	} {
 		t.Run(test.header, func(t *testing.T) {
 			t.Parallel()
-			if got := acceptsGzip(test.header); got != test.want {
-				t.Fatalf("acceptsGzip(%q) = %v, want %v", test.header, got, test.want)
+			if got := httpx.AcceptsGzip(http.Header{"Accept-Encoding": []string{test.header}}); got != test.want {
+				t.Fatalf("AcceptsGzip(%q) = %v, want %v", test.header, got, test.want)
 			}
 		})
 	}

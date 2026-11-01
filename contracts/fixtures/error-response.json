@@ -1,0 +1,8 @@
+{
+  "error": "node unavailable",
+  "code": "unavailable",
+  "retryable": true,
+  "request_id": "request-123",
+  "node_id": "worker-1",
+  "operation": "GET /api/nodes/{id}/models"
+}

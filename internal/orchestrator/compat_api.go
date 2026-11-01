@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 )
@@ -57,8 +58,11 @@ type anthropicRequest struct {
 }
 
 func (s *Server) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
-	_, backend := s.currentAgent()
-	models := s.listClusterModels(backend)
+	request, err := parseModelListRequest(r, "ollama-models", true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	type modelInfo struct {
 		Name       string         `json:"name"`
 		Model      string         `json:"model"`
@@ -67,6 +71,26 @@ func (s *Server) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 		Digest     string         `json:"digest"`
 		Details    map[string]any `json:"details"`
 	}
+	if request.Page.Active {
+		page, err := s.modelListingsPage(request, "ollama-models", false)
+		if err != nil {
+			http.Error(w, "could not list model page: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		list := make([]modelInfo, len(page.models))
+		now := time.Now().UTC()
+		for index, model := range page.models {
+			list[index] = modelInfo{
+				Name: model.Name, Model: model.Name, ModifiedAt: now,
+				Digest: model.Name, Details: map[string]any{"family": model.Engine},
+			}
+		}
+		writeModelListResponse(w, request, list, page.next, page.hasMore, nil)
+		return
+	}
+	_, backend := s.currentAgent()
+	snapshot := s.modelInventorySnapshot(backend)
+	models := filterModelInfos(snapshot.models, request.Filters)
 	list := make([]modelInfo, 0, len(models))
 	seen := make(map[string]bool)
 	for _, model := range models {
@@ -79,7 +103,7 @@ func (s *Server) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 			Digest: model.Name, Details: map[string]any{"family": model.Engine},
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": list})
+	writeModelListResponse(w, request, list, cluster.ModelListingPosition{}, false, map[string]any{"models": list})
 }
 
 func (s *Server) handleOllamaChat(w http.ResponseWriter, r *http.Request) {

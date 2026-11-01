@@ -23,6 +23,7 @@ func main() {
 	windowsBinary := flag.String("windows-binary", "maistr0.exe", "Windows output name (maistr0-update.exe when installed image is in use)")
 	darwinOnly := flag.Bool("darwin-only", false, "write manifests for darwin/amd64 and darwin/arm64 bundles only")
 	flag.Parse()
+	// Linux arm64 binaries are shipped, but peer update manifests do not support that target.
 	targets := []struct{ folder, name string }{
 		{"windows-amd64", *windowsBinary},
 		{"linux-amd64", "maistr0"},

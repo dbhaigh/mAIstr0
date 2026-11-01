@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/handler_utils"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/shard"
 )
@@ -28,9 +29,8 @@ func (s *Server) handleShardMembership(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.UnavailableError(errors.New("shard group persistence is unavailable")))
 		return
 	}
-	request, err := httpx.DecodeJSON[ShardMembershipRequest](w, r, httpx.ControlJSONBodyBytes)
-	if err != nil {
-		writeError(w, apperr.Invalid(err))
+	request, ok := handler_utils.DecodeJSON[ShardMembershipRequest](w, r, httpx.ControlJSONBodyBytes)
+	if !ok {
 		return
 	}
 	group, err := s.shards.Reconfigure(r.Context(), r.PathValue("id"), request)
@@ -105,9 +105,8 @@ func (s *Server) handleCreateShardGroup(w http.ResponseWriter, r *http.Request) 
 		writeError(w, apperr.UnavailableError(errors.New("shard group persistence is unavailable")))
 		return
 	}
-	request, err := httpx.DecodeJSON[CreateShardGroupRequest](w, r, 2<<20)
-	if err != nil {
-		writeError(w, apperr.Invalid(err))
+	request, ok := handler_utils.DecodeJSON[CreateShardGroupRequest](w, r, 2<<20)
+	if !ok {
 		return
 	}
 	group, err := s.shards.Create(r.Context(), request)

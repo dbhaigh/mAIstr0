@@ -18,9 +18,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
+	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/nodeagent"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 	"github.com/maistr0/maistr0/internal/selfupdate"
@@ -214,7 +216,12 @@ func (c *Controller) run(ctx context.Context) error {
 		mux.ServeHTTP(w, r)
 	}))
 	server := &http.Server{
-		Handler:   handler,
+		Handler: httpx.Chain(
+			handler,
+			httpx.RequestID,
+			httpx.WithErrorContext(apperr.ErrorContext{NodeID: c.nodeID}),
+			httpx.FormatErrors,
+		),
 		TLSConfig: c.identity.ServerTLSConfig(),
 	}
 	serveErr := make(chan error, 1)

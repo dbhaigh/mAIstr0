@@ -163,13 +163,35 @@ defensive result cloning are unchanged. `TestRecentAndPageRecentShareCacheOrderi
 warms the cache through either API and checks ordering before and after mutation.
 This is shared maintenance logic, not a claimed performance optimization.
 
-### Compatibility stream line parsing
+### Compatibility stream response handling
 
-The OpenAI SSE, Ollama NDJSON, and Anthropic SSE writers now share
-`compatStreamParser` for newline framing and `data:` extraction. Each writer
-still owns its protocol headers, error/output events, and terminal frames.
-Characterization tests cover mid-line and mid-UTF-8 chunk splits, empty chunks,
-an upstream error followed by more output, and client disconnect propagation.
+The OpenAI SSE, Ollama NDJSON, and Anthropic SSE writers share
+`compatStreamParser` for newline framing, `data:` extraction, and upstream
+event decoding. They also embed `compatStreamResponse` for status handling,
+header setup, upstream-error passthrough, and stream writes. Protocol headers
+remain configured per writer: OpenAI buffers headers and sets keep-alive, while
+Ollama and Anthropic expose `Flush` and write headers directly. Each writer
+still owns its protocol envelopes and terminal frames. Characterization tests
+cover mid-line and mid-UTF-8 chunk splits, empty chunks, an upstream error
+followed by more output, and client disconnect propagation.
+
+### Task-history transport
+
+The node-agent and orchestrator share `tasksync.Transfer` for paginated
+snapshot fetches, compressed page dispatch, and GET snapshot responses.
+`SnapshotRequest` and `TaskSynchronization` provide common request state and
+dispatch-failure completion behavior. The callers retain their own election or
+coordinator checks, merge versus authoritative-replacement behavior, and
+watermark advancement rules; the remote label also preserves their distinct
+peer/node error prefixes. The orchestrator keeps its user-facing history-page
+query path and page metrics in its handler.
+
+### Stage readiness interface
+
+The node-agent status and stage components share `stageReadinessProvider` for
+the readiness method shape. Stage readiness still reports loaded stages that
+are not unloading, while status readiness separately checks configured models
+against ready runtime engine capabilities.
 
 `BenchmarkCompatStreamWriters` ran with `-benchmem -count=10 -benchtime=200ms`
 on Windows/amd64, Go 1.27.3. Benchstat reported allocations per stream of
@@ -264,9 +286,10 @@ identical implementations and characterization tests.
 - CLI diagnostics clear the memory path before validation to avoid filesystem
   effects. Startup and print-config role/address/memory overlays differ.
   Shared flag-heavy configuration plumbing would obscure those differences.
-- Node-peer and orchestrator task-sync callers have different authority/merge
-  policies and observable error prefixes. Snapshot, incremental, and watermark
-  sync paths also have distinct failure/advance rules.
+- Node-peer and orchestrator task-sync callers retain different
+  authority/merge policies and observable error prefixes around the shared
+  `tasksync.Transfer`. Snapshot, incremental, and watermark sync paths also
+  have distinct failure/advance rules.
 - bbolt and in-memory adapters intentionally implement the same store contract
   separately. Legacy fixtures and common semantics tests protect parity.
 - Shell and PowerShell scripts support native workflows; release paths also

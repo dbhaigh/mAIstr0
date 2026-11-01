@@ -17,10 +17,12 @@ import (
 var errSpeculativeHedgeLost = errors.New("speculative dispatch lost")
 
 type candidateDispatchResult struct {
-	err       error
-	retryable bool
-	won       bool
-	attempted []scheduler.Assignment
+	err          error
+	retryable    bool
+	won          bool
+	attempted    []scheduler.Assignment
+	failureClass string
+	httpStatus   int
 }
 
 type hedgeReservationResult struct {
@@ -41,6 +43,15 @@ func (d *dispatcherComponent) executeCandidateWithHedge(
 		return d.runCandidateSeries(ctx, taskID, assignment, prompt, nil)
 	}
 	history, ok := d.memory.(interface {
+		// P95Duration returns the observed 95th-percentile duration for a model
+		// and task type.
+		//
+		// Parameters: model and taskType (string) identify the workload.
+		// Returns: the recorded duration, or a nonpositive duration when no
+		// usable history is available.
+		//
+		// References: [request paths](../../docs/architecture.md#request-paths),
+		// [dispatcher_hedging_test.go](dispatcher_hedging_test.go).
 		P95Duration(model, taskType string) time.Duration
 	})
 	if !ok {
@@ -204,7 +215,8 @@ func (d *dispatcherComponent) executeCandidateWithHedge(
 		return *secondaryResult
 	}
 	return candidateDispatchResult{
-		err: errors.New("speculative dispatch produced no result"),
+		err:          errors.New("speculative dispatch produced no result"),
+		failureClass: "dispatch_error",
 	}
 }
 
@@ -280,6 +292,7 @@ func (d *dispatcherComponent) runCandidateSeries(
 			if errors.Is(context.Cause(ctx), errSpeculativeHedgeLost) {
 				failureClass = "hedge_loser"
 			}
+			result.failureClass = failureClass
 			d.recordDispatchWithAttemptID(
 				assignment, requestID, "", "", beginErr, time.Since(started), failureClass, 0,
 			)
@@ -343,6 +356,7 @@ func (d *dispatcherComponent) runCandidateSeries(
 			time.Since(started), recordFailureClass, httpStatus,
 		)
 		result.err, result.retryable = attemptErr, retryable
+		result.failureClass, result.httpStatus = failureClass, httpStatus
 		if attemptErr == nil || retryable || validationAttempt >= assignment.Subtask.MaxRetries || ctx.Err() != nil {
 			return result
 		}
