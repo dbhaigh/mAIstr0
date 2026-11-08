@@ -62,6 +62,7 @@ func (r *responseCapture) Write(b []byte) (int, error) {
 	}
 	return r.body.Write(b)
 }
+
 // WriteHeader records the status code produced by a compatibility handler.
 //
 // Parameters: status (int) is the HTTP status code to capture.

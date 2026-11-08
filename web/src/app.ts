@@ -28,7 +28,7 @@ import { dashboardViewModel } from "./shared/view-model.js";
 import { checkSetupReadiness, loadModelCatalog } from "./views/cluster-setup.js";
 import { renderOverview } from "./views/cluster.js";
 import { refreshMemory } from "./views/memory.js";
-import { renderNodes, renderSetupNodes } from "./views/nodes.js";
+import { nodeUpgradeStatus, renderNodes, renderSetupNodes } from "./views/nodes.js";
 import { renderPipelineDashboard } from "./views/pipelines.js";
 import { renderDiscovery, renderRouting } from "./views/routing.js";
 import { refreshShardGroups } from "./views/shards.js";
@@ -314,6 +314,7 @@ function applySnapshot(snap: DashboardSnapshot): void {
     models: node.models, default_model: node.default_model, fast_score: node.fast_score,
     active_tasks: node.active_tasks, healthy: node.healthy, leader: node.leader,
     version_error: node.version_error, last_seen: node.healthy ? undefined : node.last_seen,
+    upgrade_status: nodeUpgradeStatus(node),
     gpu_sample: node.gpu_history?.at(-1)?.timestamp,
     npu_sample: node.npu_history?.at(-1)?.timestamp,
     system_sample: node.system_history?.at(-1)?.timestamp,
@@ -336,6 +337,7 @@ function applySnapshot(snap: DashboardSnapshot): void {
       },
       model_count: node.models?.length || 0,
       last_seen: node.healthy ? undefined : node.last_seen,
+      upgrade_status: nodeUpgradeStatus(node),
       gpu_stats_available: node.hardware?.gpu_stats_available,
       gpu_utilization_percent: node.hardware?.gpu_utilization_percent,
       npu_stats_available: node.hardware?.npu_stats_available,
@@ -386,6 +388,7 @@ function applySnapshot(snap: DashboardSnapshot): void {
   }));
   const peerSignature = JSON.stringify({ peers: peerState, discoveryAuthentication: dashboardState.discoveryAuthentication, nodes: nodeState.map((node) => ({
     id: node.id, address: node.address, healthy: node.healthy, last_seen: node.last_seen,
+    upgrade_status: node.upgrade_status,
   })), pairing: dashboardState.pairing.status });
   const discoveredNodeState = (snap.discovery || [])
     .filter((peer) => peer.role === "node")

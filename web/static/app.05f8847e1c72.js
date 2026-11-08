@@ -306,16 +306,16 @@
       if (totalCount === 0) return "0 tasks";
       return `Showing ${visibleCount} of ${totalCount} ${totalCount === 1 ? "task" : "tasks"}`;
     }
-    function pairingPINViewModel(status) {
-      const hasPIN = Boolean(status?.pin);
-      const hasActivePIN = hasPIN || Boolean(status?.expires_at);
+    function pairingPINViewModel(status2) {
+      const hasPIN = Boolean(status2?.pin);
+      const hasActivePIN = hasPIN || Boolean(status2?.expires_at);
       return {
-        visible: status?.role === "orchestrator",
+        visible: status2?.role === "orchestrator",
         hasPIN,
         hasActivePIN,
-        pinText: status?.pin || (hasActivePIN ? "Hidden on this connection" : "Expired"),
+        pinText: status2?.pin || (hasActivePIN ? "Hidden on this connection" : "Expired"),
         regenerateText: hasPIN ? "Generate / replace pairing PIN" : hasActivePIN ? "Generate / reveal pairing PIN" : "Generate pairing PIN",
-        expiryText: status?.expires_at ? `Expires ${new Date(status.expires_at).toLocaleTimeString()}. The PIN can be used once.` : "No active PIN. Generate a new PIN to pair another node.",
+        expiryText: status2?.expires_at ? `Expires ${new Date(status2.expires_at).toLocaleTimeString()}. The PIN can be used once.` : "No active PIN. Generate a new PIN to pair another node.",
         stateText: hasPIN ? "Share the PIN and HTTPS address only with the node you intend to add." : hasActivePIN ? "An active PIN is hidden on this connection. Generate a replacement to reveal it locally." : "No active PIN. Generate one to add or re-pair a node."
       };
     }
@@ -452,10 +452,10 @@
           open();
         }, delay);
       }
-      function disconnect(source) {
-        if (closed || source !== eventSource) return;
+      function disconnect(source2) {
+        if (closed || source2 !== eventSource) return;
         eventSource = null;
-        source.close?.();
+        source2.close?.();
         clearStableTimer();
         stopHealthMonitor();
         heartbeatSeen = false;
@@ -463,54 +463,54 @@
         setConnected(false);
         scheduleReconnect();
       }
-      function checkHealth(source) {
-        if (closed || source !== eventSource) return;
-        if (source.readyState === 2 || connected && source.readyState === 0) {
-          disconnect(source);
+      function checkHealth(source2) {
+        if (closed || source2 !== eventSource) return;
+        if (source2.readyState === 2 || connected && source2.readyState === 0) {
+          disconnect(source2);
           return;
         }
         if (heartbeatSeen && nowImpl() - lastHeartbeatAt >= heartbeatTimeoutMs) {
           onError(new Error("dashboard event stream heartbeat timed out"));
-          disconnect(source);
+          disconnect(source2);
         }
       }
       function open() {
         if (closed) return;
-        let source;
+        let source2;
         try {
-          source = new EventSourceImpl("/api/events");
+          source2 = new EventSourceImpl("/api/events");
         } catch (error) {
           onError(error);
           setConnected(false);
           scheduleReconnect();
           return;
         }
-        eventSource = source;
-        source.onopen = () => {
-          if (closed || source !== eventSource) return;
+        eventSource = source2;
+        source2.onopen = () => {
+          if (closed || source2 !== eventSource) return;
           setConnected(true);
           clearStableTimer();
           stableTimer = setTimeoutImpl(() => {
             stableTimer = null;
-            if (source === eventSource && connected) retryAttempt = 0;
+            if (source2 === eventSource && connected) retryAttempt = 0;
           }, stableConnectionMs);
         };
-        source.onerror = () => disconnect(source);
-        source.onmessage = (event) => {
-          if (closed || source !== eventSource) return;
+        source2.onerror = () => disconnect(source2);
+        source2.onmessage = (event) => {
+          if (closed || source2 !== eventSource) return;
           try {
             scheduler.enqueue(JSON.parse(event.data));
           } catch (error) {
             onError(error);
           }
         };
-        source.addEventListener?.("heartbeat", () => {
-          if (closed || source !== eventSource) return;
+        source2.addEventListener?.("heartbeat", () => {
+          if (closed || source2 !== eventSource) return;
           heartbeatSeen = true;
           lastHeartbeatAt = nowImpl();
         });
         healthTimer = setIntervalImpl(
-          () => checkHealth(source),
+          () => checkHealth(source2),
           heartbeatCheckIntervalMs
         );
       }
@@ -525,9 +525,9 @@
         clearStableTimer();
         stopHealthMonitor();
         if (eventSource) {
-          const source = eventSource;
+          const source2 = eventSource;
           eventSource = null;
-          source.close?.();
+          source2.close?.();
         }
         setConnected(false);
       }
@@ -945,14 +945,14 @@
       console.error("failed to load session", id, err);
     }
   }
-  async function createNewSession(title = "") {
+  async function createNewSession(title2 = "") {
     if (isSending) return;
     try {
       const session = await fetchJSON("/api/agent/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: title || `Session ${(/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+          title: title2 || `Session ${(/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
           coordinator_model: agentModelSelect?.value || "",
           max_steps: parseInt(agentStepsSelect?.value || "8", 10)
         })
@@ -1039,7 +1039,7 @@
   }
   function formatClusterStatusAnswer(nodes, data, errors = []) {
     const health = data["/api/cluster/health"];
-    const status = data["/api/status"];
+    const status2 = data["/api/status"];
     const shardList = data["/api/shards"];
     const taskPage = data["/api/tasks?page_size=50"];
     const online = nodes.filter((node) => node.healthy);
@@ -1096,9 +1096,9 @@
       lines.push(`  Engines: ${engines.length ? engines.map((engine) => `${engine.name}: ${engine.ready ? "ready" : "not ready"}, inventory ${dashboardViewModel.engineInventoryState(engine)}${engine.last_error ? `, error ${engine.last_error}` : ""}`).join("; ") : node.version ? "none configured or detected" : "readiness not reported (legacy node)"}.`);
       if (node.version_error) lines.push(`  Version warning: ${node.version_error}`);
     }
-    if (status) {
-      lines.push("", `Orchestrator: ${status.role || "unknown role"}; mode ${status.mode || "full"}; version ${data["/api/version"]?.version || "unknown"}.`);
-      lines.push(`Persistence: ${status.persistence?.available === true ? "available" : status.persistence?.available === false ? "unavailable" : "not reported"}${status.persistence?.warning ? `; ${status.persistence.warning}` : ""}.`);
+    if (status2) {
+      lines.push("", `Orchestrator: ${status2.role || "unknown role"}; mode ${status2.mode || "full"}; version ${data["/api/version"]?.version || "unknown"}.`);
+      lines.push(`Persistence: ${status2.persistence?.available === true ? "available" : status2.persistence?.available === false ? "unavailable" : "not reported"}${status2.persistence?.warning ? `; ${status2.persistence.warning}` : ""}.`);
     }
     if (health) {
       const dispatch = health.global_dispatch || {};
@@ -1657,35 +1657,35 @@ ${escapeHtml(tr.output.node_reply)}</div>
   async function refreshPersistenceStatus() {
     if (!persistenceWarning) return;
     try {
-      const status = await fetchJSON("/api/status");
-      const persistence = status.persistence;
-      persistenceWarning.hidden = status.mode === "minimal" || persistence?.available !== false;
+      const status2 = await fetchJSON("/api/status");
+      const persistence = status2.persistence;
+      persistenceWarning.hidden = status2.mode === "minimal" || persistence?.available !== false;
       persistenceWarning.textContent = persistence?.warning || "Persistent memory is unavailable.";
-      initializeOptionalFeatures(status.mode !== "minimal");
+      initializeOptionalFeatures(status2.mode !== "minimal");
     } catch (error) {
       console.error("Could not load persistence status:", error);
       initializeOptionalFeatures(true);
     }
   }
   function updateClusterTitle(count) {
-    const title = document.querySelector("header h1");
-    if (title) title.textContent = `mAIstr0 · ${count} ${count === 1 ? "Node" : "Nodes"}`;
+    const title2 = document.querySelector("header h1");
+    if (title2) title2.textContent = `mAIstr0 · ${count} ${count === 1 ? "Node" : "Nodes"}`;
   }
 
   // src/components/pairing-dialog.js
   var generatedPairingPIN = null;
   var pairingPolicyPending = false;
-  function pairingStatusWithGeneratedPIN(status) {
-    if (status.pin) {
-      generatedPairingPIN = { pin: status.pin, expires_at: status.expires_at };
-      return status;
+  function pairingStatusWithGeneratedPIN(status2) {
+    if (status2.pin) {
+      generatedPairingPIN = { pin: status2.pin, expires_at: status2.expires_at };
+      return status2;
     }
-    if (!generatedPairingPIN) return status;
-    if (!status.expires_at || status.expires_at !== generatedPairingPIN.expires_at || Date.parse(status.expires_at) <= Date.now()) {
+    if (!generatedPairingPIN) return status2;
+    if (!status2.expires_at || status2.expires_at !== generatedPairingPIN.expires_at || Date.parse(status2.expires_at) <= Date.now()) {
       generatedPairingPIN = null;
-      return status;
+      return status2;
     }
-    return { ...status, pin: generatedPairingPIN.pin };
+    return { ...status2, pin: generatedPairingPIN.pin };
   }
   function openPairingDialog(node = null) {
     if (!pairingConnectDialog || pairingConnectDialog.open) return;
@@ -1695,12 +1695,12 @@ ${escapeHtml(tr.output.node_reply)}</div>
     dashboardState.pairing.targetNode = node;
     if (pairingFingerprint) pairingFingerprint.value = node && !node.joinOrchestrator && !node.discovered ? dashboardState.pairing.status?.fingerprint || "" : "";
     if (pairingStatus) pairingStatus.textContent = "";
-    const title = document.getElementById("pairing-title-node");
+    const title2 = document.getElementById("pairing-title-node");
     const description = document.getElementById("pairing-dialog-description");
     if (node?.joinOrchestrator) {
       const pairingStatus2 = dashboardState.pairing.status;
       const alreadyPairedWithTarget = pairingStatus2?.joined && pairingStatus2.orchestrator_id === node.id;
-      if (title) title.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}'s cluster` : `Join ${node.id}'s cluster`;
+      if (title2) title2.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}'s cluster` : `Join ${node.id}'s cluster`;
       if (description) description.textContent = `Connect securely to ${node.id} at ${node.peer_addr || node.address}. Discovery does not authenticate its certificate. With strict verification off, same-subnet pairing skips the fingerprint and PIN; otherwise verify the fingerprint out of band and enter the PIN.`;
       if (pairingAddressField) pairingAddressField.hidden = false;
       if (pairingAddress) {
@@ -1711,7 +1711,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
       if (pairingConnectButton) pairingConnectButton.textContent = alreadyPairedWithTarget ? `Re-pair with ${node.id}` : pairingStatus2?.joined ? `Switch to ${node.id}` : "Join cluster";
     } else if (node) {
       const invitation = Boolean(node.discovered);
-      if (title) title.textContent = invitation ? `Pair ${node.id} with this cluster` : `Re-pair ${node.id} with this cluster`;
+      if (title2) title2.textContent = invitation ? `Pair ${node.id} with this cluster` : `Re-pair ${node.id} with this cluster`;
       if (description) description.textContent = invitation ? `Send a pairing invitation to ${node.address}. The node must confirm locally before it joins.` : "Enter this cluster's HTTPS address and an active one-use PIN. The selected node must be online and already trusted by this cluster.";
       if (pairingAddressField) pairingAddressField.hidden = invitation;
       if (pairingAddress) pairingAddress.required = !invitation;
@@ -1722,7 +1722,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
       if (pairingAddressField) pairingAddressField.hidden = false;
       if (pairingAddress) pairingAddress.required = true;
       const joiningNode = dashboardState.pairing.status?.role === "node";
-      if (title) title.textContent = joiningNode ? dashboardState.pairing.status.joined ? "Re-pair node" : "Join cluster" : "Connect to orchestrator";
+      if (title2) title2.textContent = joiningNode ? dashboardState.pairing.status.joined ? "Re-pair node" : "Join cluster" : "Connect to orchestrator";
       if (description) description.textContent = joiningNode ? "Enter the orchestrator HTTPS address, its out-of-band verified certificate fingerprint, and the one-use PIN shown on its local Setup page." : "Enter the HTTPS address and one-use PIN displayed on the orchestrator dashboard.";
       if (joiningNode) {
         pairingAddress.value = dashboardState.pairing.status.orchestrator_addr || pairingAddress.value;
@@ -1786,61 +1786,61 @@ ${escapeHtml(tr.output.node_reply)}</div>
   });
   async function loadPairingStatus() {
     try {
-      const status = pairingStatusWithGeneratedPIN(await fetchJSON("/api/pairing/status"));
-      if (status.dashboard_url) {
-        window.location.replace(status.dashboard_url);
+      const status2 = pairingStatusWithGeneratedPIN(await fetchJSON("/api/pairing/status"));
+      if (status2.dashboard_url) {
+        window.location.replace(status2.dashboard_url);
         return;
       }
-      dashboardState.pairing.status = status;
-      if (pairingFingerprintDisplay) pairingFingerprintDisplay.textContent = status.fingerprint || "Unavailable";
-      if (status.role === "orchestrator") {
-        const pinViewModel = dashboardViewModel.pairingPINViewModel(status);
+      dashboardState.pairing.status = status2;
+      if (pairingFingerprintDisplay) pairingFingerprintDisplay.textContent = status2.fingerprint || "Unavailable";
+      if (status2.role === "orchestrator") {
+        const pinViewModel = dashboardViewModel.pairingPINViewModel(status2);
         if (pairingPinView) pairingPinView.hidden = !pinViewModel.visible;
         if (pairingNodeConnect) pairingNodeConnect.hidden = true;
         if (pairingInstructions) pairingInstructions.textContent = "Strict mode requires an out-of-band verified fingerprint and one-use PIN. With strict mode off, nodes on a connected local subnet can auto-join.";
         if (pairingRequireVerification && !pairingPolicyPending) {
-          pairingRequireVerification.checked = status.require_pairing_verification === true;
+          pairingRequireVerification.checked = status2.require_pairing_verification === true;
         }
         if (pairingPolicyState && !pairingPolicyPending) {
-          pairingPolicyState.textContent = status.require_pairing_verification ? "Strict mode is on. New joins and re-pairs require both checks; existing trust is unchanged." : "Strict mode is off. Nodes on a connected local subnet may auto-join; existing trust is unchanged.";
+          pairingPolicyState.textContent = status2.require_pairing_verification ? "Strict mode is on. New joins and re-pairs require both checks; existing trust is unchanged." : "Strict mode is off. Nodes on a connected local subnet may auto-join; existing trust is unchanged.";
         }
         if (pairingPinRegenerateBtn) {
           pairingPinRegenerateBtn.textContent = pinViewModel.regenerateText;
         }
-        if (pairingAddressDisplay) pairingAddressDisplay.textContent = status.address || "HTTPS address unavailable";
+        if (pairingAddressDisplay) pairingAddressDisplay.textContent = status2.address || "HTTPS address unavailable";
         if (pairingPin) pairingPin.textContent = pinViewModel.pinText;
         if (pairingPinExpiry) pairingPinExpiry.textContent = pinViewModel.expiryText;
         if (pairingState) pairingState.textContent = pinViewModel.stateText;
         return;
       }
-      if (status.role === "node") {
+      if (status2.role === "node") {
         if (pairingPinView) pairingPinView.hidden = true;
         if (pairingNodeConnect) pairingNodeConnect.hidden = false;
-        if (pairingConnectOpenBtn) pairingConnectOpenBtn.textContent = status.joined ? "Re-pair / change orchestrator" : "Enter address and pairing PIN";
-        if (pairingInstructions) pairingInstructions.textContent = status.auto_join_available ? "This orchestrator is on a connected local subnet. If cluster strict mode is off, the node joins automatically without an out-of-band fingerprint or PIN." : status.require_pairing_verification ? "Cluster strict mode is on. New joins and re-pairs require the orchestrator's verified certificate fingerprint and one-use PIN." : "For non-local connections, verify the orchestrator's certificate fingerprint out of band and enter its one-use PIN. Discovery alone does not establish trust.";
-        if (status.orchestrator_addr && pairingAddress && !pairingAddress.value) {
-          pairingAddress.value = status.orchestrator_addr;
+        if (pairingConnectOpenBtn) pairingConnectOpenBtn.textContent = status2.joined ? "Re-pair / change orchestrator" : "Enter address and pairing PIN";
+        if (pairingInstructions) pairingInstructions.textContent = status2.auto_join_available ? "This orchestrator is on a connected local subnet. If cluster strict mode is off, the node joins automatically without an out-of-band fingerprint or PIN." : status2.require_pairing_verification ? "Cluster strict mode is on. New joins and re-pairs require the orchestrator's verified certificate fingerprint and one-use PIN." : "For non-local connections, verify the orchestrator's certificate fingerprint out of band and enter its one-use PIN. Discovery alone does not establish trust.";
+        if (status2.orchestrator_addr && pairingAddress && !pairingAddress.value) {
+          pairingAddress.value = status2.orchestrator_addr;
         }
         if (pairingState) {
-          pairingState.textContent = status.joined ? `Connected to ${status.orchestrator_addr || "the orchestrator"}.` : status.auto_join_available ? `Connecting automatically to ${status.orchestrator_addr || "a discovered cluster"} on this subnet.` : status.trusted ? "Pairing succeeded. Waiting for the node to register with the orchestrator." : "Not paired. Enter the orchestrator HTTPS address and its one-use PIN.";
+          pairingState.textContent = status2.joined ? `Connected to ${status2.orchestrator_addr || "the orchestrator"}.` : status2.auto_join_available ? `Connecting automatically to ${status2.orchestrator_addr || "a discovered cluster"} on this subnet.` : status2.trusted ? "Pairing succeeded. Waiting for the node to register with the orchestrator." : "Not paired. Enter the orchestrator HTTPS address and its one-use PIN.";
         }
-        if (!status.joined && !dashboardState.pairing.setupFocused) {
+        if (!status2.joined && !dashboardState.pairing.setupFocused) {
           dashboardState.pairing.setupFocused = true;
           document.querySelector('.nav-tab[data-tab="cluster-tab"]')?.click();
           document.querySelector('[data-window="setup-panel"]')?.click();
           document.getElementById("setup-pairing-tab")?.click();
         }
         const invitationPending = await checkPairingInvitation();
-        if ((status.auto_join_available || status.joined || status.trusted) && dashboardState.pairing.dialogAutoOpened) {
+        if ((status2.auto_join_available || status2.joined || status2.trusted) && dashboardState.pairing.dialogAutoOpened) {
           pairingConnectDialog?.close();
           dashboardState.pairing.dialogAutoOpened = false;
           dashboardState.pairing.promptShown = false;
         }
-        if (!invitationPending && !status.joined && !status.trusted && status.pairing_required !== false && !status.auto_join_available && !dashboardState.pairing.promptShown) {
+        if (!invitationPending && !status2.joined && !status2.trusted && status2.pairing_required !== false && !status2.auto_join_available && !dashboardState.pairing.promptShown) {
           dashboardState.pairing.promptShown = true;
           dashboardState.pairing.dialogAutoOpened = true;
           openPairingDialog();
-        } else if (status.joined) {
+        } else if (status2.joined) {
           dashboardState.pairing.promptShown = false;
           dashboardState.pairing.dialogAutoOpened = false;
         }
@@ -1974,7 +1974,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
       signatureOf: (task) => JSON.stringify({ task, idPrefix, linkNodes }),
       renderItem: (t, visibleIndex) => {
         const index = range.start + visibleIndex;
-        const status = validStatuses.has(t.status) ? t.status : "unknown";
+        const status2 = validStatuses.has(t.status) ? t.status : "unknown";
         const isExpanded = state.expanded.has(t.id);
         const detailsId = `${idPrefix}-details-${index}`;
         const subtasks = t.subtasks || [];
@@ -2015,14 +2015,14 @@ ${escapeHtml(tr.output.node_reply)}</div>
       `;
         }).join("");
         const item = document.createElement("tr");
-        item.className = `task-history-row task-history-row-${status}`;
+        item.className = `task-history-row task-history-row-${status2}`;
         item.dataset.taskId = t.id;
         item.innerHTML = `
       <td><button class="task-expand-btn" type="button" aria-expanded="${isExpanded}" aria-controls="${detailsId}" aria-label="Show details for ${escapeHtml(t.description || t.id)}"><span class="task-expand-icon" aria-hidden="true">›</span></button></td>
       <td><span class="task-history-title" title="${escapeHtml(t.description || t.id)}">${escapeHtml(t.description || t.id)}</span><span class="task-history-timestamp">${formatTimestamp("Created", t.created_at)}</span></td>
       <td><span class="task-history-id" title="${escapeHtml(t.id)}">${escapeHtml(t.id)}</span></td>
       <td>${subtasks.length ? `${completedCount} / ${subtasks.length}` : "—"}</td>
-      <td><span class="badge ${status}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
+      <td><span class="badge ${status2}">${escapeHtml(status2.replaceAll("_", " "))}</span></td>
     `;
         const detailsRow = document.createElement("tr");
         detailsRow.id = detailsId;
@@ -2036,9 +2036,9 @@ ${escapeHtml(tr.output.node_reply)}</div>
         ${t.updated_at ? formatTimestamp("Updated", t.updated_at) : ""}
       </div>
       <div class="task-actions">
-        ${status === "running" || status === "awaiting_approval" ? `<button class="cancel-task-btn" type="button" data-task-id="${escapeHtml(t.id)}">Cancel</button>` : ""}
-        ${status === "awaiting_approval" ? `<button class="approve-task-btn primary-btn" type="button" data-task-id="${escapeHtml(t.id)}">Approve and synthesize</button>` : ""}
-        ${t.resumable && (status === "failed" || status === "cancelled") ? `<button class="resume-task-btn primary-btn" type="button" data-task-id="${escapeHtml(t.id)}">Resume</button>` : ""}
+        ${status2 === "running" || status2 === "awaiting_approval" ? `<button class="cancel-task-btn" type="button" data-task-id="${escapeHtml(t.id)}">Cancel</button>` : ""}
+        ${status2 === "awaiting_approval" ? `<button class="approve-task-btn primary-btn" type="button" data-task-id="${escapeHtml(t.id)}">Approve and synthesize</button>` : ""}
+        ${t.resumable && (status2 === "failed" || status2 === "cancelled") ? `<button class="resume-task-btn primary-btn" type="button" data-task-id="${escapeHtml(t.id)}">Resume</button>` : ""}
       </div>
       ${t.error ? `<p class="task-error-reason"><strong>Task failure reason:</strong> ${escapeHtml(t.error)}</p>` : ""}
       ${t.last_checkpoint ? `<div class="task-checkpoint">Last checkpoint: ${escapeHtml(t.last_checkpoint)}</div>` : ""}
@@ -2117,13 +2117,13 @@ ${escapeHtml(tr.output.node_reply)}</div>
     const query = (taskHistorySearch?.value || "").trim().toLowerCase();
     const statusFilter = taskHistoryStatus?.value || "all";
     const orderedTasks = [...tasks].filter((task) => {
-      const status = task.status || "unknown";
-      if (statusFilter !== "all" && status !== statusFilter) return false;
+      const status2 = task.status || "unknown";
+      if (statusFilter !== "all" && status2 !== statusFilter) return false;
       if (!query) return true;
       const searchable = [
         task.id,
         task.description,
-        status,
+        status2,
         task.result,
         task.error,
         ...(task.subtasks || []).flatMap((item) => [
@@ -2381,8 +2381,8 @@ ${s.output || s.error || ""}`)
       const state = dashboardViewModel.engineInventoryState(engine);
       const count = Math.max(0, Number(engine.model_count) || 0);
       const countLabel = state === "error" ? `${count} known` : `${count} model${count === 1 ? "" : "s"}`;
-      const title = engine.last_error ? `${engine.name}: ${engine.last_error}` : `${engine.name}: ${dashboardViewModel.engineInventoryLabel(state)}`;
-      return `<span class="engine-status-chip ${state}" title="${escapeHtml(title)}">
+      const title2 = engine.last_error ? `${engine.name}: ${engine.last_error}` : `${engine.name}: ${dashboardViewModel.engineInventoryLabel(state)}`;
+      return `<span class="engine-status-chip ${state}" title="${escapeHtml(title2)}">
       <strong>${escapeHtml(engine.name || "Unknown engine")}</strong>
       <span>${escapeHtml(dashboardViewModel.engineInventoryLabel(state))} · ${countLabel}</span>
     </span>`;
@@ -2435,6 +2435,85 @@ ${s.output || s.error || ""}`)
     </div>
   </details>`;
   }
+
+  // src/components/upgrade-dialog.js
+  var activeNodeID = "";
+  var submitUpgradeRequest = null;
+  var activeStatus = null;
+  var dialog = document.getElementById("node-upgrade-dialog");
+  var form = document.getElementById("node-upgrade-form");
+  var title = document.getElementById("node-upgrade-title");
+  var source = document.getElementById("node-upgrade-source");
+  var pathField = document.getElementById("node-upgrade-path-field");
+  var pathInput = document.getElementById("node-upgrade-path");
+  var peerField = document.getElementById("node-upgrade-peer-field");
+  var peerInput = document.getElementById("node-upgrade-peer");
+  var status = document.getElementById("node-upgrade-status");
+  var submitButton = document.getElementById("node-upgrade-submit");
+  function isUpgradeActive(value) {
+    return ["queued", "starting", "running", "restarting", "rejoining"].includes(value?.state);
+  }
+  function updateSourceFields() {
+    const peerSource = source?.value === "peer";
+    if (pathField) pathField.hidden = peerSource;
+    if (peerField) peerField.hidden = !peerSource;
+    if (pathInput) pathInput.required = !peerSource;
+    if (peerInput) peerInput.required = peerSource;
+  }
+  function statusText(value) {
+    if (!value) return "Choose a local executable path or a trusted peer source.";
+    const state = String(value.state || "unknown").replaceAll("_", " ");
+    const phase = String(value.phase || "").replaceAll("_", " ");
+    const progress = Math.max(0, Math.min(100, Number(value.progress) || 0));
+    const ticket = String(value.ticket_status || "not requested").replaceAll("_", " ");
+    const reason = value.failure_reason ? ` Failure: ${value.failure_reason}` : "";
+    return `Upgrade ${state}${phase ? ` · ${phase}` : ""} · ${progress}% · Rejoin ticket: ${ticket}.${reason}`;
+  }
+  function openUpgradeDialog(node, submit) {
+    if (!dialog || !form || !source || !pathInput || !peerInput) {
+      throw new Error("Upgrade dialog is unavailable.");
+    }
+    activeNodeID = node.id;
+    submitUpgradeRequest = submit;
+    title.textContent = `Upgrade ${node.id}`;
+    source.value = "path";
+    pathInput.value = "";
+    peerInput.value = "";
+    updateSourceFields();
+    updateUpgradeDialogStatus(node.id, node.upgrade_status);
+    dialog.showModal();
+    pathInput.focus();
+  }
+  function updateUpgradeDialogStatus(nodeID, value) {
+    if (nodeID !== activeNodeID || !status) return;
+    activeStatus = value || null;
+    status.textContent = statusText(value);
+    if (submitButton) submitButton.disabled = isUpgradeActive(value);
+  }
+  source?.addEventListener("change", updateSourceFields);
+  document.getElementById("node-upgrade-cancel")?.addEventListener("click", () => dialog?.close());
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!activeNodeID || !submitUpgradeRequest) return;
+    const value = source?.value === "peer" ? peerInput?.value.trim() : pathInput?.value.trim();
+    if (!value) {
+      if (status) status.textContent = source?.value === "peer" ? "Enter the ID of a trusted peer." : "Enter an absolute path on the target node.";
+      return;
+    }
+    const request = source?.value === "peer" ? { peer_id: value } : { path: value };
+    if (submitButton) submitButton.disabled = true;
+    if (status) status.textContent = "Submitting upgrade request…";
+    try {
+      await submitUpgradeRequest(activeNodeID, request);
+      if (status?.textContent === "Submitting upgrade request…") {
+        status.textContent = "Upgrade request accepted; waiting for node status.";
+      }
+    } catch (error) {
+      if (status) status.textContent = `Unable to start upgrade: ${error?.message || error}`;
+    } finally {
+      if (submitButton) submitButton.disabled = isUpgradeActive(activeStatus);
+    }
+  });
 
   // src/views/shards.js
   var shardGroupList = document.getElementById("shard-group-list");
@@ -2699,11 +2778,11 @@ ${s.output || s.error || ""}`)
     if (inventoryLoading || !inventory.has(nodeID)) {
       return { eligible: false, reason: "Checking managed engines…" };
     }
-    const status = inventory.get(nodeID);
-    if (status.error) {
-      return { eligible: false, reason: `Managed engine check failed: ${status.error}` };
+    const status2 = inventory.get(nodeID);
+    if (status2.error) {
+      return { eligible: false, reason: `Managed engine check failed: ${status2.error}` };
     }
-    const engines = status.engines || [];
+    const engines = status2.engines || [];
     const requiredKind = mode === "vllm-mp" ? "vllm" : "ggml-rpc-server";
     if (!engines.some((engine) => engine.kind?.toLowerCase() === requiredKind)) {
       if (mode === "llamacpp-rpc") {
@@ -2736,7 +2815,7 @@ ${s.output || s.error || ""}`)
       }
     }));
     if (generation !== shardSetupGeneration) return;
-    shardSetupInventory = new Map(inventory.map(({ nodeID, ...status }) => [nodeID, status]));
+    shardSetupInventory = new Map(inventory.map(({ nodeID, ...status2 }) => [nodeID, status2]));
     shardSetupInventoryLoading = false;
     renderShardSetupNodes();
     return loadShardSetupModels();
@@ -2986,6 +3065,124 @@ ${s.output || s.error || ""}`)
   });
 
   // src/views/nodes.js
+  var upgradeStatusCache = /* @__PURE__ */ new Map();
+  var monitoredUpgrades = /* @__PURE__ */ new Set();
+  function isUpgradeActive2(status2) {
+    return ["queued", "starting", "running", "restarting", "rejoining"].includes(status2?.state);
+  }
+  function statusTime(status2) {
+    const parsed = Date.parse(status2?.updated_at || "");
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  function nodeUpgradeStatus(node) {
+    if (!node) return null;
+    const reported = node.upgrade_status;
+    const cached = upgradeStatusCache.get(node.id);
+    if (!reported) return cached || null;
+    if (!cached) return reported;
+    return statusTime(cached) >= statusTime(reported) ? cached : reported;
+  }
+  function nodeUpgradeStatusMarkup(node) {
+    const status2 = nodeUpgradeStatus(node);
+    if (!status2?.state) return "";
+    const progress = Math.max(0, Math.min(100, Number(status2.progress) || 0));
+    const state = escapeHtml(String(status2.state).replaceAll("_", " "));
+    const phase = status2.phase ? escapeHtml(String(status2.phase).replaceAll("_", " ")) : "";
+    const ticket = escapeHtml(String(status2.ticket_status || "not requested").replaceAll("_", " "));
+    return `<section class="node-upgrade-status" role="status" aria-live="polite">
+    <div><strong>Upgrade ${state}</strong>${phase ? ` · ${phase}` : ""}</div>
+    <progress max="100" value="${progress}" aria-label="Upgrade progress ${progress}%"></progress>
+    <small>${progress}% · Rejoin ticket: ${ticket}</small>
+    ${status2.failure_reason ? `<p class="node-upgrade-failure">${escapeHtml(status2.failure_reason)}</p>` : ""}
+  </section>`;
+  }
+  function setNodeUpgradeStatus(nodeID, status2) {
+    if (!status2?.state) return;
+    const normalized = {
+      ...status2,
+      updated_at: status2.updated_at || (/* @__PURE__ */ new Date()).toISOString(),
+      progress: Math.max(0, Math.min(100, Number(status2.progress) || 0))
+    };
+    const node = (dashboardState.nodes || []).find((item) => item.id === nodeID);
+    const current = nodeUpgradeStatus(node) || upgradeStatusCache.get(nodeID);
+    if (current && statusTime(current) > statusTime(normalized)) return;
+    if (current && JSON.stringify(current) === JSON.stringify(normalized)) return;
+    upgradeStatusCache.set(nodeID, normalized);
+    updateUpgradeDialogStatus(nodeID, normalized);
+    renderNodes(dashboardState.nodes || []);
+    renderSetupNodes(dashboardState.nodes || []);
+    if (typeof window !== "undefined" && window.dispatchEvent && typeof Event !== "undefined") {
+      window.dispatchEvent(new Event("maistr0:upgrade-status"));
+    }
+  }
+  function openNodeUpgradeDialog(node) {
+    openUpgradeDialog({ ...node, upgrade_status: nodeUpgradeStatus(node) }, submitNodeUpgrade);
+  }
+  async function submitNodeUpgrade(nodeID, request) {
+    const response = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeID)}/service/upgrade`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    });
+    const starting = response?.state === "starting";
+    setNodeUpgradeStatus(nodeID, {
+      state: starting ? "starting" : "queued",
+      phase: starting ? "starting_node" : "queued",
+      progress: 0,
+      ticket_status: "not_requested",
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    void monitorNodeUpgradeStatus(nodeID);
+    await refresh();
+    return response;
+  }
+  async function monitorNodeUpgradeStatus(nodeID) {
+    if (monitoredUpgrades.has(nodeID)) return;
+    monitoredUpgrades.add(nodeID);
+    const deadline = Date.now() + 30 * 60 * 1e3;
+    let lastError = "";
+    try {
+      while (Date.now() < deadline) {
+        const current2 = nodeUpgradeStatus((dashboardState.nodes || []).find((node) => node.id === nodeID));
+        if (current2 && !isUpgradeActive2(current2)) return;
+        try {
+          const service = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeID)}/service`);
+          if (service?.upgrade_status) {
+            setNodeUpgradeStatus(nodeID, service.upgrade_status);
+          } else if (service?.operation === "upgrade-failed") {
+            setNodeUpgradeStatus(nodeID, {
+              state: "failed",
+              phase: "host_controller",
+              progress: 0,
+              ticket_status: "not_requested",
+              failure_reason: service.error || "The host controller could not start the node for upgrade.",
+              updated_at: (/* @__PURE__ */ new Date()).toISOString()
+            });
+          }
+          lastError = "";
+        } catch (error) {
+          const message = error?.message || String(error);
+          if (message !== lastError) {
+            console.warn(`Could not refresh upgrade status for node ${nodeID}:`, error);
+            lastError = message;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      const current = nodeUpgradeStatus((dashboardState.nodes || []).find((node) => node.id === nodeID));
+      if (current && isUpgradeActive2(current)) {
+        setNodeUpgradeStatus(nodeID, {
+          ...current,
+          state: "unknown",
+          phase: "status_unavailable",
+          failure_reason: "Upgrade status could not be confirmed within 30 minutes.",
+          updated_at: (/* @__PURE__ */ new Date()).toISOString()
+        });
+      }
+    } finally {
+      monitoredUpgrades.delete(nodeID);
+    }
+  }
   function renderNodes(nodes) {
     dashboardState.nodes = nodes || [];
     if (!nodesList) return;
@@ -3009,6 +3206,7 @@ ${s.output || s.error || ""}`)
       keyOf: (node) => node.id,
       signatureOf: (node) => JSON.stringify({
         node,
+        upgradeStatus: nodeUpgradeStatus(node),
         modelPanelOpen: modelPanelOpen.has(node.id),
         modelPanel: lastFetchedModels.get(node.id)
       }),
@@ -3019,10 +3217,13 @@ ${s.output || s.error || ""}`)
         const nodeActions = n.healthy ? `<button class="model-config-toggle" data-node="${escapeHtml(n.id)}">⚙ Configure models</button>
            <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
            <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>` : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
+        const upgradeStatus = nodeUpgradeStatus(n);
+        const upgradeButton = n.control_address ? `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="upgrade" ${isUpgradeActive2(upgradeStatus) ? "disabled" : ""}>Upgrade</button>` : "";
         const serviceActions = n.control_address ? `<div class="node-service-actions" aria-label="Node service controls">
             ${n.healthy ? `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="drain" ${n.draining ? "disabled" : ""}>Drain &amp; stop</button>
                  <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="stop">Stop</button>
-                 <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="restart">Restart</button>` : `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="start">Start</button>`}
+                 <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="restart">Restart</button>
+                 ${upgradeButton}` : `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="start">Start</button>${upgradeButton}`}
           </div>` : "";
         card.innerHTML = `
         <div class="node-card-heading"><h3>${escapeHtml(n.id)} <span class="badge ${n.healthy ? "healthy" : "unhealthy"}">${n.healthy ? "online" : "offline"}</span></h3></div>
@@ -3043,6 +3244,7 @@ ${s.output || s.error || ""}`)
         <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
         ${nodeActions}
         ${n.draining ? '<small class="node-offline-note">Draining · waiting for active work</small>' : ""}
+        ${nodeUpgradeStatusMarkup(n)}
         ${serviceActions}
         <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
       `;
@@ -3086,12 +3288,19 @@ ${s.output || s.error || ""}`)
     });
   }
   async function controlNodeService(nodeId, action, button) {
+    if (action === "upgrade") {
+      const node = (dashboardState.nodes || []).find((item) => item.id === nodeId) || { id: nodeId };
+      openNodeUpgradeDialog(node);
+      return;
+    }
     if (action !== "start" && !window.confirm(`${action[0].toUpperCase()}${action.slice(1)} ${nodeId}?`)) return;
     const original = button.textContent;
     button.disabled = true;
     button.textContent = `${action}…`;
     try {
-      await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/service/${action}`, { method: "POST" });
+      await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/service/${action}`, {
+        method: "POST"
+      });
       button.textContent = action === "drain" ? "Draining…" : `${action} requested`;
       await refresh();
     } catch (err) {
@@ -3122,7 +3331,7 @@ ${s.output || s.error || ""}`)
     }
     dashboardDOM.patchKeyedChildren(setupNodeList, ordered, {
       keyOf: (node) => node.id,
-      signatureOf: JSON.stringify,
+      signatureOf: (node) => JSON.stringify({ node, upgradeStatus: nodeUpgradeStatus(node) }),
       renderItem: (node) => {
         const online = Boolean(node.healthy);
         const card = document.createElement("article");
@@ -3137,6 +3346,13 @@ ${s.output || s.error || ""}`)
         <span>${node.active_tasks || 0} active tasks</span>
         ${online ? "" : `<span>Last seen ${escapeHtml(node.last_seen ? formatRelativeTime(node.last_seen) : "unknown")}</span>`}
       </div>`;
+        card.insertAdjacentHTML("beforeend", nodeUpgradeStatusMarkup(node));
+        if (node.control_address) {
+          card.insertAdjacentHTML("beforeend", `<div class="node-service-actions setup-node-actions">
+        <button class="node-service-action" data-node="${escapeHtml(node.id)}" data-action="upgrade" ${isUpgradeActive2(nodeUpgradeStatus(node)) ? "disabled" : ""}>Upgrade</button>
+      </div>`);
+          card.querySelector("[data-action=upgrade]")?.addEventListener("click", () => openNodeUpgradeDialog(node));
+        }
         card.insertAdjacentHTML("beforeend", engineStatusSummaryMarkup(node.engines));
         attachNodeContextMenu(card, node);
         return card;
@@ -3147,20 +3363,20 @@ ${s.output || s.error || ""}`)
     setTerminalNode(node);
     setTerminalDialogueId(null);
     const modal = document.getElementById("node-terminal");
-    const title = document.getElementById("node-terminal-title");
+    const title2 = document.getElementById("node-terminal-title");
     const models = document.getElementById("node-terminal-model");
     const messages = document.getElementById("node-terminal-messages");
-    const status = document.getElementById("node-terminal-status");
-    title.textContent = `${node.id} terminal`;
+    const status2 = document.getElementById("node-terminal-status");
+    title2.textContent = `${node.id} terminal`;
     messages.innerHTML = "";
-    status.textContent = "Loading local models...";
+    status2.textContent = "Loading local models...";
     modal.hidden = false;
     try {
       const available = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/models`);
       models.innerHTML = available.map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ${escapeHtml(m.engine)}</option>`).join("");
-      status.textContent = available.length ? "Ready" : "No locally served models";
+      status2.textContent = available.length ? "Ready" : "No locally served models";
     } catch (err) {
-      status.textContent = "Model discovery failed: " + err.message;
+      status2.textContent = "Model discovery failed: " + err.message;
     }
     document.getElementById("node-terminal-input")?.focus();
   }
@@ -3184,11 +3400,11 @@ ${s.output || s.error || ""}`)
     const input = document.getElementById("node-terminal-input");
     const content = input.value.trim();
     const model = document.getElementById("node-terminal-model").value;
-    const status = document.getElementById("node-terminal-status");
+    const status2 = document.getElementById("node-terminal-status");
     if (!content || !model) return;
     input.value = "";
     appendTerminalMessage("user", content);
-    status.textContent = "Generating...";
+    status2.textContent = "Generating...";
     setTerminalAbortController(new AbortController());
     if (nodeTerminalInterruptBtn) nodeTerminalInterruptBtn.hidden = false;
     try {
@@ -3198,14 +3414,14 @@ ${s.output || s.error || ""}`)
       }
       const response = await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues/${encodeURIComponent(terminalDialogueId)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }), signal: terminalAbortController.signal });
       appendTerminalMessage("assistant", response.reply || response.error || "No response");
-      status.textContent = `${response.model || model} · ${response.duration_ms || 0}ms`;
+      status2.textContent = `${response.model || model} · ${response.duration_ms || 0}ms`;
     } catch (err) {
       if (err.name === "AbortError") {
         appendTerminalMessage("assistant", "⚠️ Dialogue turn interrupted.");
-        status.textContent = "Interrupted";
+        status2.textContent = "Interrupted";
       } else {
         appendTerminalMessage("assistant", "Error: " + err.message);
-        status.textContent = "Request failed";
+        status2.textContent = "Request failed";
       }
     } finally {
       setTerminalAbortController(null);
@@ -3228,11 +3444,11 @@ ${s.output || s.error || ""}`)
   });
   async function openNodeProperties(node) {
     const modal = document.getElementById("node-properties-modal");
-    const form = document.getElementById("node-properties-form");
-    const status = document.getElementById("node-properties-status");
-    if (!modal || !form) return;
+    const form2 = document.getElementById("node-properties-form");
+    const status2 = document.getElementById("node-properties-status");
+    if (!modal || !form2) return;
     setContextNode(node);
-    status.textContent = "Loading properties...";
+    status2.textContent = "Loading properties...";
     modal.hidden = false;
     try {
       const [props, runtimeSettings] = await Promise.all([
@@ -3241,7 +3457,7 @@ ${s.output || s.error || ""}`)
       ]);
       nodeProperties.set(node.id, props);
       for (const [name, value] of Object.entries(props)) {
-        const field = form.elements.namedItem(name);
+        const field = form2.elements.namedItem(name);
         if (!field) continue;
         if (field.type === "checkbox") field.checked = Boolean(value);
         else if (name === "disabled_models") field.value = (value || []).join("\n");
@@ -3263,7 +3479,7 @@ ${s.output || s.error || ""}`)
         runtime_no_peer_updates: "no_peer_updates"
       };
       for (const [fieldName, settingName] of Object.entries(runtimeFields)) {
-        const field = form.elements.namedItem(fieldName);
+        const field = form2.elements.namedItem(fieldName);
         if (!field) continue;
         const value = runtimeSettings[settingName];
         if (field.type === "checkbox") field.checked = Boolean(value);
@@ -3271,20 +3487,20 @@ ${s.output || s.error || ""}`)
       }
       document.getElementById("node-properties-title").textContent = `${node.id} properties`;
       document.getElementById("node-properties-subtitle").textContent = "Edit node properties and persistent startup settings. Startup changes apply after restart.";
-      status.textContent = "";
-      form.elements.namedItem("advertise_addr")?.focus();
+      status2.textContent = "";
+      form2.elements.namedItem("advertise_addr")?.focus();
     } catch (err) {
-      status.textContent = "Unable to load properties: " + err.message;
+      status2.textContent = "Unable to load properties: " + err.message;
     }
   }
   function closeNodeProperties() {
     const modal = document.getElementById("node-properties-modal");
     if (modal) modal.hidden = true;
   }
-  async function saveNodeProperties(nodeId, form) {
-    const status = document.getElementById("node-properties-status");
-    const value = (name) => form.elements.namedItem(name)?.value.trim() || "";
-    status.textContent = "Saving...";
+  async function saveNodeProperties(nodeId, form2) {
+    const status2 = document.getElementById("node-properties-status");
+    const value = (name) => form2.elements.namedItem(name)?.value.trim() || "";
+    status2.textContent = "Saving...";
     try {
       const node = dashboardState.nodes.find((item) => item.id === nodeId);
       if (node?.healthy) {
@@ -3298,8 +3514,8 @@ ${s.output || s.error || ""}`)
             engine_name: value("engine_name"),
             engine_url: value("engine_url"),
             disabled_models: value("disabled_models").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
-            discovery_enabled: form.elements.namedItem("discovery_enabled").checked,
-            auto_open_browser: form.elements.namedItem("auto_open_browser").checked,
+            discovery_enabled: form2.elements.namedItem("discovery_enabled").checked,
+            auto_open_browser: form2.elements.namedItem("auto_open_browser").checked,
             tray_mode: value("tray_mode"),
             memory_path: value("memory_path")
           })
@@ -3318,17 +3534,17 @@ ${s.output || s.error || ""}`)
           tray_mode: value("runtime_tray_mode"),
           harness: value("runtime_harness"),
           memory_path: value("runtime_memory_path"),
-          auto_open_browser: form.elements.namedItem("runtime_auto_open_browser").checked,
-          discovery_enabled: form.elements.namedItem("runtime_discovery_enabled").checked,
-          allow_peer_updates: form.elements.namedItem("runtime_allow_peer_updates").checked,
-          no_peer_updates: form.elements.namedItem("runtime_no_peer_updates").checked
+          auto_open_browser: form2.elements.namedItem("runtime_auto_open_browser").checked,
+          discovery_enabled: form2.elements.namedItem("runtime_discovery_enabled").checked,
+          allow_peer_updates: form2.elements.namedItem("runtime_allow_peer_updates").checked,
+          no_peer_updates: form2.elements.namedItem("runtime_no_peer_updates").checked
         })
       });
-      status.textContent = "Saved";
+      status2.textContent = "Saved";
       await refresh();
       setTimeout(closeNodeProperties, 500);
     } catch (err) {
-      status.textContent = "Error: " + err.message;
+      status2.textContent = "Error: " + err.message;
     }
   }
   async function refreshNodeModels(nodeId) {
@@ -3685,8 +3901,8 @@ ${s.output || s.error || ""}`)
   var TASK_ACTIVE_STATES = /* @__PURE__ */ new Set(["pending", "running", "synthesizing", "awaiting_approval"]);
   var TASK_STATES = /* @__PURE__ */ new Set([...TASK_ACTIVE_STATES, "completed", "failed", "cancelled"]);
   var SUBTASK_STATES = /* @__PURE__ */ new Set(["pending", "running", "completed", "failed", "cancelled"]);
-  function knownStatus(status, states) {
-    return states.has(status) ? status : "unknown";
+  function knownStatus(status2, states) {
+    return states.has(status2) ? status2 : "unknown";
   }
   function nodeAssignments(tasks) {
     const assigned = /* @__PURE__ */ new Map();
@@ -3766,13 +3982,13 @@ ${s.output || s.error || ""}`)
           const capacityLabel = capacity ? ` · ${capacity.remaining}/${capacity.max} slots free` : "";
           const nodeTasks = assignments.get(node.id) || [];
           const state = node.discovered ? "discovered" : node.healthy ? "online" : "offline";
-          const status = node.discovered ? "available · not paired" : state;
+          const status2 = node.discovered ? "available · not paired" : state;
           const lastSeen = node.last_seen ? `${node.discovered ? "Seen" : "Last seen"} ${formatRelativeTime(node.last_seen)}` : "Last seen unavailable";
           const card = document.createElement("article");
           card.className = `overview-node ${state}`;
           card.dataset.nodeId = node.id;
           card.innerHTML = `
-          <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status}</span></div>
+          <div class="overview-node-heading"><span class="legend-dot ${node.discovered ? "peer" : state}"></span><strong>${escapeHtml(node.id)}</strong><span class="badge ${state}">${status2}</span></div>
           <div class="overview-node-address">${escapeHtml(node.address || "Address unavailable")}</div>
           <div class="overview-node-meta">${node.discovered ? "Discovered on the local network" : `${node.id === leaderID ? "Cluster leader · " : ""}${active} active tasks${capacityLabel} · ${(node.models || []).length} models`}</div>
           <div class="overview-node-metrics">${gpuGaugeMarkup(node, 36)}${npuGaugeMarkup(node, 36)}${node.hardware?.cpu_stats_available ? `<span>CPU ${node.hardware.cpu_utilization_percent}%</span>` : ""}${node.hardware?.memory_stats_available ? `<span>RAM ${node.hardware.memory_usage_percent}%</span>` : ""}</div>
@@ -4058,12 +4274,12 @@ ${s.output || s.error || ""}`)
     const sharded = model.kind === "sharded";
     const state = pipelineActions.get(model.model_id);
     const nodes = (model.nodes || []).map(escapeHtml).join(", ");
-    const status = pipeline?.status || "not_placed";
+    const status2 = pipeline?.status || "not_placed";
     const plan = pipeline?.plan;
     const stages = pipeline?.stages || [];
     const stageMarkup = stages.length ? `<div class="pipeline-stage-list">${stages.map(pipelineStageMarkup).join("")}</div>` : `<p class="pipeline-empty">${sharded ? "No placement yet. Reshard to place and load stages." : "Whole-model execution."}</p>`;
     const shardedDetails = sharded ? `
-      <div class="row"><span>Pipeline</span><span class="badge ${status === "ready" ? "healthy" : status === "degraded" ? "unhealthy" : "unknown"}">${escapeHtml(status.replaceAll("_", " "))}</span></div>
+      <div class="row"><span>Pipeline</span><span class="badge ${status2 === "ready" ? "healthy" : status2 === "degraded" ? "unhealthy" : "unknown"}">${escapeHtml(status2.replaceAll("_", " "))}</span></div>
       ${plan ? `<div class="row"><span>Plan version</span><span>${plan.plan_version}</span></div>` : ""}
       ${stageMarkup}
       <button type="button" class="primary-btn pipeline-reshard-button" data-reshard-model="${escapeHtml(model.model_id)}" ${state?.pending ? "disabled" : ""}>${state?.pending ? "Placing / loading…" : "Reshard / Reload stages"}</button>
@@ -4146,10 +4362,10 @@ ${s.output || s.error || ""}`)
       for (const s of t.subtasks || []) {
         const bucket = byNode.get(s.node_id);
         if (!bucket) continue;
-        const status = knownStatus(s.status, SUBTASK_STATES);
-        bucket[status]++;
+        const status2 = knownStatus(s.status, SUBTASK_STATES);
+        bucket[status2]++;
         if (bucket.recent.length < 5) {
-          bucket.recent.push({ taskId: t.id, subtaskId: s.subtask?.id || "subtask", model: s.model, status, taskType: s.subtask?.task_type || "work" });
+          bucket.recent.push({ taskId: t.id, subtaskId: s.subtask?.id || "subtask", model: s.model, status: status2, taskType: s.subtask?.task_type || "work" });
         }
       }
     }
@@ -4192,13 +4408,14 @@ ${s.output || s.error || ""}`)
   function visibleNetworkPeers(peers, nodes, pairingStatus2) {
     const visible = new Map((peers || []).map((peer) => [peer.id, peer]));
     for (const node of nodes || []) {
-      if (!node.healthy || visible.has(node.id)) continue;
+      if (visible.has(node.id) || !node.healthy && !node.control_address) continue;
       visible.set(node.id, {
         id: node.id,
         role: "node",
         peer_addr: node.address,
         last_seen: node.last_seen,
-        orchestrator_id: pairingStatus2?.orchestrator_id
+        orchestrator_id: pairingStatus2?.orchestrator_id,
+        offline: !node.healthy
       });
     }
     if (pairingStatus2?.role === "node" && pairingStatus2.node_id) {
@@ -4244,13 +4461,16 @@ ${s.output || s.error || ""}`)
       signatureOf: (peer) => JSON.stringify({
         peer,
         pairing: dashboardState.pairing.status,
-        member: dashboardState.nodes.find((node) => node.id === peer.id)
+        member: dashboardState.nodes.find((node) => node.id === peer.id),
+        upgradeStatus: nodeUpgradeStatus(dashboardState.nodes.find((node) => node.id === peer.id))
       }),
       renderItem: (p) => {
         const card = document.createElement("div");
         card.className = "card";
         const associated = p.role === "node" ? p.orchestrator_id || "Not announced" : p.role === "orchestrator" ? dashboardState.pairing.status?.role === "node" ? p.id === dashboardState.pairing.status.orchestrator_id ? "current orchestrator" : "available to join" : "self" : "Not elected";
         const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
+        const upgradeStatus = nodeUpgradeStatus(member);
+        const upgradeInProgress = ["queued", "starting", "running", "restarting", "rejoining"].includes(upgradeStatus?.state);
         const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
         const joinOrchestrator = p.role === "orchestrator" && dashboardState.pairing.status?.role === "node" && !p.local;
         const orchestratorTarget = joinOrchestrator ? {
@@ -4265,14 +4485,17 @@ ${s.output || s.error || ""}`)
         const alreadyJoined = dashboardState.pairing.status?.joined && dashboardState.pairing.status.orchestrator_id === p.id;
         const joinLabel = alreadyJoined ? `Re-pair with ${p.id}` : dashboardState.pairing.status?.joined ? `Switch to ${p.id}'s cluster` : `Join ${p.id}'s cluster`;
         card.innerHTML = `
-      <h3>${escapeHtml(p.id)} <span class="badge healthy">${escapeHtml(p.role)}</span></h3>
+      <h3>${escapeHtml(p.id)} <span class="badge ${p.offline ? "unhealthy" : "healthy"}">${escapeHtml(p.role)}</span></h3>
       <div class="row"><span>Address</span><span>${escapeHtml(p.peer_addr || p.http_addr || "Address unavailable")}</span></div>
-      ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
+      ${p.role === "node" ? `<div class="row"><span>Status</span><span>${p.offline ? "Known cluster member · offline" : member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
       <div class="row"><span>Associated orchestrator</span><span>${escapeHtml(associated)}</span></div>
       <div class="row"><span>Last seen</span><span>${p.local ? "This device" : p.last_seen ? new Date(p.last_seen).toLocaleTimeString() : "Online in cluster"}</span></div>
+      ${member ? nodeUpgradeStatusMarkup(member) : ""}
+      ${member?.control_address ? `<div class="node-service-actions"><button class="node-service-action" data-action="upgrade" ${upgradeInProgress ? "disabled" : ""}>Upgrade</button></div>` : ""}
       ${orchestratorTarget ? `<button type="button" class="discovery-join-orchestrator" data-action="join-orchestrator" ${p.peer_addr ? "" : "disabled"}>${escapeHtml(joinLabel)}</button>` : ""}
     `;
         if (p.role === "node") {
+          card.querySelector("[data-action=upgrade]")?.addEventListener("click", () => openNodeUpgradeDialog(member));
           attachNodeContextMenu(card, member || {
             id: p.id,
             address: p.peer_addr || p.http_addr,
@@ -4291,6 +4514,11 @@ ${s.output || s.error || ""}`)
         }
         return card;
       }
+    });
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("maistr0:upgrade-status", () => {
+      renderDiscovery(dashboardState.discovery || [], dashboardState.discoveryAuthentication);
     });
   }
 
@@ -4360,9 +4588,9 @@ ${s.output || s.error || ""}`)
   function taskHistoryURL(cursor = "") {
     const params = new URLSearchParams({ page_size: "50" });
     const query = (taskHistorySearch2?.value || "").trim();
-    const status = taskHistoryStatus2?.value || "all";
+    const status2 = taskHistoryStatus2?.value || "all";
     if (query) params.set("q", query);
-    if (status !== "all") params.set("status", status);
+    if (status2 !== "all") params.set("status", status2);
     if (cursor) params.set("cursor", cursor);
     return `/api/tasks?${params}`;
   }
@@ -4380,8 +4608,8 @@ ${s.output || s.error || ""}`)
   }
   async function refreshTaskHistory(reset = false) {
     const query = (taskHistorySearch2?.value || "").trim();
-    const status = taskHistoryStatus2?.value || "all";
-    const filterKey = JSON.stringify([query, status]);
+    const status2 = taskHistoryStatus2?.value || "all";
+    const filterKey = JSON.stringify([query, status2]);
     if (reset || !taskHistoryPage2.initialized || filterKey !== taskHistoryPage2.filterKey) {
       taskHistoryPage2.generation++;
       taskHistoryPage2.items = [];
@@ -4477,9 +4705,9 @@ ${s.output || s.error || ""}`)
       const discovery = await fetchJSON("/api/discovery");
       let discoveryAuthentication = "unavailable";
       try {
-        const status = await fetchJSON("/api/security/status");
-        if (status.discovery_authentication === "unauthenticated" || status.discovery_authentication === "hmac-sha256") {
-          discoveryAuthentication = status.discovery_authentication;
+        const status2 = await fetchJSON("/api/security/status");
+        if (status2.discovery_authentication === "unauthenticated" || status2.discovery_authentication === "hmac-sha256") {
+          discoveryAuthentication = status2.discovery_authentication;
         } else {
           throw new Error("security status response omitted a recognized discovery authentication mode");
         }
@@ -4524,15 +4752,15 @@ ${s.output || s.error || ""}`)
     const capacityByNode = new Map(
       (dashboardState2.capacity?.nodes || []).map((node) => [node.node_id, node])
     );
-    const status = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState2.nodes, dashboardState2.capacity);
-    const statusSignature = JSON.stringify(status);
+    const status2 = dashboardViewModel.dashboardStatusViewModel(snap, dashboardState2.nodes, dashboardState2.capacity);
+    const statusSignature = JSON.stringify(status2);
     if (statusSignature !== signatures.status) {
-      updateClusterTitle(status.nodeCount);
-      if (statNodes) statNodes.textContent = `Nodes: ${status.nodeCount}`;
-      if (statModels) statModels.textContent = `Models: ${status.modelCount}`;
-      if (statLoad) statLoad.textContent = status.loadLabel;
-      if (statMemory && status.memoryLabel) statMemory.textContent = status.memoryLabel;
-      if (statVersion && status.buildVersion) statVersion.textContent = status.buildVersion;
+      updateClusterTitle(status2.nodeCount);
+      if (statNodes) statNodes.textContent = `Nodes: ${status2.nodeCount}`;
+      if (statModels) statModels.textContent = `Models: ${status2.modelCount}`;
+      if (statLoad) statLoad.textContent = status2.loadLabel;
+      if (statMemory && status2.memoryLabel) statMemory.textContent = status2.memoryLabel;
+      if (statVersion && status2.buildVersion) statVersion.textContent = status2.buildVersion;
       signatures.status = statusSignature;
     }
     const nodeState = dashboardState2.nodes.map((node) => ({
@@ -4548,6 +4776,7 @@ ${s.output || s.error || ""}`)
       leader: node.leader,
       version_error: node.version_error,
       last_seen: node.healthy ? void 0 : node.last_seen,
+      upgrade_status: nodeUpgradeStatus(node),
       gpu_sample: node.gpu_history?.at(-1)?.timestamp,
       npu_sample: node.npu_history?.at(-1)?.timestamp,
       system_sample: node.system_history?.at(-1)?.timestamp
@@ -4570,6 +4799,7 @@ ${s.output || s.error || ""}`)
         },
         model_count: node.models?.length || 0,
         last_seen: node.healthy ? void 0 : node.last_seen,
+        upgrade_status: nodeUpgradeStatus(node),
         gpu_stats_available: node.hardware?.gpu_stats_available,
         gpu_utilization_percent: node.hardware?.gpu_utilization_percent,
         npu_stats_available: node.hardware?.npu_stats_available,
@@ -4632,7 +4862,8 @@ ${s.output || s.error || ""}`)
       id: node.id,
       address: node.address,
       healthy: node.healthy,
-      last_seen: node.last_seen
+      last_seen: node.last_seen,
+      upgrade_status: node.upgrade_status
     })), pairing: dashboardState2.pairing.status });
     const discoveredNodeState = (snap.discovery || []).filter((peer) => peer.role === "node").map((peer) => ({ id: peer.id, address: peer.peer_addr || peer.http_addr, last_seen: peer.last_seen }));
     const overviewNodeSignature = JSON.stringify({ members: overviewNodeState, discovered: discoveredNodeState });

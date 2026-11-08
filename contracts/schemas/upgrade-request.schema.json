@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/upgrade-request.schema.json",
+  "title": "UpgradeRequest",
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Absolute path to a regular executable on the target node."
+    },
+    "peer_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "ID of a currently trusted peer; requires peer updates to be enabled."
+    }
+  },
+  "oneOf": [
+    {"required": ["path"]},
+    {"required": ["peer_id"]}
+  ],
+  "additionalProperties": false
+}

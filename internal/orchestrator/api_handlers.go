@@ -199,20 +199,7 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
-	localAddr, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
-	remoteAddr, addrErr := net.ResolveTCPAddr("tcp", r.RemoteAddr)
-	sameSubnet := false
-	if addrErr == nil {
-		var subnetErr error
-		sameSubnet, subnetErr = netutil.AreOnSameSubnet(localAddr, remoteAddr)
-		if subnetErr != nil {
-			logging.Errorf("orchestrator", "orchestrator: could not determine pairing subnet for %s: %v", r.RemoteAddr, subnetErr)
-			sameSubnet = false
-		}
-	}
-	if addrErr != nil {
-		logging.Errorf("orchestrator", "orchestrator: could not parse pairing remote address %q: %v", r.RemoteAddr, addrErr)
-	}
+	sameSubnet := requestOnSameSubnet(r)
 	pinValid := false
 	if request.PIN != "" {
 		pinValid = s.identity.ConsumePairingPIN(request.PIN)
@@ -254,6 +241,21 @@ func (s *Server) handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		ID: s.SelfID(), Role: "orchestrator", CertificatePEM: s.identity.CertificatePEM(),
 		Peers: s.identity.TrustedPeers(),
 	})
+}
+
+func requestOnSameSubnet(r *http.Request) bool {
+	localAddr, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	remoteAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
+	if err != nil {
+		logging.Errorf("orchestrator", "orchestrator: could not parse peer remote address %q: %v", r.RemoteAddr, err)
+		return false
+	}
+	sameSubnet, err := netutil.AreOnSameSubnet(localAddr, remoteAddr)
+	if err != nil {
+		logging.Errorf("orchestrator", "orchestrator: could not determine peer subnet for %s: %v", r.RemoteAddr, err)
+		return false
+	}
+	return sameSubnet
 }
 
 // handleDiscovery returns other mAIstr0 instances (orchestrators or nodes)

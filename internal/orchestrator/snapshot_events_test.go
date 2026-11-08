@@ -24,6 +24,17 @@ func TestSnapshotPublishSkipsIdleBuild(t *testing.T) {
 	}
 }
 
+func TestDashboardPipelinePlansWithoutShardsAreEmptyArray(t *testing.T) {
+	plans := (&Server{}).dashboardPipelinePlans(nil)
+	encoded, err := json.Marshal(plans)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != "[]" {
+		t.Fatalf("pipeline plans without shards = %s, want []", encoded)
+	}
+}
+
 func TestRunFailureStopsBackgroundWorkers(t *testing.T) {
 	srv := newTestServer(t)
 	srv.SetDiscoveryEnabled(false)

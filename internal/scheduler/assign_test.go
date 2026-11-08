@@ -12,6 +12,47 @@ import (
 	"github.com/maistr0/maistr0/internal/hardware"
 )
 
+func TestAssignPreservesFirstCandidateForEqualScores(t *testing.T) {
+	node := func(id string) cluster.NodeStatus {
+		return cluster.NodeStatus{
+			ID: id, Address: "http://" + id, Healthy: true,
+			Engines: []engine.Status{{Name: "simulated", Ready: true}},
+			Models:  []engine.Model{{Name: "simulated-general", Engine: "simulated", Tags: []string{"general"}}},
+		}
+	}
+	nodes := []cluster.NodeStatus{node("first"), node("second")}
+	before := append([]cluster.NodeStatus(nil), nodes...)
+	subtasks := []Subtask{{ID: "work", TaskType: "general"}}
+
+	first, err := Assign(subtasks, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := first[0].NodeID; got != "first" {
+		t.Fatalf("equal-score assignment selected %q, want first candidate", got)
+	}
+	if !reflect.DeepEqual(nodes, before) {
+		t.Fatal("assignment mutated the supplied node snapshot")
+	}
+
+	reversed := []cluster.NodeStatus{nodes[1], nodes[0]}
+	reversedBefore := append([]cluster.NodeStatus(nil), reversed...)
+	second, err := Assign(subtasks, reversed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second[0].NodeID; got != "second" {
+		t.Fatalf("reversed equal-score assignment selected %q, want first candidate", got)
+	}
+	if first[0].Score != second[0].Score {
+		t.Fatalf("equal-score candidates produced different scores: %v and %v",
+			first[0].Score, second[0].Score)
+	}
+	if !reflect.DeepEqual(reversed, reversedBefore) {
+		t.Fatal("assignment mutated the reversed node snapshot")
+	}
+}
+
 func TestFilterSubtaskCandidatesDropsIneligibleNodesAndKeepsFullNodes(t *testing.T) {
 	subtask := Subtask{TaskType: "code", RequiredCapabilities: []string{"coder"}, MinModelSizeGB: 7}
 	nodes := []cluster.NodeStatus{

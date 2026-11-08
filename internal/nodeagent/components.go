@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/background"
@@ -110,6 +111,9 @@ type orchestratorLink struct {
 		RemovePeer(string) error
 		IsTrustedID(string) bool
 		IsTrustedOrchestratorID(string) bool
+		StorePendingRejoinTicket(peeridentity.PendingRejoinTicket) error
+		PendingRejoinTicket(string, time.Time) (peeridentity.PendingRejoinTicket, bool, error)
+		ClearPendingRejoinTicket(string, string) error
 	}
 	telemetry interface{ hardwareSnapshot() hardware.Info }
 	models    interface {
@@ -118,15 +122,18 @@ type orchestratorLink struct {
 	}
 	state interface {
 		peersSnapshot() []cluster.NodeStatus
+		peersSnapshotForSerialization() []cluster.NodeStatus
 		replacePeers([]cluster.NodeStatus)
 		configSnapshot() config.NodeConfig
 	}
-	tasks          *taskmgr.Manager
-	events         *hub.Hub
-	syncer         *syncerComponent
-	statusSnapshot func() statusResponse
-	currentTasks   func(context.Context) ([]*taskmgr.Task, error)
-	heartbeat      *HeartbeatMonitor
+	tasks               *taskmgr.Manager
+	events              *hub.Hub
+	syncer              *syncerComponent
+	statusSnapshot      func() statusResponse
+	currentTasks        func(context.Context) ([]*taskmgr.Task, error)
+	heartbeat           *HeartbeatMonitor
+	statusUpdates       chan struct{}
+	reportUpgradeStatus func(cluster.UpgradeStatus)
 	// orchMu protects orchestrator identity/address and the cached cluster pairing policy; it is not nested with joinedMu or pairingInviteMu.
 	orchMu                sync.RWMutex
 	orchestratorAddr      string
@@ -142,6 +149,8 @@ type orchestratorLink struct {
 	pairingAccepting           bool
 	requirePairingVerification bool
 	applyPairingPolicy         func(bool) error
+	// rejoinTicketDeferred prevents this process from consuming a ticket prepared for its replacement.
+	rejoinTicketDeferred atomic.Bool
 }
 
 type executorComponent struct {
@@ -248,6 +257,9 @@ func newOrchestratorLink(
 		RemovePeer(string) error
 		IsTrustedID(string) bool
 		IsTrustedOrchestratorID(string) bool
+		StorePendingRejoinTicket(peeridentity.PendingRejoinTicket) error
+		PendingRejoinTicket(string, time.Time) (peeridentity.PendingRejoinTicket, bool, error)
+		ClearPendingRejoinTicket(string, string) error
 	},
 	telemetry interface{ hardwareSnapshot() hardware.Info },
 	models interface {
@@ -272,6 +284,7 @@ func newOrchestratorLink(
 		state:            state,
 		tasks:            tasks,
 		events:           events,
+		statusUpdates:    make(chan struct{}, 1),
 	}
 	link.heartbeat = newHeartbeatMonitor(
 		link.getOrchestratorAddr,

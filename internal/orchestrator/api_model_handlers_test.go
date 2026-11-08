@@ -214,12 +214,12 @@ func TestModelInventoryCacheReusesAndExpiresSnapshots(t *testing.T) {
 	loads := 0
 	load := func() []agent.ModelInfo {
 		loads++
-		return []agent.ModelInfo{{Name: "cached"}}
+		return []agent.ModelInfo{{Name: fmt.Sprintf("cached-%d", loads)}}
 	}
 
 	first := cache.get("deepseek", load)
 	second := cache.get("deepseek", load)
-	if loads != 1 || first.createdAt != second.createdAt || first.models[0].Name != "cached" {
+	if loads != 1 || first.createdAt != second.createdAt || first.models[0].Name != "cached-1" {
 		t.Fatalf("cache did not reuse inventory: loads=%d first=%+v second=%+v", loads, first, second)
 	}
 
@@ -227,7 +227,7 @@ func TestModelInventoryCacheReusesAndExpiresSnapshots(t *testing.T) {
 	cache.entry.expiresAt = time.Now().Add(-time.Second)
 	cache.mu.Unlock()
 	third := cache.get("deepseek", load)
-	if loads != 2 || third.createdAt.Equal(first.createdAt) {
+	if loads != 2 || third.models[0].Name != "cached-2" {
 		t.Fatalf("expired cache was not refreshed: loads=%d first=%v third=%v", loads, first.createdAt, third.createdAt)
 	}
 

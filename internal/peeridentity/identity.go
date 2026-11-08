@@ -35,10 +35,19 @@ type trustedPeer struct {
 	Address     string `json:"address,omitempty"`
 }
 
+// IsTrustedNodeID reports whether id is currently pinned with the node role.
+func (i *Identity) IsTrustedNodeID(id string) bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	peer, ok := i.trusted[id]
+	return ok && peer.Role == "node"
+}
+
 type identityFile struct {
-	ID          string                 `json:"id"`
-	Certificate string                 `json:"certificate"`
-	Trusted     map[string]trustedPeer `json:"trusted"`
+	ID            string                       `json:"id"`
+	Certificate   string                       `json:"certificate"`
+	Trusted       map[string]trustedPeer       `json:"trusted"`
+	RejoinTickets map[string]rejoinTicketEntry `json:"rejoin_tickets,omitempty"`
 }
 
 // Identity owns a node's self-signed TLS identity and the pins for cluster
@@ -60,6 +69,9 @@ type Identity struct {
 	now             func() time.Time
 	clientTransport *http.Transport
 	activeConns     map[*identityConn]struct{}
+	// rejoinMu serializes reads and writes of the short-lived local ticket sidecar.
+	rejoinMu            sync.Mutex
+	issuedRejoinTickets map[string]rejoinTicketEntry
 }
 
 type identityConn struct {
@@ -150,6 +162,10 @@ func Open(path, id string) (*Identity, error) {
 		identity.trusted = saved.Trusted
 		if identity.trusted == nil {
 			identity.trusted = make(map[string]trustedPeer)
+		}
+		identity.issuedRejoinTickets = saved.RejoinTickets
+		if identity.issuedRejoinTickets == nil {
+			identity.issuedRejoinTickets = make(map[string]rejoinTicketEntry)
 		}
 		if err := identity.createCertificate(); err != nil {
 			return nil, fmt.Errorf("peeridentity: create ephemeral TLS identity: %w", err)
@@ -930,8 +946,12 @@ func (i *Identity) ReloadTrustedPeers() (resultErr error) {
 	if saved.Trusted == nil {
 		saved.Trusted = make(map[string]trustedPeer)
 	}
+	if saved.RejoinTickets == nil {
+		saved.RejoinTickets = make(map[string]rejoinTicketEntry)
+	}
 	i.mu.Lock()
 	i.trusted = saved.Trusted
+	i.issuedRejoinTickets = saved.RejoinTickets
 	i.mu.Unlock()
 	return nil
 }
@@ -1116,6 +1136,7 @@ func (i *Identity) TrustedPeers() map[string]string {
 func (i *Identity) persistLocked() error {
 	saved := identityFile{
 		ID: i.id, Certificate: i.certificatePEM, Trusted: i.trusted,
+		RejoinTickets: i.issuedRejoinTickets,
 	}
 	raw, err := json.Marshal(saved)
 	if err != nil {

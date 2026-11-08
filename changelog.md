@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added a dashboard and host-controller Upgrade action for local executable
+  paths or explicitly enabled paired-peer sources. Upgrades wait for idle and
+  use a five-minute, node-bound, single-use mTLS rejoin ticket stored in a
+  protected local cache; strict pairing and off-subnet security requirements
+  remain unchanged, and long-lived private keys are never persisted. Upgrade
+  controls are available on node cards and Local Network / Setup panels,
+  including stopped application nodes; phase, progress, ticket state, and
+  failures are exposed through service status and node SSE updates.
 - Certificate fingerprint comparisons are now case-insensitive. Structured
   security audit events record identity lifecycle, PIN operations, certificate
   validation, trust changes, and rejected peer authentication without logging
@@ -9,7 +17,7 @@
 - Identity private keys are now process-local and never written to disk. The
   stable node ID and trust roster persist, but each startup creates a new
   certificate, so peers must be re-paired after a restart.
-- Bumped the release version to `0.1.1.16`.
+- Bumped the release version to `0.1.1.17`.
 - Dashboard event streams now reconnect with capped exponential backoff and
   heartbeat monitoring, and fall back to polling while the cluster tab is
   active. Reconnection receives a fresh snapshot; HTTP actions are not queued.

@@ -37,6 +37,35 @@ and [LAN election and partitions](./lan-election.md). For what the runtime
 does and does not guarantee across failures and partitions, see
 [Distributed-system guarantees and limits](./distributed-guarantees.md).
 
+## Upgrade and rejoin
+
+An upgrade request supplies an absolute local executable path or an opted-in
+trusted peer source. The node freezes new work, waits for current work to drain,
+stages and verifies the candidate, then requests a short-lived rejoin ticket
+from its current orchestrator over mTLS before stopping. The orchestrator
+stores only the ticket digest and expiry. The ticket is single-use and
+node-ID-bound; issuance and consumption both require a previously trusted node
+on the connected local subnet with strict pairing verification disabled.
+
+The replacement process creates a fresh ephemeral certificate and presents it
+with the ticket. Only that restarted process may consume a newly cached ticket:
+the outgoing process defers ticket use until restart so its registration loop
+cannot race the replacement and consume the ticket first. The orchestrator
+atomically replaces the node's certificate pin, after which the normal peer
+roster refresh propagates it. The raw ticket remains in a separate protected
+cache; long-lived private keys are never persisted. Strict pairing and the
+verified fingerprint/PIN path remain in force for all other enrollment.
+
+For an OS-service-managed node, the independent
+[host service controller](./node-service-controller.md) starts a stopped
+application child and rechecks current orchestrator authority before
+forwarding the request. Upgrade phase, ticket state, and failures are surfaced
+through lifecycle and node status updates. The real two-process replacement
+path is characterized by
+`go test ./internal/integration -run '^TestUpgradeRejoinTwoNodeLocalCluster$' -count=1 -timeout=5m`.
+See [pairing and security](./pairing-and-security.md#upgrade-and-rejoin) for
+the exact trust restrictions.
+
 ## Request paths
 
 The separate `cmd/maistr0-bench` executable composes bounded HTTP workloads

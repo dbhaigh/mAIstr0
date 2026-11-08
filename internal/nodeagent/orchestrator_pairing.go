@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -164,10 +165,23 @@ func (c *orchestratorLink) pairWithAddressContextAndSubnetPolicy(
 	if err := json.Unmarshal(data, &result); err != nil {
 		return fmt.Errorf("decode pairing response: %w", err)
 	}
+	if err := c.applyOrchestratorPairingResponse(result, resp.TLS, expectedID, address); err != nil {
+		return err
+	}
+	logging.Infof("nodeagent", "nodeagent: successfully paired with orchestrator %s at %s", result.ID, address)
+	return nil
+}
+
+func (c *orchestratorLink) applyOrchestratorPairingResponse(
+	result nodePairingResponse,
+	connection *tls.ConnectionState,
+	expectedID, address string,
+) error {
+	cfg := c.configState.configSnapshot()
 	if result.Role != "orchestrator" || result.ID == "" || (expectedID != "" && result.ID != expectedID) {
 		return fmt.Errorf("pairing server identity %q does not match discovered orchestrator %q", result.ID, expectedID)
 	}
-	if err := peeridentity.ValidatePeerConnection(result.ID, result.CertificatePEM, resp.TLS); err != nil {
+	if err := peeridentity.ValidatePeerConnection(result.ID, result.CertificatePEM, connection); err != nil {
 		return fmt.Errorf("authenticate pairing response: %w", err)
 	}
 	for id, certificate := range result.Peers {
@@ -178,7 +192,7 @@ func (c *orchestratorLink) pairWithAddressContextAndSubnetPolicy(
 			return fmt.Errorf("validate paired peer %q: %w", id, err)
 		}
 		if id == result.ID {
-			if err := peeridentity.ValidatePeerConnection(id, certificate, resp.TLS); err != nil {
+			if err := peeridentity.ValidatePeerConnection(id, certificate, connection); err != nil {
 				return fmt.Errorf("authenticate coordinator roster entry: %w", err)
 			}
 		}
@@ -197,7 +211,6 @@ func (c *orchestratorLink) pairWithAddressContextAndSubnetPolicy(
 	c.configState.clearPairingPIN()
 	c.setOrchestratorAddr(address)
 	c.setOrchestratorID(result.ID)
-	logging.Infof("nodeagent", "nodeagent: successfully paired with orchestrator %s at %s", result.ID, address)
 	return nil
 }
 

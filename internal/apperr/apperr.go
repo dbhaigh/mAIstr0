@@ -109,9 +109,9 @@ type Error struct {
 	Kind Kind
 	Err  error
 
-	context       ErrorContext
-	retryable     bool
-	retryableSet  bool
+	context      ErrorContext
+	retryable    bool
+	retryableSet bool
 }
 
 func (e *Error) Error() string {
@@ -167,14 +167,14 @@ func (ErrorFormatter) Format(err error, requestContext ErrorContext) ErrorRespon
 	}
 }
 
-func Invalid(err error) error             { return wrap(InvalidInput, err) }
-func NotFoundError(err error) error       { return wrap(NotFound, err) }
-func ConflictError(err error) error       { return wrap(Conflict, err) }
-func UnavailableError(err error) error    { return wrap(Unavailable, err) }
-func UpstreamError(err error) error       { return wrap(Upstream, err) }
-func InternalError(err error) error       { return wrap(Internal, err) }
-func UnauthorizedError(err error) error   { return wrap(Unauthorized, err) }
-func ForbiddenError(err error) error      { return wrap(Forbidden, err) }
+func Invalid(err error) error           { return wrap(InvalidInput, err) }
+func NotFoundError(err error) error     { return wrap(NotFound, err) }
+func ConflictError(err error) error     { return wrap(Conflict, err) }
+func UnavailableError(err error) error  { return wrap(Unavailable, err) }
+func UpstreamError(err error) error     { return wrap(Upstream, err) }
+func InternalError(err error) error     { return wrap(Internal, err) }
+func UnauthorizedError(err error) error { return wrap(Unauthorized, err) }
+func ForbiddenError(err error) error    { return wrap(Forbidden, err) }
 func MethodNotAllowedError(err error) error {
 	return wrap(MethodNotAllowed, err)
 }
@@ -185,7 +185,7 @@ func PayloadTooLargeError(err error) error {
 func UpgradeRequiredError(err error) error { return wrap(UpgradeRequired, err) }
 func RateLimitedError(err error) error     { return wrap(RateLimited, err) }
 func NotImplementedError(err error) error  { return wrap(NotImplemented, err) }
-func GatewayTimeoutError(err error) error { return wrap(GatewayTimeout, err) }
+func GatewayTimeoutError(err error) error  { return wrap(GatewayTimeout, err) }
 
 func wrap(kind Kind, err error) error {
 	if err == nil {
@@ -201,11 +201,11 @@ func WithContext(err error, context ErrorContext) error {
 	}
 	kind, existingContext, retryable, retryableSet := errorPolicy(err)
 	return &Error{
-		Kind:          kind,
-		Err:           err,
-		context:       mergeContext(context, existingContext),
-		retryable:     retryable,
-		retryableSet:  retryableSet,
+		Kind:         kind,
+		Err:          err,
+		context:      mergeContext(context, existingContext),
+		retryable:    retryable,
+		retryableSet: retryableSet,
 	}
 }
 

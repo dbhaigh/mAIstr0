@@ -455,6 +455,8 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/updates/manifest", s.handlePeerUpdate)
 	mux.HandleFunc("GET /api/updates/binary", s.handlePeerUpdate)
 	mux.HandleFunc("POST /api/pairing/join", s.handlePairingJoin)
+	mux.HandleFunc("POST /api/pairing/rejoin-ticket", s.handleRejoinTicket)
+	mux.HandleFunc("POST /api/pairing/rejoin", s.handleRejoin)
 	mux.HandleFunc("GET /api/pairing/status", s.handlePairingStatus)
 	mux.HandleFunc("GET /api/pairing/policy", s.handlePairingPolicy)
 	mux.Handle("PATCH /api/pairing/policy", peeridentity.LoopbackOnly(http.HandlerFunc(s.handlePairingPolicy)))
@@ -620,7 +622,7 @@ func (s *Server) run(ctx context.Context, listenAddr string) error {
 	logging.Infof("orchestrator", "orchestrator listening on %s", listenAddr)
 	mux := s.fenceStateChangingRequests(s.Mux())
 	secure := requireElectedOrchestrator(s.isElectedOrchestrator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/pairing/join" {
+		if r.URL.Path == "/api/pairing/join" || r.URL.Path == "/api/pairing/rejoin" {
 			mux.ServeHTTP(w, r)
 			return
 		}

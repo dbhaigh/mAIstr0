@@ -127,12 +127,12 @@ func (s *Server) snapshot() clusterSnapshot {
 func (s *Server) dashboardModelInventory(nodes []cluster.NodeStatus) []dashboardModelEntry {
 	shardedSources := make(map[string]struct{}, len(s.shardedModels))
 	shardedLogicalIDs := make(map[string]struct{}, len(s.shardedModels))
-	entries := make(map[string]*dashboardModelEntry)
+	entries := make(map[string]dashboardModelEntry)
 	for logicalID, model := range s.shardedModels {
 		key := strings.ToLower(logicalID)
 		shardedLogicalIDs[key] = struct{}{}
 		shardedSources[strings.ToLower(model.SourceModelID)] = struct{}{}
-		entries[key] = &dashboardModelEntry{ModelID: logicalID, Kind: "sharded"}
+		entries[key] = dashboardModelEntry{ModelID: logicalID, Kind: "sharded"}
 	}
 
 	wholeNodes := make(map[string]map[string]struct{})
@@ -163,12 +163,12 @@ func (s *Server) dashboardModelInventory(nodes []cluster.NodeStatus) []dashboard
 			nodes = append(nodes, nodeID)
 		}
 		sort.Strings(nodes)
-		entries[key] = &dashboardModelEntry{ModelID: wholeNames[key], Kind: "whole", Nodes: nodes}
+		entries[key] = dashboardModelEntry{ModelID: wholeNames[key], Kind: "whole", Nodes: nodes}
 	}
 
 	inventory := make([]dashboardModelEntry, 0, len(entries))
 	for _, entry := range entries {
-		inventory = append(inventory, *entry)
+		inventory = append(inventory, entry)
 	}
 	sort.Slice(inventory, func(i, j int) bool {
 		if inventory[i].ModelID != inventory[j].ModelID {
@@ -180,6 +180,10 @@ func (s *Server) dashboardModelInventory(nodes []cluster.NodeStatus) []dashboard
 }
 
 func (s *Server) dashboardPipelinePlans(nodes []cluster.NodeStatus) []dashboardPipelinePlan {
+	if len(s.shardedModels) == 0 {
+		return []dashboardPipelinePlan{}
+	}
+
 	byNode := make(map[string]cluster.NodeStatus, len(nodes))
 	for _, node := range nodes {
 		byNode[node.ID] = node

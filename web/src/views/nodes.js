@@ -1,6 +1,7 @@
 import { refresh } from "../app.ts";
 import { engineStatusDetailsMarkup, engineStatusSummaryMarkup } from "../components/node-card.js";
 import { openPairingDialog } from "../components/pairing-dialog.js";
+import { openUpgradeDialog, updateUpgradeDialogStatus } from "../components/upgrade-dialog.js";
 import { fetchJSON } from "../shared/api.js";
 import { dashboardDOM } from "../shared/dom.js";
 import { escapeHtml, formatRelativeTime } from "../shared/format.js";
@@ -28,6 +29,133 @@ import {
 import { nodeAcceleratorMarkup, resourceHistoryMarkup, sortNodesByCapability } from "./cluster.js";
 import { openShardGroupWizard } from "./shard-setup.js";
 
+const upgradeStatusCache = new Map();
+const monitoredUpgrades = new Set();
+
+function isUpgradeActive(status) {
+  return ["queued", "starting", "running", "restarting", "rejoining"].includes(status?.state);
+}
+
+function statusTime(status) {
+  const parsed = Date.parse(status?.updated_at || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function nodeUpgradeStatus(node) {
+  if (!node) return null;
+  const reported = node.upgrade_status;
+  const cached = upgradeStatusCache.get(node.id);
+  if (!reported) return cached || null;
+  if (!cached) return reported;
+  return statusTime(cached) >= statusTime(reported) ? cached : reported;
+}
+
+export function nodeUpgradeStatusMarkup(node) {
+  const status = nodeUpgradeStatus(node);
+  if (!status?.state) return "";
+  const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
+  const state = escapeHtml(String(status.state).replaceAll("_", " "));
+  const phase = status.phase ? escapeHtml(String(status.phase).replaceAll("_", " ")) : "";
+  const ticket = escapeHtml(String(status.ticket_status || "not requested").replaceAll("_", " "));
+  return `<section class="node-upgrade-status" role="status" aria-live="polite">
+    <div><strong>Upgrade ${state}</strong>${phase ? ` · ${phase}` : ""}</div>
+    <progress max="100" value="${progress}" aria-label="Upgrade progress ${progress}%"></progress>
+    <small>${progress}% · Rejoin ticket: ${ticket}</small>
+    ${status.failure_reason ? `<p class="node-upgrade-failure">${escapeHtml(status.failure_reason)}</p>` : ""}
+  </section>`;
+}
+
+function setNodeUpgradeStatus(nodeID, status) {
+  if (!status?.state) return;
+  const normalized = {
+    ...status,
+    updated_at: status.updated_at || new Date().toISOString(),
+    progress: Math.max(0, Math.min(100, Number(status.progress) || 0)),
+  };
+  const node = (dashboardState.nodes || []).find((item) => item.id === nodeID);
+  const current = nodeUpgradeStatus(node) || upgradeStatusCache.get(nodeID);
+  if (current && statusTime(current) > statusTime(normalized)) return;
+  if (current && JSON.stringify(current) === JSON.stringify(normalized)) return;
+  upgradeStatusCache.set(nodeID, normalized);
+  updateUpgradeDialogStatus(nodeID, normalized);
+  renderNodes(dashboardState.nodes || []);
+  renderSetupNodes(dashboardState.nodes || []);
+  if (typeof window !== "undefined" && window.dispatchEvent && typeof Event !== "undefined") {
+    window.dispatchEvent(new Event("maistr0:upgrade-status"));
+  }
+}
+
+export function openNodeUpgradeDialog(node) {
+  openUpgradeDialog({ ...node, upgrade_status: nodeUpgradeStatus(node) }, submitNodeUpgrade);
+}
+
+async function submitNodeUpgrade(nodeID, request) {
+  const response = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeID)}/service/upgrade`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  const starting = response?.state === "starting";
+  setNodeUpgradeStatus(nodeID, {
+    state: starting ? "starting" : "queued",
+    phase: starting ? "starting_node" : "queued",
+    progress: 0,
+    ticket_status: "not_requested",
+    updated_at: new Date().toISOString(),
+  });
+  void monitorNodeUpgradeStatus(nodeID);
+  await refresh();
+  return response;
+}
+
+async function monitorNodeUpgradeStatus(nodeID) {
+  if (monitoredUpgrades.has(nodeID)) return;
+  monitoredUpgrades.add(nodeID);
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let lastError = "";
+  try {
+    while (Date.now() < deadline) {
+      const current = nodeUpgradeStatus((dashboardState.nodes || []).find((node) => node.id === nodeID));
+      if (current && !isUpgradeActive(current)) return;
+      try {
+        const service = await fetchJSON(`/api/nodes/${encodeURIComponent(nodeID)}/service`);
+        if (service?.upgrade_status) {
+          setNodeUpgradeStatus(nodeID, service.upgrade_status);
+        } else if (service?.operation === "upgrade-failed") {
+          setNodeUpgradeStatus(nodeID, {
+            state: "failed",
+            phase: "host_controller",
+            progress: 0,
+            ticket_status: "not_requested",
+            failure_reason: service.error || "The host controller could not start the node for upgrade.",
+            updated_at: new Date().toISOString(),
+          });
+        }
+        lastError = "";
+      } catch (error) {
+        const message = error?.message || String(error);
+        if (message !== lastError) {
+          console.warn(`Could not refresh upgrade status for node ${nodeID}:`, error);
+          lastError = message;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    const current = nodeUpgradeStatus((dashboardState.nodes || []).find((node) => node.id === nodeID));
+    if (current && isUpgradeActive(current)) {
+      setNodeUpgradeStatus(nodeID, {
+        ...current,
+        state: "unknown",
+        phase: "status_unavailable",
+        failure_reason: "Upgrade status could not be confirmed within 30 minutes.",
+        updated_at: new Date().toISOString(),
+      });
+    }
+  } finally {
+    monitoredUpgrades.delete(nodeID);
+  }
+}
+
 export function renderNodes(nodes) {
   dashboardState.nodes = nodes || [];
   if (!nodesList) return;
@@ -53,6 +181,7 @@ export function renderNodes(nodes) {
     keyOf: (node) => node.id,
     signatureOf: (node) => JSON.stringify({
       node,
+      upgradeStatus: nodeUpgradeStatus(node),
       modelPanelOpen: modelPanelOpen.has(node.id),
       modelPanel: lastFetchedModels.get(node.id),
     }),
@@ -67,13 +196,18 @@ export function renderNodes(nodes) {
            <button class="node-model-refresh" data-node="${escapeHtml(n.id)}">↻ Rescan engines &amp; models</button>
            <button class="node-terminal-open" data-node="${escapeHtml(n.id)}">▸ Open node terminal</button>`
         : `<small class="node-offline-note">Offline · last seen ${formatRelativeTime(n.last_seen)}</small>`;
+      const upgradeStatus = nodeUpgradeStatus(n);
+      const upgradeButton = n.control_address
+        ? `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="upgrade" ${isUpgradeActive(upgradeStatus) ? "disabled" : ""}>Upgrade</button>`
+        : "";
       const serviceActions = n.control_address
         ? `<div class="node-service-actions" aria-label="Node service controls">
             ${n.healthy
               ? `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="drain" ${n.draining ? "disabled" : ""}>Drain &amp; stop</button>
                  <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="stop">Stop</button>
-                 <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="restart">Restart</button>`
-              : `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="start">Start</button>`}
+                 <button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="restart">Restart</button>
+                 ${upgradeButton}`
+              : `<button class="node-service-action" data-node="${escapeHtml(n.id)}" data-action="start">Start</button>${upgradeButton}`}
           </div>`
         : "";
       card.innerHTML = `
@@ -95,6 +229,7 @@ export function renderNodes(nodes) {
         <div>${modelTags || '<span style="color:var(--muted);font-size:0.75rem">No models installed</span>'}</div>
         ${nodeActions}
         ${n.draining ? '<small class="node-offline-note">Draining · waiting for active work</small>' : ""}
+        ${nodeUpgradeStatusMarkup(n)}
         ${serviceActions}
         <div class="model-config-panel" id="model-config-${cssId(n.id)}" style="display:${modelPanelOpen.has(n.id) ? "block" : "none"}"></div>
       `;
@@ -137,12 +272,19 @@ export function renderNodes(nodes) {
 }
 
 async function controlNodeService(nodeId, action, button) {
+  if (action === "upgrade") {
+    const node = (dashboardState.nodes || []).find((item) => item.id === nodeId) || { id: nodeId };
+    openNodeUpgradeDialog(node);
+    return;
+  }
   if (action !== "start" && !window.confirm(`${action[0].toUpperCase()}${action.slice(1)} ${nodeId}?`)) return;
   const original = button.textContent;
   button.disabled = true;
   button.textContent = `${action}…`;
   try {
-    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/service/${action}`, { method: "POST" });
+    await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/service/${action}`, {
+      method: "POST",
+    });
     button.textContent = action === "drain" ? "Draining…" : `${action} requested`;
     await refresh();
   } catch (err) {
@@ -174,7 +316,7 @@ export function renderSetupNodes(nodes) {
   }
   dashboardDOM.patchKeyedChildren(setupNodeList, ordered, {
     keyOf: (node) => node.id,
-    signatureOf: JSON.stringify,
+    signatureOf: (node) => JSON.stringify({ node, upgradeStatus: nodeUpgradeStatus(node) }),
     renderItem: (node) => {
     const online = Boolean(node.healthy);
     const card = document.createElement("article");
@@ -189,6 +331,13 @@ export function renderSetupNodes(nodes) {
         <span>${node.active_tasks || 0} active tasks</span>
         ${online ? "" : `<span>Last seen ${escapeHtml(node.last_seen ? formatRelativeTime(node.last_seen) : "unknown")}</span>`}
       </div>`;
+    card.insertAdjacentHTML("beforeend", nodeUpgradeStatusMarkup(node));
+    if (node.control_address) {
+      card.insertAdjacentHTML("beforeend", `<div class="node-service-actions setup-node-actions">
+        <button class="node-service-action" data-node="${escapeHtml(node.id)}" data-action="upgrade" ${isUpgradeActive(nodeUpgradeStatus(node)) ? "disabled" : ""}>Upgrade</button>
+      </div>`);
+      card.querySelector("[data-action=upgrade]")?.addEventListener("click", () => openNodeUpgradeDialog(node));
+    }
     card.insertAdjacentHTML("beforeend", engineStatusSummaryMarkup(node.engines));
     attachNodeContextMenu(card, node);
     return card;

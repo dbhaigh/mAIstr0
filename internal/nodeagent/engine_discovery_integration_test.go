@@ -233,10 +233,12 @@ func buildNodeAgentFakeEngine(t *testing.T) string {
 		t.Fatal("resolve integration test source path")
 	}
 	binary := filepath.Join(t.TempDir(), "fakeengine")
-	goBinary := filepath.Join(runtime.GOROOT(), "bin", "go")
+	goBinary, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("locate go command: %v", err)
+	}
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
-		goBinary += ".exe"
 	}
 	command := exec.Command(goBinary, "build", "-o", binary, "./supervisor/testdata/fakeengine")
 	command.Dir = filepath.Dir(currentFile)
@@ -253,7 +255,11 @@ func reserveNodeAgentPort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("reserve fake engine port: %v", err)
 	}
-	defer listener.Close()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close reserved fake engine port: %v", err)
+		}
+	}()
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
@@ -281,7 +287,11 @@ func requestNodeAgentModelStates(t *testing.T, client *http.Client, serverURL st
 	if err != nil {
 		t.Fatalf("request model states: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close model states response: %v", err)
+		}
+	}()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("model states status = %d, want %d", response.StatusCode, http.StatusOK)
 	}

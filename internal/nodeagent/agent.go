@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/engine"
@@ -19,6 +20,7 @@ import (
 	"github.com/maistr0/maistr0/internal/memory"
 	"github.com/maistr0/maistr0/internal/nodeagent/supervisor"
 	"github.com/maistr0/maistr0/internal/scheduler"
+	"github.com/maistr0/maistr0/internal/selfupdate"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"net/http"
 	"net/url"
@@ -53,6 +55,17 @@ type Agent struct {
 	runtimeSettingsPath string
 	lifecycleMu         sync.RWMutex
 	shutdown            func()
+	// upgradeMu protects upgradeRequester and upgradeStatus; it is not held while calling either callback.
+	upgradeMu        sync.RWMutex
+	upgradeRequester func(context.Context, selfupdate.UpgradeRequest) error
+	upgradeStatus    *cluster.UpgradeStatus
+}
+
+// SetUpgradeRequester installs the bounded background-upgrade queue before Run.
+func (a *Agent) SetUpgradeRequester(requester func(context.Context, selfupdate.UpgradeRequest) error) {
+	a.upgradeMu.Lock()
+	a.upgradeRequester = requester
+	a.upgradeMu.Unlock()
 }
 
 type peerDispatchJob struct {
@@ -197,6 +210,7 @@ func newAgentWithNormalizedConfig(cfg config.NodeConfig, tasks *taskmgr.Manager,
 		managedEngines:      managedEngines,
 	}
 	link.statusSnapshot = a.status
+	link.reportUpgradeStatus = a.setUpgradeStatus
 	link.currentTasks = peers.currentTasksContext
 	if store, err := memory.Open(cfg.MemoryPath, cfg.NodeID); err != nil {
 		logging.Errorf("nodeagent", "nodeagent: memory unavailable, running stateless: %v", err)

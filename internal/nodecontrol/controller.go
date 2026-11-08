@@ -1,6 +1,7 @@
 package nodecontrol
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/closeutil"
+	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 	"github.com/maistr0/maistr0/internal/httpx"
@@ -59,6 +61,8 @@ type Controller struct {
 	desiredRunning   bool
 	operation        string
 	lastError        string
+	pendingUpgrade   *selfupdate.UpgradeRequest
+	upgradeStatus    *cluster.UpgradeStatus
 	wake             chan struct{}
 }
 
@@ -69,13 +73,14 @@ type childProcess struct {
 }
 
 type serviceStatus struct {
-	Running        bool   `json:"running"`
-	DesiredRunning bool   `json:"desired_running"`
-	Operation      string `json:"operation,omitempty"`
-	Draining       bool   `json:"draining,omitempty"`
-	ActiveTasks    int    `json:"active_tasks,omitempty"`
-	ControlAddress string `json:"control_address"`
-	Error          string `json:"error,omitempty"`
+	Running        bool                   `json:"running"`
+	DesiredRunning bool                   `json:"desired_running"`
+	Operation      string                 `json:"operation,omitempty"`
+	Draining       bool                   `json:"draining,omitempty"`
+	ActiveTasks    int                    `json:"active_tasks,omitempty"`
+	ControlAddress string                 `json:"control_address"`
+	Error          string                 `json:"error,omitempty"`
+	UpgradeStatus  *cluster.UpgradeStatus `json:"upgrade_status,omitempty"`
 }
 
 var errPeerUpdateHandoff = errors.New("controller stopping for peer-update handoff")
@@ -335,12 +340,19 @@ func (c *Controller) supervise(ctx context.Context) error {
 }
 
 func (c *Controller) startChild() error {
-	c.stopDiscovery()
-	args, err := childArgs(c.runtimePath, c.nodeConfigPath, c.controlAddress, c.runtimeSettings,
+	persistedSettings, err := config.LoadRuntimeSettings(c.runtimePath)
+	if err != nil {
+		return fmt.Errorf("load runtime settings before starting node: %w", err)
+	}
+	settings := c.runtimeSettings
+	settings.AllowPeerUpdates = persistedSettings.AllowPeerUpdates
+	settings.NoPeerUpdates = persistedSettings.NoPeerUpdates
+	args, err := childArgs(c.runtimePath, c.nodeConfigPath, c.controlAddress, settings,
 		os.Getpid(), c.restartArgs, c.serviceManaged)
 	if err != nil {
 		return fmt.Errorf("prepare node process arguments: %w", err)
 	}
+	c.stopDiscovery()
 	command := exec.Command(c.executablePath, args...)
 	configureChildProcess(command)
 	command.Stdout = os.Stdout
@@ -351,8 +363,10 @@ func (c *Controller) startChild() error {
 	child := &childProcess{cmd: command, done: make(chan struct{})}
 	c.mu.Lock()
 	c.child = child
-	c.operation = ""
-	c.lastError = ""
+	if c.pendingUpgrade == nil {
+		c.operation = ""
+		c.lastError = ""
+	}
 	c.mu.Unlock()
 	go func() {
 		child.err = command.Wait()
@@ -555,6 +569,10 @@ func (c *Controller) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status.DesiredRunning = c.desiredRunning
 	status.Operation = c.operation
 	status.Error = c.lastError
+	if c.upgradeStatus != nil {
+		copy := *c.upgradeStatus
+		status.UpgradeStatus = &copy
+	}
 	c.mu.RUnlock()
 	if status.Running {
 		request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, c.localNodeURL+"/api/lifecycle/status", nil)
@@ -564,12 +582,24 @@ func (c *Controller) handleStatus(w http.ResponseWriter, r *http.Request) {
 				defer closeutil.Discard(response.Body)
 				if response.StatusCode == http.StatusOK {
 					var local struct {
-						Draining    bool `json:"draining"`
-						ActiveTasks int  `json:"active_tasks"`
+						Draining      bool                   `json:"draining"`
+						ActiveTasks   int                    `json:"active_tasks"`
+						UpgradeStatus *cluster.UpgradeStatus `json:"upgrade_status"`
 					}
 					if decodeErr := json.NewDecoder(io.LimitReader(response.Body, 4<<10)).Decode(&local); decodeErr == nil {
 						status.Draining = local.Draining
 						status.ActiveTasks = local.ActiveTasks
+						if local.UpgradeStatus != nil {
+							c.recordUpgradeStatus(*local.UpgradeStatus)
+							c.mu.RLock()
+							if c.upgradeStatus != nil {
+								copy := *c.upgradeStatus
+								status.UpgradeStatus = &copy
+							}
+							status.Operation = c.operation
+							status.Error = c.lastError
+							c.mu.RUnlock()
+						}
 					}
 				}
 			}
@@ -581,13 +611,17 @@ func (c *Controller) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (c *Controller) handleAction(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("action")
 	switch action {
-	case "start", "stop", "restart", "drain":
+	case "start", "stop", "restart", "drain", "upgrade":
 	default:
-		http.Error(w, "action must be start, stop, restart, or drain", http.StatusBadRequest)
+		http.Error(w, "action must be start, stop, restart, drain, or upgrade", http.StatusBadRequest)
 		return
 	}
 	if !c.actionMu.TryLock() {
 		http.Error(w, "another node lifecycle operation is in progress", http.StatusConflict)
+		return
+	}
+	if action == "upgrade" {
+		c.handleUpgradeAction(w, r)
 		return
 	}
 	switch action {
@@ -667,6 +701,275 @@ func (c *Controller) handleAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (c *Controller) handleUpgradeAction(w http.ResponseWriter, r *http.Request) {
+	async := false
+	defer func() {
+		if !async {
+			c.actionMu.Unlock()
+		}
+	}()
+	request, err := httpx.DecodeJSON[selfupdate.UpgradeRequest](w, r, 4<<10)
+	if err != nil {
+		http.Error(w, "invalid upgrade request", http.StatusBadRequest)
+		return
+	}
+	if err := request.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.PeerID != "" {
+		enabled, err := c.peerUpdatesEnabled()
+		if err != nil {
+			slog.Error("nodecontrol: load runtime settings for peer update gate", "node_id", c.nodeID, "error", err)
+			http.Error(w, "runtime settings are unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !enabled {
+			http.Error(w, selfupdate.ErrPeerUpdatesDisabled.Error(), http.StatusForbidden)
+			return
+		}
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		http.Error(w, "could not encode upgrade request", http.StatusInternalServerError)
+		return
+	}
+	peerID := ""
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		peerID = strings.TrimSpace(r.TLS.PeerCertificates[0].Subject.CommonName)
+	}
+	c.mu.Lock()
+	if c.upgradeStatus != nil && c.upgradeStatus.Active() {
+		c.mu.Unlock()
+		http.Error(w, "an upgrade is already in progress", http.StatusConflict)
+		return
+	}
+	child := c.child
+	if child == nil {
+		c.pendingUpgrade = &request
+		c.desiredRunning = true
+		c.operation = "upgrade-starting"
+		c.lastError = ""
+		c.upgradeStatus = &cluster.UpgradeStatus{
+			State: "starting", Phase: "starting_node", Progress: 0,
+			TicketStatus: "not_requested", UpdatedAt: time.Now().UTC(),
+		}
+		c.mu.Unlock()
+		c.signal()
+		async = true
+		go func() {
+			defer c.actionMu.Unlock()
+			c.forwardUpgradeAfterStart(body, peerID)
+		}()
+		writeJSON(w, http.StatusAccepted, map[string]string{"state": "starting"})
+		return
+	}
+	c.mu.Unlock()
+
+	if peerID != "" {
+		current, currentErr := c.currentOrchestratorID(r.Context())
+		if currentErr != nil {
+			http.Error(w, "current orchestrator authority could not be verified", http.StatusServiceUnavailable)
+			return
+		}
+		if current != peerID {
+			http.Error(w, "request requires the current elected orchestrator", http.StatusForbidden)
+			return
+		}
+	}
+	c.recordUpgradeStatus(cluster.UpgradeStatus{
+		State: "queued", Phase: "queued", Progress: 0,
+		TicketStatus: "not_requested", UpdatedAt: time.Now().UTC(),
+	})
+	c.mu.Lock()
+	c.operation = "upgrading"
+	c.lastError = ""
+	c.mu.Unlock()
+	response, err := c.requestChildWithBody(r.Context(), http.MethodPost, "/api/upgrade", body)
+	if err != nil {
+		c.failUpgrade(err, false)
+		http.Error(w, "could not forward upgrade request to node: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer closeutil.Discard(response.Body)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		c.failUpgrade(fmt.Errorf("node rejected upgrade request: %s", response.Status), false)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	if _, err := io.Copy(w, io.LimitReader(response.Body, 4<<10)); err != nil {
+		slog.Error("nodecontrol: write upgrade response", "node_id", c.nodeID, "error", err)
+	}
+}
+
+func (c *Controller) peerUpdatesEnabled() (bool, error) {
+	settings, err := config.LoadRuntimeSettings(c.runtimePath)
+	if err != nil {
+		return false, fmt.Errorf("load runtime settings: %w", err)
+	}
+	return settings.AllowPeerUpdates != nil &&
+		*settings.AllowPeerUpdates &&
+		(settings.NoPeerUpdates == nil || !*settings.NoPeerUpdates), nil
+}
+
+func (c *Controller) forwardUpgradeAfterStart(body []byte, peerID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	child, authorityID, err := c.waitForUpgradeChild(ctx)
+	if err != nil {
+		c.failUpgrade(err, true)
+		return
+	}
+	if peerID != "" && authorityID != peerID {
+		c.failUpgrade(errors.New("current orchestrator authority changed before the upgrade could be forwarded"), true)
+		return
+	}
+	select {
+	case <-child.done:
+		c.failUpgrade(errors.New("node exited before the upgrade could be queued"), true)
+		return
+	default:
+	}
+	c.recordUpgradeStatus(cluster.UpgradeStatus{
+		State: "queued", Phase: "queued", Progress: 0,
+		TicketStatus: "not_requested", UpdatedAt: time.Now().UTC(),
+	})
+	c.mu.Lock()
+	c.operation = "upgrading"
+	c.lastError = ""
+	c.mu.Unlock()
+	response, err := c.requestChildWithBody(ctx, http.MethodPost, "/api/upgrade", body)
+	if err != nil {
+		c.failUpgrade(fmt.Errorf("could not forward upgrade request to node: %w", err), false)
+		return
+	}
+	defer closeutil.Discard(response.Body)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		c.failUpgrade(fmt.Errorf("node rejected upgrade request: %s", response.Status), false)
+		return
+	}
+	c.mu.Lock()
+	c.pendingUpgrade = nil
+	c.operation = "upgrading"
+	c.lastError = ""
+	c.mu.Unlock()
+}
+
+func (c *Controller) waitForUpgradeChild(ctx context.Context) (*childProcess, string, error) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		c.mu.RLock()
+		child := c.child
+		desired := c.desiredRunning
+		startupError := c.lastError
+		c.mu.RUnlock()
+		if child != nil {
+			select {
+			case <-child.done:
+				return nil, "", errors.New("node exited before its authority endpoint became ready")
+			default:
+			}
+			authorityID, ready := c.readUpgradeAuthority(ctx)
+			if ready {
+				return child, authorityID, nil
+			}
+		} else if !desired {
+			if startupError == "" {
+				startupError = "node failed to start"
+			}
+			return nil, "", errors.New(startupError)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, "", fmt.Errorf("wait for node upgrade startup: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *Controller) readUpgradeAuthority(ctx context.Context) (string, bool) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.localNodeURL+"/api/lifecycle/authority", nil)
+	if err != nil {
+		return "", false
+	}
+	response, err := (&http.Client{Timeout: time.Second}).Do(request)
+	if err != nil {
+		return "", false
+	}
+	defer closeutil.Discard(response.Body)
+	if response.StatusCode != http.StatusOK {
+		return "", false
+	}
+	var result struct {
+		OrchestratorID string `json:"orchestrator_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<10)).Decode(&result); err != nil {
+		return "", false
+	}
+	return result.OrchestratorID, result.OrchestratorID != ""
+}
+
+func (c *Controller) recordUpgradeStatus(status cluster.UpgradeStatus) {
+	if status.UpdatedAt.IsZero() {
+		status.UpdatedAt = time.Now().UTC()
+	}
+	if status.Progress < 0 {
+		status.Progress = 0
+	} else if status.Progress > 100 {
+		status.Progress = 100
+	}
+	c.mu.Lock()
+	if c.upgradeStatus != nil && status.UpdatedAt.Before(c.upgradeStatus.UpdatedAt) {
+		c.mu.Unlock()
+		return
+	}
+	copy := status
+	c.upgradeStatus = &copy
+	switch status.State {
+	case "failed":
+		c.operation = "upgrade-failed"
+		c.lastError = status.FailureReason
+	case "completed":
+		if c.operation == "upgrading" || c.operation == "upgrade-starting" {
+			c.operation = ""
+			c.lastError = ""
+		}
+	}
+	c.mu.Unlock()
+}
+
+func (c *Controller) failUpgrade(err error, stopChild bool) {
+	now := time.Now().UTC()
+	c.mu.Lock()
+	c.pendingUpgrade = nil
+	c.operation = "upgrade-failed"
+	c.lastError = err.Error()
+	progress := 0
+	ticketStatus := "not_requested"
+	if c.upgradeStatus != nil {
+		progress = c.upgradeStatus.Progress
+		ticketStatus = c.upgradeStatus.TicketStatus
+	}
+	c.upgradeStatus = &cluster.UpgradeStatus{
+		State: "failed", Phase: "upgrade_failed", Progress: progress,
+		TicketStatus: ticketStatus, FailureReason: err.Error(), UpdatedAt: now,
+	}
+	child := c.child
+	if stopChild {
+		c.desiredRunning = false
+	}
+	c.mu.Unlock()
+	if stopChild && child != nil {
+		select {
+		case <-child.done:
+		default:
+			c.stopProcess(child)
+		}
+		c.startDiscovery()
+	}
+}
+
 func (c *Controller) waitForDrain(child *childProcess) error {
 	deadline := time.NewTimer(30 * time.Minute)
 	defer deadline.Stop()
@@ -731,6 +1034,19 @@ func (c *Controller) requestChild(method, path string) error {
 		return fmt.Errorf("node returned %s", response.Status)
 	}
 	return nil
+}
+
+func (c *Controller) requestChildWithBody(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, method, c.localNodeURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 func (c *Controller) handleRuntimeSettings(w http.ResponseWriter, r *http.Request) {

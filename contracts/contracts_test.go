@@ -190,6 +190,10 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 	nodeStatus := cluster.NodeStatus{
 		ID: "worker-1", Version: "1.0.0", Address: "https://worker-1",
 		ControlAddress: "https://worker-1:7453", Draining: true,
+		UpgradeStatus: &cluster.UpgradeStatus{
+			State: "rejoining", Phase: "rejoining_orchestrator", Progress: 95,
+			TicketStatus: "ready", UpdatedAt: now,
+		},
 		Hardware:             hardware.Info{OS: "linux", Arch: "amd64", CPUCores: 8, TotalRAMMB: 16384, Score: 10},
 		Models:               []engine.Model{{Name: "general", Engine: "simulated", Tags: []string{}}},
 		SupportedShardModels: []string{"large-model"}, MaxLayersItCanHost: 16,
@@ -268,7 +272,7 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		t.Fatalf("parse error response fixture: %v", err)
 	}
 	values := map[string]any{
-		"error-response.schema.json":  errorResponse,
+		"error-response.schema.json":   errorResponse,
 		"shard-membership.schema.json": map[string]any{"node_ids": []string{"worker-1", "worker-2"}},
 		"peer-update.schema.json":      map[string]any{"version": "0.0.24.1", "os": "darwin", "arch": "arm64", "sha256": strings.Repeat("a", 64), "size": 14000000},
 		"dashboard-pipeline.schema.json": map[string]any{
@@ -373,6 +377,14 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		"node-service-status.schema.json": map[string]any{
 			"running": true, "desired_running": true, "operation": "drain",
 			"draining": true, "active_tasks": 2, "control_address": "https://worker-1:7453",
+			"upgrade_status": cluster.UpgradeStatus{
+				State: "running", Phase: "requesting_rejoin_ticket", Progress: 75,
+				TicketStatus: "requesting", UpdatedAt: now,
+			},
+		},
+		"upgrade-status.schema.json": cluster.UpgradeStatus{
+			State: "completed", Phase: "rejoined", Progress: 100,
+			TicketStatus: "consumed", UpdatedAt: now,
 		},
 		"stage-assignment.schema.json": engine.StageAssignment{
 			ModelID: "large-model", StartLayer: 0, EndLayer: 16, Engine: "vllm", IsFinal: true,
@@ -625,7 +637,7 @@ func TestSchemaSetIsComplete(t *testing.T) {
 		"peer-update.schema.json", "shard-membership.schema.json",
 		"stage-assignment.schema.json", "stage-forward-frame.schema.json",
 		"sharded-model-config.schema.json", "stage-spec.schema.json", "subtask-result.schema.json", "subtask.schema.json", "task-dependencies.schema.json",
-		"task-graph.schema.json", "task.schema.json",
+		"task-graph.schema.json", "task.schema.json", "upgrade-request.schema.json", "upgrade-status.schema.json",
 	}
 	actual, err := filepath.Glob(filepath.Join("schemas", "*.schema.json"))
 	if err != nil {

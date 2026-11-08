@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
@@ -140,6 +141,27 @@ func (c *identityComponent) IsTrustedID(id string) bool {
 
 func (c *identityComponent) IsTrustedOrchestratorID(id string) bool {
 	return c.identity != nil && c.identity.IsTrustedOrchestratorID(id)
+}
+
+func (c *identityComponent) StorePendingRejoinTicket(ticket peeridentity.PendingRejoinTicket) error {
+	if c.identity == nil {
+		return errors.New("node identity is not initialized")
+	}
+	return c.identity.StorePendingRejoinTicket(ticket)
+}
+
+func (c *identityComponent) PendingRejoinTicket(orchestratorID string, now time.Time) (peeridentity.PendingRejoinTicket, bool, error) {
+	if c.identity == nil {
+		return peeridentity.PendingRejoinTicket{}, false, errors.New("node identity is not initialized")
+	}
+	return c.identity.PendingRejoinTicket(orchestratorID, now)
+}
+
+func (c *identityComponent) ClearPendingRejoinTicket(orchestratorID, token string) error {
+	if c.identity == nil {
+		return errors.New("node identity is not initialized")
+	}
+	return c.identity.ClearPendingRejoinTicket(orchestratorID, token)
 }
 
 func (c *identityComponent) requireTrustedPeer(handler http.Handler) http.Handler {

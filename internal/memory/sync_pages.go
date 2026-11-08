@@ -44,11 +44,10 @@ func PageSnapshot(snapshot Snapshot, cursor, upper map[string]uint64, maxBytes i
 	if err != nil {
 		return Snapshot{}, nil, false, err
 	}
-	values, nextCursor, more, err := syncpage.NextWithKey(
+	sizeEncoder := newJSONSizeEncoder()
+	values, nextCursor, more, err := syncpage.NextWithKeySizeInPlace(
 		records, cursor, upper, maxBytes, len(baseJSON)+envelopeBytes,
-		func(value any) ([]byte, error) {
-			return json.Marshal(value)
-		},
+		sizeEncoder.Size,
 		syncpage.KeyFuncs[any]{Compare: compareSnapshotKeys, Format: formatSnapshotKey},
 	)
 	if err != nil {
@@ -78,6 +77,34 @@ func PageSnapshot(snapshot Snapshot, cursor, upper map[string]uint64, maxBytes i
 		page.Watermarks = cloneWatermarks(upper)
 	}
 	return page, nextCursor, more, nil
+}
+
+type jsonSizeEncoder struct {
+	encoder *json.Encoder
+	writer  *jsonSizeWriter
+}
+
+type jsonSizeWriter struct {
+	bytes int
+}
+
+func newJSONSizeEncoder() *jsonSizeEncoder {
+	writer := &jsonSizeWriter{}
+	return &jsonSizeEncoder{encoder: json.NewEncoder(writer), writer: writer}
+}
+
+func (e *jsonSizeEncoder) Size(value any) (int, error) {
+	e.writer.bytes = 0
+	if err := e.encoder.Encode(value); err != nil {
+		return 0, err
+	}
+	// Encoder.Encode adds a newline; page sizing uses json.Marshal's length.
+	return e.writer.bytes - 1, nil
+}
+
+func (w *jsonSizeWriter) Write(data []byte) (int, error) {
+	w.bytes += len(data)
+	return len(data), nil
 }
 
 // Kind values follow the lexical order of the prefixes used in memory sort keys.

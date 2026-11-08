@@ -116,6 +116,7 @@ func BenchmarkAssignWithExperienceNodeModels(b *testing.B) {
 					}},
 				}
 			}
+
 			subtasks := []Subtask{{ID: "benchmark", Description: "baseline assignment", TaskType: "general"}}
 			experience := benchmarkExperience{}
 
@@ -129,5 +130,41 @@ func BenchmarkAssignWithExperienceNodeModels(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkAssignWithExperienceManyModelsPerNode(b *testing.B) {
+	logOutput := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(logOutput)
+
+	const nodeCount = 100
+	const modelsPerNode = 10
+	nodes := make([]cluster.NodeStatus, nodeCount)
+	for i := range nodes {
+		models := make([]engine.Model, modelsPerNode)
+		for j := range models {
+			models[j] = engine.Model{
+				Name: "simulated-general-" + strconv.Itoa(j), Engine: "simulated",
+				Tags: []string{"general"},
+			}
+		}
+		nodes[i] = cluster.NodeStatus{
+			ID: "node-" + strconv.Itoa(i), Address: "http://node", Healthy: true,
+			Engines: []engine.Status{{Name: "simulated", Ready: true}},
+			Models:  models,
+		}
+	}
+	subtasks := []Subtask{{ID: "benchmark", Description: "many-model assignment", TaskType: "general"}}
+	experience := benchmarkExperience{}
+
+	b.ReportAllocs()
+	b.ReportMetric(float64(nodeCount), "nodes/op")
+	b.ReportMetric(float64(nodeCount*modelsPerNode), "models/op")
+	b.ResetTimer()
+	for range b.N {
+		if _, err := AssignWithExperience(subtasks, nodes, experience); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

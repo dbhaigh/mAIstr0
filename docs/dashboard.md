@@ -12,6 +12,35 @@ can auto-join; strict mode requires an out-of-band fingerprint and one-use PIN
 for new joins and re-pairs. Configure the same discovery secret on all cluster
 members to enable the authenticated mode.
 
+## Node upgrades
+
+The **Upgrade** action appears on node cards and in the Local Network and Setup
+panels for nodes that advertise a host service controller, including offline
+nodes. Choose either an absolute executable path on the target node or a
+trusted peer ID in the upgrade dialog. The path is resolved on the target node,
+not in the browser. Peer sources require the existing `--allow-peer-updates`
+opt-in. The node verifies that the replacement is a newer compatible
+executable, waits for active work to finish, and queues the replacement
+through the existing update helper.
+
+Before stopping, the node requests a five-minute, single-use rejoin ticket over
+its current mTLS connection. The orchestrator issues it only to a previously
+trusted node on the connected local subnet when strict pairing verification is
+disabled. After restart, the ticket restores the node's certificate trust
+without a new PIN or fingerprint; other paired nodes learn the updated
+certificate through their normal roster refresh. Strict mode and off-subnet
+connections continue to require the verified fingerprint and PIN. Upgrade
+status shows the current phase, percentage, rejoin-ticket state, and any
+failure reason. Status changes are included in node SSE snapshots; the
+dashboard also reads host-controller status while the application process is
+starting or restarting. Ordinary Start, Stop, Drain, and Restart controls are
+unchanged.
+
+When the application process is stopped, the host controller starts it and
+forwards the upgrade request only after the node's current orchestrator
+authority is available. The process remains managed by the host controller
+through the normal replacement and rejoin flow.
+
 ## Sharding
 
 A managed shard group runs one model across multiple machines. It is different

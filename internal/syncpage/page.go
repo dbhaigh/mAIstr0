@@ -26,7 +26,7 @@ func Next[T any](
 	baseBytes int,
 	encode func(T) ([]byte, error),
 ) ([]T, map[string]uint64, bool, error) {
-	return next(records, cursor, upper, maxBytes, baseBytes, encode, nil)
+	return next(records, cursor, upper, maxBytes, baseBytes, sizeFromEncoder(encode), nil, false)
 }
 
 // NextWithKey pages records using value-based key comparison instead of stored key strings.
@@ -41,7 +41,23 @@ func NextWithKey[T any](
 	if key.Compare == nil || key.Format == nil {
 		return nil, nil, false, errors.New("syncpage: key comparison and formatting are required")
 	}
-	return next(records, cursor, upper, maxBytes, baseBytes, encode, &key)
+	return next(records, cursor, upper, maxBytes, baseBytes, sizeFromEncoder(encode), &key, false)
+}
+
+// NextWithKeySizeInPlace uses records as scratch storage and may reorder or overwrite it.
+// The caller must relinquish records after calling this function.
+func NextWithKeySizeInPlace[T any](
+	records []Record[T],
+	cursor, upper map[string]uint64,
+	maxBytes int64,
+	baseBytes int,
+	encodedSize func(T) (int, error),
+	key KeyFuncs[T],
+) ([]T, map[string]uint64, bool, error) {
+	if encodedSize == nil || key.Compare == nil || key.Format == nil {
+		return nil, nil, false, errors.New("syncpage: size callback, key comparison, and formatting are required")
+	}
+	return next(records, cursor, upper, maxBytes, baseBytes, encodedSize, &key, true)
 }
 
 func next[T any](
@@ -49,10 +65,16 @@ func next[T any](
 	cursor, upper map[string]uint64,
 	maxBytes int64,
 	baseBytes int,
-	encode func(T) ([]byte, error),
+	encodedSize func(T) (int, error),
 	key *KeyFuncs[T],
+	inPlace bool,
 ) ([]T, map[string]uint64, bool, error) {
-	eligible := make([]Record[T], 0, len(records))
+	var eligible []Record[T]
+	if inPlace {
+		eligible = records[:0]
+	} else {
+		eligible = make([]Record[T], 0, len(records))
+	}
 	legacyRecords := make([]Record[T], 0)
 	for _, record := range records {
 		if record.Origin == "" || record.Sequence == 0 {
@@ -101,11 +123,11 @@ func next[T any](
 		if record.Sequence > originUpper {
 			continue
 		}
-		data, err := encode(record.Value)
+		encodedBytes, err := encodedSize(record.Value)
 		if err != nil {
 			return nil, nil, false, err
 		}
-		recordSize := int64(len(data) + 1)
+		recordSize := int64(encodedBytes + 1)
 		if size+recordSize > maxBytes {
 			if len(page) == 0 {
 				recordKey := record.Key
@@ -126,6 +148,16 @@ func next[T any](
 		}
 	}
 	return page, nextCursor, false, nil
+}
+
+func sizeFromEncoder[T any](encode func(T) ([]byte, error)) func(T) (int, error) {
+	return func(value T) (int, error) {
+		encoded, err := encode(value)
+		if err != nil {
+			return 0, err
+		}
+		return len(encoded), nil
+	}
 }
 
 func compareKeys[T any](left, right Record[T], key *KeyFuncs[T]) int {

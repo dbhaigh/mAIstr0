@@ -46,9 +46,9 @@ func TestRecordDispatchFailureEmitsStructuredTraceEvent(t *testing.T) {
 		"task-1",
 		"subtask-1",
 		&dispatchFailure{
-			phase:         dispatchPhaseCapacityReservation,
-			cause:         errors.New("sensitive worker response"),
-			relatedErr:    errors.New("sensitive scheduler response"),
+			phase:      dispatchPhaseCapacityReservation,
+			cause:      errors.New("sensitive worker response"),
+			relatedErr: errors.New("sensitive scheduler response"),
 			assignment: scheduler.Assignment{
 				Subtask: scheduler.Subtask{ID: "subtask-1"},
 				NodeID:  "node-7",

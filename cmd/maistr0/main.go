@@ -313,6 +313,23 @@ func main() {
 	var updateOrchestrator *orchestrator.Server
 	var updateFailover *failoverCoordinator
 	var updatePublisherKey []byte
+	upgradeRequests := make(chan selfupdate.UpgradeRequest, 1)
+	peerUpdatesEnabled := *allowPeerUpdates && !*noPeerUpdates
+	configureNodeUpgrade := func(agent *nodeagent.Agent) {
+		agent.SetUpgradeRequester(func(ctx context.Context, request selfupdate.UpgradeRequest) error {
+			if request.PeerID != "" && !peerUpdatesEnabled {
+				return selfupdate.ErrPeerUpdatesDisabled
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case upgradeRequests <- request:
+				return nil
+			default:
+				return selfupdate.ErrUpgradeInProgress
+			}
+		})
+	}
 	sensitiveFilePaths := []string{logFilePath}
 
 	switch *role {
@@ -351,6 +368,7 @@ func main() {
 		}
 		agent.SetRuntimeSettings(*runtimeConfigPath, runtimeSettings)
 		agent.SetShutdownHandler(stopRuntime)
+		configureNodeUpgrade(agent)
 		if err := agent.InitializeIdentity(); err != nil {
 			fatalf("failed to initialize node identity: %v", err)
 		}
@@ -441,6 +459,7 @@ func main() {
 		agent.SetRuntimeSettings(*runtimeConfigPath, runtimeSettings)
 		srv.SetPairingPolicyUpdater(agent.SetPairingVerificationRequired)
 		agent.SetShutdownHandler(stopRuntime)
+		configureNodeUpgrade(agent)
 		updateNode = agent
 		closeNode = func() {
 			if err := agent.Close(); err != nil {
@@ -522,10 +541,10 @@ func main() {
 		os.Exit(0)
 	}
 	updaterDone := make(chan struct{})
-	if updateNode != nil && *allowPeerUpdates && !*noPeerUpdates {
+	if updateNode != nil {
 		go func() {
 			defer close(updaterDone)
-			selfupdate.RunWithControllerHandoff(runCtx, func() selfupdate.Source {
+			selfupdate.RunWithControllerHandoffAndRequests(runCtx, func() selfupdate.Source {
 				source := updateNode.UpdateSource()
 				source.PublisherPublicKey = updatePublisherKey
 				if updateOrchestrator != nil {
@@ -540,7 +559,7 @@ func main() {
 				ControllerPID:  *hostControllerPID,
 				ServiceManaged: *hostControllerManaged,
 				RestartArgs:    controllerRestartArgs,
-			})
+			}, upgradeRequests, peerUpdatesEnabled)
 		}()
 	} else {
 		close(updaterDone)

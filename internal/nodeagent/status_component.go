@@ -41,6 +41,7 @@ type statusResponse struct {
 	Address                   string                       `json:"address"`
 	ControlAddress            string                       `json:"control_address,omitempty"`
 	Draining                  bool                         `json:"draining,omitempty"`
+	UpgradeStatus             *cluster.UpgradeStatus       `json:"upgrade_status,omitempty"`
 	Hardware                  hardware.Info                `json:"hardware"`
 	TelemetryAt               time.Time                    `json:"telemetry_at"`
 	GPUHistory                []hardware.GPUUsageSample    `json:"gpu_history,omitempty"`
@@ -184,5 +185,7 @@ func mergeShardModels(configured, loaded []string) []string {
 }
 
 func (a *Agent) status() statusResponse {
-	return a.statusReporter.snapshot()
+	status := a.statusReporter.snapshot()
+	status.UpgradeStatus = a.upgradeStatusSnapshot()
+	return status
 }

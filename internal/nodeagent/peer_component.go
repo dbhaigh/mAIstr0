@@ -287,6 +287,15 @@ func (s *agentState) peersSnapshot() []cluster.NodeStatus {
 	return out
 }
 
+// peersSnapshotForSerialization returns a read-only view whose backing slice
+// remains stable because replacePeers publishes a fresh top-level slice.
+// Callers must not mutate the slice or its nested peer data.
+func (s *agentState) peersSnapshotForSerialization() []cluster.NodeStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peers
+}
+
 func (s *agentState) replacePeers(peers []cluster.NodeStatus) {
 	s.mu.Lock()
 	s.peers = append([]cluster.NodeStatus(nil), peers...)

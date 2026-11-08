@@ -30,3 +30,14 @@ func TestOrchestratorEventStreamIgnoresHeartbeatAndParsesCRLFFrames(t *testing.T
 		t.Fatalf("peer snapshot after heartbeat = %#v, want next-node", got)
 	}
 }
+
+func TestPeersSnapshotForSerializationSurvivesReplacement(t *testing.T) {
+	state := &agentState{}
+	state.replacePeers([]cluster.NodeStatus{{ID: "previous-node"}})
+	snapshot := state.peersSnapshotForSerialization()
+
+	state.replacePeers([]cluster.NodeStatus{{ID: "current-node"}})
+	if len(snapshot) != 1 || snapshot[0].ID != "previous-node" {
+		t.Fatalf("read-only peer snapshot changed after replacement: %#v", snapshot)
+	}
+}

@@ -31,9 +31,9 @@ type ScoringConfig = score.ScoringConfig
 //
 // Example:
 //
-//     cfg := scheduler.DefaultScoringConfig()
-//     cfg.LatencyPreferenceWeight = 20
-//     assignments, err := scheduler.AssignWithConfig(subtasks, nodes, &cfg, nil)
+//	cfg := scheduler.DefaultScoringConfig()
+//	cfg.LatencyPreferenceWeight = 20
+//	assignments, err := scheduler.AssignWithConfig(subtasks, nodes, &cfg, nil)
 //
 // See [assign_test.go](assign_test.go) and [contracts_test.go](contracts_test.go).
 func DefaultScoringConfig() ScoringConfig {
@@ -76,11 +76,11 @@ type UnassignableSubtasksError struct {
 //
 // Example:
 //
-//     var unassignable *scheduler.UnassignableSubtasksError
-//     if errors.As(err, &unassignable) {
-//         message := unassignable.Error()
-//         _ = message
-//     }
+//	var unassignable *scheduler.UnassignableSubtasksError
+//	if errors.As(err, &unassignable) {
+//	    message := unassignable.Error()
+//	    _ = message
+//	}
 func (e *UnassignableSubtasksError) Error() string {
 	message := "scheduler: no compatible model for subtasks: " + strings.Join(e.SubtaskIDs, ", ")
 	if len(e.ModelRejections) == 0 {
@@ -151,18 +151,18 @@ type CostExperience interface {
 //
 // Example:
 //
-//     assignments, err := scheduler.Assign(subtasks, nodeSnapshot)
-//     if errors.Is(err, scheduler.ErrNoHealthyNodes) {
-//         return err
-//     }
-//     var unassignable *scheduler.UnassignableSubtasksError
-//     if errors.As(err, &unassignable) {
-//         return fmt.Errorf("cannot schedule %v: %w", unassignable.SubtaskIDs, err)
-//     }
-//     if err != nil {
-//         return err
-//     }
-//     _ = assignments
+//	assignments, err := scheduler.Assign(subtasks, nodeSnapshot)
+//	if errors.Is(err, scheduler.ErrNoHealthyNodes) {
+//	    return err
+//	}
+//	var unassignable *scheduler.UnassignableSubtasksError
+//	if errors.As(err, &unassignable) {
+//	    return fmt.Errorf("cannot schedule %v: %w", unassignable.SubtaskIDs, err)
+//	}
+//	if err != nil {
+//	    return err
+//	}
+//	_ = assignments
 //
 // Performance note: scoring examines each subtask against healthy nodes and
 // their advertised models, approximately O(S×(N+M)) for S subtasks, N nodes,
@@ -186,11 +186,11 @@ func Assign(subtasks []Subtask, nodes []cluster.NodeStatus) ([]Assignment, error
 //
 // Example:
 //
-//     assignments, err := scheduler.AssignWithExperience(subtasks, nodeSnapshot, history)
-//     if err != nil {
-//         return err
-//     }
-//     _ = assignments
+//	assignments, err := scheduler.AssignWithExperience(subtasks, nodeSnapshot, history)
+//	if err != nil {
+//	    return err
+//	}
+//	_ = assignments
 //
 // Performance note: the candidate scan has the same O(S×(N+M)) cost as Assign;
 // experience lookups are performed for eligible node/model/subtask candidates.
@@ -218,13 +218,13 @@ func AssignWithExperience(subtasks []Subtask, nodes []cluster.NodeStatus, exp Ex
 //
 // Example:
 //
-//     cfg := scheduler.DefaultScoringConfig()
-//     cfg.LearnedBiasWeight = 0.5
-//     assignments, err := scheduler.AssignWithConfig(subtasks, nodeSnapshot, &cfg, history)
-//     if err != nil {
-//         return err
-//     }
-//     _ = assignments
+//	cfg := scheduler.DefaultScoringConfig()
+//	cfg.LearnedBiasWeight = 0.5
+//	assignments, err := scheduler.AssignWithConfig(subtasks, nodeSnapshot, &cfg, history)
+//	if err != nil {
+//	    return err
+//	}
+//	_ = assignments
 //
 // Performance note: candidate scoring is approximately O(S×(N+M)) for S
 // subtasks, N nodes, and M total advertised models.
@@ -255,17 +255,17 @@ func AssignWithConfig(subtasks []Subtask, nodes []cluster.NodeStatus, cfg *Scori
 //
 // Example:
 //
-//     graph := scheduler.NewTaskGraph()
-//     if err := graph.AddNode(scheduler.Subtask{
-//         ID: "summarize", Description: "Summarize the report", TaskType: "general",
-//     }); err != nil {
-//         return err
-//     }
-//     assignments, err := scheduler.AssignGraph(graph, nodeSnapshot, nil, nil)
-//     if err != nil {
-//         return err
-//     }
-//     _ = assignments
+//	graph := scheduler.NewTaskGraph()
+//	if err := graph.AddNode(scheduler.Subtask{
+//	    ID: "summarize", Description: "Summarize the report", TaskType: "general",
+//	}); err != nil {
+//	    return err
+//	}
+//	assignments, err := scheduler.AssignGraph(graph, nodeSnapshot, nil, nil)
+//	if err != nil {
+//	    return err
+//	}
+//	_ = assignments
 //
 // Performance note: candidate scoring is approximately O(S×(N+M)) for S
 // graph nodes, N nodes, and M total advertised models, plus graph validation
@@ -295,14 +295,15 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 		c := DefaultScoringConfig()
 		cfg = &c
 	}
-	healthy := make([]cluster.NodeStatus, 0, len(nodes))
-	for _, n := range nodes {
+	healthy := make([]*cluster.NodeStatus, 0, len(nodes))
+	for i := range nodes {
+		n := &nodes[i]
 		if n.Healthy && !n.Draining {
 			healthy = append(healthy, n)
 		} else if n.Draining {
-			LogDecision("planning", "draining", n, "", 0, ScoreFactors{})
+			LogDecision("planning", "draining", *n, "", 0, ScoreFactors{})
 		} else {
-			LogDecision("planning", "unhealthy", n, "", 0, ScoreFactors{})
+			LogDecision("planning", "unhealthy", *n, "", 0, ScoreFactors{})
 		}
 	}
 	if len(healthy) == 0 {
@@ -326,6 +327,7 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	assignments := make([]Assignment, 0, len(subtasks))
 	var unassignable []string
 	var modelRejections []score.ModelEligibilityRejection
+	var healthyValues []cluster.NodeStatus
 	now := time.Now()
 
 	for _, st := range subtasks {
@@ -341,9 +343,15 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 		bestNode, bestModel, bestEngine, bestScore, factors := pickBest(st, outDegree, healthy, nodeCapabilities, simulatedLoad, exp, cfg, now, logger)
 		if bestNode == nil {
 			unassignable = append(unassignable, st.ID)
+			if healthyValues == nil {
+				healthyValues = make([]cluster.NodeStatus, len(healthy))
+				for i, node := range healthy {
+					healthyValues[i] = *node
+				}
+			}
 			modelRejections = append(
 				modelRejections,
-				score.ExplainNPUModelRejections(healthy, toScoringSubtask(st, outDegree))...,
+				score.ExplainNPUModelRejections(healthyValues, toScoringSubtask(st, outDegree))...,
 			)
 			continue
 		}
@@ -377,7 +385,7 @@ func assignSubtaskList(subtasks []Subtask, graph *TaskGraph, nodes []cluster.Nod
 	return assignments, nil
 }
 
-func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabilities [][]string, load map[string]simulatedNodeLoad, exp Experience, cfg *ScoringConfig, now time.Time, logger *slog.Logger) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
+func pickBest(st Subtask, outDegree int, nodes []*cluster.NodeStatus, nodeCapabilities [][]string, load map[string]simulatedNodeLoad, exp Experience, cfg *ScoringConfig, now time.Time, logger *slog.Logger) (*cluster.NodeStatus, string, string, float64, ScoreFactors) {
 	var best *cluster.NodeStatus
 	bestScore := math.Inf(-1)
 	bestBias := 0.0
@@ -387,13 +395,13 @@ func pickBest(st Subtask, outDegree int, nodes []cluster.NodeStatus, nodeCapabil
 	scoringSubtask := toScoringSubtask(st, outDegree)
 	debug := logger.Enabled(context.Background(), slog.LevelDebug)
 
-	for i := range nodes {
-		candidate, ok := prepareScoringCandidateForScore(&nodes[i], scoringSubtask, nodeCapabilities[i])
+	for i, node := range nodes {
+		candidate, ok := prepareScoringCandidateForScore(node, scoringSubtask, nodeCapabilities[i])
 		if !ok {
 			if debug {
-				eligibility := score.ExplainEligibility(nodes[i], scoringSubtask)
+				eligibility := score.ExplainEligibility(*node, scoringSubtask)
 				logDecision(logger, slog.LevelDebug, "planning", eligibility.Reason,
-					nodes[i], "", 0, ScoreFactors{}, eligibility)
+					*node, "", 0, ScoreFactors{}, eligibility)
 			}
 			continue
 		}

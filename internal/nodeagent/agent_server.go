@@ -42,6 +42,7 @@ func (a *Agent) run(ctx context.Context) error {
 	})
 	mux.HandleFunc("GET /api/status", a.handleSystemStatus)
 	mux.HandleFunc("GET /api/pairing/status", a.handlePairingStatus)
+	mux.HandleFunc("POST /api/upgrade", a.handleUpgrade)
 	mux.HandleFunc("POST /api/pairing/connect", a.handlePairingConnect)
 	mux.HandleFunc("POST /api/pairing/invitation", a.handlePairingInvitation)
 	mux.Handle("GET /api/pairing/invitation", peeridentity.LoopbackOnly(http.HandlerFunc(a.handlePairingInvitationStatus)))

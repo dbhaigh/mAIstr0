@@ -21,6 +21,7 @@ type NodeStatus struct {
 	Address                   string                       `json:"address"` // base URL the orchestrator can reach the node at
 	ControlAddress            string                       `json:"control_address,omitempty"`
 	Draining                  bool                         `json:"draining,omitempty"`
+	UpgradeStatus             *UpgradeStatus               `json:"upgrade_status,omitempty"`
 	Hardware                  hardware.Info                `json:"hardware"`
 	Models                    []engine.Model               `json:"models"`
 	Engines                   []engine.Status              `json:"engines,omitempty"`
@@ -43,6 +44,24 @@ type NodeStatus struct {
 	Healthy                   bool                         `json:"healthy"`
 	Leader                    bool                         `json:"leader"` // elected cluster leader (most capable healthy node)
 	VersionError              string                       `json:"version_error,omitempty"`
+}
+
+type UpgradeStatus struct {
+	State         string    `json:"state"`
+	Phase         string    `json:"phase"`
+	Progress      int       `json:"progress"`
+	TicketStatus  string    `json:"ticket_status"`
+	FailureReason string    `json:"failure_reason,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (s UpgradeStatus) Active() bool {
+	switch s.State {
+	case "queued", "starting", "running", "restarting", "rejoining":
+		return true
+	default:
+		return false
+	}
 }
 
 // RegistrySnapshot is either a full registry view or a delta from a prior
@@ -377,8 +396,52 @@ func (r *Registry) fullSnapshot() RegistrySnapshot {
 
 func cloneNodeStatuses(statuses []NodeStatus) []NodeStatus {
 	out := make([]NodeStatus, len(statuses))
+	modelCount, tagCount, protocolCount := 0, 0, 0
+	for _, status := range statuses {
+		modelCount += len(status.Models)
+		for _, model := range status.Models {
+			tagCount += len(model.Tags)
+			protocolCount += len(model.Protocols)
+		}
+	}
+
+	models := make([]engine.Model, modelCount)
+	tags := make([]string, tagCount)
+	protocols := make([]string, protocolCount)
+	modelOffset, tagOffset, protocolOffset := 0, 0, 0
 	for i := range statuses {
-		out[i] = cloneNodeStatus(statuses[i])
+		out[i] = cloneNodeStatusExceptModels(statuses[i])
+		sourceModels := statuses[i].Models
+		if sourceModels == nil {
+			out[i].Models = nil
+			continue
+		}
+
+		modelEnd := modelOffset + len(sourceModels)
+		out[i].Models = models[modelOffset:modelEnd:modelEnd]
+		copy(out[i].Models, sourceModels)
+		modelOffset = modelEnd
+		for j := range sourceModels {
+			sourceTags := sourceModels[j].Tags
+			if sourceTags == nil {
+				out[i].Models[j].Tags = nil
+			} else {
+				tagEnd := tagOffset + len(sourceTags)
+				out[i].Models[j].Tags = tags[tagOffset:tagEnd:tagEnd]
+				copy(out[i].Models[j].Tags, sourceTags)
+				tagOffset = tagEnd
+			}
+
+			sourceProtocols := sourceModels[j].Protocols
+			if sourceProtocols == nil {
+				out[i].Models[j].Protocols = nil
+			} else {
+				protocolEnd := protocolOffset + len(sourceProtocols)
+				out[i].Models[j].Protocols = protocols[protocolOffset:protocolEnd:protocolEnd]
+				copy(out[i].Models[j].Protocols, sourceProtocols)
+				protocolOffset = protocolEnd
+			}
+		}
 	}
 	return out
 }
@@ -485,17 +548,19 @@ func (r *Registry) invalidateSnapshotLocked() {
 }
 
 func cloneNodeStatus(status NodeStatus) NodeStatus {
+	models := cloneNodeModels(status.Models)
+	status = cloneNodeStatusExceptModels(status)
+	status.Models = models
+	return status
+}
+
+func cloneNodeStatusExceptModels(status NodeStatus) NodeStatus {
 	status.Hardware.Devices = cloneSlice(status.Hardware.Devices)
 	for i := range status.Hardware.Devices {
 		status.Hardware.Devices[i].Backends = cloneSlice(status.Hardware.Devices[i].Backends)
 	}
 	status.Hardware.NUMANodes = cloneSlice(status.Hardware.NUMANodes)
 	status.Hardware.NetworkLinks = cloneSlice(status.Hardware.NetworkLinks)
-	status.Models = cloneSlice(status.Models)
-	for i := range status.Models {
-		status.Models[i].Tags = cloneSlice(status.Models[i].Tags)
-		status.Models[i].Protocols = cloneSlice(status.Models[i].Protocols)
-	}
 	status.Engines = cloneSlice(status.Engines)
 	for i := range status.Engines {
 		status.Engines[i].Protocols = cloneSlice(status.Engines[i].Protocols)
@@ -506,6 +571,18 @@ func cloneNodeStatus(status NodeStatus) NodeStatus {
 	status.NPUHistory = cloneSlice(status.NPUHistory)
 	status.SystemHistory = cloneSlice(status.SystemHistory)
 	return status
+}
+
+func cloneNodeModels(models []engine.Model) []engine.Model {
+	if models == nil {
+		return nil
+	}
+	cloned := cloneSlice(models)
+	for i := range cloned {
+		cloned[i].Tags = cloneSlice(cloned[i].Tags)
+		cloned[i].Protocols = cloneSlice(cloned[i].Protocols)
+	}
+	return cloned
 }
 
 func cloneSlice[T any](items []T) []T {

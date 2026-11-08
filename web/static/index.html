@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>mAIstr0 · Interactive Cluster Orchestrator</title>
-  <link rel="stylesheet" href="/style.3f543a09b730.css" />
+  <link rel="stylesheet" href="/style.daddaceed147.css" />
 </head>
 <body>
   <header>
@@ -345,6 +345,29 @@
     </form>
   </dialog>
 
+  <dialog id="node-upgrade-dialog" class="pairing-dialog upgrade-dialog" aria-labelledby="node-upgrade-title">
+    <form id="node-upgrade-form">
+      <h3 id="node-upgrade-title">Upgrade node</h3>
+      <label class="upgrade-field">Upgrade source
+        <select id="node-upgrade-source">
+          <option value="path">Local executable path</option>
+          <option value="peer">Trusted peer</option>
+        </select>
+      </label>
+      <label id="node-upgrade-path-field" class="upgrade-field">Absolute executable path on the target node
+        <input id="node-upgrade-path" type="text" autocomplete="off" placeholder="C:\path\to\maistr0.exe" required />
+      </label>
+      <label id="node-upgrade-peer-field" class="upgrade-field" hidden>Trusted peer ID
+        <input id="node-upgrade-peer" type="text" autocomplete="off" placeholder="node-id" />
+      </label>
+      <p id="node-upgrade-status" class="setup-status" role="status" aria-live="polite"></p>
+      <div class="pairing-dialog-actions">
+        <button id="node-upgrade-cancel" class="icon-button" type="button">Cancel</button>
+        <button id="node-upgrade-submit" class="primary-btn" type="submit">Start upgrade</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="pairing-invitation-dialog" class="pairing-dialog" aria-labelledby="pairing-invitation-title">
     <div>
       <h3 id="pairing-invitation-title">Cluster pairing request</h3>
@@ -471,6 +494,6 @@
     </div>
   </div>
 
-  <script src="/app.e832c9ea0596.js"></script>
+  <script src="/app.05f8847e1c72.js"></script>
 </body>
 </html>

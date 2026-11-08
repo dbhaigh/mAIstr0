@@ -44,14 +44,14 @@ func TestSignReleaseCommandSignsManifestAndPrintsOnlyPublicKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var output, errorOutput bytes.Buffer
-	if err := runSignRelease([]string{"--manifest", manifestPath, "--key", keyPath}, &output, &errorOutput); err != nil {
-		t.Fatalf("runSignRelease: %v; stderr: %s", err, errorOutput.String())
+	stdout, stderr := runMainForTest(t, "sign-release", "--manifest", manifestPath, "--key", keyPath)
+	if stderr != "" {
+		t.Fatalf("sign-release stderr: %s", stderr)
 	}
-	if !strings.Contains(output.String(), base64.StdEncoding.EncodeToString(publicKey)) {
-		t.Fatalf("output omitted trusted publisher key: %q", output.String())
+	if !strings.Contains(stdout, base64.StdEncoding.EncodeToString(publicKey)) {
+		t.Fatalf("output omitted trusted publisher key: %q", stdout)
 	}
-	if bytes.Contains(output.Bytes(), privateKey) {
+	if bytes.Contains([]byte(stdout), privateKey) {
 		t.Fatal("command output included private key bytes")
 	}
 	signedData, err := os.ReadFile(manifestPath)

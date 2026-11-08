@@ -82,6 +82,8 @@ const taskSource = source.slice(taskSourceStart, source.indexOf("async function 
 const resourceHistorySource = source.slice(source.indexOf("function gpuGaugeMarkup("), source.indexOf("const TASK_ACTIVE_STATES"));
 const engineStatusSource = readModuleSource("src", "components", "node-card.js");
 const pairingDialogSource = readModuleSource("src", "components", "pairing-dialog.js");
+const upgradeDialogSource = readModuleSource("src", "components", "upgrade-dialog.js");
+const routingViewSource = readModuleSource("src", "views", "routing.js");
 const themeSource = readModuleSource("src", "shared", "theme.js");
 const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
 const optionalFeaturesSource = source.slice(source.indexOf("let optionalFeaturesInitialized = false;"), source.indexOf("async function refreshPersistenceStatus()"));
@@ -513,6 +515,9 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
   const statMemory = { textContent: "Memory: 1 · 50%" };
   const statVersion = { textContent: "" };
   const pipelineRenderCalls = [];
+  const nodeRenderCalls = [];
+  const setupRenderCalls = [];
+  const discoveryRenderCalls = [];
   let titleCount;
   let titleCalls = 0;
   const context = vm.createContext({
@@ -534,11 +539,12 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
     updateClusterTitle: (count) => { titleCount = count; titleCalls += 1; },
     mergeLiveTaskHistory() {},
     renderOverview() {},
-    renderNodes() {},
-    renderSetupNodes() {},
+    nodeUpgradeStatus: (node) => node?.upgrade_status || null,
+    renderNodes: (nodes) => nodeRenderCalls.push(nodes),
+    renderSetupNodes: (nodes) => setupRenderCalls.push(nodes),
     renderRouting() {},
     renderPipelineDashboard: (models, plans) => pipelineRenderCalls.push({ models, plans }),
-    renderDiscovery() {},
+    renderDiscovery: (...args) => discoveryRenderCalls.push(args),
     renderTasks() {},
     refreshOverviewTimes() {},
   });
@@ -582,6 +588,28 @@ test("SSE snapshot application updates status pills and preserves loaded task hi
   context.applySnapshot(snapshot);
   assert.equal(titleCalls, 1, "unchanged status section should not update the title");
   assert.equal(pipelineRenderCalls.length, 1, "unchanged pipeline section should not rerender");
+  assert.equal(nodeRenderCalls.length, 1);
+  assert.equal(setupRenderCalls.length, 1);
+  assert.equal(discoveryRenderCalls.length, 1);
+  const upgradeSnapshot = {
+    ...snapshot,
+    nodes: snapshot.nodes.map((node) => node.id === "offline"
+      ? {
+        ...node,
+        upgrade_status: {
+          state: "rejoining",
+          phase: "rejoining_orchestrator",
+          progress: 95,
+          ticket_status: "ready",
+          updated_at: "2026-10-16T03:00:00Z",
+        },
+      }
+      : node),
+  };
+  context.applySnapshot(upgradeSnapshot);
+  assert.equal(nodeRenderCalls.length, 2, "upgrade status changes rerender node cards");
+  assert.equal(setupRenderCalls.length, 2, "upgrade status changes rerender Setup cards");
+  assert.equal(discoveryRenderCalls.length, 2, "upgrade status changes rerender Local Network cards");
 });
 
 test("Pipeline dashboard distinguishes model distribution and renders live stage details", () => {
@@ -1185,6 +1213,123 @@ test("Node service actions require confirmation and use the encoded lifecycle ro
   assert.equal(refreshed, 1);
 });
 
+test("Upgrade controls open the source dialog for offline nodes", async () => {
+  const start = nodeViewSource.indexOf("async function controlNodeService(");
+  const end = nodeViewSource.indexOf("\nfunction renderSetupNodes(", start);
+  const opened = [];
+  const context = vm.createContext({
+    window: {},
+    dashboardState: {
+      nodes: [{ id: "offline-node", healthy: false, control_address: "https://node:7453" }],
+    },
+    openNodeUpgradeDialog: (node) => opened.push(node),
+  });
+  vm.runInContext(nodeViewSource.slice(start, end), context);
+  await context.controlNodeService("offline-node", "upgrade", {});
+  assert.deepEqual(opened, [{ id: "offline-node", healthy: false, control_address: "https://node:7453" }]);
+  assert.match(nodeViewSource, /data-action="upgrade"/);
+  assert.match(nodeViewSource, /nodeUpgradeStatusMarkup\(n\)/);
+  assert.match(nodeViewSource, /setup-node-actions/);
+  assert.match(routingViewSource, /nodeUpgradeStatusMarkup\(member\)/);
+  assert.match(routingViewSource, /openNodeUpgradeDialog\(member\)/);
+});
+
+test("Upgrade dialog submits either a local path or a trusted peer ID", async () => {
+  const ids = [
+    "node-upgrade-dialog", "node-upgrade-form", "node-upgrade-title",
+    "node-upgrade-source", "node-upgrade-path-field", "node-upgrade-path",
+    "node-upgrade-peer-field", "node-upgrade-peer", "node-upgrade-status",
+    "node-upgrade-submit", "node-upgrade-cancel",
+  ];
+  const elements = Object.fromEntries(ids.map((id) => [id, {
+    value: "",
+    textContent: "",
+    hidden: false,
+    required: false,
+    disabled: false,
+    listeners: {},
+    addEventListener(type, handler) { this.listeners[type] = handler; },
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+    focus() {},
+  }]));
+  const context = vm.createContext({
+    document: { getElementById: (id) => elements[id] || null },
+  });
+  vm.runInContext(upgradeDialogSource, context);
+  const requests = [];
+  const submit = async (nodeID, request) => requests.push({ nodeID, request });
+
+  context.openUpgradeDialog({ id: "worker", upgrade_status: null }, submit);
+  elements["node-upgrade-source"].value = "peer";
+  elements["node-upgrade-source"].listeners.change();
+  assert.equal(elements["node-upgrade-path-field"].hidden, true);
+  assert.equal(elements["node-upgrade-peer-field"].hidden, false);
+  elements["node-upgrade-peer"].value = "trusted-node";
+  await elements["node-upgrade-form"].listeners.submit({ preventDefault() {} });
+  assert.equal(requests[0].nodeID, "worker");
+  assert.equal(requests[0].request.peer_id, "trusted-node");
+
+  context.openUpgradeDialog({ id: "worker", upgrade_status: null }, submit);
+  elements["node-upgrade-path"].value = "C:\\maistr0\\next.exe";
+  await elements["node-upgrade-form"].listeners.submit({ preventDefault() {} });
+  assert.equal(requests[1].nodeID, "worker");
+  assert.equal(requests[1].request.path, "C:\\maistr0\\next.exe");
+});
+
+test("Upgrade status renders progress, ticket state, and escaped failure reasons", () => {
+  const start = nodeViewSource.indexOf("function nodeUpgradeStatusMarkup(");
+  const end = nodeViewSource.indexOf("\nfunction setNodeUpgradeStatus(", start);
+  const context = vm.createContext({
+    nodeUpgradeStatus: (node) => node?.upgrade_status || null,
+    escapeHtml: (value) => String(value).replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+    })[character]),
+  });
+  vm.runInContext(nodeViewSource.slice(start, end), context);
+  const html = context.nodeUpgradeStatusMarkup({
+    id: "worker",
+    upgrade_status: {
+      state: "failed",
+      phase: "rejoin_rejected",
+      progress: 95,
+      ticket_status: "rejected",
+      failure_reason: "orchestrator <rejected>",
+    },
+  });
+  assert.match(html, /Upgrade failed/);
+  assert.match(html, /95%/);
+  assert.match(html, /Rejoin ticket: rejected/);
+  assert.match(html, /orchestrator &lt;rejected&gt;/);
+  assert.doesNotMatch(html, /orchestrator <rejected>/);
+});
+
+test("Upgrade submission uses the node service route and starts status monitoring", async () => {
+  const start = nodeViewSource.indexOf("async function submitNodeUpgrade(");
+  const end = nodeViewSource.indexOf("\nasync function monitorNodeUpgradeStatus(", start);
+  const requests = [];
+  const statuses = [];
+  const monitors = [];
+  let refreshed = 0;
+  const context = vm.createContext({
+    fetchJSON: async (url, options) => {
+      requests.push({ url, options });
+      return { state: "starting" };
+    },
+    setNodeUpgradeStatus: (nodeID, status) => statuses.push({ nodeID, status }),
+    monitorNodeUpgradeStatus: (nodeID) => monitors.push(nodeID),
+    refresh: async () => { refreshed += 1; },
+  });
+  vm.runInContext(nodeViewSource.slice(start, end), context);
+  await context.submitNodeUpgrade("offline/<node>", { path: "C:\\maistr0\\next.exe" });
+  assert.equal(requests[0].url, "/api/nodes/offline%2F%3Cnode%3E/service/upgrade");
+  assert.equal(requests[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(requests[0].options.body), { path: "C:\\maistr0\\next.exe" });
+  assert.equal(statuses[0].status.state, "starting");
+  assert.deepEqual(monitors, ["offline/<node>"]);
+  assert.equal(refreshed, 1);
+});
+
 test("Live node context is expandable from cluster overview node cards", () => {
   const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
   const overviewStart = index.indexOf('<section id="cluster-overview-panel"');
@@ -1660,6 +1805,7 @@ function discoveryContext(nodes = [], pairing = null) {
   };
   const contextMenus = [];
   const openedPairingTargets = [];
+  const openedUpgradeTargets = [];
   const securityStatus = { textContent: "" };
   const context = vm.createContext({
     discoveryList: list,
@@ -1668,6 +1814,7 @@ function discoveryContext(nodes = [], pairing = null) {
       getElementById: (id) => id === "discovery-security-status" ? securityStatus : null,
       createElement: () => {
         const joinButton = { addEventListener(_event, handler) { this.handler = handler; } };
+        const upgradeButton = { addEventListener(_event, handler) { this.handler = handler; } };
         const card = {
           innerHTML: "",
           className: "",
@@ -1684,18 +1831,25 @@ function discoveryContext(nodes = [], pairing = null) {
             this.parentNode = null;
           },
           joinButton,
-          querySelector: (selector) => selector === "[data-action=join-orchestrator]" ? joinButton : null,
+          querySelector: (selector) => selector === "[data-action=join-orchestrator]"
+            ? joinButton
+            : selector === "[data-action=upgrade]" ? upgradeButton : null,
         };
         return card;
       },
     },
     dashboardDOM,
     escapeHtml: (value) => String(value),
+    nodeUpgradeStatus: (node) => node?.upgrade_status || null,
+    nodeUpgradeStatusMarkup: (node) => node?.upgrade_status
+      ? `<small>Rejoin ticket: ${node.upgrade_status.ticket_status}</small>`
+      : "",
     attachNodeContextMenu: (element, node) => contextMenus.push({ element, node }),
     openPairingDialog: (node) => openedPairingTargets.push(node),
+    openNodeUpgradeDialog: (node) => openedUpgradeTargets.push(node),
   });
   vm.runInContext(discoverySource, context);
-  return { context, list, contextMenus, openedPairingTargets, securityStatus };
+  return { context, list, contextMenus, openedPairingTargets, openedUpgradeTargets, securityStatus };
 }
 
 test("Local Network labels whether LAN discovery announcements are authenticated", () => {
@@ -1753,6 +1907,38 @@ test("Local Network merges discovered nonmembers with online members without dup
   assert.match(list.cards.find((card) => card.innerHTML.includes("paired-worker <")).innerHTML, /Visible \u00b7 cluster member/);
   assert.match(list.cards.find((card) => card.innerHTML.includes("unpaired-worker <")).innerHTML, /Visible \u00b7 not a member of this cluster/);
   assert.match(html, /other-orchestrator/);
+});
+
+test("Local Network exposes Upgrade for a controlled cluster member", () => {
+  const node = {
+    id: "worker", address: "https://worker:7451", control_address: "https://worker:7453",
+    healthy: false, upgrade_status: {
+      state: "rejoining", phase: "rejoining_orchestrator", progress: 95,
+      ticket_status: "ready",
+    },
+  };
+  const { context, list, openedUpgradeTargets } = discoveryContext([node]);
+  context.renderDiscovery([{ id: "worker", role: "node", peer_addr: node.address }]);
+  const card = list.cards.find((item) => item.innerHTML.includes("worker <"));
+  assert.match(card.innerHTML, /data-action="upgrade"/);
+  assert.match(card.innerHTML, /Rejoin ticket: ready/);
+  card.querySelector("[data-action=upgrade]").handler();
+  assert.equal(openedUpgradeTargets[0], node);
+});
+
+test("Local Network keeps an offline controller available for Upgrade", () => {
+  const node = {
+    id: "stopped-worker", address: "https://worker:7451",
+    control_address: "https://worker:7453", healthy: false,
+  };
+  const { context, list, openedUpgradeTargets } = discoveryContext([node]);
+  context.renderDiscovery([]);
+  const card = list.cards.find((item) => item.innerHTML.includes("stopped-worker <"));
+  assert.ok(card);
+  assert.match(card.innerHTML, /Known cluster member \u00b7 offline/);
+  assert.match(card.innerHTML, /data-action="upgrade"/);
+  card.querySelector("[data-action=upgrade]").handler();
+  assert.equal(openedUpgradeTargets[0], node);
 });
 
 test("Local Network shows the unjoined local worker when discovery excludes self", () => {

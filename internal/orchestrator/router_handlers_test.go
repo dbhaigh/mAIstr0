@@ -234,9 +234,134 @@ func TestRouterPropagatesClientCancellation(t *testing.T) {
 	}
 }
 
+func TestRouterConcurrentStreamLimitIsHeldUntilStreamCompletes(t *testing.T) {
+	srv := newTestServer(t)
+	srv.routerClients = newRouterClientLimiter(0, 1)
+	srv.registry.Upsert(routerTestNode("node", "http://node-a", 1))
+
+	streamBlocked := make(chan struct{})
+	releaseStream := make(chan struct{})
+	reader := &holdAfterFirstByteReader{blocked: streamBlocked, release: releaseStream}
+	var upstreamCalls atomic.Int32
+	srv.nodeClient.dispatcher.Transport = routerRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if upstreamCalls.Add(1) == 1 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(reader),
+				Request:    r,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader("x")), Request: r,
+		}, nil
+	})
+
+	makeRequest := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/router/v1/chat/completions",
+			strings.NewReader(`{"model":"demo","stream":true}`))
+		request.RemoteAddr = "192.0.2.30:4321"
+		return request
+	}
+	firstResponse := httptest.NewRecorder()
+	firstDone := make(chan struct{})
+	go func() {
+		srv.Mux().ServeHTTP(firstResponse, makeRequest())
+		close(firstDone)
+	}()
+	select {
+	case <-streamBlocked:
+	case <-time.After(2 * time.Second):
+		close(releaseStream)
+		t.Fatal("first upstream stream did not remain open")
+	}
+	if firstResponse.Code != http.StatusOK || firstResponse.Body.String() != "x" {
+		close(releaseStream)
+		t.Fatalf("first stream response = %d %q, want committed 200 stream", firstResponse.Code, firstResponse.Body.String())
+	}
+
+	limitedResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(limitedResponse, makeRequest())
+	if limitedResponse.Code != http.StatusTooManyRequests ||
+		limitedResponse.Header().Get("Retry-After") != "1" ||
+		!strings.Contains(limitedResponse.Body.String(), "per-client concurrency limit exceeded") {
+		close(releaseStream)
+		t.Fatalf("over-limit response = %d headers=%v body=%q, want 429 with Retry-After: 1",
+			limitedResponse.Code, limitedResponse.Header(), limitedResponse.Body.String())
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		close(releaseStream)
+		t.Fatalf("over-limit request reached an upstream node; calls = %d, want 1", got)
+	}
+
+	close(releaseStream)
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first stream did not finish after its body was released")
+	}
+	retryResponse := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(retryResponse, makeRequest())
+	if retryResponse.Code != http.StatusOK || retryResponse.Body.String() != "x" {
+		t.Fatalf("request after stream completion = %d %q, want successful dispatch", retryResponse.Code, retryResponse.Body.String())
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("upstream calls after limiter release = %d, want 2", got)
+	}
+}
+
+func TestRouterRetryExhaustionReturns502WithoutClientConcurrencyLimit(t *testing.T) {
+	srv := newTestServer(t)
+	srv.registry.Upsert(routerTestNode("node", "http://node-a", 1))
+	var upstreamCalls atomic.Int32
+	srv.nodeClient.dispatcher.Transport = routerRoundTripper(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("temporarily unavailable")),
+			Request:    r,
+		}, nil
+	})
+
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(
+		http.MethodPost, "/router/v1/chat/completions", strings.NewReader(`{"model":"demo"}`),
+	))
+	if response.Code != http.StatusBadGateway ||
+		!strings.Contains(response.Body.String(), "no additional compatible inference node is available") {
+		t.Fatalf("exhausted router response = %d %q, want retry-exhaustion 502",
+			response.Code, response.Body.String())
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstream calls = %d, want one failed attempt before candidate exhaustion", got)
+	}
+}
+
 type routerRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f routerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type holdAfterFirstByteReader struct {
+	blocked chan struct{}
+	release chan struct{}
+	sent    bool
+}
+
+func (r *holdAfterFirstByteReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if !r.sent {
+		r.sent = true
+		p[0] = 'x'
+		return 1, nil
+	}
+	close(r.blocked)
+	<-r.release
+	return 0, io.EOF
+}
 
 type failAfterFirstByteReader struct{ sent bool }
 

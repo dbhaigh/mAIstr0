@@ -14,7 +14,7 @@ export type DispatchAttemptStatus = "running" | "succeeded" | "failed";
 export type DeviceKind = "cpu" | "gpu" | "npu";
 export type TelemetryState = "fresh" | "stale" | "unavailable";
 export type DiscoveryAuthentication = "unauthenticated" | "hmac-sha256" | "unavailable";
-export type NodeServiceAction = "start" | "stop" | "restart" | "drain";
+export type NodeServiceAction = "start" | "stop" | "restart" | "drain" | "upgrade";
 export type DashboardTabID = "cluster-tab" | "memory-tab" | "agent-tab";
 
 export interface HardwareDevice {
@@ -109,12 +109,22 @@ export interface SystemUsageSample {
   [property: string]: unknown;
 }
 
+export interface UpgradeStatus {
+  state: "queued" | "starting" | "running" | "restarting" | "rejoining" | "completed" | "failed" | "unknown";
+  phase: string;
+  progress: number;
+  ticket_status: "not_requested" | "requesting" | "ready" | "consumed" | "expired" | "rejected" | "failed";
+  failure_reason?: string;
+  updated_at: DateTimeString;
+}
+
 export interface NodeStatus {
   id: NodeID;
   version: string;
   address: string;
   control_address?: string;
   draining?: boolean;
+  upgrade_status?: UpgradeStatus;
   hardware: NodeHardware;
   models: NodeModel[] | null;
   engines?: EngineStatus[];

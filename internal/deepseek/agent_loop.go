@@ -133,9 +133,7 @@ func (h *Harness) CallModel(ctx context.Context, request deepSeekRequest, _ func
 		},
 	}
 	for _, call := range parsed.ToolCalls {
-		turn.ToolCalls = append(turn.ToolCalls, agent.ToolCall{
-			ID: call.ID, Name: call.Name, Arguments: call.Arguments, RawArgs: call.RawArgs,
-		})
+		turn.ToolCalls = append(turn.ToolCalls, agent.ToolCall(call))
 	}
 	turn.Events = append(turn.Events, agent.StreamEvent{
 		Type: agent.EventNodeOutput, NodeID: request.node.ID, NodeAddr: request.node.Address,

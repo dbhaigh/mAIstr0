@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
+	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
@@ -126,6 +128,139 @@ func TestManifestValidation(t *testing.T) {
 			t.Fatalf("valid darwin/%s manifest rejected: %v", arch, err)
 		}
 	}
+}
+
+func TestUpgradeRequestRequiresOneValidSource(t *testing.T) {
+	tests := []struct {
+		name    string
+		request UpgradeRequest
+		wantErr bool
+	}{
+		{name: "absolute local path", request: UpgradeRequest{Path: filepath.Join(t.TempDir(), "maistr0")}},
+		{name: "paired peer", request: UpgradeRequest{PeerID: "node-2"}},
+		{name: "missing source", wantErr: true},
+		{name: "both sources", request: UpgradeRequest{Path: filepath.Join(t.TempDir(), "maistr0"), PeerID: "node-2"}, wantErr: true},
+		{name: "relative path", request: UpgradeRequest{Path: "maistr0.exe"}, wantErr: true},
+		{name: "blank peer", request: UpgradeRequest{PeerID: " "}, wantErr: true},
+		{name: "padded peer", request: UpgradeRequest{PeerID: " node-2 "}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.request.Validate()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestApplyRequestedUpgradeFailsClosedBeforeRestartIfRejoinUnavailable(t *testing.T) {
+	installed := buildReleaseFixture(t, "9.0.0")
+	candidate := buildReleaseFixture(t, "9.0.1")
+	distribution := Distribution{Executable: installed, Version: "9.0.0"}
+	tests := []struct {
+		name             string
+		prepare          func(context.Context) error
+		wantErr          string
+		wantPhase        string
+		wantProgress     int
+		wantTicketStatus string
+		wantPrepareCalls int
+	}{
+		{
+			name: "missing ticket provider", wantErr: "cannot request a rejoin ticket",
+			wantPhase: "waiting_for_idle", wantProgress: 55, wantTicketStatus: "not_requested",
+		},
+		{
+			name: "ticket request rejected",
+			prepare: func(context.Context) error {
+				return errors.New("orchestrator unavailable")
+			},
+			wantErr:   "prepare trusted rejoin before stopping: orchestrator unavailable",
+			wantPhase: "requesting_rejoin_ticket", wantProgress: 75,
+			wantTicketStatus: "failed", wantPrepareCalls: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			Admission.Thaw()
+			t.Cleanup(Admission.Thaw)
+			var statuses []cluster.UpgradeStatus
+			prepareCalls, idleCalls := 0, 0
+			shutdownCalled := false
+			source := func() Source {
+				current := Source{
+					ReportStatus: func(status cluster.UpgradeStatus) {
+						statuses = append(statuses, status)
+					},
+				}
+				if test.prepare != nil {
+					current.PrepareRejoin = func(ctx context.Context) error {
+						prepareCalls++
+						return test.prepare(ctx)
+					}
+				}
+				return current
+			}
+
+			err := applyRequestedUpgrade(
+				context.Background(), UpgradeRequest{Path: candidate}, distribution, source,
+				func() bool { idleCalls++; return true },
+				func() { shutdownCalled = true },
+				ControllerHandoff{},
+			)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("applyRequestedUpgrade error = %v, want %q", err, test.wantErr)
+			}
+			if idleCalls != 1 || prepareCalls != test.wantPrepareCalls || shutdownCalled {
+				t.Fatalf("upgrade side effects: idle=%d ticket=%d shutdown=%t",
+					idleCalls, prepareCalls, shutdownCalled)
+			}
+			if len(statuses) < 2 {
+				t.Fatalf("upgrade status updates = %+v, want staging and failure", statuses)
+			}
+			last := statuses[len(statuses)-1]
+			if last.State != "failed" || last.Phase != test.wantPhase ||
+				last.Progress != test.wantProgress || last.TicketStatus != test.wantTicketStatus ||
+				!strings.Contains(last.FailureReason, test.wantErr) {
+				t.Fatalf("final upgrade status = %+v", last)
+			}
+			for _, status := range statuses {
+				if status.State == "restarting" {
+					t.Fatalf("upgrade began restarting before rejoin was ready: %+v", statuses)
+				}
+			}
+			if !Admission.Freeze() {
+				t.Fatal("upgrade admission gate remained frozen after the failure")
+			}
+			Admission.Thaw()
+			entries, err := os.ReadDir(filepath.Dir(installed))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".maistr0-update-") {
+					t.Fatalf("failed upgrade left staged executable %q", entry.Name())
+				}
+			}
+		})
+	}
+}
+
+func buildReleaseFixture(t *testing.T, release string) string {
+	t.Helper()
+	extension := ""
+	if runtime.GOOS == "windows" {
+		extension = ".exe"
+	}
+	path := filepath.Join(t.TempDir(), "maistr0-"+release+extension)
+	packagePath := "." + string(filepath.Separator) + filepath.Join("testdata", "helper")
+	command := exec.Command("go", "build", "-ldflags", "-X main.release="+release, "-o", path, packagePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build %s release fixture: %v\n%s", release, err, output)
+	}
+	return path
 }
 
 func TestReplacementLockSerializesConcurrentHelpers(t *testing.T) {

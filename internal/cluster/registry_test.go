@@ -303,6 +303,54 @@ func TestAllUsesCachedSnapshotAndInvalidatesOnWrites(t *testing.T) {
 	}
 }
 
+func TestAllModelSlicesRemainIndependent(t *testing.T) {
+	r := NewRegistry()
+	status := node("models", 10, 10)
+	status.Models = []engine.Model{
+		{Name: "first", Tags: []string{"first"}, Protocols: []string{"first-protocol"}},
+		{Name: "second", Tags: []string{"second"}, Protocols: []string{"second-protocol"}},
+	}
+	r.Upsert(status)
+
+	first := r.All()
+	first[0].Models[0].Tags = append(first[0].Models[0].Tags, "appended")
+	first[0].Models[1].Tags[0] = "caller-mutation"
+	first[0].Models[0].Protocols[0] = "caller-mutation"
+
+	got := r.All()[0].Models
+	if got[0].Tags[0] != "first" || len(got[0].Tags) != 1 ||
+		got[1].Tags[0] != "second" || got[0].Protocols[0] != "first-protocol" {
+		t.Fatalf("mutating model slices in a returned snapshot changed cached data: %+v", got)
+	}
+}
+
+func TestAllPreservesNilAndEmptyModelSlices(t *testing.T) {
+	r := NewRegistry()
+	nilModels := node("nil-models", 10, 10)
+	nilModels.Models = nil
+	emptyModels := node("empty-models", 10, 10)
+	emptyModels.Models = []engine.Model{}
+	r.Upsert(nilModels)
+	r.Upsert(emptyModels)
+
+	statuses := r.All()
+	if len(statuses) != 2 {
+		t.Fatalf("registry returned %d nodes, want 2", len(statuses))
+	}
+	for _, status := range statuses {
+		switch status.ID {
+		case "nil-models":
+			if status.Models != nil {
+				t.Fatalf("nil model slice became non-nil: %#v", status.Models)
+			}
+		case "empty-models":
+			if status.Models == nil {
+				t.Fatal("empty model slice became nil")
+			}
+		}
+	}
+}
+
 func TestSnapshotSinceCoalescesChangesAndReportsRemovals(t *testing.T) {
 	r := NewRegistry()
 	for _, id := range []string{"alpha", "bravo", "charlie", "delta", "echo"} {

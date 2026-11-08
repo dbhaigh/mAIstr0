@@ -5,6 +5,7 @@ package fileguard
 import (
 	"encoding/binary"
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -50,6 +51,59 @@ func HasBroadACL(path string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// RestrictToCurrentUser replaces a file or directory DACL with grants for the
+// current process user and LocalSystem, and disables inherited grants.
+func RestrictToCurrentUser(path string) error {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return fmt.Errorf("read current Windows user: %w", err)
+	}
+	system, err := windows.StringToSid("S-1-5-18")
+	if err != nil {
+		return fmt.Errorf("resolve LocalSystem SID: %w", err)
+	}
+	var pinner runtime.Pinner
+	pinner.Pin(user.User.Sid)
+	pinner.Pin(system)
+	defer pinner.Unpin()
+	entries := []windows.EXPLICIT_ACCESS{
+		{
+			AccessPermissions: windows.GENERIC_ALL,
+			AccessMode:        windows.SET_ACCESS,
+			Trustee: windows.TRUSTEE{
+				TrusteeForm:  windows.TRUSTEE_IS_SID,
+				TrusteeType:  windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
+				TrusteeValue: windows.TrusteeValueFromSID(system),
+			},
+		},
+		{
+			AccessPermissions: windows.GENERIC_ALL,
+			AccessMode:        windows.SET_ACCESS,
+			Trustee: windows.TRUSTEE{
+				TrusteeForm:  windows.TRUSTEE_IS_SID,
+				TrusteeType:  windows.TRUSTEE_IS_USER,
+				TrusteeValue: windows.TrusteeValueFromSID(user.User.Sid),
+			},
+		},
+	}
+	acl, err := windows.ACLFromEntries(entries, nil)
+	if err != nil {
+		return fmt.Errorf("build restricted Windows DACL: %w", err)
+	}
+	if err := windows.SetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		user.User.Sid,
+		nil,
+		acl,
+		nil,
+	); err != nil {
+		return fmt.Errorf("restrict Windows ACL: %w", err)
+	}
+	return nil
 }
 
 func acePrincipal(ace *windows.ACCESS_ALLOWED_ACE) (*windows.SID, bool, error) {

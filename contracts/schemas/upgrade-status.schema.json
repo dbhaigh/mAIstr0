@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/upgrade-status.schema.json",
+  "title": "UpgradeStatus",
+  "type": "object",
+  "required": ["state", "phase", "progress", "ticket_status", "updated_at"],
+  "properties": {
+    "state": {
+      "type": "string",
+      "enum": ["queued", "starting", "running", "restarting", "rejoining", "completed", "failed", "unknown"]
+    },
+    "phase": {"type": "string"},
+    "progress": {"type": "integer", "minimum": 0, "maximum": 100},
+    "ticket_status": {
+      "type": "string",
+      "enum": ["not_requested", "requesting", "ready", "consumed", "expired", "rejected", "failed"]
+    },
+    "failure_reason": {"type": "string"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

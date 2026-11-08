@@ -9,14 +9,18 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
+
+	"github.com/maistr0/maistr0/internal/fileguard"
 )
 
 func TestPairingPINIsSingleUse(t *testing.T) {
@@ -250,7 +254,7 @@ func TestOpenDoesNotPersistPrivateKeyAndMigratesLegacyIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("identity file permissions = %o, want 600", info.Mode().Perm())
 	}
 
@@ -397,6 +401,205 @@ func TestClientTransportPinChangeClosesPooledConnections(t *testing.T) {
 	if response, err := client.Get(server.URL); err == nil {
 		_ = response.Body.Close()
 		t.Fatal("request succeeded against server certificate rejected by the replacement pin")
+	}
+}
+
+func TestRejoinTicketIsNodeBoundDurableAndSingleUse(t *testing.T) {
+	dir := t.TempDir()
+	orchestratorPath := filepath.Join(dir, "orchestrator.json")
+	nodePath := filepath.Join(dir, "node.json")
+	orchestrator, err := Open(orchestratorPath, "orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := Open(nodePath, "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherNode, err := Open(filepath.Join(dir, "other-node.json"), "node-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, peer := range []*Identity{node, otherNode} {
+		if err := orchestrator.TrustPeerDetails(peer.ID(), peer.CertificatePEM(), "node", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := time.Now()
+	token, expiresAt, err := orchestrator.IssueRejoinTicket(node.ID(), now, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !expiresAt.After(now) || expiresAt.After(now.Add(5*time.Minute)) {
+		t.Fatalf("ticket expiry = %s, want within five minutes after %s", expiresAt, now)
+	}
+	persisted, err := os.ReadFile(orchestratorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte(token)) {
+		t.Fatal("orchestrator persisted the raw rejoin bearer token")
+	}
+	var saved identityFile
+	if err := json.Unmarshal(persisted, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.RejoinTickets) != 1 {
+		t.Fatalf("persisted ticket count = %d, want one", len(saved.RejoinTickets))
+	}
+
+	reopenedOrchestrator, err := Open(orchestratorPath, orchestrator.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedNode, err := Open(nodePath, node.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restartedNode.CertificatePEM() == node.CertificatePEM() {
+		t.Fatal("restarted node reused its previous certificate")
+	}
+	if err := reopenedOrchestrator.ConsumeRejoinTicketAndTrust(
+		otherNode.ID(), token, otherNode.CertificatePEM(), "", time.Now(),
+	); !errors.Is(err, ErrRejoinTicketWrongNode) {
+		t.Fatalf("wrong-node ticket result = %v, want ErrRejoinTicketWrongNode", err)
+	}
+
+	if err := reopenedOrchestrator.ConsumeRejoinTicketAndTrust(
+		node.ID(), token, restartedNode.CertificatePEM(), "https://node-a.example:7451", time.Now(),
+	); err != nil {
+		t.Fatalf("consume valid ticket after restart: %v", err)
+	}
+	newCertificate, err := parseCertificate(restartedNode.CertificatePEM())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopenedOrchestrator.IsTrustedCertificate(newCertificate) {
+		t.Fatal("orchestrator did not trust the restarted node certificate")
+	}
+	oldCertificate, err := parseCertificate(node.CertificatePEM())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopenedOrchestrator.IsTrustedCertificate(oldCertificate) {
+		t.Fatal("orchestrator retained the node's previous certificate pin")
+	}
+	if err := reopenedOrchestrator.ConsumeRejoinTicketAndTrust(
+		node.ID(), token, restartedNode.CertificatePEM(), "", time.Now(),
+	); !errors.Is(err, ErrRejoinTicketInvalid) {
+		t.Fatalf("reused ticket result = %v, want ErrRejoinTicketInvalid", err)
+	}
+}
+
+func TestRejoinTicketExpiresAndCannotBeReused(t *testing.T) {
+	orchestrator, err := Open(filepath.Join(t.TempDir(), "orchestrator.json"), "orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := Open(filepath.Join(t.TempDir(), "node.json"), "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrator.TrustPeerDetails(node.ID(), node.CertificatePEM(), "node", ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	token, _, err := orchestrator.IssueRejoinTicket(node.ID(), now, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrator.ConsumeRejoinTicketAndTrust(
+		node.ID(), token, node.CertificatePEM(), "", now.Add(2*time.Second),
+	); !errors.Is(err, ErrRejoinTicketExpired) {
+		t.Fatalf("expired ticket result = %v, want ErrRejoinTicketExpired", err)
+	}
+	if err := orchestrator.ConsumeRejoinTicketAndTrust(
+		node.ID(), token, node.CertificatePEM(), "", now.Add(2*time.Second),
+	); !errors.Is(err, ErrRejoinTicketInvalid) {
+		t.Fatalf("reused expired ticket result = %v, want ErrRejoinTicketInvalid", err)
+	}
+}
+
+func TestPendingRejoinTicketSurvivesRestartInProtectedSidecar(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.json")
+	node, err := Open(path, "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	ticket := PendingRejoinTicket{
+		NodeID: node.ID(), OrchestratorID: "orchestrator",
+		Token: token, ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	if err := node.StorePendingRejoinTicket(ticket); err != nil {
+		t.Fatal(err)
+	}
+	cachePath, err := node.pendingRejoinPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		broad, err := fileguard.HasBroadACL(cachePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if broad {
+			t.Fatal("pending ticket sidecar grants access to a broad Windows principal")
+		}
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("pending ticket sidecar permissions = %o, want 600", info.Mode().Perm())
+	}
+
+	restarted, err := Open(path, node.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, exists, err := restarted.PendingRejoinTicket("orchestrator", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists || got.NodeID != ticket.NodeID || got.OrchestratorID != ticket.OrchestratorID ||
+		got.Token != ticket.Token || !got.ExpiresAt.Equal(ticket.ExpiresAt) {
+		t.Fatalf("reopened pending ticket = %+v, exists %t; want %+v", got, exists, ticket)
+	}
+	if _, exists, err := restarted.PendingRejoinTicket("different-orchestrator", time.Now()); err != nil || exists {
+		t.Fatalf("ticket for another orchestrator = exists %t, error %v; want false, nil", exists, err)
+	}
+	if err := restarted.ClearPendingRejoinTicket("orchestrator", "wrong-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists, err := restarted.PendingRejoinTicket("orchestrator", time.Now()); err != nil || !exists {
+		t.Fatalf("mismatched clear removed pending ticket: exists %t, error %v", exists, err)
+	}
+	if err := restarted.ClearPendingRejoinTicket("orchestrator", token); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists, err := restarted.PendingRejoinTicket("orchestrator", time.Now()); err != nil || exists {
+		t.Fatalf("cleared pending ticket = exists %t, error %v; want false, nil", exists, err)
+	}
+}
+
+func TestPendingRejoinTicketExpiryIsReportedAndRemoved(t *testing.T) {
+	identity, err := Open(filepath.Join(t.TempDir(), "node.json"), "node-expired-ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := PendingRejoinTicket{
+		NodeID: identity.ID(), OrchestratorID: "orchestrator",
+		Token:     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		ExpiresAt: time.Now().Add(time.Minute),
+	}
+	if err := identity.StorePendingRejoinTicket(ticket); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists, err := identity.PendingRejoinTicket("orchestrator", time.Now().Add(2*time.Minute)); exists ||
+		!errors.Is(err, ErrPendingRejoinTicketExpired) {
+		t.Fatalf("expired ticket result = exists %t, error %v; want false and ErrPendingRejoinTicketExpired", exists, err)
 	}
 }
 

@@ -258,11 +258,11 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
 ### Rapid iteration releases
 
 The base source release number is `0.1.1`, a three-component SemVer patch
-release; the current rapid-iteration build is `0.1.1.15`. Patch releases
+release; the current rapid-iteration build is `0.1.1.17`. Patch releases
 increment the third component; minor releases increment the second component
 and reset the patch and optional iteration components. For explicitly
 requested rapid iterations, append/increment a fourth numeric component
-(`0.1.1.1`, ..., `0.1.1.15`). The optional four-component convention is not
+(`0.1.1.1`, ..., `0.1.1.17`). The optional four-component convention is not
 SemVer. Peer manifests accept both three and four components and compare
 components numerically, with an omitted fourth component treated as zero.
 

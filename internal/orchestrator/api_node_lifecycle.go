@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,24 +11,42 @@ import (
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/closeutil"
+	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/selfupdate"
 )
 
 func (s *Server) handleNodeServiceStatus(w http.ResponseWriter, r *http.Request) {
-	s.proxyNodeServiceRequest(w, r, "GET", "status")
+	s.proxyNodeServiceRequest(w, r, "GET", "status", nil)
 }
 
 func (s *Server) handleNodeServiceAction(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("action")
 	switch action {
 	case "start", "stop", "restart", "drain":
+		s.proxyNodeServiceRequest(w, r, http.MethodPost, action, nil)
+	case "upgrade":
+		request, err := httpx.DecodeJSON[selfupdate.UpgradeRequest](w, r, 4<<10)
+		if err != nil {
+			writeError(w, apperr.Invalid(errors.New("invalid upgrade request")))
+			return
+		}
+		if err := request.ValidateSource(); err != nil {
+			writeError(w, apperr.Invalid(err))
+			return
+		}
+		body, err := json.Marshal(request)
+		if err != nil {
+			writeError(w, apperr.InternalError(fmt.Errorf("encode node upgrade request: %w", err)))
+			return
+		}
+		s.proxyNodeServiceRequest(w, r, http.MethodPost, action, body)
 	default:
-		writeError(w, apperr.Invalid(errors.New("action must be start, stop, restart, or drain")))
+		writeError(w, apperr.Invalid(errors.New("action must be start, stop, restart, drain, or upgrade")))
 		return
 	}
-	s.proxyNodeServiceRequest(w, r, http.MethodPost, action)
 }
 
-func (s *Server) proxyNodeServiceRequest(w http.ResponseWriter, r *http.Request, method, operation string) {
+func (s *Server) proxyNodeServiceRequest(w http.ResponseWriter, r *http.Request, method, operation string, body []byte) {
 	node, ok := s.registry.Get(r.PathValue("id"))
 	if !ok {
 		writeError(w, apperr.NotFoundError(errors.New("node not found")))
@@ -37,10 +57,13 @@ func (s *Server) proxyNodeServiceRequest(w http.ResponseWriter, r *http.Request,
 		writeError(w, apperr.UnavailableError(fmt.Errorf("node service controller unavailable: %w", err)))
 		return
 	}
-	request, err := http.NewRequestWithContext(r.Context(), method, address+"/api/service/"+operation, nil)
+	request, err := http.NewRequestWithContext(r.Context(), method, address+"/api/service/"+operation, bytes.NewReader(body))
 	if err != nil {
 		writeError(w, apperr.InternalError(fmt.Errorf("prepare node service request: %w", err)))
 		return
+	}
+	if len(body) != 0 {
+		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := s.nodeClientPort().Do(request)
 	if err != nil {

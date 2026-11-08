@@ -335,19 +335,34 @@ The dashboard's esbuild development dependency remains its build tool.
 Analysis tools were invoked with pinned `go run ...@version` commands; no
 analysis dependency was added to the project.
 
-## Performance findings, not optimizations
+## Measured performance follow-up
 
-Inventory refresh already caches/coalesces work. Snapshot clones and
-generation-aware maps/sorts enforce ownership and freshness; they were not
-removed merely because they allocate.
+The initial inventory identified allocation-heavy paths for measurement; later
+work implemented and characterized focused changes without removing defensive
+ownership copies or changing synchronization and scoring semantics. Full
+methodology and raw comparisons are in
+[performance evaluation](./performance-evaluation.md).
 
-Follow-ups requiring measurement include snapshot JSON encoding and dashboard
-signatures, full memory snapshot scan/sort and byte-limited page serialization,
-trusted-interface status maps, and routing candidate/header normalization.
-Existing snapshot, concurrent streaming, memory-history, and idle-sync
-benchmarks are suitable starting points. No benchmark speedup is claimed.
-The factory map removal is justified by unreachable readers, not speculation
-about a hot path.
+- The 100K memory-page transfer fell from **101,865 to 1,837 allocs/op
+  (-98.20%)** and **500.5 to 354.7 MiB/op (-29.13%)**, with the serialized
+  payload unchanged. `snapshotSince` allocations fell by **70.68–90.62%**
+  across the measured watermark cases.
+- Orchestrator `BuildSnapshot` fell from **591.2 to 514.8 KiB/op** and
+  **1,624 to 619 allocs/op**; node-agent snapshot construction fell from
+  **317.1 to 248.7 KiB/op**. The queued publisher request remains at
+  **0 B/op and 0 allocs/op**.
+- Scheduler assignment with 1,000 candidates fell from **452.8 to 363.7
+  us/op**, **773.2 to 147.9 KiB/op**, and **26 to 24 allocs/op**, retaining
+  deterministic scoring and eligibility rules.
+
+The memory timing samples varied and included slower results after the
+allocation change, so the recorded wins are allocation/byte reductions, not a
+general latency or peak-memory claim. Remaining work should start with the
+controlled-host timing follow-up in the performance evaluation; existing
+copies still protect snapshot ownership and wire-frame isolation. Matched
+binary-size measurements are recorded in the
+[lean baseline](./lean-baseline.md) and show a 4.0–4.3% increase rather than
+no regression.
 
 ## Verification
 
@@ -380,14 +395,54 @@ the baseline. The current focused test subsequently passed twice, and the
 final isolated full native suite passed. No cleanup change was made to mask
 the timing-sensitive failure.
 
-A later Windows run failed `TestListenerWaitReady` because UDP port 7999 was
-already bound while the full WSL race suite ran concurrently. The final native
-suite ran without simultaneous WSL network tests and passed. No unrelated
-processes were terminated.
+A prior Windows run reported a `TestListenerWaitReady` collision while UDP
+port 7999 was already bound. The current test binds to `127.0.0.1:0` and
+checks the assigned ephemeral port; production discovery still uses 7999. The
+final native suite ran without simultaneous WSL network tests and passed. No
+unrelated processes were terminated.
 
-The dashboard build could not run with the installed Linux esbuild binary
-under native Windows. Running the existing installation in WSL succeeded and
-produced byte-identical tracked output; no dependencies were reinstalled.
+A previous WSL dashboard build reproduced the tracked assets. In the latest
+validation, WSL could not use the shared Windows `@esbuild/win32-x64` package;
+the native Windows build succeeded and reproduced `web/static` byte-for-byte.
+No dependencies were reinstalled.
 
 These observations remain operational/test-isolation follow-ups, not proven
 production regressions or reasons to weaken tests.
+
+### Upgrade/rejoin and final validation
+
+The latest validation ran on Windows/amd64 with Go 1.27.3:
+
+- `go build ./...` and `go vet ./...`: passed.
+- `go test -p=1 -count=1 -timeout=180s ./...`: passed.
+- `.\build\test-race.ps1 -GoTestArgs @('-p=1','-count=1','-timeout=180s','./...')`:
+  passed.
+- `go test -short -shuffle=on -count=1 -timeout=120s ./...`: passed.
+- The restart-ticket and two-node upgrade/rejoin integration tests passed.
+- `.\build\build.ps1` passed and produced version `0.1.1.17` for Windows
+  amd64, Linux amd64, Linux arm64, and Ubuntu amd64. The Windows, Linux amd64,
+  and Ubuntu executables reported the expected version; the arm64 binary was
+  cross-compiled. UPX was unavailable, so the binaries are uncompressed.
+- `go generate ./contracts ./internal/scheduler`: passed with no generated
+  fixture drift.
+- `npm --prefix web run build`: passed with byte-identical generated assets.
+  The combined dashboard and workflow Node tests passed (84 tests);
+  `npm --prefix web run typecheck` passed, and the npm audit found zero
+  vulnerabilities.
+- The pinned golangci-lint run reported zero issues; govulncheck found no
+  vulnerabilities; actionlint passed.
+- `python scripts/check_doc_links.py` checked 41 files successfully, and
+  `git diff --check` passed.
+- All 591 tracked and untracked Go files pass gofmt after normalizing Windows
+  CRLF line endings. Four pre-existing formatting differences were normalized
+  in [apperr.go](../internal/apperr/apperr.go),
+  [dispatcher_execution.go](../internal/orchestrator/dispatcher_execution.go),
+  [dispatcher_execution_test.go](../internal/orchestrator/dispatcher_execution_test.go),
+  and [streaming.go](../internal/orchestrator/streaming.go); these edits are
+  formatting-only.
+- A native Windows `go mod tidy -diff` emitted a full `go.sum` diff with
+  `core.autocrlf=true`; Git reports both `go.mod` and `go.sum` unchanged.
+
+The matched release-binary size criterion is not met: the release-style builds
+grew by 4.09% on Linux and 4.33% on Windows. The sizes and methodology are
+recorded in the [lean baseline](./lean-baseline.md).

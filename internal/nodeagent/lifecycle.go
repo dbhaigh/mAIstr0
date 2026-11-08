@@ -6,13 +6,15 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/apperr"
+	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
 
 type lifecycleSnapshot struct {
-	Draining    bool `json:"draining"`
-	ActiveTasks int  `json:"active_tasks"`
-	Idle        bool `json:"idle"`
+	Draining      bool                   `json:"draining"`
+	ActiveTasks   int                    `json:"active_tasks"`
+	Idle          bool                   `json:"idle"`
+	UpgradeStatus *cluster.UpgradeStatus `json:"upgrade_status,omitempty"`
 }
 
 func (a *Agent) SetShutdownHandler(shutdown func()) {
@@ -24,9 +26,10 @@ func (a *Agent) SetShutdownHandler(shutdown func()) {
 func (a *Agent) handleLifecycleStatus(w http.ResponseWriter, _ *http.Request) {
 	cfg := a.configSnapshot()
 	writeJSON(w, http.StatusOK, lifecycleSnapshot{
-		Draining:    cfg.Draining,
-		ActiveTasks: a.activeTaskCount() + a.peerComponent.tasks.ActiveCount(),
-		Idle:        a.UpdateIdle(),
+		Draining:      cfg.Draining,
+		ActiveTasks:   a.activeTaskCount() + a.peerComponent.tasks.ActiveCount(),
+		Idle:          a.UpdateIdle(),
+		UpgradeStatus: a.upgradeStatusSnapshot(),
 	})
 }
 

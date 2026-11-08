@@ -301,6 +301,15 @@ Per-client limits are disabled by default. Set
 enable them. Identity is derived from a hash of `X-API-Key` or `Authorization`,
 or the direct remote address; forwarded-address headers are not trusted.
 
+The concurrent-request limit counts an SSE response for its entire lifetime;
+the slot is released when the stream or request ends. A request over the
+configured limit is rejected before dispatch with HTTP 429 and
+`Retry-After: 1`. This differs from router-generated HTTP 502 after a failed
+attempt exhausts compatible candidates, and HTTP 503 when no compatible
+candidate is available before an attempt. With per-client limits disabled,
+high concurrency can still exhaust node capacity and encounter the latter
+routing failures.
+
 Speculative hedging is also disabled by default. Set
 `speculative_hedging_enabled` to opt in and use `max_concurrent_hedges` to
 bound the extra load (maximum four). See the [API reference](./api.md) for the

@@ -18,7 +18,9 @@ such as Everyone, Authenticated Users, Users, Guests, Interactive, Network,
 and Anonymous, while retaining the current service/user account and SYSTEM.
 For a service installation, preserve its service account instead of assuming
 the interactive user is the owner. Apply the same review to custom identity,
-data, and log paths.
+data, and log paths. The separate short-lived upgrade rejoin-ticket cache is
+restricted to mode 0600 on POSIX and to the current process account and
+LocalSystem on Windows.
 
 ## Pairing a node
 
@@ -32,10 +34,12 @@ data, and log paths.
    its local interface prefixes. The coordinator independently checks the
    actual accepted connection's local and remote addresses against its
    interface prefixes; discovery and DNS alone never authorize membership.
-   After restart, a node with an already trusted orchestrator retries
-   registration in the background without opening a new-join prompt. The
-   dashboard waits for a discovered candidate before prompting for an
-   untrusted pairing.
+   After restart, a node retries registration in the background. With the
+   default same-subnet policy, its new certificate can be paired automatically
+   without a new-join prompt; strict mode or an off-subnet connection still
+   requires the verified fingerprint and PIN. An explicit upgrade can instead
+   use the short-lived rejoin ticket described below. The dashboard waits for
+   a discovered candidate before prompting for an untrusted pairing.
 3. For connections outside those prefixes, or whenever strict verification is
    enabled, enter the orchestrator's HTTPS address, out-of-band verified
    fingerprint, and PIN in the node's **Setup** panel. For unattended
@@ -78,12 +82,13 @@ validation.
 Existing identity files retain their stable node ID and trusted peer roster;
 legacy private-key fields are ignored and removed on the first successful
 startup. Because certificates are regenerated on every process start, peers
-must re-pair with the node after each restart. By default, same-subnet
-auto-pairing is enabled for new joins and re-pairs; turn on strict mode in the
-coordinator's **Pairing access** panel to require the verified fingerprint and
-a valid PIN on every subnet. The global policy is stored in each node's runtime
-settings as peers refresh and is used if a node becomes the coordinator.
-Existing trust remains unchanged when strict mode is enabled.
+must accept the new certificate through the normal pairing policy or the
+authorized upgrade rejoin flow. By default, same-subnet auto-pairing is enabled
+for new joins and re-pairs; turn on strict mode in the coordinator's
+**Pairing access** panel to require the verified fingerprint and a valid PIN
+for every new or changed certificate. The global policy is stored in each
+node's runtime settings as peers refresh and is used if a node becomes the
+coordinator. Existing trust remains unchanged when strict mode is enabled.
 Invitation-accept clients continue to send JSON
 `{"fingerprint":"<verified 64-hex SHA-256>"}`. The compatibility status field
 `auto_join_available` now reports whether a discovered candidate is on a local
@@ -91,14 +96,56 @@ interface prefix and strict mode is disabled. Peer executable updates are now
 opt-in with `--allow-peer-updates`; `--no-peer-updates` wins if both flags are
 present.
 
+## Upgrade and rejoin
+
+The dashboard's **Upgrade** action accepts either an absolute executable path
+on the target node or a currently trusted peer ID. Peer-sourced upgrades remain
+opt-in and require `--allow-peer-updates`. The node fences new work, waits for
+active work to finish, stages and verifies the replacement, then requests a
+rejoin ticket from its current orchestrator over the existing mTLS channel
+before the replacement helper stops the process.
+
+Ticket issuance and use are restricted to a previously trusted node on the
+orchestrator's connected local subnet while strict pairing verification is
+disabled. The ticket is node-ID-bound, single-use, and expires after five
+minutes. The orchestrator durably stores only its SHA-256 digest and expiry;
+the raw token is returned over mTLS and stored in a separate protected local
+cache. After restart, the node presents the ticket together with its freshly
+generated certificate over mTLS. The orchestrator consumes the ticket and
+updates the node's certificate pin atomically; the cluster's normal roster
+refresh propagates the new certificate to other paired nodes.
+
+The running process deliberately does not consume a ticket it has just cached.
+It defers rejoin-ticket use until restart, preventing its own registration loop
+from racing the replacement helper. If the application child is stopped under
+the host service controller, the controller starts it and rechecks that the
+orchestrator is still current before forwarding the upgrade request; the node
+remains responsible for requesting and presenting the ticket. Lifecycle and
+node status updates expose upgrade progress, ticket state, and failure reason
+without exposing the token.
+
+An expired, reused, wrong-node, off-subnet, or strict-mode request is rejected.
+Strict mode continues to require the out-of-band fingerprint and one-use PIN;
+the rejoin ticket does not relax pairing for other nodes or general enrollment.
+If the ticket cannot be issued, the upgrade is not applied. The cache contains
+only the short-lived ticket, never a long-lived private key, and audit events
+record issuance, use, and rejection without logging the token.
+
+The process-level happy path is exercised by
+`go test ./internal/integration -run '^TestUpgradeRejoinTwoNodeLocalCluster$' -count=1 -timeout=5m`;
+it replaces a running node binary, rejoins the local TLS orchestrator, and
+checks the stable node ID, rotated certificate pin, consumed-ticket status,
+and new executable version.
+
 ## Certificates and pin changes
 
 Fingerprint generation is deterministic for the same certificate, and
 fingerprint comparisons are case-insensitive. Each process startup creates a
 fresh local key and certificate while preserving the stable node ID and trusted
 peer roster. The certificate fingerprint therefore changes on every restart;
-peers that pin the previous certificate must be re-paired before accepting the
-new one.
+peers that pin the previous certificate must accept the new one through the
+normal pairing policy or an authorized upgrade rejoin before accepting its
+connections.
 
 Structured security audit events record identity lifecycle, PIN
 generation/verification/consumption, certificate validation, trust changes and

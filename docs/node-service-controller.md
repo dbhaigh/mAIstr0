@@ -3,7 +3,10 @@
 The controller is a mode of the `maistr0` executable, not a second executable.
 The OS service runs `maistr0 controller`; that controller process supervises a
 child `maistr0` process that runs the cluster application. This keeps Start,
-Stop, Restart, and Drain available even when the application child is stopped.
+Stop, Restart, Drain, and Upgrade controls available independently of the
+application child. For an upgrade request while stopped, the controller starts
+the application child and forwards the request after its current orchestrator
+authority is available.
 
 The controller advertises an HTTPS endpoint on TCP port `7453` by default.
 Allow inbound cluster-LAN traffic to that port, plus the normal node API and
@@ -114,13 +117,24 @@ executable, then the service manager starts the new controller mode.
   finish, and then stops the process. A drain that exceeds 30 minutes stays
   draining and reports its error rather than silently accepting new work.
 - **Restart** drains current work before stopping and starting the application.
+- **Upgrade** accepts an absolute executable path on the target node or a
+  trusted peer ID. It stages and verifies the replacement, waits for idle, and
+  obtains the short-lived rejoin ticket before launching the replacement
+  helper. If the application child is stopped, the controller starts it and
+  forwards the request only after the node reports its current orchestrator
+  authority. Service status exposes upgrade phase, progress, ticket state, and
+  failure reason. Peer sources require `--allow-peer-updates`; rejoin is
+  restricted to previously trusted nodes on the connected local subnet with
+  strict pairing verification disabled. See
+  [pairing and security](./pairing-and-security.md#upgrade-and-rejoin).
 
 The dashboard shows these controls for nodes that advertise a controller
 address. If the application is stopped, the controller uses authenticated LAN
 discovery to verify the current elected orchestrator before accepting remote
-start or lifecycle requests. Consequently, a stopped node configured with
-`--no-discovery` cannot be started remotely; start it through the local OS
-service manager or enable discovery in its persistent settings.
+start, lifecycle, or upgrade requests. Consequently, a stopped node configured
+with `--no-discovery` cannot be started or upgraded remotely; start it through
+the local OS service manager or enable discovery in its persistent settings.
 
 `--allow-peer-updates` remains opt-in: it grants paired publishers authority to
-run executable code as the node's account.
+run executable code as the node's account. A local path upgrade does not need
+that setting.

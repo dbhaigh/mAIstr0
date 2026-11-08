@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,85 @@ import (
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/discovery"
 )
+
+func TestMainVersionFlagPrintsVersion(t *testing.T) {
+	stdout, stderr := runMainForTest(t, "--version")
+	if !strings.HasPrefix(stdout, "maistr0 ") || stderr != "" {
+		t.Fatalf("version command output = stdout %q, stderr %q", stdout, stderr)
+	}
+}
+
+func TestMainPrintConfigEntryPoint(t *testing.T) {
+	stdout, stderr := runMainForTest(
+		t, "--print-config", "--role", "node", "--node-listen", ":7553", "--no-browser",
+		"--runtime-config", filepath.Join(t.TempDir(), "runtime.json"),
+	)
+	if stderr != "" {
+		t.Fatalf("print-config stderr: %s", stderr)
+	}
+	var result struct {
+		Node config.NodeConfig `json:"node"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode print-config output: %v\n%s", err, stdout)
+	}
+	if result.Node.ListenAddr != ":7553" || result.Node.AutoOpenBrowser || result.Node.NodeID == "" {
+		t.Fatalf("print-config entry-point result = %+v", result.Node)
+	}
+}
+
+func TestMainDispatchesControllerHelp(t *testing.T) {
+	stdout, stderr := runMainForTest(t, "controller", "--help")
+	if stdout != "" || !strings.Contains(stderr, "Usage of controller:") {
+		t.Fatalf("controller help output = stdout %q, stderr %q", stdout, stderr)
+	}
+}
+
+func TestRunControllerModeRejectsUnexpectedArguments(t *testing.T) {
+	err := runControllerMode([]string{"unexpected"})
+	if err == nil || err.Error() != "unexpected controller arguments: [unexpected]" {
+		t.Fatalf("runControllerMode error = %v, want unexpected-argument rejection", err)
+	}
+}
+
+func runMainForTest(t *testing.T, args ...string) (string, string) {
+	t.Helper()
+	stdoutFile, err := os.CreateTemp(t.TempDir(), "stdout-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrFile, err := os.CreateTemp(t.TempDir(), "stderr-*.txt")
+	if err != nil {
+		_ = stdoutFile.Close()
+		t.Fatal(err)
+	}
+	previousArgs, previousStdout, previousStderr := os.Args, os.Stdout, os.Stderr
+	previousCommandLine := flag.CommandLine
+	defer func() {
+		os.Args, os.Stdout, os.Stderr = previousArgs, previousStdout, previousStderr
+		flag.CommandLine = previousCommandLine
+		_ = stdoutFile.Close()
+		_ = stderrFile.Close()
+	}()
+
+	os.Args = append([]string{"maistr0"}, args...)
+	os.Stdout, os.Stderr = stdoutFile, stderrFile
+	flag.CommandLine = flag.NewFlagSet("maistr0", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(io.Discard)
+	main()
+
+	read := func(file *os.File) string {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	return read(stdoutFile), read(stderrFile)
+}
 
 func TestPrintNormalizedConfigRedactsDiscoveryAndPublisherKeys(t *testing.T) {
 	discoveryKey := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("d", 32)))

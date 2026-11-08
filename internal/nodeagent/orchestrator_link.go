@@ -226,6 +226,7 @@ func (c *orchestratorLink) registrationLoop(ctx context.Context) {
 				logging.Infof("nodeagent", "nodeagent: refusing insecure orchestrator address %q; use https", candidate.address)
 				continue
 			}
+			c.tryPendingRejoin(ctx, candidate)
 			if !c.trust.IsTrustedID(candidate.id) {
 				if pairErr := c.pairOrchestratorContext(ctx, candidate); pairErr != nil {
 					logging.Errorf("nodeagent", "nodeagent: pairing candidate %s failed: %v", candidate.id, pairErr)
@@ -239,6 +240,24 @@ func (c *orchestratorLink) registrationLoop(ctx context.Context) {
 			}
 			request.Header.Set("Content-Type", "application/json")
 			resp, postErr := c.peerClient.Do(request)
+			if postErr == nil && resp != nil &&
+				(resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) &&
+				c.trust.IsTrustedID(candidate.id) {
+				_ = resp.Body.Close()
+				if pairErr := c.pairOrchestratorContext(ctx, candidate); pairErr == nil {
+					request, requestErr = http.NewRequestWithContext(
+						ctx, http.MethodPost, candidate.address+"/api/nodes/register", bytes.NewReader(body),
+					)
+					if requestErr == nil {
+						request.Header.Set("Content-Type", "application/json")
+						resp, postErr = c.peerClient.Do(request)
+					} else {
+						postErr = requestErr
+					}
+				} else {
+					logging.Warnf("nodeagent", "nodeagent: could not refresh pairing with %s after registration rejection: %v", candidate.id, pairErr)
+				}
+			}
 			if postErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				_ = resp.Body.Close()
 				if candidate.role == "orchestrator" {
@@ -281,7 +300,24 @@ func (c *orchestratorLink) registrationLoop(ctx context.Context) {
 		return
 	}
 	register(ctx)
-	background.RunEvery(ctx, 5*time.Second, register)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		case <-c.statusUpdates:
+		}
+		register(ctx)
+	}
+}
+
+func (c *orchestratorLink) requestStatusUpdate() {
+	select {
+	case c.statusUpdates <- struct{}{}:
+	default:
+	}
 }
 
 func (c *orchestratorLink) orchestratorCandidates() []orchestratorCandidate {
@@ -517,7 +553,7 @@ func (c *orchestratorLink) buildSnapshot(ctx context.Context) ([]byte, error) {
 	if c.discoveryListener != nil {
 		discoveryPeers = c.discoveryListener.Snapshot()
 	}
-	nodes := c.state.peersSnapshot()
+	nodes := c.state.peersSnapshotForSerialization()
 	tasks, err := c.currentTasks(ctx)
 	if err != nil {
 		if ctx.Err() != nil {

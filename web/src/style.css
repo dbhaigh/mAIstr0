@@ -638,6 +638,14 @@ main {
 .pairing-dialog::backdrop { background: #050812cc; }
 .pairing-dialog form { margin: 0; }
 .pairing-dialog-actions { display: flex; justify-content: flex-end; gap: 0.65rem; margin-top: 1rem; }
+.upgrade-dialog form { display: grid; gap: 0.8rem; }
+.upgrade-field { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.82rem; }
+.upgrade-field input, .upgrade-field select { min-width: 0; width: 100%; padding: 0.55rem 0.65rem; border: 1px solid #34405e; border-radius: 6px; background: #101625; color: var(--text); font: inherit; }
+.node-upgrade-status { display: grid; gap: 0.25rem; margin-top: 0.7rem; padding: 0.65rem 0.75rem; border-left: 2px solid var(--accent); border-radius: 0 5px 5px 0; background: var(--surface-overlay); line-height: 1.4; overflow-wrap: anywhere; }
+.node-upgrade-status progress { width: 100%; height: 0.45rem; accent-color: var(--accent); }
+.node-upgrade-status small { color: var(--muted); }
+.node-upgrade-failure { margin: 0.15rem 0 0; color: var(--warn); }
+.setup-node-actions { margin-top: 0.65rem; }
 .shard-group-setup-dialog { width: min(680px, calc(100% - 2rem)); max-height: min(90vh, 820px); overflow-y: auto; }
 .shard-group-setup-dialog form { display: grid; gap: 0.8rem; }
 .shard-setup-label { display: grid; gap: 0.3rem; color: var(--muted); font-size: 0.82rem; }

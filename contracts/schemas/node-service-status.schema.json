@@ -7,11 +7,12 @@
   "properties": {
     "running": {"type": "boolean"},
     "desired_running": {"type": "boolean"},
-    "operation": {"type": "string", "enum": ["starting", "stopping", "stop", "drain", "restart"]},
+    "operation": {"type": "string", "enum": ["starting", "stopping", "stop", "drain", "restart", "upgrade-starting", "upgrading", "upgrade-failed", "updating"]},
     "draining": {"type": "boolean"},
     "active_tasks": {"type": "integer", "minimum": 0},
     "control_address": {"type": "string", "format": "uri"},
-    "error": {"type": "string"}
+    "error": {"type": "string"},
+    "upgrade_status": {"$ref": "upgrade-status.schema.json"}
   },
   "additionalProperties": false
 }

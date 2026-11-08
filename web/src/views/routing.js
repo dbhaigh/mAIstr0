@@ -3,7 +3,12 @@ import { dashboardDOM } from "../shared/dom.js";
 import { escapeHtml } from "../shared/format.js";
 import { dashboardState, discoveryList, pairingStatus, routingList } from "../shared/state.js";
 import { SUBTASK_STATES, knownStatus } from "./cluster.js";
-import { attachNodeContextMenu } from "./nodes.js";
+import {
+  attachNodeContextMenu,
+  nodeUpgradeStatus,
+  nodeUpgradeStatusMarkup,
+  openNodeUpgradeDialog,
+} from "./nodes.js";
 
 export function renderRouting(nodes, tasks) {
   if (!routingList) return;
@@ -83,10 +88,11 @@ export function renderRouting(nodes, tasks) {
 function visibleNetworkPeers(peers, nodes, pairingStatus) {
   const visible = new Map((peers || []).map((peer) => [peer.id, peer]));
   for (const node of nodes || []) {
-    if (!node.healthy || visible.has(node.id)) continue;
+    if (visible.has(node.id) || (!node.healthy && !node.control_address)) continue;
     visible.set(node.id, {
       id: node.id, role: "node", peer_addr: node.address, last_seen: node.last_seen,
       orchestrator_id: pairingStatus?.orchestrator_id,
+      offline: !node.healthy,
     });
   }
   if (pairingStatus?.role === "node" && pairingStatus.node_id) {
@@ -133,6 +139,7 @@ export function renderDiscovery(peers, authentication = "unavailable") {
       peer,
       pairing: dashboardState.pairing.status,
       member: dashboardState.nodes.find((node) => node.id === peer.id),
+      upgradeStatus: nodeUpgradeStatus(dashboardState.nodes.find((node) => node.id === peer.id)),
     }),
     renderItem: (p) => {
     const card = document.createElement("div");
@@ -145,6 +152,8 @@ export function renderDiscovery(peers, authentication = "unavailable") {
           : "self"
         : "Not elected";
     const member = p.role === "node" ? dashboardState.nodes.find((node) => node.id === p.id) : null;
+    const upgradeStatus = nodeUpgradeStatus(member);
+    const upgradeInProgress = ["queued", "starting", "running", "restarting", "rejoining"].includes(upgradeStatus?.state);
     const localMember = p.id === dashboardState.pairing.status?.node_id && dashboardState.pairing.status?.joined;
     const joinOrchestrator = p.role === "orchestrator" &&
       dashboardState.pairing.status?.role === "node" && !p.local;
@@ -165,14 +174,17 @@ export function renderDiscovery(peers, authentication = "unavailable") {
         ? `Switch to ${p.id}'s cluster`
         : `Join ${p.id}'s cluster`;
     card.innerHTML = `
-      <h3>${escapeHtml(p.id)} <span class="badge healthy">${escapeHtml(p.role)}</span></h3>
+      <h3>${escapeHtml(p.id)} <span class="badge ${p.offline ? "unhealthy" : "healthy"}">${escapeHtml(p.role)}</span></h3>
       <div class="row"><span>Address</span><span>${escapeHtml(p.peer_addr || p.http_addr || "Address unavailable")}</span></div>
-      ${p.role === "node" ? `<div class="row"><span>Status</span><span>${member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
+      ${p.role === "node" ? `<div class="row"><span>Status</span><span>${p.offline ? "Known cluster member · offline" : member || localMember ? "Visible · cluster member" : "Visible · not a member of this cluster"}${p.local ? " · local node" : ""}</span></div>` : ""}
       <div class="row"><span>Associated orchestrator</span><span>${escapeHtml(associated)}</span></div>
       <div class="row"><span>Last seen</span><span>${p.local ? "This device" : p.last_seen ? new Date(p.last_seen).toLocaleTimeString() : "Online in cluster"}</span></div>
+      ${member ? nodeUpgradeStatusMarkup(member) : ""}
+      ${member?.control_address ? `<div class="node-service-actions"><button class="node-service-action" data-action="upgrade" ${upgradeInProgress ? "disabled" : ""}>Upgrade</button></div>` : ""}
       ${orchestratorTarget ? `<button type="button" class="discovery-join-orchestrator" data-action="join-orchestrator" ${p.peer_addr ? "" : "disabled"}>${escapeHtml(joinLabel)}</button>` : ""}
     `;
     if (p.role === "node") {
+      card.querySelector("[data-action=upgrade]")?.addEventListener("click", () => openNodeUpgradeDialog(member));
       attachNodeContextMenu(card, member || {
         id: p.id,
         address: p.peer_addr || p.http_addr,
@@ -191,5 +203,11 @@ export function renderDiscovery(peers, authentication = "unavailable") {
     }
     return card;
     },
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("maistr0:upgrade-status", () => {
+    renderDiscovery(dashboardState.discovery || [], dashboardState.discoveryAuthentication);
   });
 }

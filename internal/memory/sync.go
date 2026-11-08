@@ -346,27 +346,101 @@ func snapshotSince(snapshot Snapshot, watermarks map[string]uint64) Snapshot {
 		SyncVersion: SyncProtocolVersion,
 		Watermarks:  cloneWatermarks(snapshot.Watermarks),
 	}
+	if allWatermarksZero(watermarks) {
+		filtered.Experiences = append([]Experience(nil), snapshot.Experiences...)
+		filtered.Facts = append([]Fact(nil), snapshot.Facts...)
+		filtered.Performances = append([]Performance(nil), snapshot.Performances...)
+		filtered.Dialogues = append([]DialogueRecord(nil), snapshot.Dialogues...)
+		return filtered
+	}
+
+	totalRecords := len(snapshot.Experiences) + len(snapshot.Facts) +
+		len(snapshot.Performances) + len(snapshot.Dialogues)
+	estimatedRecords := estimateSnapshotDelta(snapshot.Watermarks, watermarks, totalRecords)
+	experienceCapacity := estimateSliceCapacity(len(snapshot.Experiences), totalRecords, estimatedRecords)
 	for _, experience := range snapshot.Experiences {
 		if recordIsNewer(experience.Origin, experience.Sequence, watermarks) {
+			if filtered.Experiences == nil && experienceCapacity != 0 {
+				filtered.Experiences = make([]Experience, 0, experienceCapacity)
+			}
 			filtered.Experiences = append(filtered.Experiences, experience)
 		}
 	}
+	factCapacity := estimateSliceCapacity(len(snapshot.Facts), totalRecords, estimatedRecords)
 	for _, fact := range snapshot.Facts {
 		if recordIsNewer(fact.Origin, fact.Sequence, watermarks) {
+			if filtered.Facts == nil && factCapacity != 0 {
+				filtered.Facts = make([]Fact, 0, factCapacity)
+			}
 			filtered.Facts = append(filtered.Facts, fact)
 		}
 	}
+	performanceCapacity := estimateSliceCapacity(len(snapshot.Performances), totalRecords, estimatedRecords)
 	for _, performance := range snapshot.Performances {
 		if recordIsNewer(performance.Origin, performance.Sequence, watermarks) {
+			if filtered.Performances == nil && performanceCapacity != 0 {
+				filtered.Performances = make([]Performance, 0, performanceCapacity)
+			}
 			filtered.Performances = append(filtered.Performances, performance)
 		}
 	}
+	dialogueCapacity := estimateSliceCapacity(len(snapshot.Dialogues), totalRecords, estimatedRecords)
 	for _, dialogue := range snapshot.Dialogues {
 		if recordIsNewer(dialogue.Origin, dialogue.Sequence, watermarks) {
+			if filtered.Dialogues == nil && dialogueCapacity != 0 {
+				filtered.Dialogues = make([]DialogueRecord, 0, dialogueCapacity)
+			}
 			filtered.Dialogues = append(filtered.Dialogues, dialogue)
 		}
 	}
 	return filtered
+}
+
+func allWatermarksZero(watermarks map[string]uint64) bool {
+	for _, sequence := range watermarks {
+		if sequence != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Sequence deltas guide capacity only; recordIsNewer remains the filtering authority.
+func estimateSnapshotDelta(snapshotWatermarks, watermarks map[string]uint64, totalRecords int) int {
+	remaining := 0
+	for origin, snapshotSequence := range snapshotWatermarks {
+		if snapshotSequence <= watermarks[origin] {
+			continue
+		}
+		available := totalRecords - remaining
+		delta := snapshotSequence - watermarks[origin]
+		if delta >= uint64(available) {
+			return totalRecords
+		}
+		remaining += int(delta)
+	}
+	return remaining
+}
+
+func estimateSliceCapacity(recordCount, totalRecords, estimatedRecords int) int {
+	if recordCount == 0 || totalRecords == 0 || estimatedRecords == 0 {
+		return 0
+	}
+	if estimatedRecords >= totalRecords {
+		return recordCount
+	}
+	capacity := int(float64(recordCount) * float64(estimatedRecords) / float64(totalRecords))
+	if capacity == 0 {
+		capacity = 1
+	}
+	maxCapacity := recordCount / 10
+	if maxCapacity == 0 {
+		maxCapacity = 1
+	}
+	if capacity > maxCapacity {
+		return maxCapacity
+	}
+	return capacity
 }
 
 func recordIsNewer(origin string, sequence uint64, watermarks map[string]uint64) bool {

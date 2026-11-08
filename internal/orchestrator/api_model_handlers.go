@@ -268,12 +268,6 @@ func (s *Server) modelInventorySnapshot(backend agent.Backend) modelInventorySna
 	})
 }
 
-// listClusterModels returns the cached inventory. Callers must treat the
-// returned models and their nested slices as immutable.
-func (s *Server) listClusterModels(backend agent.Backend) []agent.ModelInfo {
-	return s.modelInventorySnapshot(backend).models
-}
-
 func (s *Server) modelListingsPage(request modelListRequest, resource string, includeConfigured bool) (modelListPage, error) {
 	if s.registry == nil {
 		return modelListPage{}, fmt.Errorf("cluster model registry is unavailable")

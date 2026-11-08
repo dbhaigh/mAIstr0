@@ -142,8 +142,13 @@ func TestListenerWaitReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	listener.mu.RLock()
-	address := listener.conn.LocalAddr().String()
+	localAddress := listener.conn.LocalAddr()
 	listener.mu.RUnlock()
+	udpAddress, ok := localAddress.(*net.UDPAddr)
+	if !ok || udpAddress.Port == 0 || udpAddress.Port == Port {
+		t.Fatalf("loopback test listener address = %v, want an assigned ephemeral UDP port", localAddress)
+	}
+	address := udpAddress.String()
 	sender, err := net.Dial("udp4", address)
 	if err != nil {
 		t.Fatal(err)

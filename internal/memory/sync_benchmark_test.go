@@ -11,6 +11,8 @@ import (
 	"github.com/maistr0/maistr0/internal/closeutil"
 )
 
+var snapshotSinceBenchmarkResult Snapshot
+
 func benchmarkHistorySnapshot(count int) Snapshot {
 	const origin = "benchmark"
 	snapshot := Snapshot{
@@ -166,9 +168,35 @@ func BenchmarkMemoryHistoryPageTransfer(b *testing.B) {
 					cursor = next
 				}
 			}
+
 			b.StopTimer()
 			b.ReportMetric(float64(fixture.count), "records/op")
 			b.ReportMetric(float64(len(snapshotBody)), "snapshot-bytes")
+		})
+	}
+}
+
+func BenchmarkSnapshotSince(b *testing.B) {
+	for _, fixture := range []struct {
+		name  string
+		count int
+	}{{"10K", 10_000}, {"100K", 100_000}} {
+		snapshot := benchmarkHistorySnapshot(fixture.count)
+		b.Run(fixture.name, func(b *testing.B) {
+			for _, consumed := range []int{0, 90, 99, 100} {
+				b.Run(strconv.Itoa(consumed)+"PercentConsumed", func(b *testing.B) {
+					watermarks := map[string]uint64{
+						"benchmark": uint64(fixture.count * consumed / 100),
+					}
+					b.ReportAllocs()
+					b.ReportMetric(float64(fixture.count), "records/op")
+					b.ReportMetric(float64(fixture.count*(100-consumed)/100), "selected/op")
+					b.ResetTimer()
+					for range b.N {
+						snapshotSinceBenchmarkResult = snapshotSince(snapshot, watermarks)
+					}
+				})
+			}
 		})
 	}
 }

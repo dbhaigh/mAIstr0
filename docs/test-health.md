@@ -2,7 +2,8 @@
 
 ## Changes
 
-- Discovery listener tests bind to `127.0.0.1:0` and use the listener's assigned
+- Discovery listener tests bind to `127.0.0.1:0`; `TestListenerWaitReady`
+  verifies the assigned ephemeral port and uses the listener's assigned
   address. Beacon tests inject interface routes and use an ephemeral UDP socket.
   Production discovery continues to use UDP port 7999 and its existing retry
   intervals. The mutable package-level interface-address test hook was replaced
@@ -23,6 +24,15 @@ No test listener still binds a fixed port. Discovery and beacon listener tests
 use ephemeral addresses. Fixed localhost ports in tests are request fixtures,
 expected configuration values, or protocol examples rather than bound
 listeners. Production discovery's port 7999 is unchanged.
+
+### Focused lifecycle coverage
+
+After adding upgrade, rejoin, and CLI entry-point characterization, statement
+coverage is 39.7% for `internal/selfupdate` (30.1% before these additions),
+35.8% for `cmd/maistr0` (27.4% before), and 61.7% for `internal/nodeagent`
+(61.5% before). In `internal/nodeagent`, `prepareRejoinTicket` is 70.6% and
+`tryPendingRejoin` is 54.0%. The full `internal/orchestrator` package is 74.7%;
+its rejoin ticket and rejoin handlers are 59.3% and 58.9%, respectively.
 
 ### Sleeps
 

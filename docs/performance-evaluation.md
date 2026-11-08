@@ -30,6 +30,30 @@ Do not extrapolate these numbers to token generation, GPU performance, WAN
 latency, or another host. No scheduler algorithm or inference transport was
 changed.
 
+## Scheduler assignment
+
+The large-candidate assignment path now keeps its healthy-node list as ordered
+pointers into the input snapshot rather than copying each full
+`cluster.NodeStatus`. It preserves candidate order, scoring and eligibility,
+including first-candidate selection on equal scores. A full healthy-node value
+slice is materialized only when an unassignable-subtask error needs NPU
+rejection details. Public scheduler signatures and the scorer's stable-snapshot
+expectation are unchanged.
+
+On the shared Windows/amd64 host (Go 1.27.3, Ryzen AI 9 HX 370, `-cpu=24`),
+10-sample `benchstat` comparison for 1,000 nodes with one model each measured
+**452.8 -> 363.7 us/op** (-19.7%), **773.2 -> 147.9 KiB/op** (-80.9%), and
+**26 -> 24 allocs/op** (-7.7%). The initial allocation profile attributed
+5.98 GB of 7.50 GB sampled allocation to constructing the copied healthy-node
+slice. A new 100-node / 10-models-per-node case measured 162.1 us/op,
+15.12 KiB/op, and 22 allocs/op after the change; it has no before comparison.
+These synthetic candidate scans do not represent production traffic.
+
+The before command was
+`go test ./internal/scheduler -run '^$' -bench '^BenchmarkAssignWithExperienceNodeModels$' -benchmem -count=10 -benchtime=200ms -cpu=24`;
+the after run used the same flags and also included
+`BenchmarkAssignWithExperienceManyModelsPerNode`.
+
 ## Evidence and environment
 
 - [Main results and all 260 original samples](./performance-evaluation.json):
@@ -441,3 +465,106 @@ in-use-heap profiles for each selected workload:
 
 The Linux race run was unavailable: the available Ubuntu WSL distribution has
 no Go executable, and no toolchain was installed for this task.
+
+### Large memory sync allocation follow-up
+
+The page-transfer path now reuses its local record slice as pager scratch and
+counts each record's JSON size with a reusable encoder instead of retaining a
+fresh `json.Marshal` byte slice. `snapshotSince` uses watermark deltas only as
+bounded capacity hints; record filtering still follows `recordIsNewer`. An
+all-zero request watermark takes an equivalent full-copy path because every
+record qualifies. Unsupported peer versions still use the existing full
+snapshot fallback.
+
+On Windows/amd64 with Go 1.27.3 (AMD Ryzen AI 9 HX 370), ten samples at
+`-benchtime=200ms -cpu=2` showed the following allocation changes versus the
+baseline. `benchstat` reported `p<0.001` for each changed allocation metric:
+
+- **100K complete page transfer:** **101.865K -> 1.837K allocs/op (-98.20%)**
+  and **500.5 -> 354.7 MiB/op (-29.13%)**. The serialized snapshot remained
+  **23,666,798 bytes**. This benchmark assembles and JSON-marshals every
+  bounded page in process; it does not measure task-history HTTP or network
+  transfer.
+- **100K `snapshotSince`, 0% consumed:** **148.38 -> 25.18 MiB/op (-83.03%)**
+  and **32 -> 3 allocs/op (-90.62%)**.
+- **100K `snapshotSince`, 90% consumed:** **12.974 -> 2.524 MiB/op (-80.55%)**
+  and **22 -> 3 allocs/op (-86.36%)**.
+- **100K `snapshotSince`, 99% consumed:** **901.3 -> 264.2 KiB/op (-70.68%)**
+  and **14 -> 3 allocs/op (-78.57%)**.
+- **100K `snapshotSince`, 100% consumed:** unchanged at **256 B/op and
+  2 allocs/op**.
+
+Wall-time results were not consistent across runs on this shared Windows host,
+so no latency improvement is claimed. The latest separate comparison measured
+the 100K page transfer at **201.8 -> 456.3 ms/op (+126%, p<0.001)**, while
+another run of the same final code measured **272.8 ms/op**; an earlier
+unchanged-path control also had high variance. For 100K `snapshotSince`, the
+latest comparison measured **19.384 -> 8.963 ms/op (-53.76%)** at 0% consumed,
+**2.241 -> 3.350 ms/op (+49.51%)** at 90%, **951.1 us -> 2.715 ms/op
+(+185.46%)** at 99%, and **849.9 us -> 2.685 ms/op (+215.90%)** at 100%.
+Treat these timings as a potential regression and re-run on a controlled host
+before drawing a latency conclusion; the stable allocation/byte reductions
+above are the measured gains.
+
+The after measurements are reproducible with:
+
+```powershell
+go test ./internal/memory -run '^$' -bench '^BenchmarkMemoryHistoryPageTransfer/100K$' `
+  -benchmem -count=10 -benchtime=200ms -cpu=2
+go test ./internal/memory -run '^$' -bench '^BenchmarkSnapshotSince$' `
+  -benchmem -count=10 -benchtime=200ms -cpu=2
+```
+
+### Orchestrator and node snapshot allocation follow-up
+
+The orchestrator now avoids building a node lookup map when there are no shard
+plans and stores dashboard inventory entries by value. Registry snapshots batch
+model, tag, and protocol clones while retaining the existing defensive-copy
+behavior, including nil versus empty slices and append isolation. The node agent
+serializes a read-only view of its copy-on-replace peer slice; `Agent.Peers()`
+continues to return a separate top-level slice. SSE fields and JSON frame sizes
+did not change, and the queued publisher implementation was not changed.
+
+Ten unprofiled samples on Windows/amd64 with Go 1.27.3 (`-benchtime=200ms
+-cpu=2`) were compared with `benchstat`:
+
+- **Orchestrator `BuildSnapshot`** (100 nodes, four models each, 50 tasks):
+  **591.2 -> 514.8 KiB/op (-12.91%, p<0.001)** and
+  **1,624 -> 619 allocs/op (-61.88%, p<0.001)**. Frame size remained
+  statistically unchanged (**p=0.721**). Time was also statistically
+  unchanged (**p=0.075**).
+- **Synchronous publication baseline:** **791.5 -> 714.0 KiB/op
+  (-9.79%, p<0.001)** and **1,644 -> 642 allocs/op (-60.95%, p<0.001)**.
+- **Queued publisher request:** remained at **0 B/op and 0 allocs/op**;
+  request time was statistically unchanged (**p=0.481**). The no-subscriber
+  publish path also remained allocation-free.
+- **Node-agent `BuildSnapshot`** (same 100-node/four-model/50-task fixture):
+  **317.1 -> 248.7 KiB/op (-21.57%, p<0.001)** and
+  **457 -> 456 allocs/op (p=0.001)**. The **145.2 KiB** frame size was
+  statistically unchanged (**p=0.833**). Time was statistically unchanged
+  (**p=0.481**).
+- The isolated 100-node registry `All` benchmark (one model per node) reduced
+  **501 -> 204 allocs/op (-59.28%, p<0.001)**; allocated bytes rose slightly,
+  **99.94 -> 100.75 KiB/op (+0.81%, p<0.001)**. This microbenchmark does not
+  show a byte reduction for the registry helper by itself.
+
+Only allocation reductions are claimed for the snapshot paths. Timing varied
+between identical comparisons: synchronous publication was statistically
+unchanged in one run (**p=0.190**) and measured **804.0 -> 782.3 us/op
+(-2.69%, p=0.002)** in this final run. The after profiles show JSON encoding
+and task deep copies are still substantial costs; they were left intact to
+preserve frame ownership and task snapshot isolation. The benchmark fixture is
+synthetic and does not include inference or network latency.
+
+Reproduce the after measurements with:
+
+```powershell
+go test ./internal/orchestrator -run '^$' `
+  -bench '^(BenchmarkBuildSnapshot|BenchmarkPublishSnapshotRequests)$' `
+  -benchmem -count=10 -benchtime=200ms -cpu=2
+go test ./internal/nodeagent -run '^$' -bench '^BenchmarkBuildSnapshot$' `
+  -benchmem -count=10 -benchtime=200ms -cpu=2
+go test ./internal/cluster -run '^$' `
+  -bench '^BenchmarkRegistrySnapshot100Nodes/All$' `
+  -benchmem -count=10 -benchtime=200ms -cpu=2
+```

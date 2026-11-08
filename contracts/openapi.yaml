@@ -310,6 +310,39 @@ paths:
         "200": {description: Join a cluster}
         "401": {description: Missing, expired, reused, or invalid PIN when verification is required}
         "403": {description: Missing client TLS proof or certificate substitution}
+  /api/pairing/rejoin-ticket:
+    post:
+      description: >-
+        Issue a five-minute, single-use ticket only to a currently trusted node
+        on the same connected subnet when strict pairing verification is off.
+        The orchestrator persists only a ticket digest and audits issuance.
+        Ticket issuance requires the node's current trusted mTLS certificate.
+      responses:
+        "200":
+          description: Short-lived ticket bound to the authenticated node ID
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RejoinTicket"}
+        "403": {description: Node is not previously trusted, is outside the local subnet, or strict pairing verification is enabled}
+        "500": {description: Ticket could not be durably persisted}
+  /api/pairing/rejoin:
+    post:
+      description: >-
+        Restore trust after an authorized upgrade. The node ID and certificate
+        must match the new mTLS client leaf; the ticket is node-bound, expires
+        after five minutes, and is consumed atomically with the trust update.
+        Strict verification and same-subnet checks remain enforced. The
+        response includes the current paired-peer roster for refresh.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RejoinRequest"}
+      responses:
+        "200": {description: Trust restored and paired peer roster returned}
+        "400": {description: Invalid rejoin request or certificate}
+        "403": {description: Ticket, node identity, strict-mode, or subnet check rejected the request}
+        "500": {description: Trust update could not be durably persisted}
   /api/pairing/status:
     get:
       responses:
@@ -511,15 +544,47 @@ paths:
       - name: action
         in: path
         required: true
-        schema: {type: string, enum: [start, stop, restart, drain]}
+        schema: {type: string, enum: [start, stop, restart, drain, upgrade]}
     post:
       summary: Control a node host process
-      description: Drain rejects new inference work, waits for current work to finish, then stops the process. Restart drains before replacement.
+      description: >-
+        Drain rejects new inference work, waits for current work to finish, then
+        stops the process. Restart drains before replacement. Upgrade accepts an
+        absolute path on the target node or a trusted peer ID; peer sources
+        require peer updates to be enabled. If the application child is stopped,
+        the host controller starts it and forwards the request after its current
+        orchestrator authority is ready.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UpgradeRequest"}
       responses:
         "202": {description: Lifecycle operation accepted}
-        "400": {description: Unsupported lifecycle action}
-        "409": {description: Node is not running or another lifecycle operation is active}
+        "400": {description: Unsupported lifecycle action or invalid upgrade source}
+        "403": {description: Peer updates are disabled or rejoin policy does not permit automatic trust restoration}
+        "409": {description: Another lifecycle operation or upgrade is active}
         "502": {description: Host controller is unavailable}
+  /api/upgrade:
+    post:
+      summary: Queue a local node binary upgrade
+      description: >-
+        Accept an absolute target-local executable path or an already paired
+        peer ID. Peer sources use the existing peer-update policy. Before
+        stopping, the node requests a short-lived rejoin ticket over mTLS and
+        stores it in a protected local cache; the upgrade is not applied if
+        ticket issuance fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UpgradeRequest"}
+      responses:
+        "202": {description: Upgrade queued}
+        "400": {description: Invalid upgrade source}
+        "403": {description: Caller is not the current orchestrator or peer updates are disabled}
+        "409": {description: Another upgrade is queued}
+        "503": {description: Upgrade service is unavailable}
   /api/nodes/{id}/engines:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -1605,10 +1670,39 @@ components:
       $ref: "./schemas/assignment-explanation.schema.json"
     NodeStatus:
       $ref: "./schemas/node-status.schema.json"
+    UpgradeStatus:
+      $ref: "./schemas/upgrade-status.schema.json"
     RuntimeSettings:
       $ref: "./schemas/runtime-settings.schema.json"
     NodeServiceStatus:
       $ref: "./schemas/node-service-status.schema.json"
+    UpgradeRequest:
+      $ref: "./schemas/upgrade-request.schema.json"
+    RejoinTicket:
+      type: object
+      required: [node_id, orchestrator_id, ticket, expires_at]
+      properties:
+        node_id: {type: string}
+        orchestrator_id: {type: string}
+        ticket:
+          type: string
+          description: Single-use bearer secret; never log or display it.
+        expires_at: {type: string, format: date-time}
+      additionalProperties: false
+    RejoinRequest:
+      type: object
+      required: [id, certificate_pem, ticket]
+      properties:
+        id: {type: string, minLength: 1}
+        peer_addr:
+          type: string
+          format: uri
+          description: Optional HTTPS address advertised by the rejoined node.
+        certificate_pem: {type: string}
+        ticket:
+          type: string
+          description: Single-use node-bound ticket from the same orchestrator.
+      additionalProperties: false
     StageAssignment:
       $ref: "./schemas/stage-assignment.schema.json"
     StageForwardFrame:
@@ -1701,6 +1795,8 @@ components:
       additionalProperties: false
 x-maistr0-registered-routes:
   - "orchestrator|POST /api/pairing/join"
+  - "orchestrator|POST /api/pairing/rejoin-ticket"
+  - "orchestrator|POST /api/pairing/rejoin"
   - "orchestrator|GET /api/pairing/status"
   - "orchestrator|GET /api/pairing/policy"
   - "orchestrator|PATCH /api/pairing/policy"
@@ -1820,6 +1916,7 @@ x-maistr0-registered-routes:
   - "node|GET /api/status"
   - "node|GET /api/pairing/status"
   - "node|POST /api/pairing/connect"
+  - "node|POST /api/upgrade"
   - "node|POST /api/pairing/invitation"
   - "node|GET /api/pairing/invitation"
   - "node|POST /api/pairing/invitation/accept"

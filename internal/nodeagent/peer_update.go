@@ -1,11 +1,26 @@
 package nodeagent
 
 import (
+	"context"
+	"time"
+
 	"github.com/maistr0/maistr0/internal/selfupdate"
 )
 
 func (a *Agent) UpdateSource() selfupdate.Source {
-	result := selfupdate.Source{Identity: a.ClusterIdentity()}
+	result := selfupdate.Source{
+		Identity:      a.ClusterIdentity(),
+		PrepareRejoin: a.orchestratorLink.prepareRejoinTicket,
+		ReportStatus:  a.setUpgradeStatus,
+		ClearRejoin: func(ctx context.Context) error {
+			orchestratorID := a.getOrchestratorID()
+			ticket, exists, err := a.identityComponent.PendingRejoinTicket(orchestratorID, time.Now())
+			if err != nil || !exists {
+				return err
+			}
+			return a.identityComponent.ClearPendingRejoinTicket(orchestratorID, ticket.Token)
+		},
+	}
 	for _, peer := range a.peerComponent.peerSnapshot() {
 		if peer.ID != a.ID() && peer.Healthy {
 			result.Peers = append(result.Peers, selfupdate.Peer{ID: peer.ID, Address: peer.Address})

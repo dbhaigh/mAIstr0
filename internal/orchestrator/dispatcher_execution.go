@@ -25,17 +25,17 @@ import (
 type dispatchPhase string
 
 const (
-	dispatchPhaseDependencyWait       dispatchPhase = "dependency_wait"
-	dispatchPhaseAttemptBudget        dispatchPhase = "attempt_budget"
-	dispatchPhaseRetryAssignment      dispatchPhase = "retry_assignment"
-	dispatchPhaseRetryPersistence     dispatchPhase = "retry_persistence"
-	dispatchPhaseDispatchContext      dispatchPhase = "dispatch_context"
-	dispatchPhaseNodeSelection        dispatchPhase = "node_selection"
-	dispatchPhaseCapacityReservation  dispatchPhase = "capacity_reservation"
-	dispatchPhaseSubtaskStart         dispatchPhase = "subtask_start"
-	dispatchPhaseSubtaskInput         dispatchPhase = "subtask_input"
-	dispatchPhaseExecution            dispatchPhase = "execution"
-	dispatchPhaseRetryBackoff         dispatchPhase = "retry_backoff"
+	dispatchPhaseDependencyWait      dispatchPhase = "dependency_wait"
+	dispatchPhaseAttemptBudget       dispatchPhase = "attempt_budget"
+	dispatchPhaseRetryAssignment     dispatchPhase = "retry_assignment"
+	dispatchPhaseRetryPersistence    dispatchPhase = "retry_persistence"
+	dispatchPhaseDispatchContext     dispatchPhase = "dispatch_context"
+	dispatchPhaseNodeSelection       dispatchPhase = "node_selection"
+	dispatchPhaseCapacityReservation dispatchPhase = "capacity_reservation"
+	dispatchPhaseSubtaskStart        dispatchPhase = "subtask_start"
+	dispatchPhaseSubtaskInput        dispatchPhase = "subtask_input"
+	dispatchPhaseExecution           dispatchPhase = "execution"
+	dispatchPhaseRetryBackoff        dispatchPhase = "retry_backoff"
 )
 
 type dispatchFailure struct {

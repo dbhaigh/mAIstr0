@@ -182,7 +182,11 @@ func TestTrustedCertificateFingerprintComparisonIsCaseInsensitive(t *testing.T) 
 		t.Fatal("uppercase stored fingerprint did not match the same certificate")
 	}
 	local, remote := net.Pipe()
-	defer remote.Close()
+	defer func() {
+		if err := remote.Close(); err != nil {
+			t.Errorf("close remote pipe: %v", err)
+		}
+	}()
 	tracked, err := identity.TrackPinnedPeerConnection(peer.certificate.Leaf, local)
 	if err != nil {
 		t.Fatalf("uppercase stored fingerprint rejected a pinned connection: %v", err)

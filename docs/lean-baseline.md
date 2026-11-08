@@ -72,6 +72,31 @@ linker settings:
 | Linux/amd64 | 20,327,144 bytes (19.39 MiB) |
 | Windows/amd64 | 20,882,944 bytes (19.92 MiB) |
 
+A later matched rebuild of revision `2f77419` and the current worktree used
+Go 1.27.3, `CGO_ENABLED=0`, and `GOARCH=amd64`. The matched baseline rebuild
+was about 13 KiB larger than the historical measurements above, so the
+comparison below uses the rebuilt baseline on both sides. Release-style sizes
+use the repository's `-trimpath` setting and stripped linker arguments
+`-s -w -X github.com/maistr0/maistr0/internal/version.Value=0.1.1.16`, without
+UPX.
+
+| Target/build | Matched baseline | Current worktree | Change |
+|---|---:|---:|---:|
+| Linux/amd64, default | 20,340,528 bytes | 21,157,796 bytes | +817,268 (+4.02%) |
+| Windows/amd64, default | 20,896,256 bytes | 21,795,840 bytes | +899,584 (+4.31%) |
+| Linux/amd64, release-style | 14,110,880 bytes | 14,688,416 bytes | +577,536 (+4.09%) |
+| Windows/amd64, release-style | 14,644,224 bytes | 15,278,592 bytes | +634,368 (+4.33%) |
+
+The binary-size no-regression check did **not** pass: the current worktree is
+about 4.0–4.3% larger in these matched builds. The earlier baseline table
+remains the original historical observation; the exact matched-build
+comparison is the evidence for the current result.
+
+After the version bump to `0.1.1.17`, `.\build\build.ps1` reproduced the
+uncompressed release-style amd64 sizes exactly: 14,688,416 bytes for Linux
+and 15,278,592 bytes for Windows. UPX was not installed, so these are
+uncompressed executable sizes; the matched-baseline regressions above remain.
+
 `go list -deps ./cmd/maistr0` reported **272 packages** on Windows/amd64,
 including the standard library. `internal/consensus` is not in that command's
 dependency graph. Comparing the whole repository package graph with and
@@ -156,8 +181,11 @@ compatibility benchmark also failed all 10 samples with local worker
 connection-refused errors. The isolated one-iteration runs passed. Failure logs
 are retained as [router](./bench-baseline/streaming-initial-failure.txt) and
 [compatibility](./bench-baseline/streaming-compat-failure.txt) diagnostics.
-Treat this as a benchmark/load reliability and overload-contract question, not
-as a proven production regression.
+The router overload contract is now characterized: a configured per-client
+concurrency cap returns 429 for the lifetime of a stream, while this 502
+message indicates that a failed attempt exhausted compatible candidates.
+The sustained-load result remains a benchmark/capacity follow-up, not a proven
+production regression; see [router controls](./configuration.md#router-controls).
 
 CPU and heap profiles used the existing synthetic `httptest` benchmark
 workloads; heap observations below use pprof's `alloc_space` sample index. The
@@ -174,6 +202,27 @@ These are instrumented profiles across synthetic sub-benchmarks; profile
 percentages are not uninstrumented production shares. Full top tables are in
 [profile-tops.txt](./bench-baseline/profile-tops.txt).
 
+### Follow-up optimization measurements
+
+The later work reduced allocations in memory transfer, snapshot construction,
+and large scheduler candidate scans. Detailed commands, fixtures, and caveats
+are in [performance evaluation](./performance-evaluation.md).
+
+- The 100K memory-page transfer fell from **101,865 to 1,837 allocs/op
+  (-98.20%)** and **500.5 to 354.7 MiB/op (-29.13%)**; the serialized payload
+  remained 23,666,798 bytes. `snapshotSince` allocation reductions ranged
+  from **70.68% to 90.62%**, depending on the consumed watermark.
+- Orchestrator `BuildSnapshot` fell from **591.2 to 514.8 KiB/op** and
+  **1,624 to 619 allocs/op**. Node-agent snapshot construction fell from
+  **317.1 to 248.7 KiB/op**. The queued publisher request remained at
+  **0 B/op and 0 allocs/op**.
+- Scheduler assignment with 1,000 candidates fell from **452.8 to 363.7
+  us/op**, **773.2 to 147.9 KiB/op**, and **26 to 24 allocs/op**.
+
+These are synthetic benchmark results. Memory timing samples were inconsistent,
+including slower samples after the allocation change, so the allocation wins
+are not a general latency claim. No peak-memory reduction is claimed.
+
 ## Test health
 
 - `go test -shuffle=on -count=3 ./...`: passed on Windows/amd64; no flaky or
@@ -184,11 +233,10 @@ percentages are not uninstrumented production shares. Full top tables are in
   `~/.local/go1.27.3/bin/go` toolchain; no toolchain was installed.
 - `go build ./...`, `go vet ./...`, and `node --test web/app_test.js`: passed;
   the Node suite reported 61 passing tests.
-- A test binds a fixed UDP port: `internal/discovery/discovery_test.go`'s
-  `TestListenerWaitReady` uses the discovery listener on UDP port 7999.
-  TCP test listeners found by the scan use `127.0.0.1:0`. The prior
-  [cleanup inventory](./cleanup-inventory.md) records a Windows collision on
-  UDP 7999; the current shuffled run passed.
+- The baseline identified a fixed-port risk in
+  `internal/discovery/discovery_test.go`. `TestListenerWaitReady` now binds to
+  `127.0.0.1:0` and verifies the assigned ephemeral UDP port; production
+  discovery continues to use port 7999.
 - There are 23 direct `time.Sleep` calls in Go `*_test.go` files; the longest
   literal delay is 50 ms. The supervisor fake-engine fixture is an exception
   outside `*_test.go`: its `tree` mode sleeps 150 ms and its `waitForever`
@@ -205,8 +253,8 @@ before changing implementation.
 |---:|---|---|---|
 | 1 | Memory sync materializes/copies substantial history: 100K page request is 307.7 ms, 588.3 MiB, and 4.696M allocations; the HTTP sync allocation profile attributes 60.77% to `snapshotSince`. | High latency/GC reduction | High |
 | 2 | Large paged transfers amplify work: 10K transfer is 19.52 ms and 29.54 MiB; 100K is 307.7 ms and 588.3 MiB. Start with page working-set and repeated-copy analysis while preserving watermarks and mixed-version behavior. | High for large stores | High |
-| 3 | Fixed UDP 7999 makes `TestListenerWaitReady` susceptible to external port collisions; a previous collision is documented even though this shuffled run passed. | More reliable CI | Low |
-| 4 | The 100-stream router benchmark returns 502 under sustained 200 ms repetitions but passes one-batch samples at `-cpu=1`. Confirm overload semantics and benchmark capacity assumptions before pursuing throughput work. | High if workload is supported | Medium |
+| 3 | The historical fixed-port test risk is resolved: `TestListenerWaitReady` uses `127.0.0.1:0` and verifies its assigned port; production discovery remains on UDP 7999. | Reliability risk removed | Done |
+| 4 | The 100-stream benchmark's 502 is distinct from configured per-client overload: tests characterize stream-lifetime 429 rejection and post-attempt candidate exhaustion. The benchmark's sustained-load capacity assumptions still need review. | High if workload is supported | Medium |
 | 5 | Snapshot construction is measurable: 100-node/50-task `BuildSnapshot` costs 653.6 us and 641.5 KiB; profiles show clone and formatting allocations. The queued publisher request is already 5.481 ns and allocation-free, so focus on payload construction rather than enqueueing. | Medium | Medium |
 | 6 | Scheduler work grows with candidate count: 1,000 node-model entries cost 444.2 us and 749.2 KiB/op, versus 8.503 us and 10.83 KiB at 10 entries. Optimize only for a supported large-cluster workload. | Medium at scale | Low-Medium |
 | 7 | Coverage is lowest in `internal/selfupdate` (28.4%), `cmd/maistr0` (30.5%), `internal/testutil` (35.7%), and `internal/inferroute` (41.2%). Prioritize lifecycle and routing error-path tests. | Medium risk reduction | Low-Medium |
