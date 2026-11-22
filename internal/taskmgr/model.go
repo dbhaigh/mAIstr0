@@ -24,9 +24,13 @@ var ErrNotAwaitingApproval = errors.New("task is not awaiting approval")
 // a failed or cancelled state.
 var ErrNotResumable = errors.New("task is not resumable")
 
+var ErrOutcomeUnknown = errors.New("outcome unknown; reconciliation required before retrying")
+
 // ErrSubtaskFinished reports an attempt to start a subtask that already has a
 // terminal outcome.
 var ErrSubtaskFinished = errors.New("subtask has already finished")
+
+var ErrDispatchInProgress = errors.New("subtask already has an active dispatch")
 
 const (
 	StatusPending          Status = "pending"
@@ -41,6 +45,8 @@ const (
 const interruptedTaskError = "orchestrator restarted before the task completed"
 
 const coordinatorChangedTaskError = "coordinator changed before the task completed"
+
+const DispatchFailureClassOutcomeUnknown = "outcome_unknown"
 
 // SubtaskResult tracks one assignment's execution outcome.
 type SubtaskResult struct {
@@ -98,6 +104,44 @@ type Task struct {
 	// persistGate first, then this lock, then Manager.mu; never wait for it
 	// while holding Manager.mu.
 	persistMu *sync.Mutex
+}
+
+func (t *Task) HasUnknownDispatchOutcome() bool {
+	if t == nil {
+		return false
+	}
+	for i := range t.Subtasks {
+		for _, attempt := range t.Subtasks[i].Attempts {
+			if attempt.FailureClass == DispatchFailureClassOutcomeUnknown {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func subtaskHasUnknownDispatchOutcome(subtask *SubtaskResult) bool {
+	if subtask == nil {
+		return false
+	}
+	for _, attempt := range subtask.Attempts {
+		if attempt.FailureClass == DispatchFailureClassOutcomeUnknown {
+			return true
+		}
+	}
+	return false
+}
+
+func markDispatchAttemptOutcomeUnknown(attempt *DispatchAttempt, now time.Time) bool {
+	if attempt == nil || attempt.Status != DispatchAttemptRunning {
+		return false
+	}
+	attempt.Status = DispatchAttemptFailed
+	attempt.FailureClass = DispatchFailureClassOutcomeUnknown
+	attempt.Error = ErrOutcomeUnknown.Error()
+	attempt.FinishedAt = &now
+	attempt.DurationMs = max(0, now.Sub(attempt.StartedAt).Milliseconds())
+	return true
 }
 
 // Finalizer converts completed subtask outputs into the task's final result.

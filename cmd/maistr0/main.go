@@ -46,6 +46,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "sign-update-catalog" {
+		if err := runSignUpdateCatalog(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "sign-update-catalog failed: %v\n", err)
+			os.Exit(2)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "controller" {
 		if err := runControllerMode(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "maistr0 controller: %v\n", err)
@@ -69,13 +76,15 @@ func main() {
 	autoOpenBrowser := flag.Bool("auto-open-browser", false, "auto-open the dashboard in a browser on startup")
 	noDiscovery := flag.Bool("no-discovery", false, "disable LAN auto-discovery (node-only; orchestrator election requires discovery)")
 	enableDiscovery := flag.Bool("enable-discovery", false, "enable LAN auto-discovery")
-	harness := flag.String("harness", "", `override orchestrator agent backend: "deepseek" or "pi"`)
+	harness := flag.String("harness", "", `override orchestrator agent backend (default: "pi")`)
 	memoryPath := flag.String("memory-path", "", "override the cluster memory database file (empty = per-user data dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	printConfig := flag.Bool("print-config", false, "print normalized configuration and exit")
 	diagnostics := flag.Bool("diagnostics", false, "print a redacted local health summary and exit")
-	noPeerUpdates := flag.Bool("no-peer-updates", false, "disable automatic idle updates from paired peers")
-	allowPeerUpdates := flag.Bool("allow-peer-updates", false, "allow paired peers to publish executable code that runs as this account (disabled by default)")
+	noPeerUpdates := flag.Bool("no-peer-updates", false, "disable explicitly requested upgrades from paired peers")
+	allowPeerUpdates := flag.Bool("allow-peer-updates", false, "allow explicitly requested executable upgrades from paired peers (disabled by default)")
+	noCentralUpdates := flag.Bool("no-central-updates", false, "disable central orchestrator-led updates")
+	allowCentralUpdates := flag.Bool("allow-central-updates", false, "allow signed orchestrator-led executable updates (disabled by default)")
 	applyPeerUpdate := flag.String("apply-peer-update", "", "internal staged executable replacement job")
 	cleanupPeerUpdate := flag.String("cleanup-peer-update", "", "internal exited replacement-helper cleanup")
 	hostControlAddr := flag.String("host-control-addr", "", "internal host controller address")
@@ -149,6 +158,12 @@ func main() {
 	if runtimeSettings.NoPeerUpdates != nil && !explicitFlags["no-peer-updates"] {
 		*noPeerUpdates = *runtimeSettings.NoPeerUpdates
 	}
+	if runtimeSettings.AllowCentralUpdates != nil && !explicitFlags["allow-central-updates"] {
+		*allowCentralUpdates = *runtimeSettings.AllowCentralUpdates
+	}
+	if runtimeSettings.NoCentralUpdates != nil && !explicitFlags["no-central-updates"] {
+		*noCentralUpdates = *runtimeSettings.NoCentralUpdates
+	}
 	browserEnabledOverride := !*noBrowser && (explicitFlags["auto-open-browser"] ||
 		explicitFlags["no-browser"] ||
 		(savedAutoOpenBrowser != nil && *savedAutoOpenBrowser))
@@ -168,6 +183,8 @@ func main() {
 	runtimeSettings.MemoryPath = stringPointer(*memoryPath)
 	runtimeSettings.AllowPeerUpdates = boolPointer(*allowPeerUpdates)
 	runtimeSettings.NoPeerUpdates = boolPointer(*noPeerUpdates)
+	runtimeSettings.AllowCentralUpdates = boolPointer(*allowCentralUpdates)
+	runtimeSettings.NoCentralUpdates = boolPointer(*noCentralUpdates)
 
 	if *applyPeerUpdate != "" {
 		if err := selfupdate.Apply(*applyPeerUpdate); err != nil {
@@ -313,12 +330,17 @@ func main() {
 	var updateOrchestrator *orchestrator.Server
 	var updateFailover *failoverCoordinator
 	var updatePublisherKey []byte
+	var centralUpdatePublisherKey []byte
 	upgradeRequests := make(chan selfupdate.UpgradeRequest, 1)
 	peerUpdatesEnabled := *allowPeerUpdates && !*noPeerUpdates
+	centralUpdatesEnabled := *allowCentralUpdates && !*noCentralUpdates
 	configureNodeUpgrade := func(agent *nodeagent.Agent) {
 		agent.SetUpgradeRequester(func(ctx context.Context, request selfupdate.UpgradeRequest) error {
 			if request.PeerID != "" && !peerUpdatesEnabled {
 				return selfupdate.ErrPeerUpdatesDisabled
+			}
+			if request.Central != nil && !centralUpdatesEnabled {
+				return selfupdate.ErrCentralUpdatesDisabled
 			}
 			select {
 			case <-ctx.Done():
@@ -359,6 +381,7 @@ func main() {
 		runtimeSettings.TrayMode = stringPointer(cfg.TrayMode)
 		runtimeSettings.Harness = stringPointer(config.DefaultOrchestratorConfig().Harness)
 		updatePublisherKey = cfg.TrustedPeerUpdatePublicKey()
+		centralUpdatePublisherKey = cfg.TrustedCentralUpdatePublicKey()
 		if err := logging.SetLevel(cfg.LogLevel); err != nil {
 			fatalf("configure log level: %v", err)
 		}
@@ -394,6 +417,7 @@ func main() {
 			if err := orchCfg.Validate(); err != nil {
 				exitConfigValidation(err)
 			}
+			electionOrchCfg = orchCfg
 			if cfg.DiscoveryHMACSecret != orchCfg.DiscoveryHMACSecret {
 				fatal("node and orchestrator discovery_hmac_secret must match for failover")
 			}
@@ -426,6 +450,7 @@ func main() {
 		runtimeSettings.TrayMode = stringPointer(orchCfg.TrayMode)
 		runtimeSettings.Harness = stringPointer(orchCfg.Harness)
 		updatePublisherKey = nodeCfg.TrustedPeerUpdatePublicKey()
+		centralUpdatePublisherKey = nodeCfg.TrustedCentralUpdatePublicKey()
 
 		// The local worker must register with this process's orchestrator,
 		// regardless of any saved or command-line node address.
@@ -544,11 +569,16 @@ func main() {
 	if updateNode != nil {
 		go func() {
 			defer close(updaterDone)
-			selfupdate.RunWithControllerHandoffAndRequests(runCtx, func() selfupdate.Source {
+			selfupdate.RunWithControllerHandoffAndRequestsAndCentralUpdates(runCtx, func() selfupdate.Source {
 				source := updateNode.UpdateSource()
 				source.PublisherPublicKey = updatePublisherKey
+				source.CentralUpdatePublicKey = centralUpdatePublisherKey
 				if updateOrchestrator != nil {
 					source.Peers = append(source.Peers, updateOrchestrator.UpdateSource().Peers...)
+				} else if updateFailover != nil {
+					if promoted := updateFailover.ActiveOrchestrator(); promoted != nil {
+						source.Peers = append(source.Peers, promoted.UpdateSource().Peers...)
+					}
 				}
 				return source
 			}, func() bool {
@@ -559,14 +589,57 @@ func main() {
 				ControllerPID:  *hostControllerPID,
 				ServiceManaged: *hostControllerManaged,
 				RestartArgs:    controllerRestartArgs,
-			}, upgradeRequests, peerUpdatesEnabled)
+			}, upgradeRequests, peerUpdatesEnabled, centralUpdatesEnabled)
 		}()
 	} else {
 		close(updaterDone)
 	}
+	centralUpdateDone := make(chan struct{})
+	if centralUpdatesEnabled && (updateOrchestrator != nil || updateFailover != nil) &&
+		electionOrchCfg.UpdateManifestURL != "" {
+		go func() {
+			defer close(centralUpdateDone)
+			selfupdate.RunCentralUpdates(runCtx, selfupdate.CentralUpdateOptions{
+				ManifestURL:        electionOrchCfg.UpdateManifestURL,
+				PublisherPublicKey: centralUpdatePublisherKey,
+				Coordinator: func() selfupdate.CentralUpdateCoordinator {
+					if updateOrchestrator != nil && updateOrchestrator.Elected() {
+						return updateOrchestrator
+					}
+					if updateFailover != nil {
+						return updateFailover.ActiveOrchestrator()
+					}
+					return nil
+				},
+				QueueSelfUpdate: func(ctx context.Context, request selfupdate.UpgradeRequest) error {
+					request.Completion = make(chan error, 1)
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case upgradeRequests <- request:
+					default:
+						return selfupdate.ErrUpgradeInProgress
+					}
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case err := <-request.Completion:
+						return err
+					}
+				},
+			})
+		}()
+	} else {
+		close(centralUpdateDone)
+		if centralUpdatesEnabled && (updateOrchestrator != nil || updateFailover != nil) &&
+			electionOrchCfg.UpdateManifestURL == "" {
+			logging.Errorf("update", "central updates are enabled but update_manifest_url is not configured")
+		}
+	}
 	quit := func() {
 		stopRuntime()
 		<-updaterDone
+		<-centralUpdateDone
 		shutdown()
 	}
 	go func() {

@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -22,6 +24,29 @@ import (
 	"github.com/maistr0/maistr0/internal/taskmgr"
 	"github.com/maistr0/maistr0/internal/testutil"
 )
+
+func TestAgentBackendCapabilityContract(t *testing.T) {
+	srv := newTestServer(t)
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/agent/backend", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/agent/backend returned %d: %s", response.Code, response.Body.String())
+	}
+	expectedBytes, err := os.ReadFile(filepath.Join("testdata", "contracts", "agent-backend.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual, expected any
+	if err := json.Unmarshal(response.Body.Bytes(), &actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(expectedBytes, &expected); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("backend capability response differs from contract fixture:\nactual: %#v\nexpected: %#v", actual, expected)
+	}
+}
 
 var updateOrchestratorContracts = flag.Bool("update", false, "update orchestrator contract golden files")
 
@@ -549,9 +574,10 @@ func TestTaskExecutionFailureHTTPContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failed.Status != taskmgr.StatusFailed || !failed.Resumable ||
+	if failed.Status != taskmgr.StatusFailed || failed.Resumable ||
+		!failed.HasUnknownDispatchOutcome() ||
 		len(failed.Subtasks) != 1 || failed.Subtasks[0].Status != taskmgr.StatusFailed {
-		t.Fatalf("execution failure did not produce a resumable failed task: %+v", failed)
+		t.Fatalf("execution failure should require reconciliation: %+v", failed)
 	}
 
 	response := serveContractRequest(mux, http.MethodGet, "/api/tasks/"+task.ID, "")
@@ -559,6 +585,13 @@ func TestTaskExecutionFailureHTTPContract(t *testing.T) {
 		t.Fatalf("GET failed task returned %d: %s", response.Code, response.Body.String())
 	}
 	assertOrchestratorGolden(t, "task-failed.json", response, false)
+
+	resume := serveContractRequest(mux, http.MethodPost, "/api/tasks/"+task.ID+"/resume", "")
+	if resume.Code != http.StatusConflict ||
+		!strings.Contains(resume.Body.String(), "outcome unknown") ||
+		!strings.Contains(resume.Body.String(), "reconciliation required") {
+		t.Fatalf("resume unknown-outcome task returned %d: %s", resume.Code, resume.Body.String())
+	}
 }
 
 func TestCompatibilityAPIContracts(t *testing.T) {

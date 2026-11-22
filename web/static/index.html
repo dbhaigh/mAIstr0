@@ -474,7 +474,8 @@
           <p class="panel-caption">Saved to the local runtime settings file and applied after restarting the host service.</p>
           <div class="node-properties-grid">
             <label>Role<select name="runtime_role"><option value="auto">Auto</option><option value="node">Node</option><option value="orchestrator">Orchestrator</option><option value="both">Both</option></select></label>
-            <label>Agent backend<select name="runtime_harness"><option value="">Use config file</option><option value="pi">Pi</option><option value="deepseek">DeepSeek</option></select></label>
+            <label>Agent backend<input name="runtime_harness" list="runtime-harness-options" placeholder="Use config file" /></label>
+            <datalist id="runtime-harness-options"><option value="pi">Pi</option><option value="deepseek">DeepSeek</option></datalist>
             <label class="wide-field">Node config file<input name="runtime_node_config_path" placeholder="Use default config" /></label>
             <label class="wide-field">Orchestrator config file<input name="runtime_orchestrator_config_path" placeholder="Use default config" /></label>
             <label>Node listen override<input name="runtime_node_listen_addr" placeholder="Use config file" /></label>
@@ -484,16 +485,18 @@
             <label class="wide-field">Memory path override<input name="runtime_memory_path" placeholder="Use config file" /></label>
             <label class="checkbox-field"><input name="runtime_auto_open_browser" type="checkbox" /> Open dashboard on startup</label>
             <label class="checkbox-field"><input name="runtime_discovery_enabled" type="checkbox" /> Enable LAN discovery</label>
-            <label class="checkbox-field"><input name="runtime_allow_peer_updates" type="checkbox" /> Allow automatic peer executable updates</label>
-            <label class="checkbox-field"><input name="runtime_no_peer_updates" type="checkbox" /> Disable peer updates</label>
+            <label class="checkbox-field"><input name="runtime_allow_peer_updates" type="checkbox" /> Allow manually requested peer executable upgrades</label>
+            <label class="checkbox-field"><input name="runtime_no_peer_updates" type="checkbox" /> Disable peer executable upgrades</label>
+            <label class="checkbox-field"><input name="runtime_allow_central_updates" type="checkbox" /> Allow signed orchestrator-led updates</label>
+            <label class="checkbox-field"><input name="runtime_no_central_updates" type="checkbox" /> Disable central updates</label>
           </div>
-          <p class="panel-caption">Peer updates execute code from paired publishers as this account. Keep them disabled unless every publisher is trusted.</p>
+          <p class="panel-caption">Central updates are opt-in and require a signed catalog. Manual peer upgrades require explicit trust in the selected publisher.</p>
         </div>
         <div class="node-properties-footer"><span id="node-properties-status" class="node-property-status"></span><button id="node-properties-cancel" type="button" class="secondary-button">Cancel</button><button type="submit" class="primary-btn">Save properties</button></div>
       </form>
     </div>
   </div>
 
-  <script src="/app.05f8847e1c72.js"></script>
+  <script src="/app.acf00374401f.js"></script>
 </body>
 </html>

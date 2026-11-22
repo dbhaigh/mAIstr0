@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Bumped the release version to `0.1.1.18`.
+- Replaced harness-name checks with a capability-aware agent backend registry.
+  Pi remains the default; optional registrations declare resume, streaming,
+  cancellation, approvals, workspace isolation, model selection, and tool
+  access. Missing backends no longer block startup or hide stored session
+  history, and sessions are never silently rerouted.
+- Added an opt-in bounded stdio process runner for future external backend
+  adapters. It requires an explicit executable and approved working directory,
+  limits JSON input/output, runtime, and concurrency, and joins process trees
+  on cancellation and shutdown. It does not provide a sandbox, stream events,
+  load a harness, or define a harness-specific protocol.
+- Added a version-sourced model endpoint compatibility matrix for Claude Code,
+  Codex, OpenCode, Gemini CLI, OpenHands, and Hermes. Direct translated
+  compatibility endpoints now reject unknown or unsupported request fields
+  rather than silently dropping them.
+- Replaced automatic peer update polling with opt-in central updates: the
+  elected orchestrator verifies and applies a signed release catalog to itself
+  before announcing it to healthy nodes, which download their own
+  Windows/Linux/macOS binaries from the configured HTTPS service. Explicit
+  paired-peer upgrades remain available behind their separate opt-in gate.
 - Added a dashboard and host-controller Upgrade action for local executable
   paths or explicitly enabled paired-peer sources. Upgrades wait for idle and
   use a five-minute, node-bound, single-use mTLS rejoin ticket stored in a
@@ -32,6 +52,15 @@
   Preflight-only exhaustion now completes with an attempt-limit error rather
   than leaving a subtask unfinished; retry eligibility and backoff are
   unchanged.
+- Side-effecting task dispatch now admits only one local active attempt per
+  subtask. Lost responses, cancellation/timeouts after dispatch starts, worker
+  errors, restart recovery, and orphaned replica attempts become
+  `outcome_unknown`; they are not automatically retried, reassigned, or
+  resumed, and the task reports that reconciliation is required. Safe
+  pre-execution model-not-found retry and separate router/shard inference retry
+  behavior remain unchanged. This is not cluster-wide fencing or exactly-once
+  execution; separate task submissions and partitioned coordinators can still
+  run duplicate work.
 - Legacy plain-text HTTP errors now use a shared JSON response with a stable
   error code, retryability, and available request, node, and operation context.
   Provider-compatible JSON envelopes and streaming error bodies are preserved.

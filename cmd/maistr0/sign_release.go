@@ -28,3 +28,22 @@ func runSignRelease(args []string, out, errOut io.Writer) error {
 	_, err = fmt.Fprintf(out, "peer_update_publisher_key: %s\n", base64.StdEncoding.EncodeToString(publicKey))
 	return err
 }
+
+func runSignUpdateCatalog(args []string, out, errOut io.Writer) error {
+	flags := flag.NewFlagSet("sign-update-catalog", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	catalogPath := flags.String("manifest", "", "path to the generated update-manifest.json")
+	privateKeyPath := flags.String("key", "", "path to an unencrypted PKCS#8 Ed25519 PEM private key")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *catalogPath == "" || *privateKeyPath == "" {
+		return errors.New("usage: maistr0 sign-update-catalog --manifest <update-manifest.json> --key <private-key.pem>")
+	}
+	publicKey, err := selfupdate.SignReleaseCatalogFile(*catalogPath, *privateKeyPath)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "central_update_publisher_key: %s\n", base64.StdEncoding.EncodeToString(publicKey))
+	return err
+}

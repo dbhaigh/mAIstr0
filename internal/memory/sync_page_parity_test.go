@@ -110,6 +110,7 @@ func TestPageSnapshotBoxedReferenceParity(t *testing.T) {
 	}{
 		{"full", nil, map[string]uint64{"benchmark": 80, "other": 4}, 1 << 20, 0},
 		{"many-pages", nil, map[string]uint64{"benchmark": 80, "other": 4}, 1024, 128},
+		{"window-before-duplicate-keys", map[string]uint64{"benchmark": 10, "other": 1}, map[string]uint64{"benchmark": 80, "other": 4}, 1024, 0},
 		{"window", map[string]uint64{"benchmark": 70, "other": 1, "legacy": 2}, map[string]uint64{"benchmark": 75, "other": 3}, 1024, 0},
 		{"legacy-upper", map[string]uint64{"legacy": 2}, map[string]uint64{"legacy": 1}, 1024, 0},
 		{"past-end", map[string]uint64{"benchmark": 100, "other": 10, "legacy": 100}, map[string]uint64{"benchmark": 80, "other": 4}, 1024, 0},

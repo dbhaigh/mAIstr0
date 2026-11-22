@@ -44,8 +44,8 @@ The runtime does **not** provide:
   cannot be forcibly stopped as a Go goroutine. Signal notifications are
   restored before cleanup, so a subsequent signal uses the operating-system
   default action. Startup calls without context support may
-  finish before component shutdown begins. Restart recovery still marks
-  interrupted work as failed and resumable.
+  finish before component shutdown begins. Restart recovery marks persisted
+  active dispatch attempts as outcome-unknown and non-resumable.
 - **Crash-atomic trust persistence.** Pairing writes the trust file in place.
   A crash or disk failure during the write can leave it unreadable.
 
@@ -165,29 +165,32 @@ The runtime does **not** provide:
   finished subtask cannot be started again, and a finished dispatch attempt
   is recorded once. (`TestTerminalTasksIgnoreLateSubtaskUpdates`,
   `TestFinishedDispatchAttemptCannotBeRecordedTwice`)
+- One task manager admits at most one active dispatch attempt per subtask.
+  An unknown outcome blocks automatic retry, reassignment, and task resume;
+  late success cannot overwrite that state. (`TestDuplicateDispatchAttemptAdmissionIsSingleFlight`,
+  `TestDispatchDoesNotRetryWhenCompletedResponseIsLost`,
+  `TestRestartClosesRunningAttemptAsOutcomeUnknown`)
 - Only failed or cancelled tasks can be resumed. Resuming any other task
   returns HTTP 409, and concurrent resume requests admit exactly one caller.
   (`TestResumeIsLimitedToStoppedTasks`,
   `TestConcurrentResumeAdmitsExactlyOneCaller`)
-- After a restart, in-progress work is recovered as failed and resumable, and
-  a later resume continues the persisted attempt history.
-  (`TestRestartRecoveryThenResumeContinuesAttemptHistory`)
+- After a restart, a persisted running attempt is recovered as failed with an
+  unknown outcome and cannot be resumed until it is reconciled outside the
+  application. Failures known to precede execution can still be resumed.
 
 **Not guaranteed**
 
-- Execution is at least once, not exactly once. See
+- There is no cluster-wide fencing or exactly-once execution. A partition can
+  produce independent local coordinators and task managers, and duplicate
+  submissions can create separate tasks. See
   [lost responses and duplicate compute](./dispatcher-retries.md#lost-responses-and-duplicate-compute).
-- Subtasks have no dispatch lease. Two concurrent dispatches of the same
-  running subtask can both execute on workers. Only the first outcome is
-  recorded. (`TestConcurrentDuplicateDispatchRecordsSingleWinner`)
-- A result from a dispatch that started before a cancel and resume can still
-  arrive after the resume and be recorded for the re-queued subtask.
-- Every task is created resumable. Whether a task can actually be resumed is
-  checked only when resume is requested.
-- Recovery cannot tell whether an interrupted attempt finished on its worker.
-- Coordinators on both sides of a partition can each run their own copy of a
-  task. Task-history synchronization replaces records by task ID and does not
-  merge their attempts.
+- Cancellation cannot prove a worker stopped; a worker may continue side
+  effects after its request is canceled. Its outcome remains unknown locally.
+- Some task records have a resumable flag, but any unknown execution outcome
+  overrides it; the resume handler checks both the flag and attempt history.
+- Separate managers can independently admit work for the same task ID during a
+  partition. Replica synchronization is not a distributed lock and cannot
+  merge or fence concurrent side effects.
 
 ## Capacity reservations
 

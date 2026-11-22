@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/maistr0/maistr0/internal/agent"
 	"github.com/maistr0/maistr0/internal/engine"
 	"github.com/maistr0/maistr0/internal/peeridentity"
 )
@@ -73,6 +74,7 @@ type NodeConfig struct {
 	DiscoveryEnabled             bool                  `json:"discovery_enabled"`
 	DiscoveryHMACSecret          string                `json:"discovery_hmac_secret,omitempty"`
 	PeerUpdatePublisherKey       string                `json:"peer_update_publisher_key,omitempty"`
+	CentralUpdatePublisherKey    string                `json:"central_update_publisher_key,omitempty"`
 	AutoOpenBrowser              bool                  `json:"auto_open_browser"`
 	TrayMode                     string                `json:"tray_mode"`   // "taskbar" or "hidden" (Windows console behavior)
 	MemoryPath                   string                `json:"memory_path"` // empty = default per-user data dir
@@ -209,6 +211,11 @@ func (cfg NodeConfig) Validate() error {
 			violations = append(violations, fmt.Errorf("peer_update_publisher_key: %w", err))
 		}
 	}
+	if cfg.CentralUpdatePublisherKey != "" {
+		if _, err := decodeConfiguredKey(cfg.CentralUpdatePublisherKey, ed25519.PublicKeySize); err != nil {
+			violations = append(violations, fmt.Errorf("central_update_publisher_key: %w", err))
+		}
+	}
 	if err := validateMemoryPath(cfg.MemoryPath); err != nil {
 		violations = append(violations, err)
 	}
@@ -241,16 +248,22 @@ func (cfg NodeConfig) TrustedPeerUpdatePublicKey() ed25519.PublicKey {
 	return ed25519.PublicKey(key)
 }
 
+func (cfg NodeConfig) TrustedCentralUpdatePublicKey() ed25519.PublicKey {
+	key, _ := base64.StdEncoding.DecodeString(cfg.CentralUpdatePublisherKey)
+	return ed25519.PublicKey(key)
+}
+
 type OrchestratorConfig struct {
 	ListenAddr                          string               `json:"listen_addr"`
 	LogLevel                            string               `json:"log_level,omitempty"`
 	Mode                                string               `json:"mode,omitempty"` // "full" or "minimal"
-	Harness                             string               `json:"harness"`        // "deepseek" or "pi"
+	Harness                             string               `json:"harness"`        // Registered agent backend; defaults to "pi".
 	MaxConcurrentDispatches             int                  `json:"max_concurrent_dispatches"`
 	DispatchTimeoutSeconds              int                  `json:"dispatch_timeout_seconds"`
 	ShardedModels                       []ShardedModelConfig `json:"sharded_models,omitempty"`
 	DiscoveryEnabled                    bool                 `json:"discovery_enabled"`
 	DiscoveryHMACSecret                 string               `json:"discovery_hmac_secret,omitempty"`
+	UpdateManifestURL                   string               `json:"update_manifest_url,omitempty"`
 	AutoOpenBrowser                     bool                 `json:"auto_open_browser"`
 	TrayMode                            string               `json:"tray_mode"`   // "taskbar" or "hidden" (Windows console behavior)
 	MemoryPath                          string               `json:"memory_path"` // empty = default per-user data dir
@@ -331,8 +344,8 @@ func (cfg OrchestratorConfig) Validate() error {
 	if cfg.Mode != "" && cfg.Mode != OrchestratorModeFull && cfg.Mode != OrchestratorModeMinimal {
 		violations = append(violations, fmt.Errorf("mode must be %q or %q", OrchestratorModeFull, OrchestratorModeMinimal))
 	}
-	if cfg.Harness != "pi" && cfg.Harness != "deepseek" {
-		violations = append(violations, fmt.Errorf("harness must be \"pi\" or \"deepseek\""))
+	if !agent.ValidBackendName(cfg.Harness) {
+		violations = append(violations, errors.New("harness must be a lowercase backend name"))
 	}
 	if cfg.MaxConcurrentDispatches <= 0 || cfg.explicitInvalidConcurrency {
 		violations = append(violations, fmt.Errorf("max_concurrent_dispatches must be greater than zero"))
@@ -392,6 +405,9 @@ func (cfg OrchestratorConfig) Validate() error {
 		if _, err := decodeConfiguredKey(cfg.DiscoveryHMACSecret, 32); err != nil {
 			violations = append(violations, fmt.Errorf("discovery_hmac_secret: %w", err))
 		}
+	}
+	if err := validateUpdateManifestURL(cfg.UpdateManifestURL); err != nil {
+		violations = append(violations, err)
 	}
 	if err := validateMemoryPath(cfg.MemoryPath); err != nil {
 		violations = append(violations, err)
@@ -473,6 +489,19 @@ func validateListenAddr(address string) error {
 
 func validateHTTPSURL(field, value string) error {
 	return validateURL(field, value, "https")
+}
+
+func validateUpdateManifestURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" ||
+		strings.ContainsAny(value, "\x00\r\n ") {
+		return errors.New("update_manifest_url must be an absolute HTTPS URL without credentials, query, or fragment")
+	}
+	return nil
 }
 
 func validateHTTPURL(field, value string) error {

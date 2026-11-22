@@ -13,10 +13,12 @@
     "tray_mode": {"type": "string", "enum": ["taskbar", "hidden"]},
     "auto_open_browser": {"type": "boolean"},
     "discovery_enabled": {"type": "boolean"},
-    "harness": {"type": "string", "enum": ["pi", "deepseek"]},
+    "harness": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$", "description": "Registered agent backend name; omitted keeps the configured/default backend."},
     "memory_path": {"type": "string"},
     "allow_peer_updates": {"type": "boolean"},
     "no_peer_updates": {"type": "boolean"},
+    "allow_central_updates": {"type": "boolean"},
+    "no_central_updates": {"type": "boolean"},
     "require_pairing_verification": {"type": "boolean"}
   },
   "additionalProperties": false

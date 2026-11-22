@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -60,6 +59,9 @@ func (e *dispatchFailure) Error() string {
 	if e == nil {
 		return ""
 	}
+	if e.failureClass == taskmgr.DispatchFailureClassOutcomeUnknown {
+		return taskmgr.ErrOutcomeUnknown.Error()
+	}
 	return fmt.Sprintf("dispatch %s phase failed: %v", e.phase, e.cause)
 }
 
@@ -88,6 +90,7 @@ type dispatchPlan struct {
 	attemptCount int
 	alreadyTried map[string]bool
 	failure      *dispatchFailure
+	blocked      bool
 }
 
 type dispatchAttemptResult struct {
@@ -173,19 +176,28 @@ func (d *dispatcherComponent) prepareDispatchPlan(
 			}
 			plan.attemptCount = len(result.Attempts)
 			for _, prior := range result.Attempts {
+				if prior.Status == taskmgr.DispatchAttemptRunning {
+					plan.blocked = true
+				}
 				plan.alreadyTried[routerPairKey(prior.NodeID, prior.Model)] = true
+				if prior.FailureClass == taskmgr.DispatchFailureClassOutcomeUnknown {
+					plan.failure = newDispatchFailure(dispatchPhaseExecution, taskmgr.ErrOutcomeUnknown)
+					plan.failure.failureClass = taskmgr.DispatchFailureClassOutcomeUnknown
+					break
+				}
 			}
 			break
 		}
 	}
-	if plan.attemptCount >= d.retryPolicy.maxAttempts {
+	if !plan.blocked && plan.failure == nil && plan.attemptCount >= d.retryPolicy.maxAttempts {
 		plan.failure = newDispatchFailure(
 			dispatchPhaseAttemptBudget,
 			errors.New("subtask dispatch attempt limit reached"),
 		)
 		plan.failure.failureClass = "attempt_limit"
 	}
-	if plan.failure == nil && plan.alreadyTried[routerPairKey(plan.assignment.NodeID, plan.assignment.Model)] {
+	if !plan.blocked && plan.failure == nil &&
+		plan.alreadyTried[routerPairKey(plan.assignment.NodeID, plan.assignment.Model)] {
 		retry, retryErr := d.retryAssignment(ctx, plan.assignment.Subtask, plan.alreadyTried)
 		if retryErr != nil {
 			cause := dispatchContextFailure(ctx)
@@ -217,6 +229,9 @@ func (d *dispatcherComponent) dispatchWithRetries(
 	assignment scheduler.Assignment,
 ) *dispatchFailure {
 	plan := d.prepareDispatchPlan(ctx, taskID, assignment)
+	if plan.blocked {
+		return nil
+	}
 	current := plan.assignment
 	failure := plan.failure
 	completed := false
@@ -332,9 +347,17 @@ func (d *dispatcherComponent) executeReservedDispatch(
 	d.metrics.recordCapacityReservation()
 
 	if err := d.tasks.StartSubtaskChecked(taskID, current.Subtask.ID); err != nil {
-		result.failure = newDispatchFailure(dispatchPhaseSubtaskStart, err)
-		result.failure.failureClass = "persistence"
-		result.failure.policyAttempt = attempt + 1
+		switch {
+		case errors.Is(err, taskmgr.ErrDispatchInProgress), errors.Is(err, taskmgr.ErrSubtaskFinished):
+			result.completed = true
+		case errors.Is(err, taskmgr.ErrOutcomeUnknown):
+			result.failure = newDispatchFailure(dispatchPhaseExecution, taskmgr.ErrOutcomeUnknown)
+			result.failure.failureClass = taskmgr.DispatchFailureClassOutcomeUnknown
+		default:
+			result.failure = newDispatchFailure(dispatchPhaseSubtaskStart, err)
+			result.failure.failureClass = "persistence"
+			result.failure.policyAttempt = attempt + 1
+		}
 	} else if prompt, ok := d.tasks.InputForSubtask(taskID, current.Subtask.ID); !ok {
 		result.failure = newDispatchFailure(
 			dispatchPhaseSubtaskInput,
@@ -344,15 +367,23 @@ func (d *dispatcherComponent) executeReservedDispatch(
 		result.failure.policyAttempt = attempt + 1
 	} else {
 		reservation.Start()
-		candidateResult := d.executeCandidateWithHedge(ctx, taskID, current, prompt, attempt, alreadyTried)
+		// Agent execution may have side effects, so do not speculatively hedge it.
+		candidateResult := d.runCandidateSeries(ctx, taskID, current, prompt, nil)
 		reservation.Release()
 		for _, attempted := range candidateResult.attempted {
 			alreadyTried[routerPairKey(attempted.NodeID, attempted.Model)] = true
 		}
 
 		attemptErr, retryable := candidateResult.err, candidateResult.retryable
-		if attemptErr == nil || candidateResult.won {
+		if candidateResult.inProgress {
 			result.completed = true
+		} else if attemptErr == nil || candidateResult.won {
+			result.completed = true
+		} else if candidateResult.outcomeUnknown {
+			result.failure = newDispatchFailure(dispatchPhaseExecution, taskmgr.ErrOutcomeUnknown)
+			result.failure.failureClass = taskmgr.DispatchFailureClassOutcomeUnknown
+			result.failure.httpStatus = candidateResult.httpStatus
+			result.failure.policyAttempt = attempt + 1
 		} else if !d.retryPolicy.canRetry(retryable, attempt+1, ctx) {
 			result.failure = contextDispatchFailure(ctx, dispatchPhaseExecution, attemptErr)
 			result.failure.retryable = retryable
@@ -495,11 +526,12 @@ func (d *dispatcherComponent) executeSubtask(ctx context.Context, assignment sch
 }
 
 type dispatchOutcome struct {
-	output       string
-	err          error
-	retryable    bool
-	failureClass string
-	httpStatus   int
+	output         string
+	err            error
+	retryable      bool
+	outcomeUnknown bool
+	failureClass   string
+	httpStatus     int
 }
 
 func (d *dispatcherComponent) executeSubtaskDetailed(ctx context.Context, assignment scheduler.Assignment, prompt string) dispatchOutcome {
@@ -535,7 +567,10 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 				failureClass, retryable := classifyUpstreamStatus(upstream.statusCode, []byte(upstream.body))
 				return dispatchOutcome{err: err, failureClass: failureClass, retryable: retryable, httpStatus: upstream.statusCode}
 			}
-			return dispatchOutcome{err: err, failureClass: "shard_execution_failure", retryable: !errors.Is(err, errShardGroupUnavailable) && !errors.Is(err, errShardGroupNotFound)}
+			return dispatchOutcome{
+				err: err, failureClass: "shard_execution_failure",
+				retryable: !errors.Is(err, errShardGroupUnavailable) && !errors.Is(err, errShardGroupNotFound),
+			}
 		}
 		return dispatchOutcome{output: output, httpStatus: http.StatusOK}
 	}
@@ -570,24 +605,27 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		if errors.Is(err, context.Canceled) {
-			return dispatchOutcome{err: err, failureClass: "cancelled"}
+		return dispatchOutcome{
+			err: taskmgr.ErrOutcomeUnknown, outcomeUnknown: true,
+			failureClass: taskmgr.DispatchFailureClassOutcomeUnknown,
 		}
-		var networkErr net.Error
-		if errors.As(err, &networkErr) && networkErr.Timeout() {
-			return dispatchOutcome{err: errors.New("node request timed out"), retryable: true, failureClass: "timeout"}
-		}
-		return dispatchOutcome{err: errors.New("node request failed"), retryable: true, failureClass: "transport"}
 	}
 	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
 		failureClass, retryable := classifyUpstreamStatus(resp.StatusCode, errBody)
 		if readErr != nil {
-			if retryable {
-				failureClass = "upstream_read"
+			return dispatchOutcome{
+				err: taskmgr.ErrOutcomeUnknown, outcomeUnknown: true,
+				failureClass: taskmgr.DispatchFailureClassOutcomeUnknown, httpStatus: resp.StatusCode,
 			}
-			return dispatchOutcome{err: errors.New("read node error response failed"), retryable: retryable, failureClass: failureClass, httpStatus: resp.StatusCode}
+		}
+		if resp.StatusCode != http.StatusBadRequest &&
+			!(resp.StatusCode == http.StatusNotFound && retryable) {
+			return dispatchOutcome{
+				err: taskmgr.ErrOutcomeUnknown, outcomeUnknown: true,
+				failureClass: taskmgr.DispatchFailureClassOutcomeUnknown, httpStatus: resp.StatusCode,
+			}
 		}
 		return dispatchOutcome{
 			err: errors.New("node returned " + resp.Status), retryable: retryable,
@@ -599,10 +637,16 @@ func (d *dispatcherComponent) executeSubtaskWithIDs(
 		Error  string `json:"error,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return dispatchOutcome{err: errors.New("invalid response from node"), retryable: true, failureClass: "invalid_response", httpStatus: resp.StatusCode}
+		return dispatchOutcome{
+			err: taskmgr.ErrOutcomeUnknown, outcomeUnknown: true,
+			failureClass: taskmgr.DispatchFailureClassOutcomeUnknown, httpStatus: resp.StatusCode,
+		}
 	}
 	if out.Error != "" {
-		return dispatchOutcome{err: errors.New("node reported execution failure"), failureClass: "execution_failure", httpStatus: resp.StatusCode}
+		return dispatchOutcome{
+			err: taskmgr.ErrOutcomeUnknown, outcomeUnknown: true,
+			failureClass: taskmgr.DispatchFailureClassOutcomeUnknown, httpStatus: resp.StatusCode,
+		}
 	}
 	return dispatchOutcome{output: out.Output, httpStatus: resp.StatusCode}
 }

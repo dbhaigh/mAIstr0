@@ -17,12 +17,14 @@ import (
 var errSpeculativeHedgeLost = errors.New("speculative dispatch lost")
 
 type candidateDispatchResult struct {
-	err          error
-	retryable    bool
-	won          bool
-	attempted    []scheduler.Assignment
-	failureClass string
-	httpStatus   int
+	err            error
+	retryable      bool
+	won            bool
+	inProgress     bool
+	outcomeUnknown bool
+	attempted      []scheduler.Assignment
+	failureClass   string
+	httpStatus     int
 }
 
 type hedgeReservationResult struct {
@@ -286,6 +288,16 @@ func (d *dispatcherComponent) runCandidateSeries(
 		requestID := taskmgr.DispatchRequestID(taskID, assignment.Subtask.ID)
 		attemptNumber, beginErr := d.tasks.BeginDispatchAttemptChecked(taskID, assignment.Subtask.ID, assignment)
 		if beginErr != nil {
+			if errors.Is(beginErr, taskmgr.ErrDispatchInProgress) || errors.Is(beginErr, taskmgr.ErrSubtaskFinished) {
+				result.inProgress = true
+				return result
+			}
+			if errors.Is(beginErr, taskmgr.ErrOutcomeUnknown) {
+				result.err = taskmgr.ErrOutcomeUnknown
+				result.failureClass = taskmgr.DispatchFailureClassOutcomeUnknown
+				result.outcomeUnknown = true
+				return result
+			}
 			result.err = beginErr
 			result.retryable = false
 			failureClass := "dispatch_error"
@@ -302,19 +314,12 @@ func (d *dispatcherComponent) runCandidateSeries(
 		attemptID := taskmgr.DispatchAttemptID(taskID, assignment.Subtask.ID, attemptNumber)
 		outcome := d.executeSubtaskWithIDs(ctx, assignment, attemptPrompt, requestID, attemptID)
 		output, attemptErr, retryable := outcome.output, outcome.err, outcome.retryable
+		outcomeUnknown := outcome.outcomeUnknown
 		failureClass, httpStatus := outcome.failureClass, outcome.httpStatus
 		if contextFailure := dispatchContextFailure(ctx); contextFailure != nil {
-			attemptErr = contextFailure
+			attemptErr = taskmgr.ErrOutcomeUnknown
+			outcomeUnknown = true
 			retryable = false
-			switch {
-			case errors.Is(context.Cause(ctx), errSpeculativeHedgeLost):
-				failureClass = "hedge_loser"
-			case errors.Is(context.Cause(ctx), context.DeadlineExceeded) ||
-				errors.Is(ctx.Err(), context.DeadlineExceeded):
-				failureClass = "timeout"
-			default:
-				failureClass = "cancelled"
-			}
 		} else if attemptErr == nil {
 			assembled := (dispatchResultAssembler{}).assemble(assignment.Subtask, output)
 			output, attemptErr = assembled.output, assembled.err
@@ -322,6 +327,11 @@ func (d *dispatcherComponent) runCandidateSeries(
 				retryable = false
 				failureClass = assembled.failureClass
 			}
+		}
+		if outcomeUnknown {
+			attemptErr = taskmgr.ErrOutcomeUnknown
+			retryable = false
+			failureClass = taskmgr.DispatchFailureClassOutcomeUnknown
 		}
 
 		var persistErr error
@@ -340,9 +350,15 @@ func (d *dispatcherComponent) runCandidateSeries(
 			)
 		}
 		if persistErr != nil {
-			attemptErr = fmt.Errorf("persist dispatch attempt: %w", persistErr)
 			retryable = false
-			failureClass = "persistence"
+			if errors.Is(persistErr, taskmgr.ErrOutcomeUnknown) {
+				attemptErr = taskmgr.ErrOutcomeUnknown
+				outcomeUnknown = true
+				failureClass = taskmgr.DispatchFailureClassOutcomeUnknown
+			} else {
+				attemptErr = fmt.Errorf("persist dispatch attempt: %w", persistErr)
+				failureClass = "persistence"
+			}
 		}
 		if attemptErr != nil && failureClass == "" {
 			failureClass = "dispatch_error"
@@ -356,8 +372,10 @@ func (d *dispatcherComponent) runCandidateSeries(
 			time.Since(started), recordFailureClass, httpStatus,
 		)
 		result.err, result.retryable = attemptErr, retryable
+		result.outcomeUnknown = outcomeUnknown
 		result.failureClass, result.httpStatus = failureClass, httpStatus
-		if attemptErr == nil || retryable || validationAttempt >= assignment.Subtask.MaxRetries || ctx.Err() != nil {
+		if attemptErr == nil || retryable || outcomeUnknown ||
+			validationAttempt >= assignment.Subtask.MaxRetries || ctx.Err() != nil {
 			return result
 		}
 		attemptPrompt = validationRetryPrompt(prompt, attemptErr, output)

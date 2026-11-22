@@ -16,6 +16,7 @@ import (
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/httpx"
+	"github.com/maistr0/maistr0/internal/inferroute"
 	"github.com/maistr0/maistr0/internal/scheduler"
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
@@ -70,7 +71,13 @@ func (c *peerComponent) dispatchToPeer(ctx context.Context, taskID string, asg s
 		}
 		return
 	}
-	c.tasks.StartSubtask(taskID, asg.Subtask.ID)
+	if err := c.tasks.StartSubtaskChecked(taskID, asg.Subtask.ID); err != nil {
+		if errors.Is(err, taskmgr.ErrDispatchInProgress) || errors.Is(err, taskmgr.ErrSubtaskFinished) {
+			return
+		}
+		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", err)
+		return
+	}
 	available := false
 	for _, peer := range c.peerSnapshot() {
 		if peer.ID == asg.NodeID && peer.Healthy && peer.Address == asg.Address {
@@ -87,11 +94,15 @@ func (c *peerComponent) dispatchToPeer(ctx context.Context, taskID string, asg s
 		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", errors.New("subtask prerequisites are not available"))
 		return
 	}
-	body, _ := json.Marshal(executeRequest{
+	body, err := json.Marshal(executeRequest{
 		SubtaskID: asg.Subtask.ID,
 		Model:     asg.Model,
 		Prompt:    prompt,
 	})
+	if err != nil {
+		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", fmt.Errorf("encode peer execution request: %w", err))
+		return
+	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, asg.Address+"/execute", bytes.NewReader(body))
 	if err != nil {
@@ -99,28 +110,60 @@ func (c *peerComponent) dispatchToPeer(ctx context.Context, taskID string, asg s
 		return
 	}
 	request.Header.Set("Content-Type", "application/json")
+	started := time.Now()
+	attemptNumber, err := c.tasks.BeginDispatchAttemptChecked(taskID, asg.Subtask.ID, asg)
+	if err != nil {
+		if errors.Is(err, taskmgr.ErrDispatchInProgress) || errors.Is(err, taskmgr.ErrSubtaskFinished) ||
+			errors.Is(err, taskmgr.ErrOutcomeUnknown) {
+			return
+		}
+		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", err)
+		return
+	}
+	requestID := taskmgr.DispatchRequestID(taskID, asg.Subtask.ID)
+	attemptID := taskmgr.DispatchAttemptID(taskID, asg.Subtask.ID, attemptNumber)
+	request.Header.Set(httpx.RequestIDHeader, requestID)
+	request.Header.Set(inferroute.HeaderRequestID, requestID)
+	request.Header.Set(inferroute.HeaderAttemptID, attemptID)
+	finishAttempt := func(status int, failureClass string, attemptErr error) {
+		if err := c.tasks.FinishDispatchAttemptChecked(
+			taskID, asg.Subtask.ID, attemptNumber, taskmgr.DispatchAttemptFailed,
+			failureClass, status, attemptErr, time.Since(started),
+		); err != nil {
+			logging.Errorf("nodeagent", "nodeagent: could not persist peer dispatch attempt %s: %v", attemptID, err)
+		}
+		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", attemptErr)
+	}
 	resp, err := c.dispatchClient.Do(request)
 	if err != nil {
-		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", err)
+		finishAttempt(0, taskmgr.DispatchFailureClassOutcomeUnknown, taskmgr.ErrOutcomeUnknown)
 		return
 	}
 	defer closeutil.Discard(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", errors.New("node returned "+resp.Status+": "+string(errBody)))
+		_, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		if readErr != nil || (resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound) {
+			finishAttempt(resp.StatusCode, taskmgr.DispatchFailureClassOutcomeUnknown, taskmgr.ErrOutcomeUnknown)
+			return
+		}
+		finishAttempt(resp.StatusCode, "client_error", errors.New("node returned "+resp.Status))
 		return
 	}
 
 	var out executeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", err)
+		finishAttempt(resp.StatusCode, taskmgr.DispatchFailureClassOutcomeUnknown, taskmgr.ErrOutcomeUnknown)
 		return
 	}
 	if out.Error != "" {
-		c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, "", errors.New(out.Error))
+		finishAttempt(resp.StatusCode, taskmgr.DispatchFailureClassOutcomeUnknown, taskmgr.ErrOutcomeUnknown)
 		return
 	}
-	c.tasks.CompleteSubtask(taskID, asg.Subtask.ID, out.Output, nil)
+	if _, err := c.tasks.CompleteDispatchAttemptChecked(
+		taskID, asg.Subtask.ID, attemptNumber, "none", resp.StatusCode, time.Since(started), out.Output,
+	); err != nil {
+		logging.Errorf("nodeagent", "nodeagent: could not persist peer dispatch result %s: %v", attemptID, err)
+	}
 }
 
 // mostCapableNode returns the cluster's elected leader. The orchestrator's

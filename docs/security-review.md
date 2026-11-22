@@ -10,9 +10,9 @@ No production model downloads, external exploit targets, or malicious executable
 payloads were used.
 
 The highest-impact changes are authenticated first-contact enrollment and
-default-off peer executable updates. The former replaces implicit LAN trust;
-the latter reduces default authority, but does not add release signatures.
-Existing trust-file encodings, API routes, and database buckets are retained.
+default-off executable updates. Central updates require a signed release
+catalog; manual peer upgrades remain separately gated. Existing trust-file
+encodings, API routes, and database buckets are retained.
 Intentional request/default changes are documented in the
 [migration guide](./pairing-and-security.md#migration),
 [OpenAPI](../contracts/openapi.yaml), and
@@ -41,26 +41,29 @@ Intentional request/default changes are documented in the
   [process API test](../internal/integration/process_test.go).
   Rejection leaves trust unchanged; failed confirmation retains the invitation.
 
-### SEC-02: default executable-publisher authority for paired peers
+### SEC-02: executable-publisher authority for updates
 
 - **Severity: HIGH policy risk; confidence: 10/10.** Assets: application-account
   code execution, files, inherited environment, and credentials.
-- **Preconditions and impact:** a compromised paired publisher could offer a
-  newer executable and matching metadata. A same-source digest and reported
-  version detect neither a malicious publisher nor its malicious binary.
-  This was documented authority, not a bypass of mTLS authentication.
-- **Mitigated by an explicit policy change:** [startup](../cmd/maistr0/main.go)
-  does not start the receiving updater unless `--allow-peer-updates` is set.
-  `--no-peer-updates` overrides it. The opt-in warning describes code execution
-  as the local account. Publishing endpoints remain compatible.
-- **Evidence:** CLI help shows default-off opt-in; the startup gate requires
-  both allow and absence of disable. Existing
-  [updater tests](../internal/selfupdate/selfupdate_test.go) retain transfer,
-  version/platform, idle-admission, rollback, and partial-file checks.
-  No malicious executable was executed to reproduce this policy risk.
-- **Residual:** opting in still authorizes paired publishers. Independent
-  release signing and publisher authorization are not implemented. Deployments
-  needing that assurance must leave peer updates disabled.
+- **Preconditions and impact:** a compromised central signing key or update
+  service could distribute a malicious release to nodes that opted in. Manual
+  peer upgrades also trust the selected paired publisher, whose digest and
+  reported version do not establish that its executable is benign.
+- **Mitigated by explicit policy and publisher verification:** central updates
+  are disabled unless `--allow-central-updates` is set and require a signed
+  catalog verified with the configured publisher key. The elected orchestrator
+  applies its own update before announcing it to nodes. Automatic peer polling
+  is removed; explicit peer upgrades require the separate
+  `--allow-peer-updates` gate, and `--no-peer-updates` overrides it.
+- **Evidence:** CLI/runtime gates default off. The central updater validates
+  catalog signatures, artifact origin, digest, platform, and reported version;
+  updater tests cover transfer, idle admission, replacement, and rollback.
+  No malicious executable was run to reproduce this policy risk.
+- **Residual:** opting into central updates trusts the signing key and private
+  update service to publish safe code. Opting into manual peer upgrades grants
+  the selected paired publisher the same local-account code-execution
+  authority. Keep central updates and peer upgrades disabled unless those
+  respective trust relationships are intended.
 
 ### SEC-03: enrollment payload certificates were not TLS-channel bound
 

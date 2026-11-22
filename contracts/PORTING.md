@@ -30,7 +30,9 @@ coordinator on a local interface prefix when strict mode is disabled. Local
 dashboard `PATCH /api/pairing/policy` sets the cluster-wide policy; joined nodes
 save it during peer refresh, and it affects new joins/re-pairs without revoking
 existing trust. Peer executable updates are disabled by default and require
-`--allow-peer-updates`; the legacy disable flag overrides it. Public engine URLs
+`--allow-peer-updates`; the legacy disable flag overrides it. Central
+orchestrator-led updates are separately opt-in, use an HTTPS release catalog,
+and require a configured Ed25519 publisher key. Public engine URLs
 omit userinfo/query/fragment, and inventory errors are generic. Unchanged
 redacted endpoint saves preserve credentials. Protected configuration is the
 credential-editing surface. See
@@ -51,6 +53,23 @@ boundary, not an independent release signature. Clients must pin the exact
 peer certificate, reject redirects, enforce target/size/hash/version checks,
 and install only while idle. Old clients cannot bootstrap automatically until
 manually upgraded to a release containing this updater.
+
+## Capability-aware agent backends
+
+`GET /api/agent/backend` retains `name`, `harnesses`, and
+`supports_coordinator_model`, and adds selected-backend `available` and
+`capabilities` plus a `backends` list. Capability fields are explicit
+booleans for session resume, streaming, cancellation, approvals, workspace
+isolation, model selection, and tool access. Unavailable backends have no
+capability object; clients must not interpret missing capability data as
+support.
+
+Agent session list/create/get responses add `available` and, for unavailable
+sessions, `unavailable_reason`. A client should display and allow reading or
+deleting saved history even when the owner backend is missing. Sending a turn
+to that session returns `503`; clients must not retry it through another
+backend. The persisted session JSON, ownership value, routes, and default Pi
+selection are unchanged.
 
 - [`openapi.yaml`](./openapi.yaml) lists every route registered by the
   orchestrator and node agent. `x-maistr0-registered-routes` preserves the

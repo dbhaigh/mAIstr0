@@ -183,9 +183,19 @@ The Local Network panel labels the current instance as
 **HMAC-SHA256 enabled** or **Unauthenticated (default)**. `GET
 /api/security/status` returns only that mode and never the secret.
 
-## Optional signed peer updates
+## Central and manual executable updates
 
-Peer updates remain disabled unless `--allow-peer-updates` is set. Without a
+Central updates are disabled unless `--allow-central-updates` is set, and
+require an HTTPS release catalog signed by the key configured as
+`central_update_publisher_key`. Only the elected orchestrator polls the
+configured update service. It applies its own platform release first, then
+announces the signed catalog to healthy nodes; each node downloads its own
+platform binary directly from that service. Automatic peer polling has been
+removed. See [central update configuration](./configuration.md#central-orchestrator-led-executable-updates)
+for catalog publishing, platform assets, bootstrap, and replacement behavior.
+
+Explicit peer upgrades remain disabled unless `--allow-peer-updates` is set.
+Without a
 configured publisher key, the existing paired-peer and SHA-256 checksum path
 is retained for compatibility. To require release signatures on a node, set
 its `peer_update_publisher_key` to the standard-base64 32-byte Ed25519 public
@@ -195,7 +205,7 @@ signed, or tampered manifests to be rejected before staging.
 Keep the Ed25519 private key offline. `cmd/updatebundle` creates a `.peer.json`
 manifest beside each executable. Create an unencrypted PKCS#8 key on the
 publisher machine with `openssl genpkey -algorithm ED25519 -out release-private.pem`,
-then sign each published manifest with:
+then sign each published manifest for manual peer upgrades with:
 
 ```text
 maistr0 sign-release --manifest path/to/maistr0.peer.json --key path/to/release-private.pem
@@ -276,11 +286,13 @@ and are not sandboxed. Use a dedicated account with a minimal environment and
 operator-controlled executable/model allowlists. HTTPS host, archive path,
 size, and digest checks restrict downloads but do not independently authenticate
 their publishers. A checksum fetched from the same source is not a release
-signature. Signed peer manifests are optional and only enforced when a trusted
-publisher key is configured; peer updates also remain disabled unless explicitly
-enabled. Enabling updates trusts paired publishers to execute code, and a
-configured signing key adds publisher verification (see
-[configuration](./configuration.md#automatic-peer-executable-updates)).
+signature. Opt-in central updates require a signed catalog and trust the
+configured publisher key and private update service. Signed peer manifests are
+optional and only enforced when a trusted peer publisher key is configured;
+manual peer upgrades remain disabled unless explicitly enabled. Enabling
+central updates trusts its release publisher to execute code, while enabling a
+manual peer upgrade trusts the selected paired publisher (see
+[configuration](./configuration.md#central-orchestrator-led-executable-updates)).
 External inference adapters retain their configured HTTP/TLS transport; cluster
 certificate pinning does not secure a separate remote engine HTTP endpoint.
 Use HTTPS or an authenticated encrypted network for those connections. Keep

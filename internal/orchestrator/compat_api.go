@@ -12,7 +12,6 @@ import (
 
 	"github.com/maistr0/maistr0/internal/apperr"
 	"github.com/maistr0/maistr0/internal/cluster"
-	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/inferroute"
 )
 
@@ -34,13 +33,11 @@ type ollamaChatRequest struct {
 }
 
 type ollamaGenerateRequest struct {
-	Model     string          `json:"model"`
-	Prompt    string          `json:"prompt"`
-	System    string          `json:"system"`
-	Stream    *bool           `json:"stream"`
-	Options   ollamaOptions   `json:"options"`
-	Format    json.RawMessage `json:"format"`
-	KeepAlive json.RawMessage `json:"keep_alive"`
+	Model   string        `json:"model"`
+	Prompt  string        `json:"prompt"`
+	System  string        `json:"system"`
+	Stream  *bool         `json:"stream"`
+	Options ollamaOptions `json:"options"`
 }
 
 type anthropicMessage struct {
@@ -107,7 +104,7 @@ func (s *Server) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
-	request, err := httpx.DecodeJSON[ollamaChatRequest](w, r, 4<<20)
+	request, err := decodeCompatibilityRequest[ollamaChatRequest](w, r, 4<<20)
 	if err != nil {
 		writeCompatError(w, apperr.Invalid(err), compatOllamaChat)
 		return
@@ -153,11 +150,15 @@ func (s *Server) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	_, hasSystem := shape["system"]
 	ollamaClient := strings.Contains(strings.ToLower(r.UserAgent()), "ollama")
 	if !hasStream && !hasOptions && !hasFormat && !hasKeepAlive && !hasSystem && !ollamaClient {
+		if _, err := decodeCompatibilityPayload[generateAPIRequest](raw); err != nil {
+			writeJSONError(w, apperr.Invalid(err), generateAPIResponse{Error: err.Error()})
+			return
+		}
 		s.handleGenerate(w, r)
 		return
 	}
-	var request ollamaGenerateRequest
-	if err := json.Unmarshal(raw, &request); err != nil {
+	request, err := decodeCompatibilityPayload[ollamaGenerateRequest](raw)
+	if err != nil {
 		writeCompatError(w, apperr.Invalid(err), compatOllamaGenerate)
 		return
 	}
@@ -186,7 +187,7 @@ func ollamaGenerationOptions(options ollamaOptions) (float64, int) {
 }
 
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
-	request, err := httpx.DecodeJSON[anthropicRequest](w, r, 4<<20)
+	request, err := decodeCompatibilityRequest[anthropicRequest](w, r, 4<<20)
 	if err != nil {
 		writeCompatError(w, apperr.Invalid(err), compatAnthropic)
 		return
@@ -238,8 +239,8 @@ func anthropicText(raw json.RawMessage) (string, error) {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return "", fmt.Errorf("content must be text or an array of text blocks")
+	if err := decodeCompatibilityPayloadInto(raw, &blocks); err != nil {
+		return "", fmt.Errorf("content must be text or an array of text blocks: %w", err)
 	}
 	var out strings.Builder
 	for _, block := range blocks {
@@ -249,6 +250,39 @@ func anthropicText(raw json.RawMessage) (string, error) {
 		out.WriteString(block.Text)
 	}
 	return out.String(), nil
+}
+
+func decodeCompatibilityRequest[T any](w http.ResponseWriter, r *http.Request, maxBytes int64) (T, error) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return decodeCompatibilityPayload[T](raw)
+}
+
+func decodeCompatibilityPayload[T any](raw []byte) (T, error) {
+	var value T
+	if err := decodeCompatibilityPayloadInto(raw, &value); err != nil {
+		return value, err
+	}
+	return value, nil
+}
+
+func decodeCompatibilityPayloadInto(raw []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("request must contain one JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 type compatMode int

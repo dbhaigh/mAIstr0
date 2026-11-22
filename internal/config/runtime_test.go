@@ -11,9 +11,12 @@ func TestRuntimeSettingsRoundTripAndFileMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config", "runtime.json")
 	role := "node"
 	allowUpdates := true
+	allowCentralUpdates := true
+	noCentralUpdates := false
 	requirePairingVerification := true
 	settings := RuntimeSettings{
 		Role: &role, AllowPeerUpdates: &allowUpdates,
+		AllowCentralUpdates: &allowCentralUpdates, NoCentralUpdates: &noCentralUpdates,
 		RequirePairingVerification: &requirePairingVerification,
 	}
 	if err := SaveRuntimeSettings(path, settings); err != nil {
@@ -24,6 +27,8 @@ func TestRuntimeSettingsRoundTripAndFileMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Role == nil || *got.Role != role || got.AllowPeerUpdates == nil || !*got.AllowPeerUpdates ||
+		got.AllowCentralUpdates == nil || !*got.AllowCentralUpdates ||
+		got.NoCentralUpdates == nil || *got.NoCentralUpdates ||
 		got.RequirePairingVerification == nil || !*got.RequirePairingVerification {
 		t.Fatalf("unexpected settings after round trip: %+v", got)
 	}
@@ -36,10 +41,21 @@ func TestRuntimeSettingsRoundTripAndFileMode(t *testing.T) {
 	}
 }
 
+func TestRuntimeSettingsAcceptsOptionalBackendNames(t *testing.T) {
+	harness := "claude-code"
+	if err := (RuntimeSettings{Harness: &harness}).Validate(); err != nil {
+		t.Fatalf("optional backend name was rejected: %v", err)
+	}
+}
+
 func TestRuntimeSettingsRejectInvalidValues(t *testing.T) {
 	invalidRole := "mystery"
 	if err := (RuntimeSettings{Role: &invalidRole}).Validate(); err == nil {
 		t.Fatal("invalid role was accepted")
+	}
+	invalidHarness := "../external"
+	if err := (RuntimeSettings{Harness: &invalidHarness}).Validate(); err == nil {
+		t.Fatal("invalid backend name was accepted")
 	}
 	invalidAddress := "https://node.example\n--bad"
 	if err := (RuntimeSettings{OrchestratorAddr: &invalidAddress}).Validate(); err == nil {
@@ -52,7 +68,8 @@ func TestLoadRuntimeSettingsMissingFileIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.Role != nil || settings.AllowPeerUpdates != nil || settings.RequirePairingVerification != nil {
+	if settings.Role != nil || settings.AllowPeerUpdates != nil || settings.AllowCentralUpdates != nil ||
+		settings.NoCentralUpdates != nil || settings.RequirePairingVerification != nil {
 		t.Fatalf("missing file must not add overrides: %+v", settings)
 	}
 }

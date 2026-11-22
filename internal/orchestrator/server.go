@@ -171,13 +171,20 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 // References: [request paths](../../docs/architecture.md#request-paths),
 // [server_test.go](server_test.go).
 func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
+	return NewWithConfigAndBackends(cfg)
+}
+
+// NewWithConfigAndBackends constructs an orchestrator with optional additional
+// agent backends. In full mode, registered backends are owned and closed by
+// the returned server; minimal mode keeps its existing harness-free behavior.
+func NewWithConfigAndBackends(cfg config.OrchestratorConfig, additional ...agent.BackendRegistration) (*Server, error) {
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	srv, err := newWithMemoryHarnessAndConcurrency(cfg.MemoryPath, cfg.Harness, cfg.MaxConcurrentDispatches,
 		time.Duration(cfg.DispatchTimeoutSeconds)*time.Second, cfg.Mode,
-		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second, cfg.ShardedModels)
+		cfg.SyncMaxBytes, time.Duration(cfg.SyncTimeoutSeconds)*time.Second, cfg.ShardedModels, additional...)
 	if err != nil {
 		return nil, err
 	}
@@ -201,10 +208,8 @@ func newWithMemoryHarnessAndConcurrency(
 	syncMaxBytes int64,
 	syncTimeout time.Duration,
 	shardedModels []config.ShardedModelConfig,
+	additionalBackends ...agent.BackendRegistration,
 ) (*Server, error) {
-	if harnessName != "deepseek" && harnessName != "pi" {
-		return nil, fmt.Errorf("unknown agent backend %q (want deepseek or pi)", harnessName)
-	}
 	if syncMaxBytes <= 0 {
 		syncMaxBytes = config.DefaultSyncMaxBytes
 	}
@@ -294,10 +299,44 @@ func newWithMemoryHarnessAndConcurrency(
 	}
 	if mode != config.OrchestratorModeMinimal {
 		deepseekBackend := deepseekadapter.NewDeepSeek(reg, disp, store, events)
-		harness := newHarnessManager(map[string]agent.Backend{"deepseek": deepseekBackend}, harnessName, store)
+		backendRegistry := agent.NewRegistry()
+		defaultCapabilities := agent.Capabilities{
+			SessionResume: true, Streaming: true, Cancellation: true,
+			ModelSelection: true, ToolAccess: true,
+		}
+		if err := backendRegistry.Register(agent.BackendRegistration{
+			Backend: deepseekBackend, Capabilities: defaultCapabilities,
+		}); err != nil {
+			_ = deepseekBackend.Close()
+			_ = tasks.Close()
+			if store != nil {
+				_ = store.Close()
+			}
+			return nil, fmt.Errorf("orchestrator: register DeepSeek backend: %w", err)
+		}
+		piBackend := piagent.New(&localPiProvider{generate: srv}, deepseekBackend)
+		if err := backendRegistry.Register(agent.BackendRegistration{
+			Backend: piBackend, Capabilities: defaultCapabilities,
+		}); err != nil {
+			_ = piBackend.Close()
+			_ = deepseekBackend.Close()
+			_ = tasks.Close()
+			if store != nil {
+				_ = store.Close()
+			}
+			return nil, fmt.Errorf("orchestrator: register Pi backend: %w", err)
+		}
+		harness := newHarnessManager(backendRegistry, harnessName, store)
 		srv.harness = harness
-		harness.registerBackend("pi", piagent.New(&localPiProvider{generate: srv}, deepseekBackend))
 		deepseekBackend.SetWorkflowExecutor(srv.executeWorkflow)
+		for _, registration := range additionalBackends {
+			if err := backendRegistry.Register(registration); err != nil {
+				if closeErr := srv.Close(); closeErr != nil {
+					logging.Errorf("orchestrator", "orchestrator: cleanup after backend registration failure: %v", closeErr)
+				}
+				return nil, fmt.Errorf("orchestrator: register optional agent backend: %w", err)
+			}
+		}
 	}
 	if memoryPath != "" {
 		srv.identityPath = memoryPath + ".identity"

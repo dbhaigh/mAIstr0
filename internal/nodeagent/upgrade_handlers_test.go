@@ -13,6 +13,7 @@ import (
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
 	"github.com/maistr0/maistr0/internal/selfupdate"
+	"github.com/maistr0/maistr0/internal/version"
 )
 
 func TestUpgradeHandlerValidatesAndQueuesManualRequest(t *testing.T) {
@@ -66,6 +67,72 @@ func TestUpgradeHandlerValidatesAndQueuesManualRequest(t *testing.T) {
 	if peerResponse.Code != http.StatusForbidden {
 		t.Fatalf("disabled peer upgrade status = %d, want 403", peerResponse.Code)
 	}
+}
+
+func TestUpgradeHandlerQueuesCentralReleaseAndSkipsCurrentVersion(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "central-upgrade-handler-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	var queued []selfupdate.UpgradeRequest
+	agent.SetUpgradeRequester(func(_ context.Context, request selfupdate.UpgradeRequest) error {
+		queued = append(queued, request)
+		return nil
+	})
+	request := centralUpgradeHandlerRequest("99.0.0")
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	agent.handleUpgrade(response, httptest.NewRequest(http.MethodPost, "/api/upgrade", bytes.NewReader(body)))
+	if response.Code != http.StatusAccepted || len(queued) != 1 || queued[0].Central == nil {
+		t.Fatalf("central update request: status=%d queued=%+v body=%s", response.Code, queued, response.Body.String())
+	}
+
+	request = centralUpgradeHandlerRequest(version.String())
+	body, err = json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := httptest.NewRecorder()
+	agent.handleUpgrade(current, httptest.NewRequest(http.MethodPost, "/api/upgrade", bytes.NewReader(body)))
+	if current.Code != http.StatusOK || len(queued) != 1 {
+		t.Fatalf("current release request: status=%d queued=%+v body=%s", current.Code, queued, current.Body.String())
+	}
+}
+
+func TestUpgradeHandlerRejectsDisabledCentralUpdates(t *testing.T) {
+	agent := mustNewTestAgent(t, config.NodeConfig{
+		NodeID: "central-upgrade-disabled-test", MemoryPath: filepath.Join(t.TempDir(), "node.db"),
+	})
+	agent.SetUpgradeRequester(func(context.Context, selfupdate.UpgradeRequest) error {
+		return selfupdate.ErrCentralUpdatesDisabled
+	})
+	body, err := json.Marshal(centralUpgradeHandlerRequest("99.0.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	agent.handleUpgrade(response, httptest.NewRequest(http.MethodPost, "/api/upgrade", bytes.NewReader(body)))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("disabled central update status = %d, want 403: %s", response.Code, response.Body.String())
+	}
+}
+
+func centralUpgradeHandlerRequest(release string) selfupdate.UpgradeRequest {
+	return selfupdate.UpgradeRequest{Central: &selfupdate.CentralUpdateRequest{
+		ManifestURL: "https://updates.example.test/latest.json",
+		Catalog: selfupdate.ReleaseCatalog{
+			Version: release, Signature: strings.Repeat("a", 86) + "==",
+			Artifacts: []selfupdate.ReleaseArtifact{
+				{OS: "windows", Arch: "amd64", Path: "v" + release + "/windows-amd64/maistr0.exe", SHA256: strings.Repeat("a", 64), Size: 1024},
+				{OS: "linux", Arch: "amd64", Path: "v" + release + "/linux-amd64/maistr0", SHA256: strings.Repeat("a", 64), Size: 1024},
+				{OS: "linux", Arch: "arm64", Path: "v" + release + "/linux-arm64/maistr0", SHA256: strings.Repeat("a", 64), Size: 1024},
+				{OS: "darwin", Arch: "amd64", Path: "v" + release + "/darwin-amd64/maistr0", SHA256: strings.Repeat("a", 64), Size: 1024},
+				{OS: "darwin", Arch: "arm64", Path: "v" + release + "/darwin-arm64/maistr0", SHA256: strings.Repeat("a", 64), Size: 1024},
+			},
+		},
+	}}
 }
 
 func TestUpgradeHandlerReportsQueueConflicts(t *testing.T) {

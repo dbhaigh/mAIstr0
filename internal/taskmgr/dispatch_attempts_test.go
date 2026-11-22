@@ -1,10 +1,11 @@
 package taskmgr
 
 import (
+	"errors"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -101,7 +102,7 @@ func TestSuccessfulAttemptAndSubtaskOutputPersistTogether(t *testing.T) {
 	}
 }
 
-func TestConcurrentSuccessfulAttemptsChooseOneWinner(t *testing.T) {
+func TestSingleActiveAttemptRejectsConcurrentHedge(t *testing.T) {
 	manager := NewManager()
 	t.Cleanup(func() { _ = manager.Close() })
 	primary := scheduler.Assignment{
@@ -111,70 +112,136 @@ func TestConcurrentSuccessfulAttemptsChooseOneWinner(t *testing.T) {
 	hedge := primary
 	hedge.NodeID = "node-b"
 	hedge.Model = "model-b"
-	task, err := manager.CreateChecked("hedged inference", []scheduler.Assignment{primary})
+	task, err := manager.CreateChecked("single active dispatch", []scheduler.Assignment{primary})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
 		t.Fatal(err)
 	}
-	attempts := make([]int, 2)
-	for i, assignment := range []scheduler.Assignment{primary, hedge} {
-		attempts[i], err = manager.BeginDispatchAttemptChecked(task.ID, "work", assignment)
-		if err != nil {
-			t.Fatal(err)
-		}
+	number, err := manager.BeginDispatchAttemptChecked(task.ID, "work", primary)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	var callbackCalls atomic.Int32
-	results := make(chan bool, len(attempts))
-	errorsFound := make(chan error, len(attempts))
-	var start sync.WaitGroup
-	start.Add(1)
-	var done sync.WaitGroup
-	done.Add(len(attempts))
-	for i, assignment := range []scheduler.Assignment{primary, hedge} {
-		go func(attempt int, candidate scheduler.Assignment) {
-			defer done.Done()
-			start.Wait()
-			won, completeErr := manager.CompleteDispatchAttemptWithAssignmentChecked(
-				task.ID, "work", attempts[attempt], &candidate, "none",
-				http.StatusOK, 10*time.Millisecond, candidate.NodeID+" output",
-				func() { callbackCalls.Add(1) },
-			)
-			results <- won
-			errorsFound <- completeErr
-		}(i, assignment)
+	if _, err := manager.BeginDispatchAttemptChecked(task.ID, "work", hedge); !errors.Is(err, ErrDispatchInProgress) {
+		t.Fatalf("concurrent hedge admission = %v, want ErrDispatchInProgress", err)
 	}
-	start.Done()
-	done.Wait()
-	close(results)
-	close(errorsFound)
-	winnerCount := 0
-	for won := range results {
-		if won {
-			winnerCount++
-		}
-	}
-	for completeErr := range errorsFound {
-		if completeErr != nil {
-			t.Fatalf("complete concurrent attempt: %v", completeErr)
-		}
-	}
-	if winnerCount != 1 || callbackCalls.Load() != 1 {
-		t.Fatalf("winner count/callbacks = %d/%d, want 1/1", winnerCount, callbackCalls.Load())
+	won, err := manager.CompleteDispatchAttemptWithAssignmentChecked(
+		task.ID, "work", number, &primary, "none", http.StatusOK,
+		10*time.Millisecond, "primary output", nil,
+	)
+	if err != nil || !won {
+		t.Fatalf("complete primary attempt = won %t, error %v", won, err)
 	}
 	completed, ok := manager.Get(task.ID)
-	if !ok || completed.Status != StatusCompleted || len(completed.Subtasks[0].Attempts) != 2 {
+	if !ok || completed.Status != StatusCompleted || len(completed.Subtasks[0].Attempts) != 1 {
 		t.Fatalf("completed task = %+v", completed)
 	}
-	if completed.Subtasks[0].Output != completed.Subtasks[0].Assignment.NodeID+" output" {
-		t.Fatalf("subtask output %q does not match winning assignment %+v",
-			completed.Subtasks[0].Output, completed.Subtasks[0].Assignment)
+	if completed.Subtasks[0].Output != "primary output" || completed.Subtasks[0].Assignment.NodeID != "node-a" {
+		t.Fatalf("subtask result = %+v", completed.Subtasks[0])
 	}
 }
 
-func TestRestartClosesRunningAttemptAsIndeterminate(t *testing.T) {
+func TestUnknownAttemptFinishImmediatelyBlocksResume(t *testing.T) {
+	manager := NewManager()
+	task := manager.Create("unknown outcome", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work"}, NodeID: "node-a", Model: "model-a",
+	}})
+	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+		t.Fatal(err)
+	}
+	number, err := manager.BeginDispatchAttemptChecked(task.ID, "work", task.Subtasks[0].Assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.FinishDispatchAttemptChecked(
+		task.ID, "work", number, DispatchAttemptFailed, DispatchFailureClassOutcomeUnknown,
+		0, ErrOutcomeUnknown, time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	current, ok := manager.Get(task.ID)
+	if !ok || current.Status != StatusFailed || current.Resumable ||
+		current.Subtasks[0].Status != StatusFailed || current.Error != ErrOutcomeUnknown.Error() {
+		t.Fatalf("finished unknown attempt state = %+v", current)
+	}
+	if _, err := manager.ResumeTaskChecked(task.ID); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("resume after unknown attempt = %v, want ErrOutcomeUnknown", err)
+	}
+}
+
+type failOnceTaskStateStore struct {
+	Store
+	mu       sync.Mutex
+	failNext bool
+	err      error
+}
+
+func (s *failOnceTaskStateStore) SaveTaskAndCheckpoint(task *Task, checkpoint *Checkpoint) error {
+	s.mu.Lock()
+	if s.failNext {
+		s.failNext = false
+		err := s.err
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	return saveTaskAndCheckpoint(s.Store, task, checkpoint)
+}
+
+func TestUncommittedSuccessfulDispatchBecomesUnknown(t *testing.T) {
+	persistErr := errors.New("simulated task-store failure")
+	store := &failOnceTaskStateStore{Store: NewMemoryStore(), err: persistErr}
+	manager, err := NewManagerWithStore(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeutil.Discard(manager)
+
+	assignment := scheduler.Assignment{
+		Subtask: scheduler.Subtask{ID: "work"}, NodeID: "node-a", Model: "model-a",
+	}
+	task, err := manager.CreateChecked("uncommitted result", []scheduler.Assignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+		t.Fatal(err)
+	}
+	number, err := manager.BeginDispatchAttemptChecked(task.ID, "work", assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.failNext = true
+	store.mu.Unlock()
+
+	won, err := manager.CompleteDispatchAttemptChecked(
+		task.ID, "work", number, "none", http.StatusOK, time.Millisecond, "uncommitted output",
+	)
+	if won || !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("completion after persistence failure = won %t, error %v; want unknown outcome", won, err)
+	}
+	current, ok := manager.Get(task.ID)
+	if !ok || current.Status != StatusFailed || current.Resumable ||
+		current.Subtasks[0].Output != "" ||
+		current.Subtasks[0].Attempts[0].FailureClass != DispatchFailureClassOutcomeUnknown {
+		t.Fatalf("in-memory failed commit state = %+v", current)
+	}
+
+	reopened, err := NewManagerWithStore(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeutil.Discard(reopened)
+	persisted, ok := reopened.Get(task.ID)
+	if !ok || persisted.Status != StatusFailed || persisted.Resumable ||
+		!persisted.HasUnknownDispatchOutcome() {
+		t.Fatalf("persisted failed commit state = %+v", persisted)
+	}
+}
+
+func TestRestartClosesRunningAttemptAsOutcomeUnknown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dispatch-interrupted.db")
 	manager, err := OpenManager(path, nil)
 	if err != nil {
@@ -207,8 +274,13 @@ func TestRestartClosesRunningAttemptAsIndeterminate(t *testing.T) {
 		t.Fatalf("interrupted dispatch was not restored: %+v", restored)
 	}
 	attempt := restored.Subtasks[0].Attempts[0]
-	if attempt.Status != DispatchAttemptFailed || attempt.FailureClass != "orchestrator_restart" ||
-		attempt.RequestID != DispatchRequestID(task.ID, "work") || attempt.FinishedAt == nil {
+	if attempt.Status != DispatchAttemptFailed || attempt.FailureClass != DispatchFailureClassOutcomeUnknown ||
+		attempt.Error != ErrOutcomeUnknown.Error() ||
+		attempt.RequestID != DispatchRequestID(task.ID, "work") || attempt.FinishedAt == nil ||
+		restored.Resumable || !strings.Contains(restored.Error, "reconciliation required") {
 		t.Fatalf("running attempt was not closed with its uncertain outcome: %+v", attempt)
+	}
+	if _, err := reopened.ResumeTaskChecked(task.ID); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("resume after restart = %v, want ErrOutcomeUnknown", err)
 	}
 }

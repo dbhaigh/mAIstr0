@@ -305,6 +305,10 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.NotFoundError(errors.New("task not found")))
 		return
 	}
+	if task.HasUnknownDispatchOutcome() {
+		writeError(w, apperr.ConflictError(taskmgr.ErrOutcomeUnknown))
+		return
+	}
 	if !task.Resumable {
 		writeError(w, apperr.ConflictError(errors.New("task is not resumable")))
 		return

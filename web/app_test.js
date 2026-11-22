@@ -86,6 +86,7 @@ const upgradeDialogSource = readModuleSource("src", "components", "upgrade-dialo
 const routingViewSource = readModuleSource("src", "views", "routing.js");
 const themeSource = readModuleSource("src", "shared", "theme.js");
 const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
+const sessionListSource = source.slice(source.indexOf("function sessionsForHarness("), source.indexOf("async function selectSession("));
 const optionalFeaturesSource = source.slice(source.indexOf("let optionalFeaturesInitialized = false;"), source.indexOf("async function refreshPersistenceStatus()"));
 const sendInteractiveStart = source.indexOf("async function sendInteractiveMessage(text) {");
 const sendInteractiveEnd = source.indexOf("\nfunction handleStreamEvent(", sendInteractiveStart);
@@ -1149,6 +1150,7 @@ test("Offline node properties save persistent runtime settings without requiring
     "runtime_tray_mode", "runtime_harness", "runtime_memory_path",
     "runtime_auto_open_browser", "runtime_discovery_enabled",
     "runtime_allow_peer_updates", "runtime_no_peer_updates",
+    "runtime_allow_central_updates", "runtime_no_central_updates",
   ].map((name) => [name, { value: "", checked: false }]));
   fields.runtime_role.value = "node";
   fields.runtime_allow_peer_updates.checked = true;
@@ -1181,6 +1183,8 @@ test("Offline node properties save persistent runtime settings without requiring
     discovery_enabled: false,
     allow_peer_updates: true,
     no_peer_updates: false,
+    allow_central_updates: false,
+    no_central_updates: false,
   });
   assert.equal(status.textContent, "Saved");
   assert.equal(refreshed, 1);
@@ -1382,6 +1386,54 @@ test("mAIstr0 is the default chat mode and does not create an agent session on s
   assert.equal(context.dashboardState.sessions.length, 1);
   assert.equal(selected, 0);
   assert.equal(created, 0);
+});
+
+test("Unavailable optional-backend sessions remain visible in the conversation list", () => {
+  const items = [];
+  const context = vm.createContext({
+    dashboardState: {
+      sessions: [
+        { id: "available-session", harness: "pi", title: "Available", available: true },
+        { id: "saved-external-session", harness: "external", title: "Saved history", available: false },
+        { id: "legacy-session", harness: "<img src=x>", title: "Legacy owner", available: false },
+      ],
+    },
+    backendAvailability: new Map([
+      ["pi", { name: "pi", available: true }],
+      ["external", { name: "external", available: false }],
+    ]),
+    currentAgentHarness: "pi",
+    activeSessionId: null,
+    isSending: false,
+    sessionListEl: { innerHTML: "", appendChild: (item) => items.push(item) },
+    escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"),
+    document: {
+      createElement: () => ({
+        dataset: {},
+        setAttribute() {},
+        addEventListener() {},
+        querySelector: () => null,
+      }),
+    },
+    selectSession: () => {},
+  });
+  context.backendLabel = (name) => name;
+  context.sessionIsAvailable = (session) =>
+    session.available !== false && context.backendAvailability.get(session.harness)?.available !== false;
+  vm.runInContext(sessionListSource, context);
+  context.renderSessionList();
+
+  assert.equal(items.length, 3);
+  assert.match(items[1].innerHTML, /Unavailable · external/);
+  assert.match(items[1].innerHTML, /Saved history/);
+  assert.doesNotMatch(items[2].innerHTML, /<img/);
+});
+
+test("Runtime backend setting accepts optional registered backend names", () => {
+  const index = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8");
+  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "contracts", "schemas", "runtime-settings.schema.json"), "utf8"));
+  assert.match(index, /<input name="runtime_harness" list="runtime-harness-options"/);
+  assert.equal(schema.properties.harness.pattern, "^[a-z][a-z0-9_-]{0,63}$");
 });
 
 test("minimal mode hides harness and learning controls without loading optional APIs", () => {

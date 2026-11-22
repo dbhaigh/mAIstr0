@@ -1,11 +1,13 @@
-// Command updatebundle writes checked metadata for cross-platform peer bundles.
+// Command updatebundle writes checked metadata and optional central-update payloads.
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,11 +24,12 @@ func main() {
 	release := flag.String("version", version.String(), "release of the binaries just built")
 	windowsBinary := flag.String("windows-binary", "maistr0.exe", "Windows output name (maistr0-update.exe when installed image is in use)")
 	darwinOnly := flag.Bool("darwin-only", false, "write manifests for darwin/amd64 and darwin/arm64 bundles only")
+	catalogOutput := flag.String("catalog-output", "", "optional unsigned central update catalog path; requires all five platform binaries")
 	flag.Parse()
-	// Linux arm64 binaries are shipped, but peer update manifests do not support that target.
 	targets := []struct{ folder, name string }{
 		{"windows-amd64", *windowsBinary},
 		{"linux-amd64", "maistr0"},
+		{"linux-arm64", "maistr0"},
 		{"linux-ubuntu-amd64", "maistr0"},
 	}
 	if *darwinOnly {
@@ -64,4 +67,64 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if *catalogOutput != "" {
+		if err := writeCentralUpdatePayload(*root, *release, *windowsBinary, *catalogOutput); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+}
+
+func writeCentralUpdatePayload(root, release, windowsBinary, output string) error {
+	catalog, err := selfupdate.BuildReleaseCatalog(root, release, windowsBinary)
+	if err != nil {
+		return err
+	}
+	outputPath, err := filepath.Abs(output)
+	if err != nil {
+		return fmt.Errorf("resolve central catalog output path: %w", err)
+	}
+	outputDir := filepath.Dir(outputPath)
+	for _, artifact := range catalog.Artifacts {
+		relativePath := filepath.FromSlash(artifact.Path)
+		sourcePath := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(artifact.Path, "v"+release+"/")))
+		targetPath := filepath.Join(outputDir, relativePath)
+		if err := copyUpdateArtifact(sourcePath, targetPath); err != nil {
+			return fmt.Errorf("stage central update artifact %s/%s: %w", artifact.OS, artifact.Arch, err)
+		}
+	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create central update payload directory: %w", err)
+	}
+	data, err := json.MarshalIndent(catalog, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode central update catalog: %w", err)
+	}
+	if err := os.WriteFile(outputPath, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write unsigned central update catalog: %w", err)
+	}
+	return nil
+}
+
+func copyUpdateArtifact(sourcePath, targetPath string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open release binary: %w", err)
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect release binary: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create artifact directory: %w", err)
+	}
+	target, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return fmt.Errorf("create staged release binary: %w", err)
+	}
+	_, copyErr := io.Copy(target, source)
+	syncErr := target.Sync()
+	closeErr := target.Close()
+	return errors.Join(copyErr, syncErr, closeErr)
 }

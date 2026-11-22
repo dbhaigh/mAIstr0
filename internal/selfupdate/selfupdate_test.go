@@ -108,7 +108,6 @@ func TestManifestValidation(t *testing.T) {
 		{"platform", func(m *Manifest) { m.OS = "../windows" }},
 		{"arch", func(m *Manifest) { m.Arch = "unknown" }},
 		{"windows arm64", func(m *Manifest) { m.OS, m.Arch = "windows", "arm64" }},
-		{"linux arm64", func(m *Manifest) { m.OS, m.Arch = "linux", "arm64" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := valid
@@ -121,16 +120,25 @@ func TestManifestValidation(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, arch := range []string{"amd64", "arm64"} {
+	for _, platform := range []struct{ os, arch string }{
+		{os: "linux", arch: "arm64"},
+		{os: "darwin", arch: "amd64"},
+		{os: "darwin", arch: "arm64"},
+	} {
 		manifest := valid
-		manifest.OS, manifest.Arch = "darwin", arch
+		manifest.OS, manifest.Arch = platform.os, platform.arch
 		if err := manifest.Validate(); err != nil {
-			t.Fatalf("valid darwin/%s manifest rejected: %v", arch, err)
+			t.Fatalf("valid %s/%s manifest rejected: %v", platform.os, platform.arch, err)
 		}
 	}
 }
 
 func TestUpgradeRequestRequiresOneValidSource(t *testing.T) {
+	_, catalog := signedCentralCatalog(t, "9.0.0")
+	central := &CentralUpdateRequest{
+		ManifestURL: "https://updates.example.test/latest.json",
+		Catalog:     catalog,
+	}
 	tests := []struct {
 		name    string
 		request UpgradeRequest
@@ -138,8 +146,10 @@ func TestUpgradeRequestRequiresOneValidSource(t *testing.T) {
 	}{
 		{name: "absolute local path", request: UpgradeRequest{Path: filepath.Join(t.TempDir(), "maistr0")}},
 		{name: "paired peer", request: UpgradeRequest{PeerID: "node-2"}},
+		{name: "signed central release", request: UpgradeRequest{Central: central}},
 		{name: "missing source", wantErr: true},
 		{name: "both sources", request: UpgradeRequest{Path: filepath.Join(t.TempDir(), "maistr0"), PeerID: "node-2"}, wantErr: true},
+		{name: "multiple sources", request: UpgradeRequest{Path: filepath.Join(t.TempDir(), "maistr0"), Central: central}, wantErr: true},
 		{name: "relative path", request: UpgradeRequest{Path: "maistr0.exe"}, wantErr: true},
 		{name: "blank peer", request: UpgradeRequest{PeerID: " "}, wantErr: true},
 		{name: "padded peer", request: UpgradeRequest{PeerID: " node-2 "}, wantErr: true},
@@ -329,24 +339,7 @@ func TestArtifactManifestRollbackRestoresPreviousSidecar(t *testing.T) {
 	}
 }
 
-func TestNewestPeerReleasesSelectsOnlyTheHighestRelease(t *testing.T) {
-	offers := []peerRelease{
-		{peer: Peer{ID: "older"}, manifest: Manifest{Version: "0.1.1.3"}},
-		{peer: Peer{ID: "intermediate"}, manifest: Manifest{Version: "0.1.1.4"}},
-		{peer: Peer{ID: "newest-a"}, manifest: Manifest{Version: "0.1.1.5"}},
-		{peer: Peer{ID: "newest-b"}, manifest: Manifest{Version: "0.1.1.5"}},
-	}
-
-	got := newestPeerReleases("0.1.1.3", offers)
-	if len(got) != 2 || got[0].peer.ID != "newest-a" || got[1].peer.ID != "newest-b" {
-		t.Fatalf("newestPeerReleases() = %+v, want only both 0.1.1.5 publishers", got)
-	}
-	if got := newestPeerReleases("0.1.1.5", offers); len(got) != 0 {
-		t.Fatalf("newestPeerReleases() at the cluster maximum = %+v, want no update", got)
-	}
-}
-
-func TestDistributionUsesRunningExecutableVersionAsUpdateBaseline(t *testing.T) {
+func TestDistributionUsesRunningExecutableVersion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("version probe fixture builds an executable")
 	}
@@ -365,13 +358,6 @@ func TestDistributionUsesRunningExecutableVersionAsUpdateBaseline(t *testing.T) 
 	}
 	if distribution.Version != "9.0.1" {
 		t.Fatalf("running executable version = %q, want 9.0.1", distribution.Version)
-	}
-	offers := []peerRelease{
-		{manifest: Manifest{Version: "9.0.1"}},
-		{manifest: Manifest{Version: "9.0.2"}},
-	}
-	if got := newestPeerReleases(distribution.Version, offers); len(got) != 1 || got[0].manifest.Version != "9.0.2" {
-		t.Fatalf("updates after restart = %+v, want only a newer 9.0.2 release", got)
 	}
 }
 

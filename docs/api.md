@@ -50,12 +50,21 @@ conversion. See [migration](./pairing-and-security.md#migration).
   "sha256": "<64 lowercase hex characters>", "size": 14000000 }`.
 - `GET /api/updates/binary` with the same query downloads that executable.
   Both listeners expose these read-only endpoints to paired mTLS peers
-  (or local loopback). An unavailable target returns 404. No arbitrary
+  (or local loopback) for explicitly requested `peer_id` upgrades; nodes no
+  longer poll peers automatically. An unavailable target returns 404. No arbitrary
   filesystem paths or download URLs are accepted. The manifest may include an
   Ed25519 `signature`; a receiving node configured with
   `peer_update_publisher_key` requires and verifies it before staging. Without
-  that key, the legacy checksum-only behavior remains. See the executable-trust warning in
-  [configuration](./configuration.md#automatic-peer-executable-updates).
+  that key, the legacy checksum-only behavior remains.
+- Central releases use the orchestrator-configured HTTPS `update_manifest_url`.
+  The elected orchestrator polls a signed catalog, updates itself first, then
+  sends the catalog to healthy nodes over paired mTLS. Nodes use their own
+  `GOOS/GOARCH` asset and download it directly from the catalog's HTTPS origin.
+  The catalog signature is verified using `central_update_publisher_key`;
+  central updates are separately opt-in and disabled by default. Supported
+  assets are Windows amd64, Linux amd64/arm64, and macOS amd64/arm64. See the
+  executable-trust warning in
+  [configuration](./configuration.md#central-orchestrator-led-executable-updates).
 - `POST /api/shards/{id}/members` accepts
   `{ "node_ids": ["AHDEV01", "AHDT00"] }` and returns the ready group.
   Retain the current model-head node. New members must be healthy and have
@@ -214,10 +223,11 @@ required fields, and bounded retries. Set
 and outputs survive restarts.
 
 `"routing_preference":"latency"` favors faster completion estimates;
-`"quality"` is the default and retains model-quality bonuses. Speculative
-hedging is disabled by default and can be enabled in orchestrator
-configuration. When enabled, at most the configured bounded number of secondary
-attempts may be dispatched after historical p95 latency.
+`"quality"` is the default and retains model-quality bonuses. Side-effecting
+task `/execute` requests are not speculatively hedged: only one active attempt
+is admitted per subtask. An ambiguous execution result requires reconciliation
+and is not automatically retried or resumed. Router/inference retry behavior
+is unchanged.
 
 Example task submission:
 
@@ -336,12 +346,18 @@ and memory/learning views. Task history is pageable, and a subtask assignment
 can navigate to and highlight its selected node.
 
 The interactive harness can be switched for new conversations; existing
-conversations remain on their original harness. An interrupted agent turn
-cancels downstream model dispatches while preserving the session. The cluster
+conversations remain on their original harness. `GET /api/agent/backend`
+reports registered backends and their declared capabilities. Its existing
+`name`, `harnesses`, and `supports_coordinator_model` fields are preserved.
+Session list/get responses identify unavailable owners and continue to expose
+their stored history; sending to one returns an unavailable error rather than
+rerouting. An interrupted agent turn cancels downstream model dispatches while
+preserving the session. The cluster
 view includes discovered LAN peers, node/engine readiness, model inventory,
 tasks, and setup/pairing controls. If persistent memory is unavailable,
 `GET /api/status` reports degraded persistence so the dashboard can warn that
 conversation history and learned data will not survive restart.
+See [agent backends](./agent-backends.md) for capability semantics.
 
 ## Distributed models
 

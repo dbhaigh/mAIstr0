@@ -187,6 +187,7 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		}},
 	}}
 	orchestratorConfig := config.DefaultOrchestratorConfig()
+	orchestratorConfig.UpdateManifestURL = "https://updates.example.test/latest.json"
 	nodeStatus := cluster.NodeStatus{
 		ID: "worker-1", Version: "1.0.0", Address: "https://worker-1",
 		ControlAddress: "https://worker-1:7453", Draining: true,
@@ -272,9 +273,61 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		t.Fatalf("parse error response fixture: %v", err)
 	}
 	values := map[string]any{
-		"error-response.schema.json":   errorResponse,
+		"error-response.schema.json": errorResponse,
+		"agent-backend.schema.json": map[string]any{
+			"name": "pi", "harnesses": []string{"pi", "deepseek"},
+			"supports_coordinator_model": true, "available": true,
+			"capabilities": map[string]any{
+				"session_resume": true, "streaming": true, "cancellation": true,
+				"approvals": false, "workspace_isolation": false,
+				"model_selection": true, "tool_access": true,
+			},
+			"backends": []any{
+				map[string]any{
+					"name": "external", "available": false,
+				},
+				map[string]any{
+					"name": "pi", "available": true,
+					"capabilities": map[string]any{
+						"session_resume": true, "streaming": true, "cancellation": true,
+						"approvals": false, "workspace_isolation": false,
+						"model_selection": true, "tool_access": true,
+					},
+				},
+			},
+		},
+		"agent-session-view.schema.json": map[string]any{
+			"id": "saved-session", "harness": "external", "available": false,
+			"unavailable_reason": "backend_unavailable",
+			"messages":           []any{map[string]any{"role": "user", "content": "history"}},
+		},
 		"shard-membership.schema.json": map[string]any{"node_ids": []string{"worker-1", "worker-2"}},
 		"peer-update.schema.json":      map[string]any{"version": "0.0.24.1", "os": "darwin", "arch": "arm64", "sha256": strings.Repeat("a", 64), "size": 14000000},
+		"release-catalog.schema.json": map[string]any{
+			"version": "1.2.3",
+			"artifacts": []any{
+				map[string]any{"os": "windows", "arch": "amd64", "path": "v1.2.3/windows-amd64/maistr0.exe", "sha256": strings.Repeat("a", 64), "size": 14000000},
+				map[string]any{"os": "linux", "arch": "amd64", "path": "v1.2.3/linux-amd64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+				map[string]any{"os": "linux", "arch": "arm64", "path": "v1.2.3/linux-arm64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+				map[string]any{"os": "darwin", "arch": "amd64", "path": "v1.2.3/darwin-amd64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+				map[string]any{"os": "darwin", "arch": "arm64", "path": "v1.2.3/darwin-arm64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+			},
+			"signature": strings.Repeat("a", 86) + "==",
+		},
+		"central-update.schema.json": map[string]any{
+			"manifest_url": "https://updates.example.test/latest.json",
+			"catalog": map[string]any{
+				"version": "1.2.3",
+				"artifacts": []any{
+					map[string]any{"os": "windows", "arch": "amd64", "path": "v1.2.3/windows-amd64/maistr0.exe", "sha256": strings.Repeat("a", 64), "size": 14000000},
+					map[string]any{"os": "linux", "arch": "amd64", "path": "v1.2.3/linux-amd64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+					map[string]any{"os": "linux", "arch": "arm64", "path": "v1.2.3/linux-arm64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+					map[string]any{"os": "darwin", "arch": "amd64", "path": "v1.2.3/darwin-amd64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+					map[string]any{"os": "darwin", "arch": "arm64", "path": "v1.2.3/darwin-arm64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+				},
+				"signature": strings.Repeat("a", 86) + "==",
+			},
+		},
 		"dashboard-pipeline.schema.json": map[string]any{
 			"model_inventory": []any{
 				map[string]any{"model_id": "whole-model", "kind": "whole", "nodes": []string{"worker-1"}},
@@ -371,8 +424,24 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 		"score-factors.schema.json":       scheduler.ScoreFactors{},
 		"node-status.schema.json":         nodeStatus,
 		"runtime-settings.schema.json": map[string]any{
-			"role": "node", "allow_peer_updates": true,
-			"discovery_enabled": true, "auto_open_browser": false,
+			"role": "node", "allow_peer_updates": true, "allow_central_updates": true,
+			"discovery_enabled": true, "auto_open_browser": false, "harness": "claude-code",
+		},
+		"upgrade-request.schema.json": map[string]any{
+			"central": map[string]any{
+				"manifest_url": "https://updates.example.test/latest.json",
+				"catalog": map[string]any{
+					"version": "1.2.3",
+					"artifacts": []any{
+						map[string]any{"os": "windows", "arch": "amd64", "path": "v1.2.3/windows-amd64/maistr0.exe", "sha256": strings.Repeat("a", 64), "size": 14000000},
+						map[string]any{"os": "linux", "arch": "amd64", "path": "v1.2.3/linux-amd64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+						map[string]any{"os": "linux", "arch": "arm64", "path": "v1.2.3/linux-arm64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+						map[string]any{"os": "darwin", "arch": "amd64", "path": "v1.2.3/darwin-amd64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+						map[string]any{"os": "darwin", "arch": "arm64", "path": "v1.2.3/darwin-arm64/maistr0", "sha256": strings.Repeat("a", 64), "size": 14000000},
+					},
+					"signature": strings.Repeat("a", 86) + "==",
+				},
+			},
 		},
 		"node-service-status.schema.json": map[string]any{
 			"running": true, "desired_running": true, "operation": "drain",
@@ -620,8 +689,9 @@ func TestDashboardRouterPropertiesAreTopLevel(t *testing.T) {
 
 func TestSchemaSetIsComplete(t *testing.T) {
 	expected := []string{
+		"agent-backend.schema.json", "agent-session-view.schema.json",
 		"announcement.schema.json", "assignment-explanation.schema.json", "assignment.schema.json", "cluster-health.schema.json", "dashboard-pipeline.schema.json", "dialogue-record.schema.json",
-		"error-response.schema.json",
+		"error-response.schema.json", "central-update.schema.json",
 		"activation-tensor.schema.json", "dispatch-attempt.schema.json", "engine-status.schema.json", "experience.schema.json",
 		"fact.schema.json", "node-config.schema.json", "create-shard-group.schema.json",
 		"managed-engine-start.schema.json", "managed-engine-status.schema.json",
@@ -634,7 +704,7 @@ func TestSchemaSetIsComplete(t *testing.T) {
 		"router-circuit-breaker.schema.json", "router-request-event.schema.json", "router-requests.schema.json", "runtime-settings.schema.json",
 		"score-factors.schema.json", "security-status.schema.json", "snapshot.schema.json",
 		"shard-group-list.schema.json", "shard-group.schema.json", "shard-model-profile.schema.json", "shard-plan.schema.json",
-		"peer-update.schema.json", "shard-membership.schema.json",
+		"peer-update.schema.json", "release-catalog.schema.json", "shard-membership.schema.json",
 		"stage-assignment.schema.json", "stage-forward-frame.schema.json",
 		"sharded-model-config.schema.json", "stage-spec.schema.json", "subtask-result.schema.json", "subtask.schema.json", "task-dependencies.schema.json",
 		"task-graph.schema.json", "task.schema.json", "upgrade-request.schema.json", "upgrade-status.schema.json",

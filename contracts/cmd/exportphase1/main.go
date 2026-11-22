@@ -92,6 +92,7 @@ var streamNormalizationRules = []string{
 func phase1Requests() map[string]request {
 	jsonBody := func(value string) json.RawMessage { return json.RawMessage(value) }
 	return map[string]request{
+		"agent-backend": {Method: "GET", Path: "/api/agent/backend"},
 		"compat-anthropic-messages": {
 			Method: "POST", Path: "/v1/messages",
 			Body: jsonBody(`{"model":"simulated-general","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`),

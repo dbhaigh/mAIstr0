@@ -33,7 +33,7 @@ type Manifest struct {
 
 func (m Manifest) Validate() error {
 	validPlatform := (m.OS == "windows" && m.Arch == "amd64") ||
-		(m.OS == "linux" && m.Arch == "amd64") ||
+		(m.OS == "linux" && (m.Arch == "amd64" || m.Arch == "arm64")) ||
 		(m.OS == "darwin" && (m.Arch == "amd64" || m.Arch == "arm64"))
 	if !releaseVersion.MatchString(m.Version) || !validPlatform ||
 		m.Size <= 0 || m.Size > MaxBinaryBytes {
@@ -83,7 +83,7 @@ type Distribution struct {
 
 func (d Distribution) artifact(goos, arch string) (string, Manifest, error) {
 	validTarget := (goos == "windows" && arch == "amd64") ||
-		(goos == "linux" && arch == "amd64") ||
+		(goos == "linux" && (arch == "amd64" || arch == "arm64")) ||
 		(goos == "darwin" && (arch == "amd64" || arch == "arm64"))
 	if !validTarget {
 		return "", Manifest{}, errors.New("unsupported update target")

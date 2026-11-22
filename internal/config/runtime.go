@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/maistr0/maistr0/internal/agent"
 )
 
 type RuntimeSettings struct {
@@ -23,6 +25,8 @@ type RuntimeSettings struct {
 	MemoryPath                 *string `json:"memory_path,omitempty"`
 	AllowPeerUpdates           *bool   `json:"allow_peer_updates,omitempty"`
 	NoPeerUpdates              *bool   `json:"no_peer_updates,omitempty"`
+	AllowCentralUpdates        *bool   `json:"allow_central_updates,omitempty"`
+	NoCentralUpdates           *bool   `json:"no_central_updates,omitempty"`
 	RequirePairingVerification *bool   `json:"require_pairing_verification,omitempty"`
 }
 
@@ -105,8 +109,8 @@ func (settings RuntimeSettings) Validate() error {
 	if settings.TrayMode != nil && *settings.TrayMode != "taskbar" && *settings.TrayMode != "hidden" {
 		return errors.New("tray_mode must be taskbar or hidden")
 	}
-	if settings.Harness != nil && *settings.Harness != "pi" && *settings.Harness != "deepseek" {
-		return errors.New("harness must be pi or deepseek")
+	if settings.Harness != nil && !agent.ValidBackendName(*settings.Harness) {
+		return errors.New("harness must be a lowercase backend name")
 	}
 	for name, value := range map[string]*string{
 		"node_config_path":         settings.NodeConfigPath,

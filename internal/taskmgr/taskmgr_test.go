@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -75,19 +76,53 @@ func TestCancelAndSnapshotCheckedReturnsAtomicTaskSnapshot(t *testing.T) {
 	}
 	if !cancelled || snapshot == nil || snapshot.Status != StatusCancelled ||
 		len(snapshot.Subtasks[0].Attempts) != 1 ||
-		snapshot.Subtasks[0].Attempts[0].Status != DispatchAttemptRunning {
+		snapshot.Subtasks[0].Attempts[0].Status != DispatchAttemptFailed ||
+		snapshot.Subtasks[0].Attempts[0].FailureClass != DispatchFailureClassOutcomeUnknown ||
+		snapshot.Resumable {
 		t.Fatalf("cancellation snapshot = %#v, cancelled %v", snapshot, cancelled)
 	}
-	if err := manager.FinishDispatchAttemptChecked(task.ID, "work", number, DispatchAttemptFailed,
-		"cancelled", 0, context.Canceled, time.Millisecond); err != nil {
-		t.Fatal(err)
+	if won, err := manager.CompleteDispatchAttemptChecked(
+		task.ID, "work", number, "none", http.StatusOK, time.Millisecond, "late output",
+	); err != nil || won {
+		t.Fatalf("late dispatch result = %t, %v; want ignored", won, err)
 	}
-	if snapshot.Subtasks[0].Attempts[0].Status != DispatchAttemptRunning {
+	if snapshot.Subtasks[0].Attempts[0].Status != DispatchAttemptFailed {
 		t.Fatalf("cancellation snapshot changed after dispatch completion: %+v", snapshot.Subtasks[0].Attempts[0])
 	}
 	current, ok := manager.Get(task.ID)
-	if !ok || current.Subtasks[0].Attempts[0].Status != DispatchAttemptFailed {
+	if !ok || current.Subtasks[0].Attempts[0].Status != DispatchAttemptFailed ||
+		current.Subtasks[0].Attempts[0].FailureClass != DispatchFailureClassOutcomeUnknown ||
+		current.Subtasks[0].Output != "" {
 		t.Fatalf("persisted task did not record dispatch completion: %#v", current)
+	}
+	if _, err := manager.ResumeTaskChecked(task.ID); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("resume after cancellation = %v, want ErrOutcomeUnknown", err)
+	}
+}
+
+func TestDuplicateDispatchAttemptAdmissionIsSingleFlight(t *testing.T) {
+	manager := NewManager()
+	task := manager.Create("single-flight", []scheduler.Assignment{{
+		Subtask: scheduler.Subtask{ID: "work"}, NodeID: "node-a", Model: "model-a",
+	}})
+	if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+		t.Fatal(err)
+	}
+	number, err := manager.BeginDispatchAttemptChecked(task.ID, "work", task.Subtasks[0].Assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.BeginDispatchAttemptChecked(task.ID, "work", task.Subtasks[0].Assignment); !errors.Is(err, ErrDispatchInProgress) {
+		t.Fatalf("duplicate dispatch admission = %v, want ErrDispatchInProgress", err)
+	}
+	if err := manager.FinishDispatchAttemptChecked(
+		task.ID, "work", number, DispatchAttemptFailed, "client_error", http.StatusBadRequest,
+		errors.New("request rejected"), time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.BeginDispatchAttemptChecked(task.ID, "work", task.Subtasks[0].Assignment); err != nil {
+		t.Fatalf("dispatch after definitive failure = %v, want admitted", err)
 	}
 }
 

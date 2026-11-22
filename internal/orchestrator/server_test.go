@@ -396,8 +396,20 @@ func TestHarnessSelection(t *testing.T) {
 	}
 	defer closeutil.Discard(pi)
 
-	if _, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "unknown.db"), "unknown"); err == nil {
-		t.Fatal("expected unknown backend to return an error")
+	optional, err := NewWithMemoryAndHarness(filepath.Join(t.TempDir(), "unknown.db"), "external")
+	if err != nil {
+		t.Fatalf("unavailable optional backend prevented startup: %v", err)
+	}
+	defer closeutil.Discard(optional)
+	name, backend := optional.currentAgent()
+	if name != "external" || backend != nil {
+		t.Fatalf("configured unavailable backend = %q / %T; want no fallback backend", name, backend)
+	}
+	response := httptest.NewRecorder()
+	optional.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/agent/sessions",
+		strings.NewReader(`{"title":"must not use another backend"}`)))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing configured backend allowed session creation: %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -1729,7 +1741,7 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 			t.Errorf("standard dispatch request ID = %q, want attempt request ID %q", got, want)
 		}
 		attemptIDs <- dispatchIDs{request: r.Header.Get(inferroute.HeaderRequestID), attempt: r.Header.Get(inferroute.HeaderAttemptID)}
-		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		http.Error(w, "model not found", http.StatusNotFound)
 	}))
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1780,7 +1792,7 @@ func TestDispatchRetriesOnAnotherHealthyNode(t *testing.T) {
 	}
 	if attempts := completed.Subtasks[0].Attempts; len(attempts) != 2 ||
 		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
-		attempts[0].FailureClass != "upstream_5xx" ||
+		attempts[0].FailureClass != "stale_model" ||
 		attempts[1].Status != taskmgr.DispatchAttemptSucceeded ||
 		attempts[0].NodeID == attempts[1].NodeID ||
 		attempts[0].Model == attempts[1].Model ||
@@ -1925,9 +1937,15 @@ func TestDispatchCancellationDuringExecutionFailsWithoutRetry(t *testing.T) {
 		t.Fatalf("cancelled dispatch task = %+v", completed)
 	}
 	attempts := completed.Subtasks[0].Attempts
-	if len(attempts) != 1 || attempts[0].FailureClass != "cancelled" ||
+	if len(attempts) != 1 || attempts[0].FailureClass != taskmgr.DispatchFailureClassOutcomeUnknown ||
 		attempts[0].Status != taskmgr.DispatchAttemptFailed {
 		t.Fatalf("cancelled dispatch attempts = %+v", attempts)
+	}
+	if completed.Resumable || !completed.HasUnknownDispatchOutcome() {
+		t.Fatalf("cancelled dispatch task should require reconciliation: %+v", completed)
+	}
+	if _, err := srv.tasks.ResumeTaskChecked(task.ID); !errors.Is(err, taskmgr.ErrOutcomeUnknown) {
+		t.Fatalf("resume after cancellation = %v, want ErrOutcomeUnknown", err)
 	}
 	if retryCalls.Load() != 0 {
 		t.Fatalf("cancelled dispatch triggered %d retries", retryCalls.Load())
@@ -1953,7 +1971,7 @@ func (c *loseFirstDispatchResponse) Do(request *http.Request) (*http.Response, e
 	return response, nil
 }
 
-func TestDispatchRetriesWhenCompletedResponseIsLost(t *testing.T) {
+func TestDispatchDoesNotRetryWhenCompletedResponseIsLost(t *testing.T) {
 	var firstCompleted, secondCalls atomic.Int32
 	workerCompleted := make(chan struct{})
 	type dispatchIDs struct{ request, attempt string }
@@ -2007,18 +2025,17 @@ func TestDispatchRetriesWhenCompletedResponseIsLost(t *testing.T) {
 
 	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
 	completed, ok := srv.tasks.Get(task.ID)
-	if !ok || completed.Status != taskmgr.StatusCompleted {
-		t.Fatalf("lost-response retry task = %+v", completed)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("lost-response task = %+v", completed)
 	}
 	attempts := completed.Subtasks[0].Attempts
-	if firstCompleted.Load() != 1 || secondCalls.Load() != 1 || len(attempts) != 2 ||
-		attempts[0].FailureClass != "transport" ||
+	if firstCompleted.Load() != 1 || secondCalls.Load() != 0 || len(attempts) != 1 ||
+		attempts[0].FailureClass != taskmgr.DispatchFailureClassOutcomeUnknown ||
 		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
-		attempts[1].Status != taskmgr.DispatchAttemptSucceeded ||
 		attempts[0].RequestID != taskmgr.DispatchRequestID(task.ID, "lost-response") ||
-		attempts[1].RequestID != attempts[0].RequestID {
-		t.Fatalf("lost-response execution = first %d, retry %d, attempts %+v",
-			firstCompleted.Load(), secondCalls.Load(), attempts)
+		!strings.Contains(completed.Error, "reconciliation required") || completed.Resumable {
+		t.Fatalf("lost-response execution = first %d, retry %d, attempts %+v, task %+v",
+			firstCompleted.Load(), secondCalls.Load(), attempts, completed)
 	}
 	if got, want := <-firstIDs, (dispatchIDs{
 		request: taskmgr.DispatchRequestID(task.ID, "lost-response"),
@@ -2026,19 +2043,20 @@ func TestDispatchRetriesWhenCompletedResponseIsLost(t *testing.T) {
 	}); got != want {
 		t.Fatalf("first lost-response attempt IDs = %+v, want %+v", got, want)
 	}
-	if got, want := <-secondIDs, (dispatchIDs{
-		request: taskmgr.DispatchRequestID(task.ID, "lost-response"),
-		attempt: taskmgr.DispatchAttemptID(task.ID, "lost-response", 2),
-	}); got != want {
-		t.Fatalf("retry attempt IDs = %+v, want %+v", got, want)
+	select {
+	case got := <-secondIDs:
+		t.Fatalf("unexpected retry request IDs = %+v", got)
+	default:
 	}
 }
 
-func TestDispatchRetriesWhenAssignedNodeDisappears(t *testing.T) {
+func TestDispatchDoesNotRetryWhenAssignedNodeDisappears(t *testing.T) {
 	disappeared := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	disappearedAddress := disappeared.URL
 	disappeared.Close()
+	var availableCalls atomic.Int32
 	available := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		availableCalls.Add(1)
 		_ = json.NewEncoder(w).Encode(map[string]string{"output": "recovered on another node"})
 	}))
 	defer available.Close()
@@ -2057,16 +2075,18 @@ func TestDispatchRetriesWhenAssignedNodeDisappears(t *testing.T) {
 
 	srv.dispatch(task.ID, task.Subtasks[0].Assignment)
 	completed, ok := srv.tasks.Get(task.ID)
-	if !ok || completed.Status != taskmgr.StatusCompleted {
-		t.Fatalf("node-loss retry task = %+v", completed)
+	if !ok || completed.Status != taskmgr.StatusFailed {
+		t.Fatalf("node-loss task = %+v", completed)
 	}
 	attempts := completed.Subtasks[0].Attempts
-	if len(attempts) != 2 || attempts[0].FailureClass != "transport" ||
+	if len(attempts) != 1 || attempts[0].FailureClass != taskmgr.DispatchFailureClassOutcomeUnknown ||
 		attempts[0].Status != taskmgr.DispatchAttemptFailed ||
-		attempts[1].Status != taskmgr.DispatchAttemptSucceeded ||
-		completed.Subtasks[0].NodeID != "node-b" ||
-		completed.Subtasks[0].Output != "recovered on another node" {
+		completed.Subtasks[0].NodeID != "node-a" ||
+		completed.Resumable || !completed.HasUnknownDispatchOutcome() {
 		t.Fatalf("node-loss dispatch result = task %+v, attempts %+v", completed.Subtasks[0], attempts)
+	}
+	if availableCalls.Load() != 0 {
+		t.Fatalf("replacement worker received %d calls after ambiguous transport failure", availableCalls.Load())
 	}
 }
 
@@ -2161,7 +2181,7 @@ func TestDispatchDeadlineDuringRetryStopsFurtherAttempts(t *testing.T) {
 	retryStarted := make(chan struct{})
 	releaseRetry := make(chan struct{})
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		http.Error(w, "model not found", http.StatusNotFound)
 	}))
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2230,10 +2250,12 @@ func TestDispatchDeadlineDuringRetryStopsFurtherAttempts(t *testing.T) {
 		t.Fatalf("deadline retry task = %+v", completed)
 	}
 	attempts := completed.Subtasks[0].Attempts
-	if len(attempts) != 2 || attempts[0].FailureClass != "upstream_5xx" ||
-		attempts[1].FailureClass != "timeout" || attempts[1].Status != taskmgr.DispatchAttemptFailed ||
-		!strings.Contains(completed.Subtasks[0].Error, "deadline exceeded") || thirdCalls.Load() != 0 {
-		t.Fatalf("deadline retry history = %+v, task error %q, third worker calls %d",
+	if len(attempts) != 2 || attempts[0].FailureClass != "stale_model" ||
+		attempts[1].FailureClass != taskmgr.DispatchFailureClassOutcomeUnknown ||
+		attempts[1].Status != taskmgr.DispatchAttemptFailed ||
+		!strings.Contains(completed.Subtasks[0].Error, "reconciliation required") ||
+		completed.Resumable || thirdCalls.Load() != 0 {
+		t.Fatalf("deadline during retry history = %+v, task error %q, third worker calls %d",
 			attempts, completed.Subtasks[0].Error, thirdCalls.Load())
 	}
 }
@@ -2303,8 +2325,10 @@ func TestDispatcherUsesConfiguredTimeout(t *testing.T) {
 		t.Fatalf("timed-out task = %+v", completed)
 	}
 	result := completed.Subtasks[0]
-	if !strings.Contains(result.Error, "subtask dispatch deadline exceeded") ||
-		len(result.Attempts) != 1 || result.Attempts[0].FailureClass != "timeout" {
+	if !strings.Contains(result.Error, "reconciliation required") ||
+		len(result.Attempts) != 1 ||
+		result.Attempts[0].FailureClass != taskmgr.DispatchFailureClassOutcomeUnknown ||
+		completed.Resumable {
 		t.Fatalf("timed-out subtask result = %+v", result)
 	}
 }
@@ -2318,7 +2342,7 @@ func TestDispatchRetriesAcrossMoreThanTwoNodes(t *testing.T) {
 		nodes[index] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			calls[nodeIndex].Add(1)
 			if nodeIndex < 2 {
-				http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+				http.Error(w, "model not found", http.StatusNotFound)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"output": "third node succeeded"})

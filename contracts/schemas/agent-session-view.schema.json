@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/agent-session-view.schema.json",
+  "title": "AgentSessionView",
+  "type": "object",
+  "required": ["id", "harness", "available"],
+  "properties": {
+    "id": {"type": "string"},
+    "title": {"type": "string"},
+    "harness": {"type": "string"},
+    "available": {"type": "boolean"},
+    "unavailable_reason": {
+      "type": "string",
+      "enum": ["backend_unavailable", "session_resume_unsupported", "session_restore_failed", "session_unavailable"]
+    },
+    "messages": {"type": "array", "items": {"type": "object"}},
+    "memory": {"type": "object"},
+    "config": {"type": "object"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "active": {"type": "boolean"}
+  },
+  "additionalProperties": true
+}

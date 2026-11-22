@@ -13,8 +13,11 @@ import (
 func TestClusterPairingPolicyPersistsAcrossRuntimeSettingsPatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.json")
 	allowPeerUpdates := true
+	allowCentralUpdates := true
 	agent := &Agent{orchestratorLink: &orchestratorLink{}}
-	agent.SetRuntimeSettings(path, config.RuntimeSettings{AllowPeerUpdates: &allowPeerUpdates})
+	agent.SetRuntimeSettings(path, config.RuntimeSettings{
+		AllowPeerUpdates: &allowPeerUpdates, AllowCentralUpdates: &allowCentralUpdates,
+	})
 
 	if err := agent.SetPairingVerificationRequired(true); err != nil {
 		t.Fatal(err)
@@ -24,7 +27,7 @@ func TestClusterPairingPolicyPersistsAcrossRuntimeSettingsPatch(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPatch, "/api/runtime-settings",
-		strings.NewReader(`{"role":"node","allow_peer_updates":true}`))
+		strings.NewReader(`{"role":"node","allow_peer_updates":true,"allow_central_updates":true}`))
 	response := httptest.NewRecorder()
 	agent.handleRuntimeSettings(response, request)
 	if response.Code != http.StatusOK {
@@ -35,7 +38,8 @@ func TestClusterPairingPolicyPersistsAcrossRuntimeSettingsPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if saved.RequirePairingVerification == nil || !*saved.RequirePairingVerification ||
-		saved.AllowPeerUpdates == nil || !*saved.AllowPeerUpdates {
+		saved.AllowPeerUpdates == nil || !*saved.AllowPeerUpdates ||
+		saved.AllowCentralUpdates == nil || !*saved.AllowCentralUpdates {
 		t.Fatalf("runtime settings patch lost persisted policy or unrelated setting: %+v", saved)
 	}
 }

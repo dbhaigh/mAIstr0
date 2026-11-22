@@ -34,6 +34,13 @@ func (s *Server) agentForSession(id string) (string, agent.Backend, bool) {
 	return s.harnessPort().agentForSession(id)
 }
 
+func (s *Server) agentSession(id string) (agentSessionView, bool) {
+	if s.harness == nil {
+		return agentSessionView{}, false
+	}
+	return s.harnessPort().session(id)
+}
+
 func (s *Server) selectHarness(name string) bool {
 	if s.harness == nil {
 		return false
@@ -41,11 +48,18 @@ func (s *Server) selectHarness(name string) bool {
 	return s.harnessPort().selectHarness(name)
 }
 
-func (s *Server) listAgentSessions() []*agent.Session {
+func (s *Server) listAgentSessions() []agentSessionView {
 	if s.harness == nil {
 		return nil
 	}
 	return s.harnessPort().listAgentSessions()
+}
+
+func (s *Server) agentBackendViews() []agentBackendView {
+	if s.harness == nil {
+		return nil
+	}
+	return s.harnessPort().backendViews()
 }
 
 func (s *Server) persistAgentSession(session *agent.Session) error {

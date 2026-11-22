@@ -83,8 +83,8 @@ func TestDistributionReturnsNotFoundForUnsupportedPlatform(t *testing.T) {
 	}
 	distribution := Distribution{Executable: executable, Version: "99.0.0"}
 	for _, path := range []string{
-		"/api/updates/manifest?os=linux&arch=arm64",
-		"/api/updates/binary?os=linux&arch=arm64",
+		"/api/updates/manifest?os=linux&arch=riscv64",
+		"/api/updates/binary?os=linux&arch=riscv64",
 	} {
 		t.Run(path, func(t *testing.T) {
 			response := httptest.NewRecorder()

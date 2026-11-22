@@ -264,10 +264,35 @@ func replicaOutranks(current, incoming *Task) bool {
 }
 
 func isInterruptedTask(task *Task) bool {
-	return task.Error == interruptedTaskError || task.Error == coordinatorChangedTaskError
+	return task.Error == interruptedTaskError || task.Error == coordinatorChangedTaskError ||
+		task.Error == ErrOutcomeUnknown.Error()
 }
 
 func interruptOrphanedTask(task *Task) {
+	now := time.Now()
+	for i := range task.Subtasks {
+		for j := range task.Subtasks[i].Attempts {
+			markDispatchAttemptOutcomeUnknown(&task.Subtasks[i].Attempts[j], now)
+		}
+	}
+	hasUnknown := task.HasUnknownDispatchOutcome()
+	if hasUnknown {
+		task.Status = StatusFailed
+		task.Error = ErrOutcomeUnknown.Error()
+		task.Resumable = false
+		for i := range task.Subtasks {
+			if task.Subtasks[i].Status == StatusPending || task.Subtasks[i].Status == StatusRunning {
+				task.Subtasks[i].Status = StatusFailed
+				task.Subtasks[i].Error = coordinatorChangedTaskError
+			}
+			if subtaskHasUnknownDispatchOutcome(&task.Subtasks[i]) {
+				task.Subtasks[i].Status = StatusFailed
+				task.Subtasks[i].Error = ErrOutcomeUnknown.Error()
+			}
+		}
+		task.UpdatedAt = now
+		return
+	}
 	switch task.Status {
 	case StatusPending, StatusRunning, StatusSynthesis:
 		task.Status = StatusFailed

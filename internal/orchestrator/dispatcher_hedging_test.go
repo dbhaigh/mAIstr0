@@ -19,22 +19,18 @@ import (
 	"github.com/maistr0/maistr0/internal/taskmgr"
 )
 
-func TestSpeculativeHedgeCancelsLoserAndPersistsWinner(t *testing.T) {
+func TestTaskDispatchDoesNotHedgeSideEffectingExecution(t *testing.T) {
 	primaryStarted := make(chan struct{})
-	primaryCancelled := make(chan struct{})
 	primaryRelease := make(chan struct{})
 	var releaseOnce sync.Once
 	releasePrimary := func() { releaseOnce.Do(func() { close(primaryRelease) }) }
 	var primaryCalls, hedgeCalls atomic.Int32
-	primary := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+	primary := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		primaryCalls.Add(1)
 		_, _ = io.Copy(io.Discard, request.Body)
 		close(primaryStarted)
-		select {
-		case <-request.Context().Done():
-			close(primaryCancelled)
-		case <-primaryRelease:
-		}
+		<-primaryRelease
+		_ = json.NewEncoder(response).Encode(map[string]string{"output": "primary output"})
 	}))
 	defer primary.Close()
 	defer releasePrimary()
@@ -89,42 +85,34 @@ func TestSpeculativeHedgeCancelsLoserAndPersistsWinner(t *testing.T) {
 	}
 	select {
 	case <-dispatchDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("hedged dispatch did not finish")
+		t.Fatal("dispatch completed before the primary worker returned")
+	case <-time.After(150 * time.Millisecond):
 	}
+	if hedgeCalls.Load() != 0 {
+		t.Fatalf("side-effecting task was hedged %d times", hedgeCalls.Load())
+	}
+	releasePrimary()
 	select {
-	case <-primaryCancelled:
-	case <-time.After(time.Second):
-		t.Fatal("losing primary dispatch was not cancelled")
+	case <-dispatchDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("primary dispatch did not finish")
 	}
 
 	completed, ok := srv.tasks.Get(task.ID)
 	if !ok || completed.Status != taskmgr.StatusCompleted ||
-		completed.Subtasks[0].Output != "hedge output" ||
-		completed.Subtasks[0].Assignment.NodeID != "node-b" {
-		t.Fatalf("hedge winner was not persisted: %+v", completed)
+		completed.Subtasks[0].Output != "primary output" ||
+		completed.Subtasks[0].Assignment.NodeID != "node-a" {
+		t.Fatalf("primary result was not persisted: %+v", completed)
 	}
 	attempts := completed.Subtasks[0].Attempts
-	if len(attempts) != 2 {
-		t.Fatalf("dispatch attempts = %+v, want primary and hedge", attempts)
+	if len(attempts) != 1 || attempts[0].NodeID != "node-a" ||
+		attempts[0].Status != taskmgr.DispatchAttemptSucceeded {
+		t.Fatalf("dispatch attempts = %+v, want one primary attempt", attempts)
 	}
-	var winner, loser bool
-	for _, attempt := range attempts {
-		switch {
-		case attempt.NodeID == "node-b" && attempt.Status == taskmgr.DispatchAttemptSucceeded:
-			winner = true
-		case attempt.NodeID == "node-a" && attempt.Status == taskmgr.DispatchAttemptFailed &&
-			attempt.FailureClass == "hedge_loser":
-			loser = true
-		}
+	if primaryCalls.Load() != 1 || hedgeCalls.Load() != 0 {
+		t.Fatalf("worker calls = primary %d, hedge %d; want (1, 0)", primaryCalls.Load(), hedgeCalls.Load())
 	}
-	if !winner || !loser {
-		t.Fatalf("attempt outcomes = %+v, want hedge winner and cancelled primary loser", attempts)
-	}
-	if primaryCalls.Load() != 1 || hedgeCalls.Load() != 1 {
-		t.Fatalf("worker calls = primary %d, hedge %d; want one each", primaryCalls.Load(), hedgeCalls.Load())
-	}
-	for _, nodeID := range []string{"node-a", "node-b"} {
+	for _, nodeID := range []string{"node-a"} {
 		node, found := srv.registry.Get(nodeID)
 		if !found || node.ActiveTasks != 0 {
 			t.Fatalf("node %s load after hedge = %+v, found=%t; want zero active tasks", nodeID, node, found)
@@ -135,12 +123,12 @@ func TestSpeculativeHedgeCancelsLoserAndPersistsWinner(t *testing.T) {
 	for _, experience := range experiences {
 		if experience.Description == "Run the work" {
 			taskExperiences++
-			if !experience.Success || experience.NodeID != "node-b" || experience.Output != "hedge output" {
-				t.Errorf("unexpected hedge task experience: %+v", experience)
+			if !experience.Success || experience.NodeID != "node-a" || experience.Output != "primary output" {
+				t.Errorf("unexpected task experience: %+v", experience)
 			}
 		}
 	}
 	if taskExperiences != 1 {
-		t.Fatalf("task experiences = %d, want winner only", taskExperiences)
+		t.Fatalf("task experiences = %d, want primary result only", taskExperiences)
 	}
 }

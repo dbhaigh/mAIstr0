@@ -58,7 +58,9 @@ export async function activateAgentTab(harness) {
       applyAgentBackend(backend);
       await loadAgentTools();
     }
-    await loadClusterModels();
+    if (dashboardState.agentCapabilities?.model_selection !== false) {
+      await loadClusterModels();
+    }
     const sessions = sessionsForHarness(harness);
     const rememberedID = activeSessionIds.get(harness);
     const sessionID = sessions.some((session) => session.id === rememberedID)
@@ -79,7 +81,7 @@ export async function activateAgentTab(harness) {
     });
   } finally {
     agentTabs.forEach((tab) => { tab.disabled = false; });
-    if (newSessionBtn) newSessionBtn.disabled = false;
+    if (newSessionBtn) newSessionBtn.disabled = isSending || dashboardState.activeBackendAvailable === false;
     if (agentHarnessSelect) agentHarnessSelect.disabled = false;
     renderSessionList();
   }
@@ -99,7 +101,7 @@ export function setAgentConsoleMode(mode) {
 
   if (sessionSection) sessionSection.hidden = direct;
   if (settingsSection) settingsSection.hidden = direct;
-  if (toolsSection) toolsSection.hidden = direct;
+  if (toolsSection) toolsSection.hidden = direct || dashboardState.agentCapabilities?.tool_access === false;
   if (modelLabel) modelLabel.hidden = direct || !agentSupportsCoordinatorModel;
   if (agentSidebar) agentSidebar.hidden = direct;
   if (harnessLabel) harnessLabel.hidden = direct;
@@ -109,7 +111,10 @@ export function setAgentConsoleMode(mode) {
   if (clearDirectChatBtn) clearDirectChatBtn.hidden = !direct;
   if (sendMsgBtn) sendMsgBtn.textContent = direct ? "Ask mAIstr0" : "Send";
   if (agentSettingsTitle) {
-    agentSettingsTitle.textContent = direct ? "mAIstr0 Settings" : `${mode === "pi" ? "Pi" : "DeepSeek"} Agent Settings`;
+    const backendName = mode === "pi" ? "Pi" : mode === "deepseek"
+      ? "DeepSeek"
+      : mode.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+    agentSettingsTitle.textContent = direct ? "mAIstr0 Settings" : `${backendName} Agent Settings`;
   }
   if (modelLabelText) {
     modelLabelText.textContent = direct ? "Cluster Model" : "Coordinator Model";

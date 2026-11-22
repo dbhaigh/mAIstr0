@@ -46,7 +46,10 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-release-packages
-          path: dist/macos/${{ github.ref_name }}/*
+          path: |
+            dist/darwin-amd64/*
+            dist/darwin-arm64/*
+            dist/macos/${{ github.ref_name }}/*
           if-no-files-found: error
 
   release:
@@ -96,6 +99,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Windows and Linux update artifacts for semantic release
+        if: steps.version.outputs.iteration != 'true'
+        shell: bash
+        run: MAISTR0_REQUIRE_UPX=1 bash build/build.sh
       - name: Build and publish numeric iteration release
         if: steps.version.outputs.iteration == 'true'
         shell: bash
@@ -155,11 +162,29 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-release-packages
-          path: dist/packages/macos
+          path: dist
       - name: Attach macOS release packages
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release upload "$GITHUB_REF_NAME" dist/packages/macos/*.zip dist/packages/macos/*.tar.gz dist/packages/macos/checksums-darwin.txt --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/macos/"$GITHUB_REF_NAME"/*.zip dist/macos/"$GITHUB_REF_NAME"/*.tar.gz dist/macos/"$GITHUB_REF_NAME"/checksums-darwin.txt --clobber
+      - name: Assemble central update payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          go run ./cmd/updatebundle -root ./dist -version "$version" \
+            -catalog-output "./dist/update-service/update-manifest.json"
+          tar -czf "dist/maistr0_${version}_central-update-payload.tar.gz" \
+            -C dist/update-service .
+      - name: Attach central update payload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/maistr0_${version}_central-update-payload.tar.gz" --clobber

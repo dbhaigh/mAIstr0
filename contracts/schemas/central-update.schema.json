@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/central-update.schema.json",
+  "title": "CentralUpdateRequest",
+  "type": "object",
+  "required": ["manifest_url", "catalog"],
+  "properties": {
+    "manifest_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "catalog": {
+      "$ref": "release-catalog.schema.json"
+    }
+  },
+  "additionalProperties": false
+}

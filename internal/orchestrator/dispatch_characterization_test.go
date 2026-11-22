@@ -150,11 +150,12 @@ func TestTaskCancellationDuringDispatchCancelsNodeRequestAndReleasesCapacity(t *
 	awaitSignal(t, done, "dispatch return")
 
 	final, _ := srv.tasks.Get(task.ID)
-	if final.Status != taskmgr.StatusCancelled || final.Subtasks[0].Status != taskmgr.StatusCancelled {
+	if final.Status != taskmgr.StatusCancelled || final.Subtasks[0].Status != taskmgr.StatusFailed {
 		t.Fatalf("cancelled task = %s/%s", final.Status, final.Subtasks[0].Status)
 	}
 	attempts := final.Subtasks[0].Attempts
-	if len(attempts) != 1 || attempts[0].Status != taskmgr.DispatchAttemptFailed || attempts[0].FailureClass != "cancelled" {
+	if len(attempts) != 1 || attempts[0].Status != taskmgr.DispatchAttemptFailed ||
+		attempts[0].FailureClass != taskmgr.DispatchFailureClassOutcomeUnknown || final.Resumable {
 		t.Fatalf("cancelled attempts = %+v", attempts)
 	}
 	if calls.Load() != 1 {
@@ -215,7 +216,7 @@ func TestTaskCancellationWhileWaitingForCapacityDispatchesNothing(t *testing.T) 
 	assertDispatchCapacityReleased(t, srv, gate, "node-a")
 }
 
-func TestDispatchRetriesAreBoundedByConfiguredAttempts(t *testing.T) {
+func TestAmbiguousDispatchFailureStopsBeforeConfiguredRetryBudget(t *testing.T) {
 	for _, maxAttempts := range []int{1, 2, 3} {
 		t.Run(fmt.Sprintf("max_%d", maxAttempts), func(t *testing.T) {
 			const nodeCount = 4
@@ -248,25 +249,19 @@ func TestDispatchRetriesAreBoundedByConfiguredAttempts(t *testing.T) {
 			if final.Status != taskmgr.StatusFailed || final.Subtasks[0].Status != taskmgr.StatusFailed {
 				t.Fatalf("exhausted task = %s/%s", final.Status, final.Subtasks[0].Status)
 			}
-			if !strings.Contains(final.Subtasks[0].Error, "execution phase failed") {
-				t.Fatalf("terminal dispatch error lacks phase context: %q", final.Subtasks[0].Error)
+			if !strings.Contains(final.Error, "reconciliation required") || final.Resumable {
+				t.Fatalf("ambiguous dispatch error should require reconciliation: %+v", final)
 			}
 			attempts := final.Subtasks[0].Attempts
-			if len(attempts) != maxAttempts {
-				t.Fatalf("attempts = %d, want %d: %+v", len(attempts), maxAttempts, attempts)
+			if len(attempts) != 1 {
+				t.Fatalf("attempts = %d, want one despite retry budget %d: %+v", len(attempts), maxAttempts, attempts)
 			}
-			pairs := make(map[string]bool, len(attempts))
-			for i, attempt := range attempts {
-				pair := routerPairKey(attempt.NodeID, attempt.Model)
-				if pairs[pair] {
-					t.Fatalf("attempt %d reused node/model pair %s: %+v", i+1, pair, attempts)
-				}
-				pairs[pair] = true
-				if attempt.Number != i+1 || attempt.Status != taskmgr.DispatchAttemptFailed ||
-					attempt.FailureClass != "upstream_5xx" || attempt.HTTPStatus != http.StatusServiceUnavailable ||
-					attempt.ID != taskmgr.DispatchAttemptID(task.ID, "work", i+1) {
-					t.Fatalf("attempt %d = %+v", i+1, attempt)
-				}
+			if attempt := attempts[0]; attempt.Number != 1 ||
+				attempt.Status != taskmgr.DispatchAttemptFailed ||
+				attempt.FailureClass != taskmgr.DispatchFailureClassOutcomeUnknown ||
+				attempt.HTTPStatus != http.StatusServiceUnavailable ||
+				attempt.ID != taskmgr.DispatchAttemptID(task.ID, "work", 1) {
+				t.Fatalf("unknown dispatch attempt = %+v", attempt)
 			}
 			var totalCalls int32
 			for i := range calls {
@@ -275,8 +270,8 @@ func TestDispatchRetriesAreBoundedByConfiguredAttempts(t *testing.T) {
 				}
 				totalCalls += calls[i].Load()
 			}
-			if int(totalCalls) != maxAttempts {
-				t.Fatalf("worker calls = %d, want %d", totalCalls, maxAttempts)
+			if totalCalls != 1 {
+				t.Fatalf("worker calls = %d, want one ambiguous attempt", totalCalls)
 			}
 			assertDispatchCapacityReleased(t, srv, testCapacityGate(t, srv), nodeIDs...)
 		})
@@ -462,11 +457,7 @@ func TestDuplicateDispatchOfCompletedSubtaskIsIgnored(t *testing.T) {
 	}
 }
 
-// Dispatch has no per-subtask lease: the dispatcher assumes one dispatcher per
-// subtask, which the planner and resume handler provide. This documents what a
-// concurrent duplicate still guarantees: a single recorded winner and released
-// capacity, not a single node execution.
-func TestConcurrentDuplicateDispatchRecordsSingleWinner(t *testing.T) {
+func TestConcurrentDuplicateDispatchIsRejectedBeforeSecondExecution(t *testing.T) {
 	type arrival struct {
 		node    string
 		release chan string
@@ -501,22 +492,25 @@ func TestConcurrentDuplicateDispatchRecordsSingleWinner(t *testing.T) {
 	firstDone := runDispatch(srv, task.ID, task.Subtasks[0].Assignment)
 	first := awaitSignal(t, arrivals, "first execution")
 	secondDone := runDispatch(srv, task.ID, task.Subtasks[0].Assignment)
-	second := awaitSignal(t, arrivals, "duplicate execution")
-	if first.node != "node-a" || second.node != "node-b" {
-		t.Fatalf("executions = %s then %s; duplicate should avoid the in-flight pair", first.node, second.node)
+	awaitSignal(t, secondDone, "duplicate dispatch rejection")
+	if first.node != "node-a" {
+		t.Fatalf("first execution used %s, want node-a", first.node)
+	}
+	select {
+	case second := <-arrivals:
+		t.Fatalf("duplicate dispatch started execution on %s", second.node)
+	default:
 	}
 	first.release <- "first output"
 	awaitSignal(t, firstDone, "first dispatch")
-	second.release <- "second output"
-	awaitSignal(t, secondDone, "duplicate dispatch")
 
 	final, _ := srv.tasks.Get(task.ID)
 	result := final.Subtasks[0]
 	if final.Status != taskmgr.StatusCompleted || result.Output != "first output" || result.NodeID != "node-a" {
 		t.Fatalf("winner = status %s output %q node %s", final.Status, result.Output, result.NodeID)
 	}
-	if len(result.Attempts) != 2 || result.Attempts[0].NodeID == result.Attempts[1].NodeID {
-		t.Fatalf("duplicate attempts = %+v", result.Attempts)
+	if len(result.Attempts) != 1 || result.Attempts[0].NodeID != "node-a" {
+		t.Fatalf("duplicate dispatch attempts = %+v", result.Attempts)
 	}
 	assertDispatchCapacityReleased(t, srv, testCapacityGate(t, srv), "node-a", "node-b")
 }

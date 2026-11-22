@@ -77,7 +77,10 @@ subtasks may run even when the creating request receives 503. Rejected
 subtasks are persisted as failed; accepted work is not silently rolled back.
 Inspect the identified task and wait for running work before resuming. Do not
 blindly create a second task containing side effects. Dispatch remains
-at-least-once, not exactly-once.
+guarded against local replay when its outcome is unknown, but has no
+cluster-wide fencing or exactly-once guarantee. Unknown tasks are marked
+`outcome_unknown`, excluded from resume, and require operator reconciliation
+before new work is submitted.
 
 The existing scheduler already topologically orders assignments. A
 one-worker integration test verifies progress when the submitted plan lists
@@ -102,14 +105,17 @@ Queues elsewhere are not automatically covered by a background group.
 The concrete service-loop owners are:
 
 - [Node runtime](../internal/nodeagent/agent_server.go): beacon, hardware usage,
-  orchestrator resolution/registration, model refresh, peer polling, upstream
-  SSE subscription, task-history synchronization, peer-memory synchronization,
+  orchestrator resolution/registration, model refresh, upstream SSE
+  subscription, task-history synchronization, peer-memory synchronization,
   dashboard broadcast, orchestrator-memory synchronization, and heartbeat.
   The orchestrator-link group owns cancellation and joining of these serial
   loops. The normal single-`Run` lifecycle starts one instance of each loop; periodic work
   uses the configured/fixed interval or adaptive synchronization wait, not a
   growing queue of missed ticks. An individual pass can still fan out over
   the current peer registry as documented below.
+- [Process composition root](../cmd/maistr0/main.go): the central update poller
+  runs only when enabled and an update URL is configured. The process run
+  context cancels it, and shutdown joins it before closing the process.
 - [Orchestrator runtime](../internal/orchestrator/server.go): health sweep,
   leader logging, task-history synchronization, and discovery synchronization.
   The server group owns those loops and the lazily started snapshot publisher;
@@ -139,19 +145,17 @@ loss policies for replaceable notifications, not silent loss of task jobs.
 ## Capacity, routing, and request lifetime
 
 - Orchestrator global/per-node dispatch gates own reservations. Success,
-  failure, retry, cancellation, and hedge losers release leases through
-  existing cleanup/once paths. Planning may choose a full node; execution
-  waits on bounded capacity, consistent with the selected queued-planning
-  policy. GPU offload compatibility is unchanged.
+  failure, retry, and cancellation release leases through existing cleanup
+  paths. Side-effecting task executions are not hedged. Planning may choose a
+  full node; execution waits on bounded capacity, consistent with the selected
+  queued-planning policy. GPU offload compatibility is unchanged.
 - Node execution and pipeline/shard gates reject already-canceled admission,
   including cancellation racing a slot grant; rollback does not leak a token
   or create active state. Per-request pipeline state is released by the owner.
 - Node `max_concurrent_tasks` still applies to `/execute` and stage requests,
   **not** direct generate/chat/proxy/dialogue routes. Extending that scope
   would be a separate behavioral decision.
-- Hedges have at most the configured number of slots (capped at four);
-  result channels are bounded. Loser cancellation releases late reservations.
-  Retry is disallowed after streaming response bytes are committed.
+- Streaming router retry is disallowed after response bytes are committed.
 - Router first-token and idle-timeout timers cancel the upstream request;
   request/body cleanup stops them. Their cancellation callbacks are not engine
   workers and do not add another task queue.

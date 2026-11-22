@@ -9,6 +9,7 @@ import (
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/httpx"
 	"github.com/maistr0/maistr0/internal/selfupdate"
+	"github.com/maistr0/maistr0/internal/version"
 )
 
 func (a *Agent) handleUpgrade(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +33,10 @@ func (a *Agent) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if request.Central != nil && version.Compare(request.Central.Catalog.Version, version.String()) <= 0 {
+		writeJSON(w, http.StatusOK, map[string]string{"state": "current"})
+		return
+	}
 	a.upgradeMu.RLock()
 	requester := a.upgradeRequester
 	a.upgradeMu.RUnlock()
@@ -44,6 +49,8 @@ func (a *Agent) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, selfupdate.ErrUpgradeInProgress):
 			http.Error(w, err.Error(), http.StatusConflict)
 		case errors.Is(err, selfupdate.ErrPeerUpdatesDisabled):
+			http.Error(w, err.Error(), http.StatusForbidden)
+		case errors.Is(err, selfupdate.ErrCentralUpdatesDisabled):
 			http.Error(w, err.Error(), http.StatusForbidden)
 		default:
 			http.Error(w, "upgrade request could not be queued", http.StatusServiceUnavailable)

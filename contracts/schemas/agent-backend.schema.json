@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maistr0.dev/contracts/schemas/agent-backend.schema.json",
+  "title": "AgentBackendStatus",
+  "type": "object",
+  "required": ["name", "harnesses", "supports_coordinator_model", "available", "backends"],
+  "properties": {
+    "name": {"type": "string"},
+    "harnesses": {"type": "array", "items": {"type": "string"}},
+    "supports_coordinator_model": {"type": "boolean"},
+    "available": {"type": "boolean"},
+    "capabilities": {
+      "oneOf": [
+        {"$ref": "#/$defs/capabilities"},
+        {"type": "null"}
+      ]
+    },
+    "backends": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/backend"}
+    }
+  },
+  "$defs": {
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "session_resume", "streaming", "cancellation", "approvals",
+        "workspace_isolation", "model_selection", "tool_access"
+      ],
+      "properties": {
+        "session_resume": {"type": "boolean"},
+        "streaming": {"type": "boolean"},
+        "cancellation": {"type": "boolean"},
+        "approvals": {"type": "boolean"},
+        "workspace_isolation": {"type": "boolean"},
+        "model_selection": {"type": "boolean"},
+        "tool_access": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "backend": {
+      "type": "object",
+      "required": ["name", "available"],
+      "properties": {
+        "name": {"type": "string"},
+        "available": {"type": "boolean"},
+        "capabilities": {"$ref": "#/$defs/capabilities"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

@@ -68,6 +68,16 @@ func (f *failoverCoordinator) UpdateIdle() bool {
 	return !running && (promoted == nil || promoted.UpdateIdle())
 }
 
+func (f *failoverCoordinator) ActiveOrchestrator() *orchestrator.Server {
+	f.mu.Lock()
+	promoted := f.promoted
+	f.mu.Unlock()
+	if promoted == nil || !promoted.Elected() {
+		return nil
+	}
+	return promoted
+}
+
 // StartElection runs after the heartbeat monitor has detected an unavailable
 // coordinator. It advertises this node during one discovery lease, selects
 // only trusted cluster members, and promotes the winner with its existing

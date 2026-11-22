@@ -3,12 +3,14 @@ package taskmgr
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/maistr0/maistr0/internal/closeutil"
 	"github.com/maistr0/maistr0/internal/memory"
+	"github.com/maistr0/maistr0/internal/scheduler"
 )
 
 func TestMergeReplicaTaskSlices(t *testing.T) {
@@ -87,6 +89,74 @@ func TestMergeReplicaTaskSlices(t *testing.T) {
 				t.Fatalf("merged task = %+v, want status %q and error %q", got, test.wantStatus, test.wantError)
 			}
 		})
+	}
+}
+
+func TestPartitionLocalDispatchAdmissionAndOrphanRecovery(t *testing.T) {
+	assignment := scheduler.Assignment{
+		Subtask: scheduler.Subtask{ID: "work"},
+		NodeID:  "node-a", Model: "model-a",
+	}
+	left, right := NewManager(), NewManager()
+	leftTask, err := left.CreateChecked("partitioned task", []scheduler.Assignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightTask, err := right.CreateChecked("partitioned task", []scheduler.Assignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftTask.ID != rightTask.ID {
+		t.Fatalf("independent local task IDs = %q and %q, want same process-local sequence", leftTask.ID, rightTask.ID)
+	}
+	for _, manager := range []*Manager{left, right} {
+		if err := manager.StartSubtaskChecked(leftTask.ID, "work"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.BeginDispatchAttemptChecked(leftTask.ID, "work", assignment); err != nil {
+			t.Fatalf("partition-local admission was unexpectedly fenced: %v", err)
+		}
+	}
+
+	recovering := NewManager()
+	if err := recovering.MergeFromReplica(left.All()); err != nil {
+		t.Fatal(err)
+	}
+	orphan, ok := recovering.Get(leftTask.ID)
+	if !ok || orphan.Status != StatusFailed || orphan.Resumable ||
+		!orphan.HasUnknownDispatchOutcome() ||
+		orphan.Subtasks[0].Attempts[0].FailureClass != DispatchFailureClassOutcomeUnknown {
+		t.Fatalf("orphaned partition task = %+v", orphan)
+	}
+	if _, err := recovering.ResumeTaskChecked(leftTask.ID); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("resume of orphaned partition task = %v, want ErrOutcomeUnknown", err)
+	}
+}
+
+func TestSeparateTaskSubmissionsAreNotDeduplicated(t *testing.T) {
+	manager := NewManager()
+	assignment := scheduler.Assignment{
+		Subtask: scheduler.Subtask{ID: "work"},
+		NodeID:  "node-a", Model: "model-a",
+	}
+	first, err := manager.CreateChecked("same submitted work", []scheduler.Assignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.CreateChecked("same submitted work", []scheduler.Assignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("separate submissions share task ID %q", first.ID)
+	}
+	for _, task := range []*Task{first, second} {
+		if err := manager.StartSubtaskChecked(task.ID, "work"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.BeginDispatchAttemptChecked(task.ID, "work", assignment); err != nil {
+			t.Fatalf("independent submission %s was unexpectedly deduplicated: %v", task.ID, err)
+		}
 	}
 }
 

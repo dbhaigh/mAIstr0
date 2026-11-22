@@ -4,7 +4,7 @@
   "body": {
     "created_at": "\u003cTIME\u003e",
     "description": "Cancel this workflow",
-    "error": "task cancelled",
+    "error": "outcome unknown; reconciliation required before retrying",
     "graph": {
       "edges": [],
       "nodes": {
@@ -23,7 +23,6 @@
     "id": "\u003cTASK_ID\u003e",
     "last_checkpoint": "\u003cCHECKPOINT_ID\u003e",
     "origin": "\u003cTASK_ORIGIN\u003e",
-    "resumable": true,
     "sequence": 0,
     "status": "cancelled",
     "subtasks": [
@@ -32,16 +31,19 @@
         "attempts": [
           {
             "duration_ms": 0,
+            "error": "outcome unknown; reconciliation required before retrying",
+            "failure_class": "outcome_unknown",
+            "finished_at": "\u003cTIME\u003e",
             "id": "\u003cTASK_ID\u003e",
             "model": "general-model",
             "node_id": "cancel-worker",
             "number": 1,
             "request_id": "task-1:work",
             "started_at": "\u003cTIME\u003e",
-            "status": "running"
+            "status": "failed"
           }
         ],
-        "error": "task cancelled",
+        "error": "outcome unknown; reconciliation required before retrying",
         "model": "general-model",
         "node_id": "cancel-worker",
         "score": 0,
@@ -58,7 +60,7 @@
           "queued_tasks": 0,
           "telemetry_fresh": false
         },
-        "status": "cancelled",
+        "status": "failed",
         "subtask": {
           "description": "Wait for cancellation",
           "id": "work",

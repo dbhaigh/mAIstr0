@@ -143,13 +143,7 @@ func (m *Manager) load() error {
 					attemptHistoryChanged = true
 				}
 				if attempt.Status == DispatchAttemptRunning {
-					now := time.Now()
-					attempt.Status = DispatchAttemptFailed
-					attempt.FailureClass = "orchestrator_restart"
-					attempt.Error = "orchestrator restarted before the attempt result was recorded"
-					attempt.FinishedAt = &now
-					attempt.DurationMs = max(0, now.Sub(attempt.StartedAt).Milliseconds())
-					attemptHistoryChanged = true
+					attemptHistoryChanged = markDispatchAttemptOutcomeUnknown(attempt, time.Now()) || attemptHistoryChanged
 				}
 			}
 		}
@@ -184,6 +178,21 @@ func (m *Manager) load() error {
 			cancel()
 		} else {
 			cancel()
+		}
+		if task.HasUnknownDispatchOutcome() {
+			if task.Status != StatusCancelled {
+				task.Status = StatusFailed
+			}
+			task.Error = ErrOutcomeUnknown.Error()
+			task.Resumable = false
+			for i := range task.Subtasks {
+				if subtaskHasUnknownDispatchOutcome(&task.Subtasks[i]) {
+					task.Subtasks[i].Status = StatusFailed
+					task.Subtasks[i].Error = ErrOutcomeUnknown.Error()
+				}
+			}
+			task.UpdatedAt = time.Now()
+			metadataChanged[task.ID] = true
 		}
 		if attemptHistoryChanged && !interrupted[task.ID] {
 			task.UpdatedAt = time.Now()

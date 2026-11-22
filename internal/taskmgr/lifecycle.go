@@ -120,16 +120,29 @@ func (m *Manager) CancelAndSnapshotChecked(id string) (*Task, bool, error) {
 	t.Status = StatusCancelled
 	t.Error = "task cancelled"
 	hasCompleted := false
+	now := time.Now()
 	for i := range t.Subtasks {
+		result := &t.Subtasks[i]
+		for j := range result.Attempts {
+			markDispatchAttemptOutcomeUnknown(&result.Attempts[j], now)
+		}
 		switch t.Subtasks[i].Status {
 		case StatusCompleted:
 			hasCompleted = true
 		case StatusPending, StatusRunning:
-			t.Subtasks[i].Status = StatusCancelled
-			t.Subtasks[i].Error = "task cancelled"
+			if subtaskHasUnknownDispatchOutcome(result) {
+				result.Status = StatusFailed
+				result.Error = ErrOutcomeUnknown.Error()
+			} else {
+				result.Status = StatusCancelled
+				result.Error = "task cancelled"
+			}
 		}
 	}
-	t.Resumable = hasCompleted
+	t.Resumable = hasCompleted && !t.HasUnknownDispatchOutcome()
+	if t.HasUnknownDispatchOutcome() {
+		t.Error = ErrOutcomeUnknown.Error()
+	}
 	t.UpdatedAt = time.Now()
 	signalChanged(t)
 	_, persistErr := m.persistTaskAndCheckpointLocked(t)
@@ -155,6 +168,14 @@ func (m *Manager) StartSubtaskChecked(taskID, subtaskID string) error {
 	}
 	for i := range t.Subtasks {
 		if t.Subtasks[i].Subtask.ID == subtaskID {
+			if subtaskHasUnknownDispatchOutcome(&t.Subtasks[i]) {
+				return fmt.Errorf("taskmgr: subtask %s in task %s: %w", subtaskID, taskID, ErrOutcomeUnknown)
+			}
+			for j := range t.Subtasks[i].Attempts {
+				if t.Subtasks[i].Attempts[j].Status == DispatchAttemptRunning {
+					return fmt.Errorf("taskmgr: subtask %s in task %s: %w", subtaskID, taskID, ErrDispatchInProgress)
+				}
+			}
 			if status := t.Subtasks[i].Status; status != StatusPending && status != StatusRunning {
 				return fmt.Errorf("taskmgr: subtask %s in task %s is %s: %w", subtaskID, taskID, status, ErrSubtaskFinished)
 			}
@@ -183,6 +204,14 @@ func (m *Manager) ReassignSubtaskChecked(taskID, subtaskID string, assignment sc
 		}
 		if t.Subtasks[i].Status != StatusRunning && t.Subtasks[i].Status != StatusPending {
 			return fmt.Errorf("taskmgr: subtask %s in task %s is not pending or running", subtaskID, taskID)
+		}
+		if subtaskHasUnknownDispatchOutcome(&t.Subtasks[i]) {
+			return fmt.Errorf("taskmgr: subtask %s in task %s: %w", subtaskID, taskID, ErrOutcomeUnknown)
+		}
+		for _, attempt := range t.Subtasks[i].Attempts {
+			if attempt.Status == DispatchAttemptRunning {
+				return fmt.Errorf("taskmgr: subtask %s in task %s: %w", subtaskID, taskID, ErrDispatchInProgress)
+			}
 		}
 		assignment.Subtask = cloneSubtask(assignment.Subtask)
 		t.Subtasks[i].Assignment = assignment
@@ -276,8 +305,13 @@ func (m *Manager) completeSubtaskLocked(t *Task, subtaskID, output string, taskE
 		t.Result = aggregateOutputs(t.Subtasks)
 		if anyFailed {
 			t.Status = StatusFailed
-			t.Error = "one or more subtasks failed"
-			t.Resumable = true
+			if t.HasUnknownDispatchOutcome() {
+				t.Error = ErrOutcomeUnknown.Error()
+				t.Resumable = false
+			} else {
+				t.Error = "one or more subtasks failed"
+				t.Resumable = true
+			}
 		} else if t.RequireApproval {
 			t.Status = StatusAwaitingApproval
 			t.Resumable = true
@@ -291,6 +325,10 @@ func (m *Manager) completeSubtaskLocked(t *Task, subtaskID, output string, taskE
 		}
 	} else {
 		t.Resumable = true
+	}
+	if t.HasUnknownDispatchOutcome() {
+		t.Error = ErrOutcomeUnknown.Error()
+		t.Resumable = false
 	}
 	t.UpdatedAt = time.Now()
 	signalChanged(t)

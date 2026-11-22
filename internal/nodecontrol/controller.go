@@ -347,6 +347,8 @@ func (c *Controller) startChild() error {
 	settings := c.runtimeSettings
 	settings.AllowPeerUpdates = persistedSettings.AllowPeerUpdates
 	settings.NoPeerUpdates = persistedSettings.NoPeerUpdates
+	settings.AllowCentralUpdates = persistedSettings.AllowCentralUpdates
+	settings.NoCentralUpdates = persistedSettings.NoCentralUpdates
 	args, err := childArgs(c.runtimePath, c.nodeConfigPath, c.controlAddress, settings,
 		os.Getpid(), c.restartArgs, c.serviceManaged)
 	if err != nil {
@@ -415,6 +417,8 @@ func childArgs(runtimePath, nodeConfigPath, controlAddress string, settings conf
 	}
 	addBool("allow-peer-updates", settings.AllowPeerUpdates)
 	addBool("no-peer-updates", settings.NoPeerUpdates)
+	addBool("allow-central-updates", settings.AllowCentralUpdates)
+	addBool("no-central-updates", settings.NoCentralUpdates)
 	args = append(args, "--host-control-addr", controlAddress)
 	args = append(args,
 		"--host-controller-pid", strconv.Itoa(controllerPID),
@@ -470,6 +474,12 @@ func completeRuntimeSettings(settings config.RuntimeSettings, nodeConfigPath str
 	}
 	if settings.NoPeerUpdates == nil {
 		settings.NoPeerUpdates = boolValue(false)
+	}
+	if settings.AllowCentralUpdates == nil {
+		settings.AllowCentralUpdates = boolValue(false)
+	}
+	if settings.NoCentralUpdates == nil {
+		settings.NoCentralUpdates = boolValue(false)
 	}
 	return settings
 }
@@ -729,6 +739,18 @@ func (c *Controller) handleUpgradeAction(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	if request.Central != nil {
+		enabled, err := c.centralUpdatesEnabled()
+		if err != nil {
+			slog.Error("nodecontrol: load runtime settings for central update gate", "node_id", c.nodeID, "error", err)
+			http.Error(w, "runtime settings are unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !enabled {
+			http.Error(w, selfupdate.ErrCentralUpdatesDisabled.Error(), http.StatusForbidden)
+			return
+		}
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		http.Error(w, "could not encode upgrade request", http.StatusInternalServerError)
@@ -810,6 +832,16 @@ func (c *Controller) peerUpdatesEnabled() (bool, error) {
 	return settings.AllowPeerUpdates != nil &&
 		*settings.AllowPeerUpdates &&
 		(settings.NoPeerUpdates == nil || !*settings.NoPeerUpdates), nil
+}
+
+func (c *Controller) centralUpdatesEnabled() (bool, error) {
+	settings, err := config.LoadRuntimeSettings(c.runtimePath)
+	if err != nil {
+		return false, fmt.Errorf("load runtime settings: %w", err)
+	}
+	return settings.AllowCentralUpdates != nil &&
+		*settings.AllowCentralUpdates &&
+		(settings.NoCentralUpdates == nil || !*settings.NoCentralUpdates), nil
 }
 
 func (c *Controller) forwardUpgradeAfterStart(body []byte, peerID string) {

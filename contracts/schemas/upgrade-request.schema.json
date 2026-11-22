@@ -15,11 +15,15 @@
       "minLength": 1,
       "maxLength": 255,
       "description": "ID of a currently trusted peer; requires peer updates to be enabled."
+    },
+    "central": {
+      "$ref": "central-update.schema.json"
     }
   },
   "oneOf": [
     {"required": ["path"]},
-    {"required": ["peer_id"]}
+    {"required": ["peer_id"]},
+    {"required": ["central"]}
   ],
   "additionalProperties": false
 }

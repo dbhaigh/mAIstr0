@@ -550,10 +550,10 @@ paths:
       description: >-
         Drain rejects new inference work, waits for current work to finish, then
         stops the process. Restart drains before replacement. Upgrade accepts an
-        absolute path on the target node or a trusted peer ID; peer sources
-        require peer updates to be enabled. If the application child is stopped,
-        the host controller starts it and forwards the request after its current
-        orchestrator authority is ready.
+        absolute path on the target node, a trusted peer ID, or a signed central
+        release announcement; peer and central sources are separately opt-in.
+        If the application child is stopped, the host controller starts it and
+        forwards the request after its current orchestrator authority is ready.
       requestBody:
         required: false
         content:
@@ -570,10 +570,13 @@ paths:
       summary: Queue a local node binary upgrade
       description: >-
         Accept an absolute target-local executable path or an already paired
-        peer ID. Peer sources use the existing peer-update policy. Before
-        stopping, the node requests a short-lived rejoin ticket over mTLS and
-        stores it in a protected local cache; the upgrade is not applied if
-        ticket issuance fails.
+        peer ID or a signed central release announcement. Peer and central
+        sources have separate opt-in gates. Central announcements come from the
+        current orchestrator over paired mTLS; nodes fetch only their own
+        OS/architecture asset from the catalog's HTTPS origin. Before stopping,
+        the node requests a short-lived rejoin ticket over mTLS and stores it in
+        a protected local cache; the upgrade is not applied if ticket issuance
+        fails.
       requestBody:
         required: true
         content:
@@ -581,8 +584,9 @@ paths:
             schema: {$ref: "#/components/schemas/UpgradeRequest"}
       responses:
         "202": {description: Upgrade queued}
+        "200": {description: Target already runs this release}
         "400": {description: Invalid upgrade source}
-        "403": {description: Caller is not the current orchestrator or peer updates are disabled}
+        "403": {description: Caller is not the current orchestrator or the selected update source is disabled}
         "409": {description: Another upgrade is queued}
         "503": {description: Upgrade service is unavailable}
   /api/nodes/{id}/engines:
@@ -1423,21 +1427,42 @@ paths:
       responses: {"200": {description: Proxy agent API route}}
   /api/agent/sessions:
     get:
-      responses: {"200": {description: List agent sessions}}
+      responses:
+        "200":
+          description: List sessions, including preserved sessions whose owning backend is unavailable.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/AgentSessionView"}
     post:
-      responses: {"200": {description: Create an agent session}}
+      responses:
+        "201":
+          description: Create an agent session on the selected backend.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AgentSessionView"}
+        "503": {description: Selected optional backend is unavailable}
   /api/agent/sessions/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
     get:
-      responses: {"200": {description: Get an agent session}}
+      responses:
+        "200":
+          description: Get a session and its history, including when its owning backend is unavailable.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AgentSessionView"}
     delete:
       responses: {"200": {description: Delete an agent session}}
   /api/agent/sessions/{id}/messages:
     parameters:
       - $ref: "#/components/parameters/ID"
     post:
-      responses: {"200": {description: Send an agent message}}
+      responses:
+        "200": {description: Send an agent message}
+        "501": {description: Selected backend does not support requested streaming}
+        "503": {description: Session-owning backend is unavailable; session is not rerouted}
   /api/agent/sessions/{id}/interrupt:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -1464,9 +1489,16 @@ paths:
       responses: {"200": {description: Get agent statistics}}
   /api/agent/backend:
     get:
-      responses: {"200": {description: Get agent backend}}
+      responses:
+        "200":
+          description: Get selected backend and explicit availability/capabilities for registered and session-owning backends.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AgentBackendStatus"}
     patch:
-      responses: {"200": {description: Update agent backend}}
+      responses:
+        "200": {description: Select an available backend for new sessions}
+        "400": {description: Backend is not registered or available}
   /api/models:
     get:
       parameters:
@@ -1586,6 +1618,10 @@ components:
   schemas:
     ErrorResponse:
       $ref: "./schemas/error-response.schema.json"
+    AgentBackendStatus:
+      $ref: "./schemas/agent-backend.schema.json"
+    AgentSessionView:
+      $ref: "./schemas/agent-session-view.schema.json"
     NodeConfig:
       description: Node configuration; configured engine api_key values are write-only.
       allOf:
@@ -1652,6 +1688,10 @@ components:
       $ref: "./schemas/shard-group-list.schema.json"
     OrchestratorConfig:
       $ref: "./schemas/orchestrator-config.schema.json"
+    ReleaseCatalog:
+      $ref: "./schemas/release-catalog.schema.json"
+    CentralUpdateRequest:
+      $ref: "./schemas/central-update.schema.json"
     Task:
       $ref: "./schemas/task.schema.json"
     SubtaskResult:

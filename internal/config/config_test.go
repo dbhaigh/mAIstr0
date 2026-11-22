@@ -13,15 +13,17 @@ func TestOptionalSecurityKeysAreValidatedAndRemainOptIn(t *testing.T) {
 	publisherKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
 
 	node := DefaultNodeConfig()
-	if node.DiscoveryHMACSecret != "" || node.PeerUpdatePublisherKey != "" {
+	if node.DiscoveryHMACSecret != "" || node.PeerUpdatePublisherKey != "" || node.CentralUpdatePublisherKey != "" {
 		t.Fatal("optional security keys should be unset by default")
 	}
 	node.DiscoveryHMACSecret = secret
 	node.PeerUpdatePublisherKey = publisherKey
+	node.CentralUpdatePublisherKey = publisherKey
 	if err := node.Validate(); err != nil {
 		t.Fatalf("valid node security keys rejected: %v", err)
 	}
-	if len(node.DiscoveryHMACKey()) != 32 || len(node.TrustedPeerUpdatePublicKey()) != 32 {
+	if len(node.DiscoveryHMACKey()) != 32 || len(node.TrustedPeerUpdatePublicKey()) != 32 ||
+		len(node.TrustedCentralUpdatePublicKey()) != 32 {
 		t.Fatal("configured keys did not decode to 32 bytes")
 	}
 
@@ -47,6 +49,40 @@ func TestOptionalSecurityKeysAreValidatedAndRemainOptIn(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), node.PeerUpdatePublisherKey) {
 		t.Fatal("validation error exposed the configured publisher key")
+	}
+	node.PeerUpdatePublisherKey = publisherKey
+	node.CentralUpdatePublisherKey = "not-a-key"
+	err = node.Validate()
+	if err == nil || !strings.Contains(err.Error(), "central_update_publisher_key") {
+		t.Fatalf("invalid central publisher key validation = %v", err)
+	}
+	if strings.Contains(err.Error(), node.CentralUpdatePublisherKey) {
+		t.Fatal("validation error exposed the configured central publisher key")
+	}
+}
+
+func TestOrchestratorUpdateManifestURLRequiresPrivateHTTPSShape(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		url  string
+		ok   bool
+	}{
+		{name: "unset", ok: true},
+		{name: "https", url: "https://updates.example.test/releases/latest.json", ok: true},
+		{name: "http", url: "http://updates.example.test/latest.json"},
+		{name: "userinfo", url: "https://publisher@updates.example.test/latest.json"},
+		{name: "query", url: "https://updates.example.test/latest.json?token=value"},
+		{name: "fragment", url: "https://updates.example.test/latest.json#latest"},
+		{name: "relative", url: "/latest.json"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := DefaultOrchestratorConfig()
+			cfg.UpdateManifestURL = test.url
+			err := cfg.Validate()
+			if (err == nil) != test.ok {
+				t.Fatalf("Validate() error = %v, want valid=%t", err, test.ok)
+			}
+		})
 	}
 }
 
@@ -132,6 +168,16 @@ func TestOrchestratorHarnessConfig(t *testing.T) {
 	}
 	if cfg.DispatchTimeoutSeconds != 420 {
 		t.Fatalf("dispatch timeout = %d, want 420 seconds", cfg.DispatchTimeoutSeconds)
+	}
+	if err := os.WriteFile(path, []byte(`{"harness":"claude-code"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	optional, err := LoadOrchestratorConfig(path)
+	if err != nil {
+		t.Fatalf("load optional backend config: %v", err)
+	}
+	if optional.Harness != "claude-code" {
+		t.Fatalf("optional harness = %q", optional.Harness)
 	}
 }
 
@@ -299,7 +345,7 @@ func TestOrchestratorConfigNormalizeAndValidate(t *testing.T) {
 	}{
 		{"listen address", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.ListenAddr = "localhost" }, "listen_addr"},
 		{"mode", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Mode = "lite" }, "mode"},
-		{"harness", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Harness = "unknown" }, "harness"},
+		{"harness", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.Harness = "unknown/backend" }, "harness"},
 		{"log level", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.LogLevel = "verbose" }, "log_level"},
 		{"concurrency", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.MaxConcurrentDispatches = -1 }, "max_concurrent_dispatches"},
 		{"dispatch timeout", func(cfg *OrchestratorConfig, _ *testing.T) { cfg.DispatchTimeoutSeconds = -1 }, "dispatch_timeout_seconds"},
@@ -414,7 +460,7 @@ func TestConfigValidationReportsAllViolations(t *testing.T) {
 	}
 	cfg := OrchestratorConfig{
 		ListenAddr:              "localhost",
-		Harness:                 "invalid",
+		Harness:                 "invalid/name",
 		MaxConcurrentDispatches: -1,
 		DiscoveryEnabled:        false,
 		TrayMode:                "invalid",

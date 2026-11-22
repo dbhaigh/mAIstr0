@@ -1,0 +1,46 @@
+{
+  "name": "deepseek",
+  "harnesses": [
+    "pi",
+    "deepseek"
+  ],
+  "supports_coordinator_model": true,
+  "available": true,
+  "capabilities": {
+    "session_resume": true,
+    "streaming": true,
+    "cancellation": true,
+    "approvals": false,
+    "workspace_isolation": false,
+    "model_selection": true,
+    "tool_access": true
+  },
+  "backends": [
+    {
+      "name": "deepseek",
+      "available": true,
+      "capabilities": {
+        "session_resume": true,
+        "streaming": true,
+        "cancellation": true,
+        "approvals": false,
+        "workspace_isolation": false,
+        "model_selection": true,
+        "tool_access": true
+      }
+    },
+    {
+      "name": "pi",
+      "available": true,
+      "capabilities": {
+        "session_resume": true,
+        "streaming": true,
+        "cancellation": true,
+        "approvals": false,
+        "workspace_isolation": false,
+        "model_selection": true,
+        "tool_access": true
+      }
+    }
+  ]
+}

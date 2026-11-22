@@ -58,6 +58,15 @@ func (s *Server) handleAgentSessionsCreate(w http.ResponseWriter, r *http.Reques
 		req = decoded
 	}
 	harness, backend := s.currentAgent()
+	if backend == nil {
+		writeError(w, apperr.UnavailableError(fmt.Errorf("configured agent backend %q is unavailable; no session was created", harness)))
+		return
+	}
+	registration, _ := s.harnessPort().backendRegistration(harness)
+	if req.CoordinatorModel != "" && !registration.Capabilities.ModelSelection {
+		writeError(w, apperr.NotImplementedError(fmt.Errorf("agent backend %q does not support model selection", harness)))
+		return
+	}
 	session, err := backend.CreateSession(req.Title, agent.SessionConfig{
 		CoordinatorModel: req.CoordinatorModel,
 		MaxSteps:         req.MaxSteps,
@@ -76,37 +85,33 @@ func (s *Server) handleAgentSessionsCreate(w http.ResponseWriter, r *http.Reques
 	}
 	s.harnessPort().setSessionHarness(session.ID, harness)
 	s.publishSnapshot()
-	writeJSON(w, http.StatusCreated, session)
+	writeJSON(w, http.StatusCreated, agentSessionView{Session: session, Available: true})
 }
 
 func (s *Server) handleAgentSessionGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	harness, backend, exists := s.agentForSession(id)
+	session, exists := s.agentSession(id)
 	if !exists {
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
 		return
 	}
-	session, ok := backend.GetSession(id)
-	if !ok {
-		writeError(w, apperr.NotFoundError(errors.New("session not found")))
-		return
-	}
-	session.Harness = harness
 	writeJSON(w, http.StatusOK, session)
 }
 
 func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	harness, backend, exists := s.agentForSession(id)
+	session, exists := s.agentSession(id)
 	if !exists {
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
 		return
 	}
+	harness := session.Harness
+	_, backend, available := s.agentForSession(id)
 	if err := s.harnessPort().deletePersistedSession(harness, id); err != nil {
 		writeError(w, apperr.InternalError(fmt.Errorf("could not delete persisted agent session: %w", err)))
 		return
 	}
-	if !backend.DeleteSession(id) {
+	if available && !backend.DeleteSession(id) {
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
 		return
 	}
@@ -119,7 +124,16 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 	id := r.PathValue("id")
 	harness, backend, exists := s.agentForSession(id)
 	if !exists {
+		if session, known := s.agentSession(id); known {
+			writeError(w, apperr.UnavailableError(fmt.Errorf("session harness %q is unavailable (%s); its stored history is preserved", session.Harness, session.UnavailableReason)))
+			return
+		}
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
+		return
+	}
+	registration, registered := s.harnessPort().backendRegistration(harness)
+	if !registered {
+		writeError(w, apperr.UnavailableError(fmt.Errorf("session harness %q is unavailable", harness)))
 		return
 	}
 	req, ok := handler_utils.DecodeJSON[agentMessageRequest](
@@ -137,10 +151,13 @@ func (s *Server) handleAgentMessagePost(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	turnCtx, turnCancel := context.WithCancel(r.Context())
-	defer s.harnessPort().registerTurnCancel(id, turnCancel)()
-
 	isStream := r.URL.Query().Get("stream") == "true" || strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	if isStream && !registration.Capabilities.Streaming {
+		writeError(w, apperr.NotImplementedError(fmt.Errorf("agent backend %q does not support streaming", harness)))
+		return
+	}
+	turnCtx, turnCancel := context.WithCancel(r.Context())
+	defer s.harnessPort().registerTurnCancel(id, registration.Capabilities.Cancellation, turnCancel)()
 
 	if isStream {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -242,8 +259,7 @@ func (s *Server) handleAgentSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	_, _, exists := s.agentForSession(id)
-	if !exists {
+	if _, exists := s.agentSession(id); !exists {
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
 		return
 	}
@@ -256,12 +272,30 @@ func (s *Server) handleAgentSessionInterrupt(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleAgentToolsList(w http.ResponseWriter, r *http.Request) {
-	_, backend := s.currentAgent()
+	name, backend := s.currentAgent()
+	if backend == nil {
+		writeError(w, apperr.UnavailableError(fmt.Errorf("configured agent backend %q is unavailable", name)))
+		return
+	}
+	registration, _ := s.harnessPort().backendRegistration(name)
+	if !registration.Capabilities.ToolAccess {
+		writeError(w, apperr.NotImplementedError(fmt.Errorf("agent backend %q does not support tool access", name)))
+		return
+	}
 	writeJSON(w, http.StatusOK, backend.ListTools())
 }
 
 func (s *Server) handleAgentModelsList(w http.ResponseWriter, r *http.Request) {
-	_, backend := s.currentAgent()
+	name, backend := s.currentAgent()
+	if backend == nil {
+		writeError(w, apperr.UnavailableError(fmt.Errorf("configured agent backend %q is unavailable", name)))
+		return
+	}
+	registration, _ := s.harnessPort().backendRegistration(name)
+	if !registration.Capabilities.ModelSelection {
+		writeError(w, apperr.NotImplementedError(fmt.Errorf("agent backend %q does not support model selection", name)))
+		return
+	}
 	s.handleClusterModelInfoList(w, r, backend, "agent-models")
 }
 
@@ -270,10 +304,26 @@ func (s *Server) handleAgentStatsGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentBackendGet(w http.ResponseWriter, r *http.Request) {
-	harness, _ := s.currentAgent()
+	harness, backend := s.currentAgent()
+	var capabilities *agent.Capabilities
+	if backend != nil {
+		if registration, ok := s.harnessPort().backendRegistration(harness); ok {
+			value := registration.Capabilities
+			capabilities = &value
+		}
+	}
+	harnesses := []string{"pi", "deepseek"}
+	for _, available := range s.agentBackendViews() {
+		if available.Available && available.Name != "pi" && available.Name != "deepseek" {
+			harnesses = append(harnesses, available.Name)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": harness, "harnesses": []string{"pi", "deepseek"},
-		"supports_coordinator_model": true,
+		"name": harness, "harnesses": harnesses,
+		"supports_coordinator_model": capabilities != nil && capabilities.ModelSelection,
+		"available":                  backend != nil,
+		"capabilities":               capabilities,
+		"backends":                   s.agentBackendViews(),
 	})
 }
 
@@ -289,7 +339,7 @@ func (s *Server) handleAgentBackendPatch(w http.ResponseWriter, r *http.Request)
 	}
 	request.Harness = strings.ToLower(strings.TrimSpace(request.Harness))
 	if !s.selectHarness(request.Harness) {
-		writeError(w, apperr.Invalid(errors.New(`unsupported harness (want "pi" or "deepseek")`)))
+		writeError(w, apperr.Invalid(errors.New("unsupported or unavailable agent backend")))
 		return
 	}
 	s.handleAgentBackendGet(w, r)

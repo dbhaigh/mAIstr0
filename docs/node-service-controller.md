@@ -68,7 +68,7 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.maistr0.agent
 To uninstall the LaunchAgent and executable while retaining configuration and
 data, run `bash packaging/launchd/uninstall.sh` from the extracted archive.
 The menu-bar `.app` ZIP is separate; move it into a user-writable `~/Applications`
-folder if you want peer updates to replace its executable. Packages are
+folder if you want executable updates to replace its image. Packages are
 unsigned and not notarized, so macOS Gatekeeper may require explicit approval
 the first time the app is opened. Control-click the app in Finder, choose
 **Open**, and confirm the warning to launch it.
@@ -103,10 +103,11 @@ Start-Service mAIstr0HostController
 Get-Service mAIstr0HostController
 ```
 
-The recovery action is required for automatic peer updates: on Windows, the
-controller and application share an executable image, so the controller exits
-to release the file before replacement. The update helper replaces the
-executable, then the service manager starts the new controller mode.
+The recovery action is required for automatic executable replacement: on
+Windows, the controller and application share an executable image, so the
+controller exits to release the file before replacement. The update helper
+replaces the executable, then the service manager starts the new controller
+mode.
 
 ## Dashboard lifecycle behavior
 

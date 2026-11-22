@@ -354,45 +354,29 @@ func TestFencedJSONOutputAllowsDependentSubtaskToRun(t *testing.T) {
 	}
 }
 
-func TestTaskGraphCreationAndResumeEndpoints(t *testing.T) {
+func TestTaskGraphCancellationAndResumeEndpoints(t *testing.T) {
 	srv := newTestServer(t)
-	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"output": "step output"})
-	}))
-	defer worker.Close()
-
-	srv.registry.Upsert(cluster.NodeStatus{
-		ID: "test-node", Address: worker.URL, Healthy: true,
-		Capabilities: []string{"coder", "researcher"},
-		Models:       []engine.Model{{Name: "test-model", Tags: []string{"code"}}},
-	})
-
-	// 1. Create a DAG task via POST /api/tasks
 	graph := scheduler.NewTaskGraph()
 	_ = graph.AddNode(scheduler.Subtask{ID: "n1", Description: "Step 1", Role: "coder", RequiredCapabilities: []string{"coder"}})
 	_ = graph.AddNode(scheduler.Subtask{ID: "n2", Description: "Step 2", Role: "researcher", DependsOn: []string{"n1"}})
 	_ = graph.AddEdge("n1", "n2")
 
-	reqBody, _ := json.Marshal(map[string]any{
-		"description": "Two-step DAG task",
-		"graph":       graph,
-	})
-
-	createRec := httptest.NewRecorder()
-	srv.Mux().ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/tasks", bytes.NewReader(reqBody)))
-	if createRec.Code != http.StatusAccepted {
-		t.Fatalf("create task returned %d: %s", createRec.Code, createRec.Body.String())
+	assignments := []scheduler.Assignment{
+		{Subtask: scheduler.Subtask{ID: "n1", Description: "Step 1", Role: "coder"}, NodeID: "test-node"},
+		{Subtask: scheduler.Subtask{ID: "n2", Description: "Step 2", Role: "researcher", DependsOn: []string{"n1"}}, NodeID: "test-node"},
 	}
-
-	var created taskmgr.Task
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+	created, err := srv.tasks.CreateWithGraphAndOptionsChecked("Two-step DAG task", graph, assignments, false)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if created.ID == "" {
 		t.Fatalf("expected non-empty task ID")
 	}
+	if err := srv.tasks.CompleteSubtaskChecked(created.ID, "n1", "n1 output", nil); err != nil {
+		t.Fatal(err)
+	}
 
-	// 2. Query checkpoints
+	// Query checkpoints before cancelling the pending dependent step.
 	cpRec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(cpRec, httptest.NewRequest(http.MethodGet, "/api/tasks/"+created.ID+"/checkpoints", nil))
 	if cpRec.Code != http.StatusOK {
@@ -406,15 +390,12 @@ func TestTaskGraphCreationAndResumeEndpoints(t *testing.T) {
 		t.Fatalf("expected at least one checkpoint, got %d", len(cps))
 	}
 
-	// 3. Complete step n1, then cancel
-	srv.tasks.CompleteSubtask(created.ID, "n1", "n1 output", nil)
 	cancelRec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(cancelRec, httptest.NewRequest(http.MethodPost, "/api/tasks/"+created.ID+"/cancel", nil))
 	if cancelRec.Code != http.StatusOK {
 		t.Fatalf("cancel returned %d: %s", cancelRec.Code, cancelRec.Body.String())
 	}
 
-	// 4. Query resumable tasks
 	resumableRec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(resumableRec, httptest.NewRequest(http.MethodGet, "/api/tasks/resumable", nil))
 	if resumableRec.Code != http.StatusOK {
@@ -425,8 +406,8 @@ func TestTaskGraphCreationAndResumeEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, r := range resumable {
-		if r.ID == created.ID {
+	for _, task := range resumable {
+		if task.ID == created.ID {
 			found = true
 			break
 		}
@@ -435,7 +416,6 @@ func TestTaskGraphCreationAndResumeEndpoints(t *testing.T) {
 		t.Fatalf("expected task %s to be listed as resumable, got: %+v", created.ID, resumable)
 	}
 
-	// 5. Resume task
 	resumeRec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(resumeRec, httptest.NewRequest(http.MethodPost, "/api/tasks/"+created.ID+"/resume", nil))
 	if resumeRec.Code != http.StatusOK {

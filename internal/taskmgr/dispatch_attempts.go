@@ -1,6 +1,7 @@
 package taskmgr
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -29,6 +30,14 @@ func (m *Manager) BeginDispatchAttemptChecked(taskID, subtaskID string, assignme
 		}
 		if result.Status != StatusRunning {
 			return 0, fmt.Errorf("taskmgr: subtask %s in task %s is not running", subtaskID, taskID)
+		}
+		if subtaskHasUnknownDispatchOutcome(result) {
+			return 0, fmt.Errorf("taskmgr: subtask %s in task %s: %w", subtaskID, taskID, ErrOutcomeUnknown)
+		}
+		for i := range result.Attempts {
+			if result.Attempts[i].Status == DispatchAttemptRunning {
+				return 0, fmt.Errorf("taskmgr: subtask %s in task %s: %w", subtaskID, taskID, ErrDispatchInProgress)
+			}
 		}
 		number := len(result.Attempts) + 1
 		now := time.Now()
@@ -67,6 +76,10 @@ func (m *Manager) FinishDispatchAttemptChecked(taskID, subtaskID string, number 
 			if attempt.Number != number {
 				continue
 			}
+			if attempt.Status == DispatchAttemptFailed &&
+				attempt.FailureClass == DispatchFailureClassOutcomeUnknown {
+				return nil
+			}
 			if attempt.Status != DispatchAttemptRunning {
 				return fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s is already finished", number, subtaskID)
 			}
@@ -80,6 +93,13 @@ func (m *Manager) FinishDispatchAttemptChecked(taskID, subtaskID string, number 
 			attempt.FinishedAt = &finishedAt
 			attempt.DurationMs = duration.Milliseconds()
 			t.UpdatedAt = finishedAt
+			if failureClass == DispatchFailureClassOutcomeUnknown {
+				completion, err := m.completeSubtaskLocked(t, subtaskID, "", ErrOutcomeUnknown)
+				if err != nil {
+					return err
+				}
+				return completion.persistErr
+			}
 			signalChanged(t)
 			return m.persistLocked(t)
 		}
@@ -103,9 +123,8 @@ func (m *Manager) CompleteDispatchAttemptChecked(
 	)
 }
 
-// CompleteDispatchAttemptWithAssignmentChecked records the first successful
-// concurrent attempt as the subtask winner, then cancels losing work after the
-// task lock has been released.
+// CompleteDispatchAttemptWithAssignmentChecked atomically records the
+// successful attempt and subtask result before invoking the winner callback.
 func (m *Manager) CompleteDispatchAttemptWithAssignmentChecked(
 	taskID, subtaskID string,
 	number int,
@@ -148,28 +167,34 @@ func (m *Manager) CompleteDispatchAttemptWithAssignmentChecked(
 		return false, fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s not found", number, subtaskID)
 	}
 	if attempt.Status != DispatchAttemptRunning {
+		if attempt.Status == DispatchAttemptFailed &&
+			attempt.FailureClass == DispatchFailureClassOutcomeUnknown {
+			m.unlockTaskForUpdate(t)
+			return false, nil
+		}
 		m.unlockTaskForUpdate(t)
 		return false, fmt.Errorf("taskmgr: dispatch attempt %d for subtask %s is already finished", number, subtaskID)
 	}
 	finishedAt := time.Now()
+	if t.Status == StatusCancelled || subtaskResult.Status != StatusRunning {
+		markDispatchAttemptOutcomeUnknown(attempt, finishedAt)
+		t.Error = ErrOutcomeUnknown.Error()
+		t.Resumable = false
+		if subtaskResult.Status != StatusCompleted {
+			subtaskResult.Status = StatusFailed
+			subtaskResult.Error = ErrOutcomeUnknown.Error()
+		}
+		signalChanged(t)
+		err := m.persistLocked(t)
+		m.unlockTaskForUpdate(t)
+		return false, err
+	}
 	attempt.Status = DispatchAttemptSucceeded
 	attempt.FailureClass = failureClass
 	attempt.HTTPStatus = httpStatus
 	attempt.FinishedAt = &finishedAt
 	attempt.DurationMs = duration.Milliseconds()
 	t.UpdatedAt = finishedAt
-	if t.Status == StatusCancelled {
-		signalChanged(t)
-		err := m.persistLocked(t)
-		m.unlockTaskForUpdate(t)
-		return false, err
-	}
-	if subtaskResult.Status != StatusRunning {
-		signalChanged(t)
-		err := m.persistLocked(t)
-		m.unlockTaskForUpdate(t)
-		return false, err
-	}
 	if assignment != nil {
 		assignment.Subtask = cloneSubtask(assignment.Subtask)
 		subtaskResult.Assignment = *assignment
@@ -179,6 +204,26 @@ func (m *Manager) CompleteDispatchAttemptWithAssignmentChecked(
 	if err != nil {
 		m.unlockTaskForUpdate(t)
 		return false, err
+	}
+	if completion.persistErr != nil {
+		commitErr := completion.persistErr
+		attempt.Status = DispatchAttemptRunning
+		markDispatchAttemptOutcomeUnknown(attempt, time.Now())
+		subtaskResult.Output = ""
+		recovery, recoveryErr := m.completeSubtaskLocked(t, subtaskID, "", ErrOutcomeUnknown)
+		if recoveryErr != nil {
+			m.unlockTaskForUpdate(t)
+			return false, errors.Join(
+				fmt.Errorf("%w: completed dispatch result was not committed: %v", ErrOutcomeUnknown, commitErr),
+				fmt.Errorf("record unknown dispatch outcome: %w", recoveryErr),
+			)
+		}
+		m.unlockTaskForUpdate(t)
+		unknownErr := fmt.Errorf("%w: completed dispatch result was not committed: %v", ErrOutcomeUnknown, commitErr)
+		if recovery.persistErr != nil {
+			return false, errors.Join(unknownErr, fmt.Errorf("persist unknown dispatch outcome: %w", recovery.persistErr))
+		}
+		return false, unknownErr
 	}
 	m.unlockTaskForUpdate(t)
 	if onWinner != nil {

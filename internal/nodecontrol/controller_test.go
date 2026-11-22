@@ -1,6 +1,7 @@
 package nodecontrol
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/config"
+	"github.com/maistr0/maistr0/internal/selfupdate"
 )
 
 func TestChildArgsApplyPersistedRuntimeSettings(t *testing.T) {
@@ -36,6 +38,8 @@ func TestChildArgsApplyPersistedRuntimeSettings(t *testing.T) {
 		MemoryPath:             stringValue(`C:\maistr0\memory.db`),
 		AllowPeerUpdates:       testBoolValue(true),
 		NoPeerUpdates:          testBoolValue(true),
+		AllowCentralUpdates:    testBoolValue(true),
+		NoCentralUpdates:       testBoolValue(false),
 	}
 
 	restartArgs := []string{"controller", "--runtime-config", `C:\maistr0\runtime.json`}
@@ -59,6 +63,8 @@ func TestChildArgsApplyPersistedRuntimeSettings(t *testing.T) {
 		"--memory-path\nC:\\maistr0\\memory.db",
 		"--allow-peer-updates=true",
 		"--no-peer-updates=true",
+		"--allow-central-updates=true",
+		"--no-central-updates=false",
 		"--host-control-addr\nhttps://192.0.2.20:7453",
 		"--host-controller-pid\n42",
 		"--host-controller-managed=true",
@@ -217,6 +223,47 @@ func TestPeerUpgradeGateUsesCurrentPersistedRuntimeSettings(t *testing.T) {
 	controller.handleAction(disabled, disabledRequest)
 	if disabled.Code != http.StatusForbidden || calls != 1 {
 		t.Fatalf("disabled peer policy response = %d, forwarded calls = %d, body = %s", disabled.Code, calls, disabled.Body.String())
+	}
+}
+
+func TestCentralUpgradeGateUsesCurrentPersistedRuntimeSettings(t *testing.T) {
+	var calls int
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"state":"queued"}`))
+	}))
+	defer node.Close()
+	runtimePath := filepath.Join(t.TempDir(), "runtime.json")
+	controller := &Controller{
+		localNodeURL: node.URL,
+		runtimePath:  runtimePath,
+		child:        &childProcess{},
+	}
+	catalog := selfupdate.ReleaseCatalog{
+		Version: "1.2.3", Signature: strings.Repeat("a", 86) + "==",
+		Artifacts: []selfupdate.ReleaseArtifact{
+			{OS: "windows", Arch: "amd64", Path: "v1.2.3/windows-amd64/maistr0.exe", SHA256: strings.Repeat("a", 64), Size: 1024},
+			{OS: "linux", Arch: "amd64", Path: "v1.2.3/linux-amd64/maistr0", SHA256: strings.Repeat("a", 64), Size: 1024},
+			{OS: "linux", Arch: "arm64", Path: "v1.2.3/linux-arm64/maistr0", SHA256: strings.Repeat("a", 64), Size: 1024},
+			{OS: "darwin", Arch: "amd64", Path: "v1.2.3/darwin-amd64/maistr0", SHA256: strings.Repeat("a", 64), Size: 1024},
+			{OS: "darwin", Arch: "arm64", Path: "v1.2.3/darwin-arm64/maistr0", SHA256: strings.Repeat("a", 64), Size: 1024},
+		},
+	}
+	body, err := json.Marshal(selfupdate.UpgradeRequest{Central: &selfupdate.CentralUpdateRequest{
+		ManifestURL: "https://updates.example.test/latest.json",
+		Catalog:     catalog,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/service/upgrade",
+		bytes.NewReader(body))
+	request.SetPathValue("action", "upgrade")
+	response := httptest.NewRecorder()
+	controller.handleAction(response, request)
+	if response.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("disabled central policy response = %d, forwarded calls = %d", response.Code, calls)
 	}
 }
 

@@ -5,7 +5,7 @@ across trusted LAN machines. It includes a web dashboard, worker nodes,
 interactive agents, and synchronized cluster memory; a cloud service is not
 required.
 
-Current version: **0.1.1.17**. See the [changelog](./changelog.md#unreleased)
+Current version: **0.1.1.18**. See the [changelog](./changelog.md#unreleased)
 and the [documentation index](./docs/README.md).
 
 ## Quick start
@@ -97,8 +97,12 @@ service to manage stopped nodes from the dashboard; see
 - Keep the dashboard on loopback; do not expose it through an unauthenticated
   proxy or public tunnel. Keep certificates, PINs, API credentials, and model
   data private.
-- Peer executable updates are disabled by default. Enabling
-  `--allow-peer-updates` grants paired publishers code-execution authority.
+- Central executable updates are disabled by default. When explicitly enabled,
+  the elected orchestrator applies a signed release from the configured HTTPS
+  service before announcing it to nodes; each node downloads its own platform
+  binary. Automatic peer polling is removed; manual peer upgrades remain
+  separately opt-in and grant the selected paired publisher code-execution
+  authority. See [update configuration](./docs/configuration.md#central-orchestrator-led-executable-updates).
 - Shard data planes have separate trust requirements; follow the network
   guidance before enabling distributed engines.
 

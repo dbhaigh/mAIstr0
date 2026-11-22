@@ -349,7 +349,7 @@ func TestDependentWaitsForEveryPrerequisiteAndReceivesOrderedOutputs(t *testing.
 	}
 }
 
-func TestRestartRecoveryThenResumeContinuesAttemptHistory(t *testing.T) {
+func TestRestartRecoveryBlocksResumeWhenAttemptOutcomeUnknown(t *testing.T) {
 	store := NewMemoryStore()
 	manager, err := NewManagerWithStore(store, nil)
 	if err != nil {
@@ -377,7 +377,7 @@ func TestRestartRecoveryThenResumeContinuesAttemptHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	recovered, _ := restarted.Get(task.ID)
-	if recovered.Status != StatusFailed || !recovered.Resumable || recovered.Error != interruptedTaskError {
+	if recovered.Status != StatusFailed || recovered.Resumable || recovered.Error != ErrOutcomeUnknown.Error() {
 		t.Fatalf("recovered task = %s resumable=%t error=%q", recovered.Status, recovered.Resumable, recovered.Error)
 	}
 	if ctx, _ := restarted.Context(task.ID); ctx.Err() == nil {
@@ -387,48 +387,12 @@ func TestRestartRecoveryThenResumeContinuesAttemptHistory(t *testing.T) {
 		t.Fatalf("recovered subtasks = %+v", recovered.Subtasks)
 	}
 	if attempts := recovered.Subtasks[1].Attempts; len(attempts) != 1 ||
-		attempts[0].Status != DispatchAttemptFailed || attempts[0].FailureClass != "orchestrator_restart" ||
+		attempts[0].Status != DispatchAttemptFailed || attempts[0].FailureClass != DispatchFailureClassOutcomeUnknown ||
 		attempts[0].FinishedAt == nil {
 		t.Fatalf("interrupted attempt = %+v, want indeterminate restart failure", attempts)
 	}
-
-	resumed, err := restarted.ResumeTaskChecked(task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resumed.Subtasks[0].Status != StatusCompleted || resumed.Subtasks[0].Output != "kept output" ||
-		resumed.Subtasks[1].Status != StatusPending || len(resumed.Subtasks[1].Attempts) != 1 {
-		t.Fatalf("resumed subtasks = %+v", resumed.Subtasks)
-	}
-	if err := restarted.StartSubtaskChecked(task.ID, "inflight"); err != nil {
-		t.Fatal(err)
-	}
-	number, err := restarted.BeginDispatchAttemptChecked(task.ID, "inflight", resumed.Subtasks[1].Assignment)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if number != 2 {
-		t.Fatalf("resumed attempt number = %d, want 2 after the interrupted attempt", number)
-	}
-	won, err := restarted.CompleteDispatchAttemptChecked(task.ID, "inflight", number, "none", 200, time.Millisecond, "resumed output")
-	if err != nil || !won {
-		t.Fatalf("complete resumed attempt = %t, %v", won, err)
-	}
-
-	reopened, err := NewManagerWithStore(store, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	final, _ := reopened.Get(task.ID)
-	if final.Status != StatusCompleted || final.Resumable || final.Subtasks[1].Output != "resumed output" {
-		t.Fatalf("persisted resumed task = %+v", final)
-	}
-	attempts := final.Subtasks[1].Attempts
-	if len(attempts) != 2 || attempts[0].FailureClass != "orchestrator_restart" ||
-		attempts[1].Status != DispatchAttemptSucceeded ||
-		attempts[1].ID != DispatchAttemptID(task.ID, "inflight", 2) ||
-		attempts[0].RequestID != attempts[1].RequestID {
-		t.Fatalf("persisted attempt history = %+v", attempts)
+	if _, err := restarted.ResumeTaskChecked(task.ID); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("resume after interrupted execution = %v, want ErrOutcomeUnknown", err)
 	}
 }
 

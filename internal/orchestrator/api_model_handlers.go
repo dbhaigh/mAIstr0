@@ -740,10 +740,9 @@ func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
-	req, ok := handler_utils.DecodeJSON[openAIChatRequest](
-		w, r, httpx.InferenceJSONBodyBytes,
-	)
-	if !ok {
+	req, err := decodeCompatibilityRequest[openAIChatRequest](w, r, httpx.InferenceJSONBodyBytes)
+	if err != nil {
+		writeError(w, apperr.Invalid(err))
 		return
 	}
 
@@ -771,6 +770,9 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		switch m.Role {
 		case "system", "user", "assistant", "tool":
 			sb.WriteString("<|im_start|>" + m.Role + "\n" + m.Content + "<|im_end|>\n")
+		default:
+			writeError(w, apperr.Invalid(fmt.Errorf("unsupported message role: %s", m.Role)))
+			return
 		}
 	}
 	sb.WriteString("<|im_start|>assistant\n")
@@ -822,10 +824,9 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request) {
-	req, ok := handler_utils.DecodeJSON[openAICompletionRequest](
-		w, r, httpx.InferenceJSONBodyBytes,
-	)
-	if !ok {
+	req, err := decodeCompatibilityRequest[openAICompletionRequest](w, r, httpx.InferenceJSONBodyBytes)
+	if err != nil {
+		writeError(w, apperr.Invalid(err))
 		return
 	}
 	if s.shards != nil {

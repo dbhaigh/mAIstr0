@@ -22,7 +22,7 @@ The main options include:
 - `--no-discovery` for node-only configurations
 - `--no-browser` to suppress automatic dashboard launch
 - `--auto-open-browser` to enable automatic dashboard launch
-- `--harness pi|deepseek` to select the default interactive harness
+- `--harness <backend-name>` to select the default interactive harness
 - `--print-config` to print normalized configuration and exit
 - `--diagnostics` to print a prompt-free local health summary
 - `--allow-peer-updates` to opt in to executable updates from paired peers
@@ -43,6 +43,12 @@ cluster as a node. `both` runs the orchestrator and local worker when this
 instance is elected. The `orchestrator` role participates in startup election as a candidate; the
 winning process starts both the orchestrator and its local node worker.
 
+Pi remains the default agent backend. Registered optional backends can be
+selected by name; a valid but missing backend does not prevent startup and is
+not substituted with Pi or DeepSeek. Persisted sessions owned by an unavailable
+backend remain visible with their history. See [agent backends](./agent-backends.md)
+for capability declarations and restoration behavior.
+
 Run `maistr0 --help` for the complete option list. Orchestrator election
 requires LAN discovery; disabling discovery is supported only for
 node-oriented startup.
@@ -50,34 +56,63 @@ node-oriented startup.
 See [node service controller](./node-service-controller.md) for installing the
 Windows or Linux companion service used by dashboard lifecycle controls.
 
-## Automatic peer executable updates
+## Central orchestrator-led executable updates
 
-Peer executable updates are **disabled by default**. Opt in with
-`--allow-peer-updates` only if every paired publisher is trusted to execute
-code as the application account. `--no-peer-updates` overrides that opt-in.
-Existing launch scripts must add the allow flag if this authority is intended;
-ordinary pairing, configuration, and trust-store formats remain compatible.
+Central updates are **disabled by default**. Opt in on every participating
+process with `--allow-central-updates`; `--no-central-updates` overrides it.
+The dashboard's persistent startup settings expose the same gates. Configure
+`update_manifest_url` in the orchestrator configuration and set
+`central_update_publisher_key` in each receiving node configuration to the
+standard-base64 32-byte Ed25519 public key. The URL must be HTTPS and the
+service must serve the catalog and binaries from the same origin.
 
-Version 0.0.24.1 introduced updates from **paired peers**, not GitHub.
-Install this version manually once on existing nodes: earlier executables do
-not contain the updater and cannot bootstrap themselves. When opted in, a node
-checks healthy registered peers and LAN-discovered paired identities every
-30 seconds, using pinned mutual TLS and the peer's executable manifest.
-It compares the reachable trusted manifests first and stages only the highest
-available release, avoiding a separate restart for each intermediate version.
-Only strictly newer numeric `major.minor.patch` or
-`major.minor.patch.iteration` releases are accepted;
-rebuilding the same version does not trigger an update. Use a new version
-number for each rollout.
+Install a central-update-capable release manually once on existing nodes;
+earlier executables cannot understand the catalog or bootstrap themselves.
+Only the currently elected orchestrator polls the service, every five minutes.
+It stages and applies its own platform binary first. A protected pending-rollout
+marker lets it resume after restart; only then does it announce the signed
+catalog to healthy nodes with bounded concurrency. Nodes fetch their exact
+OS/architecture binary directly from the service and replace it when idle.
+Automatic periodic peer polling has been removed. Explicit `peer_id` upgrades
+remain available when `--allow-peer-updates` is enabled; local executable-path
+upgrades are unchanged.
 
-Rapid iterations use `0.0.24.1`, `0.0.24.2`, and so on; the fourth component
-has no single-digit limit (`0.0.24.10` follows `0.0.24.9`). A three-component
-release behaves as iteration zero. `0.0.25` sorts after all `0.0.24.x`
-versions. Any node running the earlier local 0.0.25 development build must be
-manually replaced with 0.0.24.1; automatic downgrade remains prohibited.
+Catalogs must include Windows amd64, Linux amd64 and arm64, and macOS amd64 and
+arm64. Ubuntu uses the generic Linux amd64 asset. Only strictly newer numeric
+`major.minor.patch` or `major.minor.patch.iteration` releases are accepted;
+rebuilding the same version does not trigger an update. Rapid iterations use
+`0.0.24.1`, `0.0.24.2`, and so on; the fourth component has no single-digit
+limit (`0.0.24.10` follows `0.0.24.9`). A three-component release behaves as
+iteration zero. Downgrades remain prohibited.
 
-A compatible image is downloaded beside the installed executable, with
-bounded size, SHA-256, Go platform metadata, and reported-version checks.
+The central catalog is signed over its version and all platform paths, sizes,
+and SHA-256 digests. Each node verifies the signature, downloads only its own
+platform's asset over HTTPS from the catalog origin, and validates the bytes,
+Go platform metadata, and executable-reported version before staging. Keep the
+private signing key offline. Release builds attach an unsigned
+`*_central-update-payload.tar.gz` containing `update-manifest.json` and the
+versioned platform binaries. Sign the catalog before publishing the extracted
+payload to the private service:
+
+```text
+maistr0 sign-update-catalog --manifest path/to/update-manifest.json --key path/to/release-private.pem
+```
+
+The command signs the catalog in place and prints the
+`central_update_publisher_key` value to install on receiving nodes. Preserve the
+versioned directory paths when uploading the payload. The private HTTPS service
+is external to this repository; configure its manifest URL only after the
+signed catalog and all referenced artifacts are available.
+
+**Opt-in security risk:** a compromised central signing key or update service
+could distribute executable code that runs as the application account. Keep
+the signing key offline, restrict access to the private service, and leave
+central updates disabled unless this trust is intended. Manual peer upgrades
+also execute code from the selected paired publisher and remain separately
+opt-in.
+
+### Executable replacement and manual peer bundles
+
 The executable directory must be writable by the application account.
 Downloads can be staged while busy, but installation waits until the entire
 process is idle: no active/pending tasks (including synthesis/approval), no
@@ -87,77 +122,21 @@ coordinator. A combined-role process and a promoted coordinator use the same
 admission fence. **Stop running shard groups explicitly to allow updates.**
 The updater does not force-stop them, even if inference is currently idle.
 Failed managed engines must also be explicitly stopped, so a pending crash
-restart cannot race executable replacement.
-New work is briefly rejected with 503 once replacement commits.
+restart cannot race executable replacement. New work is briefly rejected with
+503 once replacement commits.
 
 The helper waits for graceful parent exit, replaces the image, and restarts
 with the original arguments and working directory. Configuration, identity,
-model caches and databases are unchanged. The prior executable is retained
-as `<executable>.previous`; replacement/launch errors are written to
+model caches and databases are unchanged. The prior executable is retained as
+`<executable>.previous`; replacement/launch errors are written to
 `<executable>.peer-update.log`. Immediate launch failures attempt rollback;
-this is not a post-start health supervisor. For a later startup failure,
-close the process, restore the `.previous` executable, then restart manually
-with `--no-peer-updates` until the faulty release is withdrawn.
+this is not a post-start health supervisor.
 
-To require independent publisher verification, configure
-`peer_update_publisher_key` on each receiving node with the standard-base64
-32-byte Ed25519 public key. When configured, a valid signature is required
-before the executable can be staged; unsigned manifests, wrong keys, and
-tampered metadata are rejected. Without the key, the legacy checksum-only
-behavior is retained. The updates still require `--allow-peer-updates`.
-
-The private signing key must be kept offline. `cmd/updatebundle` creates a
-`.peer.json` manifest beside each executable. Sign each manifest with the
-un-encrypted PKCS#8 Ed25519 PEM key:
-
-```text
-maistr0 sign-release --manifest path/to/maistr0.peer.json --key path/to/release-private.pem
-```
-
-The command signs the manifest in place and prints the public-key configuration
-value. Install that public value only on receiving nodes. The signature covers
-version, platform, executable size, and SHA-256 metadata, excluding the
-signature field; the digest binds the signed metadata to the downloaded image.
-Signing does not replace the paired-peer authorization or
-`--allow-peer-updates` gate. Rotate the public key only after publishing
-manifests signed by its matching private key.
-
-**Opt-in security risk:** enabling peer updates grants paired publishers
-authority to supply executable code that runs as the local application
-account. A compromised publisher key or paired node can still distribute
-malicious code. Use `--no-peer-updates` on every receiving process to disable
-updates, and never pair an untrusted machine. Existing pairing and
-current-coordinator write checks are not bypassed by the updater.
-
-### Cross-platform bundles
-
-A node always serves its own native running image. Windows and Linux release
-builders cannot produce the cgo-enabled macOS app; publish macOS builds from a
-native Mac using `bash build/build-macos.sh`. Cross-platform publishers can
-keep Windows/Linux binaries in sibling `windows-amd64` and `linux-amd64`
-directories with generated `.peer.json` metadata. A native seed on each
-platform also works. Ubuntu uses the Linux amd64 image.
-
-For locally built bundles, build every platform with the **same explicit**
-`-X github.com/maistr0/maistr0/internal/version.Value=0.0.24.1` linker setting,
-then run:
-
-```powershell
-go run .\cmd\updatebundle -root .\dist -version 0.0.24.1
-```
-
-The tool requires the existing `windows-amd64`, `linux-amd64`, and
-`linux-ubuntu-amd64` build outputs; it does not compile binaries or download
-anything. The macOS build script separately creates metadata for its Darwin
-arm64 and amd64 bundles. Native images are probed with
-`-version`; the publisher asserts the foreign image's version with `-version`
-because Go trimpath builds do not retain linker settings. Receiving nodes
-verify that image's reported version before installation. When a running Windows image
-is locked, build `dist\windows-amd64\maistr0-update.exe` and pass
-`-windows-binary maistr0-update.exe`. Preserve the sibling platform folders
-and metadata when copying a multi-platform publishing bundle; a standalone
-executable can only publish its native platform. Ordinary GitHub release
-archives are single-platform native seeds.
+For explicitly requested peer upgrades, `peer_update_publisher_key` optionally
+requires Ed25519-signed `.peer.json` manifests. Use `cmd/updatebundle` to
+generate peer metadata and `maistr0 sign-release` to sign it. This key is
+separate from `central_update_publisher_key`; peer signatures do not replace
+pairing authorization or the `--allow-peer-updates` gate.
 
 ## Node configuration
 
@@ -310,9 +289,9 @@ candidate is available before an attempt. With per-client limits disabled,
 high concurrency can still exhaust node capacity and encounter the latter
 routing failures.
 
-Speculative hedging is also disabled by default. Set
-`speculative_hedging_enabled` to opt in and use `max_concurrent_hedges` to
-bound the extra load (maximum four). See the [API reference](./api.md) for the
+`speculative_hedging_enabled` and `max_concurrent_hedges` remain accepted for
+configuration compatibility, but side-effecting task `/execute` calls are not
+hedged, even when enabled. See the [API reference](./api.md) for the
 request-level `routing_preference`.
 
 ## Model engines
@@ -684,7 +663,7 @@ Nodes can opt into downloading strictly newer versions directly from paired
 peers with `--allow-peer-updates` (off by default), then restart **only when
 idle**. Stop active shard groups to allow replacement;
 the updater never force-stops a running group. See
-[peer updates and their accepted executable-trust risk](./configuration.md#automatic-peer-executable-updates)
+[peer updates and their accepted executable-trust risk](./configuration.md#central-orchestrator-led-executable-updates)
 before enabling this on machines you do not fully trust.
 
 On a shard-group card, select **Edit members**, check healthy nodes to add or

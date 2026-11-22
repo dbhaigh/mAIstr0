@@ -42,11 +42,14 @@ func TestHarnessWriteFailureCancelsAndJoinsBackend(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newTestServer(t)
-			base := installControlledHarness(t, srv, "session")
+			base := newControlledHarnessBackend("session")
 			backend := &cancellationStreamingBackend{controlledHarnessBackend: base, finished: make(chan struct{}), event: tt.event}
-			srv.harness.mu.Lock()
-			srv.harness.agents["controlled"] = backend
-			srv.harness.mu.Unlock()
+			if err := srv.harness.registry.Register(agent.BackendRegistration{
+				Backend: backend, Capabilities: agent.Capabilities{Streaming: true, Cancellation: true},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			srv.harness.setSessionHarness("session", "controlled")
 			ctx, cancel := context.WithCancel(context.Background())
 			req := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/session/messages?stream=true",
 				strings.NewReader(`{"content":"hello"}`)).WithContext(ctx)
@@ -151,9 +154,11 @@ func (b *controlledHarnessBackend) ExecuteTool(context.Context, string, string, 
 func installControlledHarness(t *testing.T, srv *Server, sessionID string) *controlledHarnessBackend {
 	t.Helper()
 	backend := newControlledHarnessBackend(sessionID)
-	srv.harness.mu.Lock()
-	srv.harness.agents["controlled"] = backend
-	srv.harness.mu.Unlock()
+	if err := srv.harness.registry.Register(agent.BackendRegistration{
+		Backend: backend, Capabilities: agent.Capabilities{Streaming: true, Cancellation: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	srv.harness.setSessionHarness(sessionID, "controlled")
 	return backend
 }

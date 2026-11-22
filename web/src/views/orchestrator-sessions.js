@@ -9,6 +9,7 @@ import {
   agentHarnessStatus,
   agentModelSelect,
   agentSettingsTitle,
+  chatInput,
   agentStepsSelect,
   agentSupportsCoordinatorModel,
   agentTabs,
@@ -17,6 +18,8 @@ import {
   currentAgentHarness,
   dashboardState,
   isSending,
+  newSessionBtn,
+  sendMsgBtn,
   sessionListEl,
   setActiveChatMode,
   setActiveSessionId,
@@ -28,7 +31,29 @@ import { activateAgentTab, setAgentConsoleMode } from "./orchestrator-controls.j
 
 // --- Interactive Orchestrator Functions ---
 
+let backendAvailability = new Map();
+let activeBackendAvailable = true;
+
+function backendLabel(name) {
+  if (name === "pi") return "Pi";
+  if (name === "deepseek") return "DeepSeek";
+  return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function sessionIsAvailable(session) {
+  const backend = backendAvailability.get(session.harness || "pi");
+  return session.available !== false && backend?.available !== false;
+}
+
+function updateNewSessionAvailability() {
+  if (newSessionBtn) newSessionBtn.disabled = isSending || !activeBackendAvailable;
+}
+
 export async function loadAgentTools() {
+  if (dashboardState.agentCapabilities?.tool_access === false) {
+    if (agentToolsList) agentToolsList.innerHTML = "";
+    return;
+  }
   try {
     const tools = await fetchJSON("/api/agent/tools");
     if (!agentToolsList) return;
@@ -58,7 +83,23 @@ export async function loadAgentBackend() {
 
 export function applyAgentBackend(backend) {
   setCurrentAgentHarness(backend.name);
-  setAgentSupportsCoordinatorModel(Boolean(backend.supports_coordinator_model));
+  const backends = Array.isArray(backend.backends)
+    ? backend.backends
+    : (backend.harnesses || []).map((name) => ({
+      name,
+      available: true,
+      capabilities: { model_selection: Boolean(backend.supports_coordinator_model), tool_access: true },
+    }));
+  dashboardState.agentBackends = backends;
+  backendAvailability = new Map(backends.map((item) => [item.name, item]));
+  dashboardState.agentCapabilities = backend.capabilities || null;
+  activeBackendAvailable = backend.available !== false;
+  dashboardState.activeBackendAvailable = activeBackendAvailable;
+  const capabilities = backend.capabilities || {};
+  const supportsModelSelection = backend.capabilities
+    ? Boolean(capabilities.model_selection)
+    : Boolean(backend.supports_coordinator_model);
+  setAgentSupportsCoordinatorModel(supportsModelSelection);
   const mode = activeChatMode === "direct" ? "direct" : backend.name;
   setActiveChatMode(mode);
   agentTabs.forEach((tab) => {
@@ -66,17 +107,36 @@ export function applyAgentBackend(backend) {
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
   });
-  if (agentHarnessSelect) agentHarnessSelect.value = backend.name;
+  if (agentHarnessSelect) {
+    agentHarnessSelect.replaceChildren();
+    for (const item of backends.filter((candidate) => candidate.available)) {
+      const option = document.createElement("option");
+      option.value = item.name;
+      option.textContent = backendLabel(item.name);
+      agentHarnessSelect.appendChild(option);
+    }
+    if (!activeBackendAvailable) {
+      const option = document.createElement("option");
+      option.value = backend.name;
+      option.textContent = `${backendLabel(backend.name)} (unavailable)`;
+      option.disabled = true;
+      agentHarnessSelect.appendChild(option);
+    }
+    agentHarnessSelect.value = backend.name;
+  }
   if (agentSettingsTitle) {
-    agentSettingsTitle.textContent = `${backend.name === "pi" ? "Pi" : "DeepSeek"} Agent Settings`;
+    agentSettingsTitle.textContent = `${backendLabel(backend.name)} Agent Settings`;
   }
   const modelLabel = agentModelSelect?.closest("label");
   const stepsLabel = agentStepsSelect?.closest("label");
-  if (modelLabel) modelLabel.hidden = !backend.supports_coordinator_model;
-  if (stepsLabel) stepsLabel.hidden = !backend.supports_coordinator_model;
+  if (modelLabel) modelLabel.hidden = !supportsModelSelection;
+  if (stepsLabel) stepsLabel.hidden = !supportsModelSelection;
   if (agentHarnessStatus) {
-    agentHarnessStatus.textContent = `New conversations use ${backend.name === "pi" ? "Pi" : "DeepSeek"}; existing conversations stay on their harness.`;
+    agentHarnessStatus.textContent = activeBackendAvailable
+      ? `New conversations use ${backendLabel(backend.name)}; existing conversations stay on their harness.`
+      : `${backendLabel(backend.name)} is unavailable. Existing session history is preserved; no other harness will be substituted.`;
   }
+  updateNewSessionAvailability();
   setAgentConsoleMode(mode);
 }
 
@@ -122,8 +182,10 @@ export async function loadSessions() {
       : sessions[0]?.id;
     if (sessionID) {
       await selectSession(sessionID);
-    } else {
+    } else if (activeBackendAvailable) {
       await createNewSession("New Interactive Session");
+    } else {
+      renderSessionList();
     }
   } catch (err) {
     console.error("failed to load sessions", err);
@@ -137,7 +199,15 @@ export function sessionsForHarness(harness) {
 export function renderSessionList() {
   if (!sessionListEl) return;
   sessionListEl.innerHTML = "";
-  for (const s of sessionsForHarness(currentAgentHarness)) {
+  const selectedSessions = sessionsForHarness(currentAgentHarness);
+  const unavailableSessions = dashboardState.sessions.filter((session) =>
+    !sessionIsAvailable(session) && !selectedSessions.some((selected) => selected.id === session.id)
+  );
+  for (const s of [...selectedSessions, ...unavailableSessions]) {
+    const available = sessionIsAvailable(s);
+    const harnessLabel = available
+      ? backendLabel(s.harness || "pi")
+      : `Unavailable · ${backendLabel(s.harness || "pi")}`;
     const div = document.createElement("div");
     div.className = "session-item" + (s.id === activeSessionId ? " active" : "");
     div.setAttribute("role", "button");
@@ -146,12 +216,12 @@ export function renderSessionList() {
     div.innerHTML = `
       <span class="session-info">
         <span class="session-title">${escapeHtml(s.title || "Session " + s.id.slice(-4))}</span>
-        <small class="session-harness">${s.harness === "deepseek" ? "DeepSeek" : "Pi"}</small>
+        <small class="session-harness">${escapeHtml(harnessLabel)}</small>
       </span>
       <button class="session-del-btn" data-del="${s.id}" title="Delete session">&times;</button>
     `;
     div.addEventListener("click", (e) => {
-      if (isSending || e.target.dataset.del) return;
+      if (isSending || e.target?.dataset?.del) return;
       selectSession(s.id);
     });
     div.addEventListener("keydown", (e) => {
@@ -171,7 +241,17 @@ export function renderSessionList() {
 export async function selectSession(id) {
   setActiveSessionId(id);
   const sessionInfo = dashboardState.sessions.find((session) => session.id === id);
-  if (sessionInfo) activeSessionIds.set(sessionInfo.harness || "pi", id);
+  if (sessionInfo) {
+    activeSessionIds.set(sessionInfo.harness || "pi", id);
+    const available = sessionIsAvailable(sessionInfo);
+    if (chatInput) chatInput.disabled = !available;
+    if (sendMsgBtn) sendMsgBtn.disabled = !available;
+    if (!available && agentHarnessStatus) {
+      agentHarnessStatus.textContent = `This ${backendLabel(sessionInfo.harness || "pi")} session is unavailable. Its stored history is preserved; select its backend when it is available to continue.`;
+    } else if (agentHarnessStatus && activeBackendAvailable) {
+      agentHarnessStatus.textContent = `New conversations use ${backendLabel(currentAgentHarness)}; existing conversations stay on their harness.`;
+    }
+  }
   renderSessionList();
   try {
     const session = await fetchJSON(`/api/agent/sessions/${encodeURIComponent(id)}`);
@@ -182,7 +262,7 @@ export async function selectSession(id) {
 }
 
 export async function createNewSession(title = "") {
-  if (isSending) return;
+  if (isSending || !activeBackendAvailable) return;
   try {
     const session = await fetchJSON("/api/agent/sessions", {
       method: "POST",

@@ -111,6 +111,9 @@ export const dashboardState = {
   nodes: [],
   tasks: [],
   sessions: [],
+  agentBackends: [],
+  agentCapabilities: null,
+  activeBackendAvailable: true,
   pairing: {
     status: null,
     targetNode: null,

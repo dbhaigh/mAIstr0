@@ -18,7 +18,7 @@ flowchart LR
     Client --> Router["Transparent router<br/>provider request passthrough"]
     Router --> Node
 
-    Orchestrator --> Harness["Interactive harness<br/>Pi or DeepSeek"]
+    Orchestrator --> Harness["Interactive backend registry<br/>Pi default"]
     Harness --> Tools["Typed shared tool catalog"]
     Tools --> TaskAPI
 
@@ -79,17 +79,19 @@ correlated router diagnostics, and their deliberate scope limits.
 - **Transparent router:** forwards provider-compatible requests without task
   planning or chat-tool translation. Its routing and retry boundaries are
   documented in the [API reference](./api.md).
-- **Interactive harness:** Pi and DeepSeek share the agent-loop and typed tool
-  catalog while retaining their own model adapters and message formats.
+- **Interactive harness:** registered backends expose typed tools and explicit
+  capability declarations; session ownership remains fixed for each session.
 - **Memory sync:** nodes exchange memory and task history using bounded,
   watermark-based transfers with compatibility fallbacks. See
   [Memory synchronization](./memory-sync.md).
 
-Pi is the default interactive harness. Its coordinator model is selected from
+Pi is the default interactive backend. Its coordinator model is selected from
 healthy nodes in the local cluster; no Pi CLI, API key, or cloud inference
 service is required. Interactive sessions are persisted in the orchestrator's
 memory database and restored after restart. Interrupting a turn cancels
 downstream dispatches while preserving session state.
+See [agent backends](./agent-backends.md) for optional backend registration
+and unavailable-session behavior.
 
 The runtime scheduler and router are coordinated through shared capacity and
 readiness information. The score calculation itself is deterministic, but

@@ -468,6 +468,8 @@ async function openNodeProperties(node) {
       runtime_discovery_enabled: "discovery_enabled",
       runtime_allow_peer_updates: "allow_peer_updates",
       runtime_no_peer_updates: "no_peer_updates",
+      runtime_allow_central_updates: "allow_central_updates",
+      runtime_no_central_updates: "no_central_updates",
     };
     for (const [fieldName, settingName] of Object.entries(runtimeFields)) {
       const field = form.elements.namedItem(fieldName);
@@ -531,6 +533,8 @@ async function saveNodeProperties(nodeId, form) {
         discovery_enabled: form.elements.namedItem("runtime_discovery_enabled").checked,
         allow_peer_updates: form.elements.namedItem("runtime_allow_peer_updates").checked,
         no_peer_updates: form.elements.namedItem("runtime_no_peer_updates").checked,
+        allow_central_updates: form.elements.namedItem("runtime_allow_central_updates").checked,
+        no_central_updates: form.elements.namedItem("runtime_no_central_updates").checked,
       }),
     });
     status.textContent = "Saved";

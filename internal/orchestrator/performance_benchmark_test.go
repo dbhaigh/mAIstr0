@@ -221,6 +221,12 @@ func BenchmarkTransparentRouterStreamingConcurrent100(b *testing.B) {
 	mux := server.Mux()
 	requestBody := []byte(`{"model":"simulated-general","stream":true,"messages":[{"role":"user","content":"benchmark router stream"}]}`)
 	const streams = 100
+	// Avoid connection churn and source-port exhaustion across repeated batches.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = streams
+	transport.MaxIdleConnsPerHost = streams
+	server.nodeClient.dispatcher.Transport = transport
+	b.Cleanup(transport.CloseIdleConnections)
 
 	b.ReportAllocs()
 	b.ResetTimer()

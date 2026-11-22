@@ -85,7 +85,7 @@ func checkpointForTask(t *Task) *Checkpoint {
 	frontier := computeFrontier(t)
 	seq := len(outputs)
 	cpID := fmt.Sprintf("cp-%s-%d", t.ID, seq)
-	resumable := t.Status != StatusCompleted
+	resumable := t.Status != StatusCompleted && !t.HasUnknownDispatchOutcome()
 
 	cp := &Checkpoint{
 		ID:        cpID,
@@ -154,6 +154,9 @@ func (m *Manager) ResumeTaskChecked(taskID string) (*Task, error) {
 		return nil, fmt.Errorf("taskmgr: task %s not found", taskID)
 	}
 	defer m.unlockTaskForUpdate(t)
+	if t.HasUnknownDispatchOutcome() {
+		return nil, fmt.Errorf("taskmgr: task %s: %w", taskID, ErrOutcomeUnknown)
+	}
 	if t.Status == StatusCompleted {
 		return nil, fmt.Errorf("taskmgr: task %s is already completed: %w", taskID, ErrNotResumable)
 	}

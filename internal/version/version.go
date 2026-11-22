@@ -7,7 +7,7 @@ import (
 )
 
 // Value is replaced by the build scripts with the release number.
-var Value = "0.1.1.17"
+var Value = "0.1.1.18"
 
 func String() string { return Value }
 
