@@ -16,7 +16,13 @@ import (
 	"time"
 
 	"github.com/maistr0/maistr0/internal/agent"
+	"github.com/maistr0/maistr0/internal/agent/claudecode"
+	"github.com/maistr0/maistr0/internal/agent/codexcli"
 	"github.com/maistr0/maistr0/internal/agent/deepseekadapter"
+	"github.com/maistr0/maistr0/internal/agent/geminicli"
+	"github.com/maistr0/maistr0/internal/agent/hermes"
+	"github.com/maistr0/maistr0/internal/agent/opencode"
+	"github.com/maistr0/maistr0/internal/agent/openhands"
 	"github.com/maistr0/maistr0/internal/background"
 	"github.com/maistr0/maistr0/internal/cluster"
 	"github.com/maistr0/maistr0/internal/config"
@@ -171,7 +177,153 @@ func NewWithMemoryAndHarness(memoryPath, harnessName string) (*Server, error) {
 // References: [request paths](../../docs/architecture.md#request-paths),
 // [server_test.go](server_test.go).
 func NewWithConfig(cfg config.OrchestratorConfig) (*Server, error) {
-	return NewWithConfigAndBackends(cfg)
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	var registrations []agent.BackendRegistration
+	var optionalBackends []agent.Backend
+	if cfg.Mode != config.OrchestratorModeMinimal {
+		backend, enabled, err := claudecode.NewFromEnvironment()
+		if err != nil {
+			return nil, fmt.Errorf("orchestrator: configure Claude Code backend: %w", err)
+		}
+		if enabled {
+			optionalBackends = append(optionalBackends, backend)
+			registrations = append(registrations, agent.BackendRegistration{
+				Backend: backend,
+				Capabilities: agent.Capabilities{
+					SessionResume: true, Streaming: true, Cancellation: true,
+				},
+				Execution: localExecutionProfile(
+					configuredPath("MAISTR0_CLAUDE_CODE_WORKSPACE"),
+					"No OS sandbox; built-in tools are disabled.",
+					"No mAIstr0 approval flow; tool access is disabled.",
+				),
+			})
+		}
+		codexBackend, codexEnabled, err := codexcli.NewFromEnvironment()
+		if err != nil {
+			for _, optional := range optionalBackends {
+				if closeErr := optional.Close(); closeErr != nil {
+					err = errors.Join(err, fmt.Errorf("close optional backend after Codex configuration failure: %w", closeErr))
+				}
+			}
+			return nil, fmt.Errorf("orchestrator: configure Codex backend: %w", err)
+		}
+		if codexEnabled {
+			optionalBackends = append(optionalBackends, codexBackend)
+			registrations = append(registrations, agent.BackendRegistration{
+				Backend: codexBackend,
+				Capabilities: agent.Capabilities{
+					SessionResume: true, Streaming: true, Cancellation: true,
+				},
+				Execution: localExecutionProfile(
+					configuredPath("MAISTR0_CODEX_WORKSPACE"),
+					"Codex read-only sandbox; not workspace-isolated.",
+					"No approval prompts; actions outside the read-only sandbox are denied.",
+				),
+			})
+		}
+		openCodeBackend, openCodeEnabled, err := opencode.NewFromEnvironment()
+		if err != nil {
+			for _, optional := range optionalBackends {
+				if closeErr := optional.Close(); closeErr != nil {
+					err = errors.Join(err, fmt.Errorf("close optional backend after OpenCode configuration failure: %w", closeErr))
+				}
+			}
+			return nil, fmt.Errorf("orchestrator: configure OpenCode backend: %w", err)
+		}
+		if openCodeEnabled {
+			optionalBackends = append(optionalBackends, openCodeBackend)
+			registrations = append(registrations, agent.BackendRegistration{
+				Backend: openCodeBackend,
+				Capabilities: agent.Capabilities{
+					SessionResume: true, Cancellation: true,
+				},
+				Execution: opencodeExecutionProfile(),
+			})
+		}
+		geminiBackend, geminiEnabled, err := geminicli.NewFromEnvironment()
+		if err != nil {
+			for _, optional := range optionalBackends {
+				if closeErr := optional.Close(); closeErr != nil {
+					err = errors.Join(err, fmt.Errorf("close optional backend after Gemini CLI configuration failure: %w", closeErr))
+				}
+			}
+			return nil, fmt.Errorf("orchestrator: configure Gemini CLI backend: %w", err)
+		}
+		if geminiEnabled {
+			optionalBackends = append(optionalBackends, geminiBackend)
+			registrations = append(registrations, agent.BackendRegistration{
+				Backend: geminiBackend,
+				Capabilities: agent.Capabilities{
+					SessionResume: true, Streaming: true, Cancellation: true,
+				},
+				Execution: localExecutionProfile(
+					configuredPath("MAISTR0_GEMINI_WORKSPACE"),
+					"Gemini CLI sandbox provider: "+configuredPath("MAISTR0_GEMINI_SANDBOX")+"; not a mAIstr0 isolation guarantee.",
+					"No mAIstr0 approval interaction; CLI is fixed to plan approval mode.",
+				),
+			})
+		}
+		openHandsBackend, openHandsEnabled, err := openhands.NewFromEnvironment()
+		if err != nil {
+			for _, optional := range optionalBackends {
+				if closeErr := optional.Close(); closeErr != nil {
+					err = errors.Join(err, fmt.Errorf("close optional backend after OpenHands configuration failure: %w", closeErr))
+				}
+			}
+			return nil, fmt.Errorf("orchestrator: configure OpenHands backend: %w", err)
+		}
+		if openHandsEnabled {
+			optionalBackends = append(optionalBackends, openHandsBackend)
+			registrations = append(registrations, agent.BackendRegistration{
+				Backend: openHandsBackend,
+				Capabilities: agent.Capabilities{
+					SessionResume: true, Streaming: true, Cancellation: true,
+				},
+				Execution: serverExecutionProfile(
+					configuredPath("MAISTR0_OPENHANDS_SERVER_URL"),
+					configuredPath("MAISTR0_OPENHANDS_WORKSPACE"),
+					"OpenHands LocalWorkspace; not an OS security boundary.",
+					"No mAIstr0 approval flow; server uses NeverConfirm.",
+				),
+			})
+		}
+		hermesBackend, hermesEnabled, err := hermes.NewFromEnvironment()
+		if err != nil {
+			for _, optional := range optionalBackends {
+				if closeErr := optional.Close(); closeErr != nil {
+					err = errors.Join(err, fmt.Errorf("close optional backend after Hermes configuration failure: %w", closeErr))
+				}
+			}
+			return nil, fmt.Errorf("orchestrator: configure Hermes backend: %w", err)
+		}
+		if hermesEnabled {
+			optionalBackends = append(optionalBackends, hermesBackend)
+			registrations = append(registrations, agent.BackendRegistration{
+				Backend: hermesBackend,
+				Capabilities: agent.Capabilities{
+					SessionResume: true, Streaming: true, Cancellation: true, ModelSelection: true,
+				},
+				Execution: serverExecutionProfile(
+					configuredPath("MAISTR0_HERMES_SERVER_URL"), "",
+					"Gateway-controlled; sandbox and workspace are not reported by the adapter.",
+					"Approval behavior is gateway-controlled; mAIstr0 has no approval interaction.",
+				),
+			})
+		}
+	}
+	server, err := NewWithConfigAndBackends(cfg, registrations...)
+	if err != nil {
+		for _, optional := range optionalBackends {
+			if closeErr := optional.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close optional backend after startup failure: %w", closeErr))
+			}
+		}
+	}
+	return server, err
 }
 
 // NewWithConfigAndBackends constructs an orchestrator with optional additional
@@ -306,6 +458,11 @@ func newWithMemoryHarnessAndConcurrency(
 		}
 		if err := backendRegistry.Register(agent.BackendRegistration{
 			Backend: deepseekBackend, Capabilities: defaultCapabilities,
+			Execution: localExecutionProfile(
+				"Not configured",
+				"No workspace isolation; tools may dispatch work to cluster nodes.",
+				"No per-action approval interaction.",
+			),
 		}); err != nil {
 			_ = deepseekBackend.Close()
 			_ = tasks.Close()
@@ -317,6 +474,11 @@ func newWithMemoryHarnessAndConcurrency(
 		piBackend := piagent.New(&localPiProvider{generate: srv}, deepseekBackend)
 		if err := backendRegistry.Register(agent.BackendRegistration{
 			Backend: piBackend, Capabilities: defaultCapabilities,
+			Execution: localExecutionProfile(
+				"Not configured",
+				"No workspace isolation; tools may dispatch work to cluster nodes.",
+				"No per-action approval interaction.",
+			),
 		}); err != nil {
 			_ = piBackend.Close()
 			_ = deepseekBackend.Close()

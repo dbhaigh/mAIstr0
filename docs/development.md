@@ -109,6 +109,13 @@ wsl.exe -d Ubuntu --cd "$((Get-Location).Path)" -- bash -lc '~/.local/go1.27.3/b
 
 Substitute your installation path or set the Linux `PATH` to your installation.
 
+A WSL run against a checkout under `/mnt/c` is not identical to native Linux
+CI. In one full race run on 2026-11-23, integration temporary-directory cleanup
+and self-update executable permissions failed, and two node-control tests
+rejected Windows-style paths under Linux. No race report was emitted; the
+harness-adapter packages passed their focused Linux race run. Treat this as a
+WSL/platform limitation and use native Ubuntu CI as the Linux release gate.
+
 ## Background work and performance feedback
 
 The orchestrator and node own background work through `internal/background.Group`.
@@ -218,8 +225,10 @@ The local cross-build scripts are available for both shells:
 ./build/build.sh
 ```
 
-The scripts produce Windows amd64 and Linux amd64/arm64 binaries under
-`dist/`. Build macOS packages on macOS with Xcode command line tools:
+The scripts produce Windows amd64, Linux amd64/arm64, and Ubuntu amd64
+binaries under `dist/`. UPX compression is applied when UPX is installed;
+release CI requires it. Build macOS packages on macOS with Xcode command line
+tools:
 
 ```sh
 bash build/build-macos.sh
@@ -230,8 +239,8 @@ a menu-bar `.app` ZIP, and a CLI `.tar.gz` with the LaunchAgent installer under
 `dist/macos/<tag>/`. The packages are unsigned and not notarized. Tagged releases use
 [GoReleaser](../.goreleaser.yaml) and the
 [release workflow](../.github/workflows/release.yml) to publish platform
-archives and SHA-256 checksums. Linux/Windows release executables are stripped
-and UPX-compressed; Windows also gets a self-extracting `.exe` package. Darwin
+archives and SHA-256 checksums. Release CI strips and UPX-compresses Linux and
+Windows executables; Windows also gets a self-extracting `.exe` package. Darwin
 arm64/amd64 packages remain native cgo builds on macOS so they retain the
 menu-bar backend. Before a release, update
 `internal/version/version.go` and its version test, move the completed
@@ -258,11 +267,11 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maistr0.agent.plist
 ### Rapid iteration releases
 
 The base source release number is `0.1.1`, a three-component SemVer patch
-release; the current rapid-iteration build is `0.1.1.18`. Patch releases
+release; the current rapid-iteration build is `0.1.1.19`. Patch releases
 increment the third component; minor releases increment the second component
 and reset the patch and optional iteration components. For explicitly
 requested rapid iterations, append/increment a fourth numeric component
-(`0.1.1.1`, ..., `0.1.1.18`). The optional four-component convention is not
+(`0.1.1.1`, ..., `0.1.1.19`). The optional four-component convention is not
 SemVer. Peer manifests accept both three and four components and compare
 components numerically, with an omitted fourth component treated as zero.
 

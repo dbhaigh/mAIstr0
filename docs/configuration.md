@@ -47,7 +47,28 @@ Pi remains the default agent backend. Registered optional backends can be
 selected by name; a valid but missing backend does not prevent startup and is
 not substituted with Pi or DeepSeek. Persisted sessions owned by an unavailable
 backend remain visible with their history. See [agent backends](./agent-backends.md)
-for capability declarations and restoration behavior.
+for capability declarations and restoration behavior. Claude Code and Codex
+are separately opt-in through their executable and workspace environment
+settings (Codex also requires an explicit `CODEX_HOME`); they do not change the
+default harness. The Codex adapter uses its own local authentication and
+read-only sandbox, not mAIstr0 inference. OpenCode is separately opt-in with
+either an owned `managed` server or an explicitly configured `connect` server;
+it requires a supported server API version and does not claim OS-level
+workspace isolation. Gemini CLI is separately opt-in with explicit
+authentication and sandbox-provider settings; it uses Google AI Studio or
+Vertex AI, not mAIstr0 inference. See [agent backends](./agent-backends.md) for
+the required environment settings and limitations.
+OpenHands is separately opt-in through an authenticated, operator-managed
+Agent Server at exactly version `1.63.1`; its configured LocalWorkspace is not
+an OS sandbox, and the server deployment must provide any required isolation.
+See [agent backends](./agent-backends.md) for its API-key, workspace, and
+provider limitations.
+Hermes is separately opt-in through an authenticated, operator-managed API
+Server at exactly version `0.23.3`. Sessions and accepted runs remain
+gateway-owned; local cancellation or shutdown does not stop gateway work.
+Hermes tools, skills, hooks, MCP, memory, approval policy, and workspace
+restrictions remain under gateway operator control. mAIstr0 inference
+compatibility is not established; see [agent backends](./agent-backends.md).
 
 Run `maistr0 --help` for the complete option list. Orchestrator election
 requires LAN discovery; disabling discovery is supported only for

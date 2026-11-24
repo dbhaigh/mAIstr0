@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -26,6 +27,7 @@ var (
 	ErrInputTooLarge            = errors.New("external execution input exceeds its limit")
 	ErrOutputTooLarge           = errors.New("external execution output exceeds its limit")
 	ErrMalformedResponse        = errors.New("external execution returned malformed JSON")
+	ErrOutputCallback           = errors.New("external execution output could not be consumed")
 	ErrProcessStart             = errors.New("external process could not be started")
 	ErrProcessFailed            = errors.New("external process failed")
 	ErrProcessTerminationFailed = errors.New("external process tree could not be terminated")
@@ -50,6 +52,7 @@ type Config struct {
 	ApprovedWorkspace string
 	Executable        string
 	Args              []string
+	Environment       map[string]string
 	RequireIsolation  bool
 	MaxRuntime        time.Duration
 	MaxInputBytes     int
@@ -127,9 +130,18 @@ func NewRunner(configured Config) (*Runner, error) {
 			return nil, ErrInvalidConfig
 		}
 	}
+	for name, value := range configured.Environment {
+		if !validEnvironmentName(name) || strings.ContainsRune(value, '\x00') {
+			return nil, ErrInvalidConfig
+		}
+		if runtime.GOOS == "windows" && strings.EqualFold(name, "SystemRoot") {
+			return nil, ErrInvalidConfig
+		}
+	}
 	configured.ApprovedWorkspace = workspace
 	configured.Executable = filepath.Clean(configured.Executable)
 	configured.Args = append([]string(nil), configured.Args...)
+	configured.Environment = cloneEnvironment(configured.Environment)
 	return newRunner(configured, workspace), nil
 }
 
@@ -158,7 +170,32 @@ func (r *Runner) RunJSON(ctx context.Context, request []byte) ([]byte, error) {
 	if !validJSONObject(request) {
 		return nil, ErrInvalidRequest
 	}
+	return r.run(ctx, nil, request, nil)
+}
 
+// RunLines sends input on stdin and calls consume once for every stdout line.
+// Arguments are appended to the configured argv; neither arguments nor output
+// are included in errors returned by the runner.
+func (r *Runner) RunLines(ctx context.Context, args []string, input []byte, consume func([]byte) error) error {
+	if !r.config.Enabled {
+		return ErrDisabled
+	}
+	if ctx == nil || consume == nil {
+		return ErrInvalidRequest
+	}
+	if len(input) > r.config.MaxInputBytes {
+		return ErrInputTooLarge
+	}
+	for _, arg := range args {
+		if strings.ContainsRune(arg, '\x00') {
+			return ErrInvalidRequest
+		}
+	}
+	_, err := r.run(ctx, args, input, consume)
+	return err
+}
+
+func (r *Runner) run(ctx context.Context, args []string, request []byte, consume func([]byte) error) ([]byte, error) {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -194,7 +231,7 @@ func (r *Runner) RunJSON(ctx context.Context, request []byte) ([]byte, error) {
 		cancel()
 	}()
 
-	response, processErr := r.runProcess(runCtx, request)
+	response, processErr := r.runProcess(runCtx, args, request, consume)
 	if errors.Is(processErr, ErrProcessTerminationFailed) {
 		r.mu.Lock()
 		r.closeErr = errors.Join(r.closeErr, processErr)
@@ -223,6 +260,11 @@ func (r *Runner) Close() error {
 		r.cancel()
 		r.mu.Unlock()
 		r.active.Wait()
+		r.mu.Lock()
+		for name := range r.config.Environment {
+			r.config.Environment[name] = ""
+		}
+		r.mu.Unlock()
 		close(r.closeDone)
 	})
 	<-r.closeDone
@@ -238,7 +280,7 @@ func terminationError(err error) error {
 	return nil
 }
 
-func (r *Runner) runProcess(ctx context.Context, request []byte) ([]byte, error) {
+func (r *Runner) runProcess(ctx context.Context, args []string, request []byte, consume func([]byte) error) ([]byte, error) {
 	workspace, err := canonicalWorkspace(r.workspace)
 	if err != nil || workspace != r.workspace {
 		return nil, ErrInvalidConfig
@@ -271,9 +313,11 @@ func (r *Runner) runProcess(ctx context.Context, request []byte) ([]byte, error)
 		return nil, ErrProcessStart
 	}
 
-	command := exec.Command(executable, r.config.Args...)
+	command := exec.Command(executable)
+	command.Args = append(command.Args, r.config.Args...)
+	command.Args = append(command.Args, args...)
 	command.Dir = workspace
-	command.Env = processEnvironment()
+	command.Env = processEnvironment(r.config.Environment)
 	command.Stdin = stdinReader
 	command.Stdout = stdoutWriter
 	command.Stderr = stderrWriter
@@ -297,7 +341,7 @@ func (r *Runner) runProcess(ctx context.Context, request []byte) ([]byte, error)
 		return nil, ErrProcessStart
 	}
 
-	output := &outputCollector{limit: r.config.MaxOutputBytes}
+	output := &outputCollector{limit: r.config.MaxOutputBytes, overflow: make(chan struct{})}
 	inputDone := make(chan error, 1)
 	go func() {
 		_, writeErr := io.Copy(stdinWriter, bytes.NewReader(request))
@@ -306,9 +350,32 @@ func (r *Runner) runProcess(ctx context.Context, request []byte) ([]byte, error)
 	}()
 	var readers sync.WaitGroup
 	readers.Add(2)
+	readersDone := make(chan struct{})
+	go func() {
+		readers.Wait()
+		close(readersDone)
+	}()
+	stdoutDone := make(chan error, 1)
 	go func() {
 		defer readers.Done()
-		_, _ = io.Copy(output.stdoutWriter(), stdoutReader)
+		if consume == nil {
+			_, err := io.Copy(output.stdoutWriter(), stdoutReader)
+			stdoutDone <- err
+			return
+		}
+		scanner := bufio.NewScanner(io.TeeReader(stdoutReader, output.meterWriter()))
+		scanner.Buffer(make([]byte, 64<<10), r.config.MaxOutputBytes)
+		for scanner.Scan() {
+			if err := consume(append([]byte(nil), scanner.Bytes()...)); err != nil {
+				stdoutDone <- ErrOutputCallback
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			stdoutDone <- ErrOutputTooLarge
+			return
+		}
+		stdoutDone <- nil
 	}()
 	go func() {
 		defer readers.Done()
@@ -319,21 +386,71 @@ func (r *Runner) runProcess(ctx context.Context, request []byte) ([]byte, error)
 
 	var waitErr error
 	var terminateErr error
-	select {
-	case waitErr = <-waited:
-	case <-ctx.Done():
-		terminateErr = tree.Kill()
-		if terminateErr != nil && command.Process != nil {
-			_ = command.Process.Kill()
+	var consumeErr error
+	waitDone := (<-chan error)(waited)
+	var stdoutReadDone <-chan error = stdoutDone
+	for waitDone != nil {
+		select {
+		case waitErr = <-waitDone:
+			waitDone = nil
+		case readErr := <-stdoutReadDone:
+			stdoutReadDone = nil
+			if readErr != nil {
+				consumeErr = readErr
+				terminateErr = tree.Kill()
+				if terminateErr != nil && command.Process != nil {
+					_ = command.Process.Kill()
+				}
+				waitErr = <-waited
+				waitDone = nil
+			}
+		case <-output.overflow:
+			terminateErr = tree.Kill()
+			if terminateErr != nil && command.Process != nil {
+				_ = command.Process.Kill()
+			}
+			waitErr = <-waited
+			waitDone = nil
+		case <-ctx.Done():
+			terminateErr = tree.Kill()
+			if terminateErr != nil && command.Process != nil {
+				_ = command.Process.Kill()
+			}
+			waitErr = <-waited
+			waitDone = nil
 		}
-		waitErr = <-waited
+	}
+	if ctx.Err() != nil && terminateErr == nil {
+		terminateErr = tree.Kill()
 	}
 	closeErr := tree.Close()
 	_ = stdinWriter.Close()
 	inputErr := <-inputDone
+	drainTimer := time.NewTimer(processTreeTerminationWait)
+	select {
+	case <-readersDone:
+	case <-drainTimer.C:
+		_ = stdoutReader.Close()
+		_ = stderrReader.Close()
+		if closeErr == nil {
+			closeErr = errors.New("process output pipes did not close")
+		}
+		<-readersDone
+	}
+	if !drainTimer.Stop() {
+		select {
+		case <-drainTimer.C:
+		default:
+		}
+	}
+	if stdoutReadDone != nil {
+		readErr := <-stdoutReadDone
+		if consumeErr == nil && readErr != nil {
+			consumeErr = readErr
+		}
+	}
 	_ = stdoutReader.Close()
 	_ = stderrReader.Close()
-	readers.Wait()
 
 	if closeErr != nil {
 		return nil, ErrProcessTerminationFailed
@@ -341,16 +458,22 @@ func (r *Runner) runProcess(ctx context.Context, request []byte) ([]byte, error)
 	if output.exceeded {
 		return nil, ErrOutputTooLarge
 	}
+	if consumeErr != nil {
+		return nil, consumeErr
+	}
 	if inputErr != nil {
 		return nil, ErrProcessFailed
 	}
 	if waitErr != nil {
 		return nil, ErrProcessFailed
 	}
-	if !validJSONObject(output.stdout) {
+	if consume == nil && !validJSONObject(output.stdout) {
 		return nil, ErrMalformedResponse
 	}
-	return append([]byte(nil), output.stdout...), nil
+	if consume == nil {
+		return append([]byte(nil), output.stdout...), nil
+	}
+	return nil, nil
 }
 
 func validJSONObject(data []byte) bool {
@@ -376,13 +499,22 @@ func canonicalWorkspace(path string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
-func processEnvironment() []string {
+func processEnvironment(configured map[string]string) []string {
+	environment := make([]string, 0, len(configured)+1)
+	systemRootPresent := false
 	if runtime.GOOS == "windows" {
 		if systemRoot := os.Getenv("SystemRoot"); systemRoot != "" {
-			return []string{"SystemRoot=" + systemRoot}
+			environment = append(environment, "SystemRoot="+systemRoot)
+			systemRootPresent = true
 		}
 	}
-	return []string{}
+	for name, value := range configured {
+		if systemRootPresent && runtime.GOOS == "windows" && strings.EqualFold(name, "SystemRoot") {
+			continue
+		}
+		environment = append(environment, name+"="+value)
+	}
+	return environment
 }
 
 type outputCollector struct {
@@ -391,6 +523,8 @@ type outputCollector struct {
 	used     int
 	stdout   []byte
 	exceeded bool
+	overflow chan struct{}
+	once     sync.Once
 }
 
 type outputWriter struct {
@@ -406,6 +540,10 @@ func (c *outputCollector) stderrWriter() io.Writer {
 	return outputWriter{collector: c}
 }
 
+func (c *outputCollector) meterWriter() io.Writer {
+	return outputWriter{collector: c}
+}
+
 func (w outputWriter) Write(data []byte) (int, error) {
 	c := w.collector
 	c.mu.Lock()
@@ -418,10 +556,36 @@ func (w outputWriter) Write(data []byte) (int, error) {
 	if accepted > remaining {
 		accepted = remaining
 		c.exceeded = true
+		c.once.Do(func() { close(c.overflow) })
 	}
 	c.used += accepted
 	if w.capture && accepted > 0 {
 		c.stdout = append(c.stdout, data[:accepted]...)
 	}
 	return len(data), nil
+}
+
+func validEnvironmentName(name string) bool {
+	if name == "" || strings.ContainsAny(name, "=\x00") {
+		return false
+	}
+	for index, char := range name {
+		if char == '_' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' ||
+			index > 0 && char >= '0' && char <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func cloneEnvironment(environment map[string]string) map[string]string {
+	if environment == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(environment))
+	for name, value := range environment {
+		cloned[name] = value
+	}
+	return cloned
 }

@@ -107,12 +107,12 @@ func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request
 	}
 	harness := session.Harness
 	_, backend, available := s.agentForSession(id)
-	if err := s.harnessPort().deletePersistedSession(harness, id); err != nil {
-		writeError(w, apperr.InternalError(fmt.Errorf("could not delete persisted agent session: %w", err)))
-		return
-	}
 	if available && !backend.DeleteSession(id) {
 		writeError(w, apperr.NotFoundError(errors.New("session not found")))
+		return
+	}
+	if err := s.harnessPort().deletePersistedSession(harness, id); err != nil {
+		writeError(w, apperr.InternalError(fmt.Errorf("could not delete persisted agent session: %w", err)))
 		return
 	}
 	s.harnessPort().removeSessionHarness(id, harness)

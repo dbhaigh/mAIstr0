@@ -172,11 +172,12 @@ backend. macOS packages are unsigned and not notarized; upstream accelerator
 support is not a hardware qualification claim. Native Windows vLLM remains
 unsupported.
 
-## Local verification record
+## Historical local verification record
 
-Validated on 2026-10-26 against source revision
-`3a8864a2c281340745bd89794ba242785297df45` plus the uncommitted improvement work,
-using Go 1.27.3:
+This record applies only to the source revision shown; it is not release
+qualification for the current source version. Validated on 2026-10-26 against
+source revision `3a8864a2c281340745bd89794ba242785297df45` plus the uncommitted
+improvement work, using Go 1.27.3:
 
 - `go build ./...`: passed.
 - `go vet ./...`: passed.

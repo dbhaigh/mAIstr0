@@ -54,9 +54,10 @@ type agentSessionView struct {
 }
 
 type agentBackendView struct {
-	Name         string              `json:"name"`
-	Available    bool                `json:"available"`
-	Capabilities *agent.Capabilities `json:"capabilities,omitempty"`
+	Name         string                 `json:"name"`
+	Available    bool                   `json:"available"`
+	Capabilities *agent.Capabilities    `json:"capabilities,omitempty"`
+	Execution    agent.ExecutionProfile `json:"execution"`
 }
 
 func newHarnessManager(registry *agent.Registry, activeHarness string, sessionStore SessionStore) *harnessManager {
@@ -189,6 +190,7 @@ func (h *harnessManager) backendViews() []agentBackendView {
 		name := registration.Backend.Name()
 		views[name] = agentBackendView{
 			Name: name, Available: true, Capabilities: &capabilities,
+			Execution: registration.Execution,
 		}
 	}
 	h.mu.RLock()
@@ -211,7 +213,13 @@ func unavailableBackendView(name string, existing agentBackendView) agentBackend
 	if existing.Name != "" {
 		return existing
 	}
-	return agentBackendView{Name: name, Available: false}
+	return agentBackendView{
+		Name: name, Available: false,
+		Execution: agent.ExecutionProfile{
+			Location: agent.ExecutionUnknown, Isolation: "Not reported",
+			ApprovalLimitations: "Not reported",
+		},
+	}
 }
 
 func (h *harnessManager) restoreAgentSessions() error {

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>mAIstr0 · Interactive Cluster Orchestrator</title>
-  <link rel="stylesheet" href="/style.daddaceed147.css" />
+  <link rel="stylesheet" href="/style.d2e6191b7632.css" />
 </head>
 <body>
   <header>
@@ -62,6 +62,7 @@
               </select>
               <small id="agent-harness-status" class="setting-help">Existing conversations stay on their current harness.</small>
             </label>
+            <div id="agent-backend-list" class="agent-backend-list" aria-live="polite"></div>
             <label class="setting-label">
               <span>Coordinator Model</span>
               <select id="agent-model-select">
@@ -123,8 +124,9 @@
           <div class="chat-input-container">
             <textarea id="chat-input" placeholder="Ask a question or tell mAIstr0 what to do..." rows="2"></textarea>
             <div class="chat-input-actions">
+              <span id="agent-session-status" class="chat-status" role="status" aria-live="polite"></span>
               <span id="chat-status" class="chat-status"></span>
-              <button id="interrupt-msg-btn" class="secondary-button interrupt-button" type="button" hidden>Interrupt</button>
+              <button id="interrupt-msg-btn" class="secondary-button interrupt-button" type="button" title="Request cancellation; confirmation is shown separately." hidden>Request stop</button>
               <button id="send-msg-btn" class="primary-btn">Ask mAIstr0</button>
             </div>
           </div>
@@ -497,6 +499,6 @@
     </div>
   </div>
 
-  <script src="/app.acf00374401f.js"></script>
+  <script src="/app.217506a7a9a1.js"></script>
 </body>
 </html>

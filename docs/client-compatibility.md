@@ -3,6 +3,12 @@
 This matrix describes the interfaces implemented by mAIstr0, not certification
 of these clients as autonomous agents. A text response from a client is not
 evidence that its tool loop, output constraints, or cancellation behavior works.
+No real-client qualification result is currently recorded. Claude Code,
+OpenCode, OpenHands, and Hermes have documented text-provider paths but remain
+untested end to end; the translated path does not support their agent tool
+loops. Codex's documented Responses path and Gemini CLI's native Gemini
+protocol are absent. See the [qualification register](./harness-qualification.md)
+for the status and evidence fields for both integration directions.
 
 ## Interface boundary
 

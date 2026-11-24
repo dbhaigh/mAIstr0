@@ -1491,7 +1491,7 @@ paths:
     get:
       responses:
         "200":
-          description: Get selected backend and explicit availability/capabilities for registered and session-owning backends.
+          description: Get selected backend and explicit availability, capabilities, execution location, workspace, isolation, and approval limitations for registered and session-owning backends.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/AgentBackendStatus"}

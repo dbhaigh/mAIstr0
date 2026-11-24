@@ -40,11 +40,23 @@
     },
     "backend": {
       "type": "object",
-      "required": ["name", "available"],
+      "required": ["name", "available", "execution"],
       "properties": {
         "name": {"type": "string"},
         "available": {"type": "boolean"},
-        "capabilities": {"$ref": "#/$defs/capabilities"}
+        "capabilities": {"$ref": "#/$defs/capabilities"},
+        "execution": {"$ref": "#/$defs/execution"}
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "required": ["location", "isolation", "approval_limitations"],
+      "properties": {
+        "location": {"type": "string", "enum": ["local", "remote", "unknown"]},
+        "workspace": {"type": "string"},
+        "isolation": {"type": "string"},
+        "approval_limitations": {"type": "string"}
       },
       "additionalProperties": false
     }

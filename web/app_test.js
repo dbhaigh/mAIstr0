@@ -87,6 +87,27 @@ const routingViewSource = readModuleSource("src", "views", "routing.js");
 const themeSource = readModuleSource("src", "shared", "theme.js");
 const sessionSource = source.slice(source.indexOf("async function loadSessions("), source.indexOf("function sessionsForHarness("));
 const sessionListSource = source.slice(source.indexOf("function sessionsForHarness("), source.indexOf("async function selectSession("));
+const backendListSource = source.slice(
+  source.indexOf("function renderAgentBackendList("),
+  source.indexOf("function updateSessionOutcome(", source.indexOf("function renderAgentBackendList(")),
+);
+const sessionOutcomeSource = source.slice(
+  source.indexOf("function updateSessionOutcome("),
+  source.indexOf("function updateNewSessionAvailability(", source.indexOf("function updateSessionOutcome(")),
+);
+const safeAgentErrorSource = directChatSource.slice(
+  directChatSource.indexOf("function safeAgentErrorStatus("),
+  directChatSource.indexOf("\n// Event Listeners for Chat", directChatSource.indexOf("function safeAgentErrorStatus(")),
+);
+const cancellationSupportSource = directChatSource.slice(
+  directChatSource.indexOf("function activeBackendSupportsCancellation("),
+  directChatSource.indexOf("async function sendInteractiveMessage(", directChatSource.indexOf("function activeBackendSupportsCancellation(")),
+);
+const interruptHandlerStart = source.indexOf("interruptMsgBtn?.addEventListener(");
+const interruptHandlerSource = source.slice(
+  interruptHandlerStart,
+  source.indexOf("sendMsgBtn?.addEventListener", interruptHandlerStart),
+);
 const optionalFeaturesSource = source.slice(source.indexOf("let optionalFeaturesInitialized = false;"), source.indexOf("async function refreshPersistenceStatus()"));
 const sendInteractiveStart = source.indexOf("async function sendInteractiveMessage(text) {");
 const sendInteractiveEnd = source.indexOf("\nfunction handleStreamEvent(", sendInteractiveStart);
@@ -1396,6 +1417,7 @@ test("Unavailable optional-backend sessions remain visible in the conversation l
         { id: "available-session", harness: "pi", title: "Available", available: true },
         { id: "saved-external-session", harness: "external", title: "Saved history", available: false },
         { id: "legacy-session", harness: "<img src=x>", title: "Legacy owner", available: false },
+        { id: "unknown-owner-session", title: "Unidentified owner", available: true },
       ],
     },
     backendAvailability: new Map([
@@ -1419,14 +1441,124 @@ test("Unavailable optional-backend sessions remain visible in the conversation l
   });
   context.backendLabel = (name) => name;
   context.sessionIsAvailable = (session) =>
-    session.available !== false && context.backendAvailability.get(session.harness)?.available !== false;
+    Boolean(session.harness) && session.available !== false &&
+    context.backendAvailability.get(session.harness)?.available === true;
   vm.runInContext(sessionListSource, context);
   context.renderSessionList();
 
-  assert.equal(items.length, 3);
+  assert.equal(items.length, 4);
   assert.match(items[1].innerHTML, /Unavailable · external/);
   assert.match(items[1].innerHTML, /Saved history/);
   assert.doesNotMatch(items[2].innerHTML, /<img/);
+  assert.match(items[3].innerHTML, /Unavailable · Unknown harness/);
+  assert.match(items[3].innerHTML, /Unidentified owner/);
+});
+
+test("Harness cards show declared availability, capabilities, execution policy, and safe workspace text", () => {
+  const element = { innerHTML: "" };
+  const context = vm.createContext({
+    agentBackendList: element,
+    backendLabel: (name) => name,
+    escapeHtml: dashboardFormat.escapeHtml,
+  });
+  vm.runInContext(backendListSource, context);
+  context.renderAgentBackendList([
+    {
+      name: "remote-agent",
+      available: true,
+      capabilities: {
+        session_resume: true,
+        streaming: false,
+        cancellation: false,
+        approvals: false,
+        workspace_isolation: false,
+        model_selection: true,
+        tool_access: true,
+      },
+      execution: {
+        location: "remote",
+        workspace: "/srv/workspace/<private>",
+        isolation: "Workspace-scoped; not an OS sandbox.",
+        approval_limitations: "No approval interaction.",
+      },
+      credential: "secret-token",
+      last_prompt: "raw prompt",
+      tool_output: "sensitive tool output",
+    },
+    { name: "disabled-agent", available: false, execution: { location: "unknown" } },
+  ]);
+
+  assert.match(element.innerHTML, /remote-agent<span class="agent-backend-availability available">Available/);
+  assert.match(element.innerHTML, /Execution: Remote/);
+  assert.match(element.innerHTML, /Workspace: \/srv\/workspace\/&lt;private&gt;/);
+  assert.match(element.innerHTML, /Streaming: No/);
+  assert.match(element.innerHTML, /Cancellation: No/);
+  assert.match(element.innerHTML, /Isolation: Workspace-scoped; not an OS sandbox/);
+  assert.match(element.innerHTML, /Approvals: No approval interaction/);
+  assert.match(element.innerHTML, /disabled-agent<span class="agent-backend-availability unavailable">Unavailable \/ not registered/);
+  assert.match(element.innerHTML, /Capabilities: not reported/);
+  assert.doesNotMatch(element.innerHTML, /secret-token|raw prompt|sensitive tool output/i);
+});
+
+test("Harness error status hides raw details and distinguishes unknown outcomes", () => {
+  const context = vm.createContext({});
+  vm.runInContext(safeAgentErrorSource, context);
+  assert.match(context.safeAgentErrorStatus("Hermes run outcome is unknown; gateway-owned work may still be active"), /Outcome unknown.*may still be running/);
+  assert.match(context.safeAgentErrorStatus("Cancellation was not confirmed"), /Cancellation was not confirmed.*may still be running/);
+  assert.equal(context.safeAgentErrorStatus("private-tool-result-and-api-key"), "The harness reported an error. Sensitive details are hidden.");
+});
+
+test("Cancellation controls require an available backend capability", () => {
+  const context = vm.createContext({
+    activeSessionId: "session-1",
+    currentAgentHarness: "pi",
+    dashboardState: {
+      sessions: [{ id: "session-1", harness: "external" }],
+      agentBackends: [
+        { name: "external", available: true, capabilities: { cancellation: false } },
+      ],
+    },
+  });
+  vm.runInContext(cancellationSupportSource, context);
+  assert.equal(context.activeBackendSupportsCancellation(), false);
+  context.dashboardState.agentBackends[0].capabilities.cancellation = true;
+  assert.equal(context.activeBackendSupportsCancellation(), true);
+  context.dashboardState.agentBackends[0].available = false;
+  assert.equal(context.activeBackendSupportsCancellation(), false);
+});
+
+test("Accepted stop requests are not presented as confirmed cancellation", async () => {
+  const statuses = [];
+  const context = vm.createContext({
+    interruptMsgBtn: {
+      disabled: false,
+      addEventListener: (_event, handler) => { context.interruptHandler = handler; },
+    },
+    isSending: true,
+    activeSessionId: "session-1",
+    activeChatMode: "pi",
+    activeBackendSupportsCancellation: () => true,
+    dashboardState: { sessions: [], agentBackends: [] },
+    chatStatus: { set textContent(value) { statuses.push(value); } },
+    fetchJSON: async () => ({ interrupted: true }),
+  });
+  vm.runInContext(interruptHandlerSource, context);
+  await context.interruptHandler();
+  assert.deepEqual(statuses, [
+    "Requesting cancellation...",
+    "Stop request accepted; cancellation is not independently confirmed.",
+  ]);
+  assert.equal(context.interruptMsgBtn.disabled, true);
+});
+
+test("Active external sessions expose unresolved work without claiming cancellation", () => {
+  const element = { textContent: "" };
+  const context = vm.createContext({ agentSessionStatus: element });
+  vm.runInContext(sessionOutcomeSource, context);
+  context.updateSessionOutcome({ active: true });
+  assert.match(element.textContent, /active work.*Completion or cancellation is not confirmed.*may still be running/);
+  context.updateSessionOutcome({ active: false });
+  assert.equal(element.textContent, "");
 });
 
 test("Runtime backend setting accepts optional registered backend names", () => {

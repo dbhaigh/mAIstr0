@@ -285,9 +285,18 @@ func TestRepresentativeValuesValidateAgainstJSONSchemas(t *testing.T) {
 			"backends": []any{
 				map[string]any{
 					"name": "external", "available": false,
+					"execution": map[string]any{
+						"location": "unknown", "isolation": "Not reported",
+						"approval_limitations": "Not reported",
+					},
 				},
 				map[string]any{
 					"name": "pi", "available": true,
+					"execution": map[string]any{
+						"location": "local", "workspace": "Not configured",
+						"isolation":            "No workspace isolation.",
+						"approval_limitations": "No per-action approval interaction.",
+					},
 					"capabilities": map[string]any{
 						"session_resume": true, "streaming": true, "cancellation": true,
 						"approvals": false, "workspace_isolation": false,

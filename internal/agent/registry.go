@@ -18,9 +18,25 @@ type Capabilities struct {
 	ToolAccess         bool `json:"tool_access"`
 }
 
+type ExecutionLocation string
+
+const (
+	ExecutionLocal   ExecutionLocation = "local"
+	ExecutionRemote  ExecutionLocation = "remote"
+	ExecutionUnknown ExecutionLocation = "unknown"
+)
+
+type ExecutionProfile struct {
+	Location            ExecutionLocation `json:"location"`
+	Workspace           string            `json:"workspace,omitempty"`
+	Isolation           string            `json:"isolation"`
+	ApprovalLimitations string            `json:"approval_limitations"`
+}
+
 type BackendRegistration struct {
 	Backend      Backend
 	Capabilities Capabilities
+	Execution    ExecutionProfile
 }
 
 type Registry struct {
@@ -44,6 +60,21 @@ func (r *Registry) Register(registration BackendRegistration) error {
 		if _, ok := registration.Backend.(SessionRestorer); !ok {
 			return fmt.Errorf("agent backend %q advertises session resume without a session restorer", name)
 		}
+	}
+	if registration.Execution.Location != "" &&
+		registration.Execution.Location != ExecutionLocal &&
+		registration.Execution.Location != ExecutionRemote &&
+		registration.Execution.Location != ExecutionUnknown {
+		return fmt.Errorf("agent backend %q has an invalid execution location", name)
+	}
+	if registration.Execution.Location == "" {
+		registration.Execution.Location = ExecutionUnknown
+	}
+	if registration.Execution.Isolation == "" {
+		registration.Execution.Isolation = "Not reported"
+	}
+	if registration.Execution.ApprovalLimitations == "" {
+		registration.Execution.ApprovalLimitations = "Not reported"
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

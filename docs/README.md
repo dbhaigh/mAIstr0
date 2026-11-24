@@ -7,6 +7,7 @@ guides below.
 
 - [API reference](./api.md)
 - [Coding-client compatibility matrix](./client-compatibility.md)
+- [Harness integration qualification](./harness-qualification.md)
 - [Dashboard workflows](./dashboard.md)
 - [Dashboard architecture](./dashboard-architecture.md)
 - [Dashboard events, measurements, and delta proposal](./dashboard-events.md)

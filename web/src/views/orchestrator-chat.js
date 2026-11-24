@@ -6,6 +6,8 @@ import {
   activeAbortController,
   activeChatMode,
   activeSessionId,
+  currentAgentHarness,
+  dashboardState,
   agentHarnessSelect,
   agentTabs,
   chatInput,
@@ -210,6 +212,13 @@ async function dispatchDirectTask(description) {
   }
 }
 
+function activeBackendSupportsCancellation() {
+  const session = dashboardState.sessions.find((item) => item.id === activeSessionId);
+  if (!session?.harness) return false;
+  const backend = dashboardState.agentBackends.find((item) => item.name === session.harness);
+  return backend?.available === true && backend.capabilities?.cancellation === true;
+}
+
 async function sendInteractiveMessage(text) {
   if (activeChatMode === "direct") return dispatchDirectTask(text);
   if (!text || !activeSessionId || isSending) return;
@@ -217,7 +226,11 @@ async function sendInteractiveMessage(text) {
   setStreamingAssistantEl(null);
   setActiveAbortController(new AbortController());
   if (sendMsgBtn) sendMsgBtn.disabled = true;
-  if (interruptMsgBtn) interruptMsgBtn.hidden = false;
+  const supportsCancellation = activeBackendSupportsCancellation();
+  if (interruptMsgBtn) {
+    interruptMsgBtn.hidden = !supportsCancellation;
+    interruptMsgBtn.disabled = false;
+  }
   if (newSessionBtn) newSessionBtn.disabled = true;
   if (agentHarnessSelect) agentHarnessSelect.disabled = true;
   agentTabs.forEach((tab) => { tab.disabled = true; });
@@ -237,13 +250,13 @@ async function sendInteractiveMessage(text) {
     });
 
     if (!response.ok) {
-      throw new Error(await response.text());
+      throw new Error(`HTTP ${response.status}`);
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let streamError = "";
+    let streamError = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -259,29 +272,30 @@ async function sendInteractiveMessage(text) {
         try {
           const event = JSON.parse(jsonStr);
           handleStreamEvent(event);
-          if (event.type === "error") streamError = event.error || "Agent request failed";
+          if (event.type === "error") streamError = true;
         } catch (e) {
-          console.error("stream parse error", e, jsonStr);
+          console.warn("agent stream event could not be parsed");
         }
       }
     }
 
     await selectSession(activeSessionId);
-    if (streamError) throw new Error(streamError);
-    if (chatStatus) chatStatus.textContent = "";
+    if (!streamError && chatStatus) chatStatus.textContent = "";
   } catch (err) {
     if (err.name === "AbortError") {
-      if (chatStatus) chatStatus.textContent = "Interrupted.";
+      if (chatStatus) {
+        chatStatus.textContent = "The response stream closed; cancellation was not confirmed.";
+      }
       try {
         await selectSession(activeSessionId);
       } catch (e) {
         // ignore
       }
     } else {
-      if (chatStatus) chatStatus.textContent = "Error: " + err.message;
+      if (chatStatus) chatStatus.textContent = safeAgentErrorStatus(err.message);
       appendMessageToChat({
         role: "assistant",
-        content: "⚠️ Error during execution: " + err.message,
+        content: "The harness reported an error. Sensitive details are hidden.",
       });
     }
   } finally {
@@ -326,7 +340,9 @@ function handleStreamEvent(event) {
       streamingAssistantEl.className = "chat-msg assistant";
       const meta = document.createElement("div");
       meta.className = "msg-meta";
-      meta.textContent = "🤖 Pi";
+      const session = dashboardState.sessions.find((item) => item.id === activeSessionId);
+      const harness = session?.harness || currentAgentHarness || "Agent";
+      meta.textContent = `🤖 ${harness.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())}`;
       const bubble = document.createElement("div");
       bubble.className = "msg-bubble";
       streamingAssistantEl.append(meta, bubble);
@@ -338,26 +354,50 @@ function handleStreamEvent(event) {
   } else if (event.type === "interrupted") {
     if (chatStatus) chatStatus.textContent = "Session interrupted.";
   } else if (event.type === "error") {
-    if (chatStatus) chatStatus.textContent = `Error: ${event.error}`;
+    if (chatStatus) chatStatus.textContent = safeAgentErrorStatus(event.error);
   }
+}
+
+function safeAgentErrorStatus(error) {
+  const message = String(error || "").toLowerCase();
+  if (message.includes("outcome") && (message.includes("unknown") || message.includes("unresolved"))) {
+    return "Outcome unknown. The harness may still be running; do not retry until the session is reconciled.";
+  }
+  if (message.includes("cancellation") &&
+      (message.includes("not confirmed") || message.includes("unconfirmed"))) {
+    return "Cancellation was not confirmed. The harness may still be running.";
+  }
+  if (/^http \d{3}$/.test(message)) {
+    return `The harness request failed (${message.slice(5)}). Sensitive details are hidden.`;
+  }
+  return "The harness reported an error. Sensitive details are hidden.";
 }
 
 // Event Listeners for Chat
 interruptMsgBtn?.addEventListener("click", async () => {
   if (!isSending) return;
-  if (chatStatus) chatStatus.textContent = "Interrupting...";
+  if (activeChatMode === "direct" || !activeBackendSupportsCancellation()) return;
+  if (chatStatus) chatStatus.textContent = "Requesting cancellation...";
+  if (interruptMsgBtn) interruptMsgBtn.disabled = true;
+  let requestAccepted = false;
   if (activeChatMode !== "direct" && activeSessionId) {
     try {
-      await fetchJSON(`/api/agent/sessions/${encodeURIComponent(activeSessionId)}/interrupt`, {
+      const result = await fetchJSON(`/api/agent/sessions/${encodeURIComponent(activeSessionId)}/interrupt`, {
         method: "POST",
       });
+      if (result.interrupted === true) {
+        requestAccepted = true;
+        if (chatStatus) chatStatus.textContent = "Stop request accepted; cancellation is not independently confirmed.";
+      } else if (chatStatus) {
+        chatStatus.textContent = "Cancellation was not confirmed; work may still be running. Wait for reconciliation before retrying.";
+      }
     } catch (err) {
-      console.error("interrupt agent session failed", err);
+      if (chatStatus) chatStatus.textContent = "Cancellation could not be confirmed; work may still be running.";
     }
+  } else {
+    activeAbortController?.abort();
   }
-  if (activeAbortController) {
-    activeAbortController.abort();
-  }
+  if (interruptMsgBtn && isSending && !requestAccepted) interruptMsgBtn.disabled = false;
 });
 
 // Event Listeners for Chat

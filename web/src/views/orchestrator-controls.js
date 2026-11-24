@@ -68,9 +68,9 @@ export async function activateAgentTab(harness) {
       : sessions[0]?.id;
     if (sessionID) await selectSession(sessionID);
     else await createNewSession();
-  } catch (err) {
-    console.error("failed to switch agent tab", err);
-    if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not switch agent: ${err.message}`;
+  } catch {
+    console.error("failed to switch agent tab");
+    if (agentHarnessStatus) agentHarnessStatus.textContent = "Could not switch harness. Sensitive details are hidden.";
     setActiveChatMode(previousMode);
     setAgentConsoleMode(previousMode);
     agentTabs.forEach((tab) => {

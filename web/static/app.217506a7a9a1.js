@@ -87,6 +87,8 @@
   var newSessionBtn = document.getElementById("new-session-btn");
   var agentHarnessSelect = document.getElementById("agent-harness-select");
   var agentHarnessStatus = document.getElementById("agent-harness-status");
+  var agentBackendList = document.getElementById("agent-backend-list");
+  var agentSessionStatus = document.getElementById("agent-session-status");
   var agentSidebar = document.querySelector(".agent-sidebar");
   var agentTabs = document.querySelectorAll(".agent-tab");
   var agentModelSelect = document.getElementById("agent-model-select");
@@ -815,8 +817,46 @@
     return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   }
   function sessionIsAvailable(session) {
-    const backend = backendAvailability.get(session.harness || "pi");
-    return session.available !== false && backend?.available !== false;
+    if (!session.harness) return false;
+    const backend = backendAvailability.get(session.harness);
+    return session.available !== false && backend?.available === true;
+  }
+  function renderAgentBackendList(backends) {
+    if (!agentBackendList) return;
+    const capabilityLabels = [
+      ["session_resume", "Resume"],
+      ["streaming", "Streaming"],
+      ["cancellation", "Cancellation"],
+      ["approvals", "Approvals"],
+      ["workspace_isolation", "Workspace isolation"],
+      ["model_selection", "Model selection"],
+      ["tool_access", "Tool access"]
+    ];
+    agentBackendList.innerHTML = backends.map((backend) => {
+      const execution = backend.execution || {};
+      const location = execution.location === "local" ? "Local" : execution.location === "remote" ? "Remote" : "Unknown";
+      const capabilities = backend.capabilities ? capabilityLabels.map(
+        ([key, label]) => `${label}: ${backend.capabilities[key] === true ? "Yes" : backend.capabilities[key] === false ? "No" : "Unknown"}`
+      ).join(" · ") : "Capabilities: not reported";
+      const availability = backend.available === true ? "Available" : "Unavailable / not registered";
+      const workspace = execution.workspace || "Not configured or not reported";
+      const isolation = execution.isolation || "Not reported";
+      const approvals = execution.approval_limitations || "Not reported";
+      return `
+      <article class="agent-backend-card">
+        <h4>${escapeHtml(backendLabel(backend.name))}<span class="agent-backend-availability ${backend.available === true ? "available" : "unavailable"}">${availability}</span></h4>
+        <small>${escapeHtml(capabilities)}</small>
+        <small>Execution: ${location} · Workspace: ${escapeHtml(workspace)}</small>
+        <small>Isolation: ${escapeHtml(isolation)}</small>
+        <small>Approvals: ${escapeHtml(approvals)}</small>
+        ${backend.available === true ? "" : "<small>Stored conversations keep their owner and history; no other harness is substituted.</small>"}
+      </article>
+    `;
+    }).join("");
+  }
+  function updateSessionOutcome(session) {
+    if (!agentSessionStatus) return;
+    agentSessionStatus.textContent = session?.active === true ? "This harness reports active work. Completion or cancellation is not confirmed; work may still be running." : "";
   }
   function updateNewSessionAvailability() {
     if (newSessionBtn) newSessionBtn.disabled = isSending || !activeBackendAvailable;
@@ -839,30 +879,33 @@
       `;
         agentToolsList.appendChild(div);
       }
-    } catch (err) {
-      console.error("failed to load agent tools", err);
+    } catch {
+      console.error("failed to load agent tools");
     }
   }
   async function loadAgentBackend() {
     try {
       applyAgentBackend(await fetchJSON("/api/agent/backend"));
-    } catch (err) {
-      console.error("failed to load agent backend", err);
-      if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not load harness: ${err.message}`;
+    } catch {
+      console.error("failed to load agent backend status");
+      if (agentHarnessStatus) agentHarnessStatus.textContent = "Could not load backend status. Sensitive details are hidden.";
     }
   }
   function applyAgentBackend(backend) {
     setCurrentAgentHarness(backend.name);
     const backends = Array.isArray(backend.backends) ? backend.backends : (backend.harnesses || []).map((name) => ({
       name,
-      available: true,
-      capabilities: { model_selection: Boolean(backend.supports_coordinator_model), tool_access: true }
+      available: name === backend.name ? backend.available !== false : name === "pi" || name === "deepseek",
+      capabilities: name === backend.name ? backend.capabilities || null : null,
+      execution: { location: "unknown" }
     }));
     dashboardState.agentBackends = backends;
     backendAvailability = new Map(backends.map((item) => [item.name, item]));
     dashboardState.agentCapabilities = backend.capabilities || null;
-    activeBackendAvailable = backend.available !== false;
+    const activeBackend = backendAvailability.get(backend.name);
+    activeBackendAvailable = backend.available !== false && activeBackend?.available === true;
     dashboardState.activeBackendAvailable = activeBackendAvailable;
+    renderAgentBackendList(backends);
     const capabilities = backend.capabilities || {};
     const supportsModelSelection = backend.capabilities ? Boolean(capabilities.model_selection) : Boolean(backend.supports_coordinator_model);
     setAgentSupportsCoordinatorModel(supportsModelSelection);
@@ -875,17 +918,11 @@
     });
     if (agentHarnessSelect) {
       agentHarnessSelect.replaceChildren();
-      for (const item of backends.filter((candidate) => candidate.available)) {
+      for (const item of backends) {
         const option = document.createElement("option");
         option.value = item.name;
-        option.textContent = backendLabel(item.name);
-        agentHarnessSelect.appendChild(option);
-      }
-      if (!activeBackendAvailable) {
-        const option = document.createElement("option");
-        option.value = backend.name;
-        option.textContent = `${backendLabel(backend.name)} (unavailable)`;
-        option.disabled = true;
+        option.textContent = `${backendLabel(item.name)}${item.available === true ? "" : " (unavailable)"}`;
+        option.disabled = item.available !== true;
         agentHarnessSelect.appendChild(option);
       }
       agentHarnessSelect.value = backend.name;
@@ -926,7 +963,7 @@
         agentModelSelect.appendChild(opt);
       }
       clusterModelsLoaded = true;
-    } catch (err) {
+    } catch {
       console.error("failed to load cluster models", err);
     }
   }
@@ -945,12 +982,12 @@
       } else {
         renderSessionList();
       }
-    } catch (err) {
-      console.error("failed to load sessions", err);
+    } catch (err2) {
+      console.error("failed to load sessions", err2);
     }
   }
   function sessionsForHarness(harness) {
-    return dashboardState.sessions.filter((session) => (session.harness || "pi") === harness);
+    return dashboardState.sessions.filter((session) => session.harness === harness);
   }
   function renderSessionList() {
     if (!sessionListEl) return;
@@ -961,7 +998,7 @@
     );
     for (const s of [...selectedSessions, ...unavailableSessions]) {
       const available = sessionIsAvailable(s);
-      const harnessLabel = available ? backendLabel(s.harness || "pi") : `Unavailable · ${backendLabel(s.harness || "pi")}`;
+      const harnessLabel = available ? backendLabel(s.harness) : `Unavailable · ${backendLabel(s.harness || "Unknown harness")}`;
       const div = document.createElement("div");
       div.className = "session-item" + (s.id === activeSessionId ? " active" : "");
       div.setAttribute("role", "button");
@@ -995,22 +1032,26 @@
     setActiveSessionId(id);
     const sessionInfo = dashboardState.sessions.find((session) => session.id === id);
     if (sessionInfo) {
-      activeSessionIds.set(sessionInfo.harness || "pi", id);
+      if (sessionInfo.harness) activeSessionIds.set(sessionInfo.harness, id);
       const available = sessionIsAvailable(sessionInfo);
       if (chatInput) chatInput.disabled = !available;
       if (sendMsgBtn) sendMsgBtn.disabled = !available;
       if (!available && agentHarnessStatus) {
-        agentHarnessStatus.textContent = `This ${backendLabel(sessionInfo.harness || "pi")} session is unavailable. Its stored history is preserved; select its backend when it is available to continue.`;
+        agentHarnessStatus.textContent = `This ${backendLabel(sessionInfo.harness || "Unknown harness")} session is unavailable. Its stored history is preserved; select its backend when it is available to continue.`;
       } else if (agentHarnessStatus && activeBackendAvailable) {
         agentHarnessStatus.textContent = `New conversations use ${backendLabel(currentAgentHarness)}; existing conversations stay on their harness.`;
       }
+      updateSessionOutcome(sessionInfo);
     }
     renderSessionList();
     try {
       const session = await fetchJSON(`/api/agent/sessions/${encodeURIComponent(id)}`);
-      if (activeSessionId === id) renderChatMessages(session);
-    } catch (err) {
-      console.error("failed to load session", id, err);
+      if (activeSessionId === id) {
+        updateSessionOutcome(session);
+        renderChatMessages(session);
+      }
+    } catch (err2) {
+      console.error("failed to load session", id, err2);
     }
   }
   async function createNewSession(title2 = "") {
@@ -1028,8 +1069,8 @@
       dashboardState.sessions.unshift(session);
       activeSessionIds.set(currentAgentHarness, session.id);
       await selectSession(session.id);
-    } catch (err) {
-      console.error("failed to create session", err);
+    } catch {
+      console.error("failed to create agent session");
     }
   }
   async function deleteSession(id) {
@@ -1049,8 +1090,8 @@
       } else {
         renderSessionList();
       }
-    } catch (err) {
-      console.error("failed to delete session", err);
+    } catch (err2) {
+      console.error("failed to delete session", err2);
     }
   }
   function renderChatMessages(session) {
@@ -1348,8 +1389,8 @@ ${escapeHtml(tr.output.node_reply)}</div>
       appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: summary });
       if (chatStatus) chatStatus.textContent = "";
       void refresh();
-    } catch (err) {
-      const message = `${statusQuestion ? "Cluster status failed" : "Task dispatch failed"}: ${err.message}`;
+    } catch (err2) {
+      const message = `${statusQuestion ? "Cluster status failed" : "Task dispatch failed"}: ${err2.message}`;
       directMessages.push({ role: "assistant", content: message });
       appendMessageToChat({ role: "assistant", coordinator: "mAIstr0", content: message });
       if (chatStatus) chatStatus.textContent = message;
@@ -1362,6 +1403,12 @@ ${escapeHtml(tr.output.node_reply)}</div>
       });
     }
   }
+  function activeBackendSupportsCancellation() {
+    const session = dashboardState.sessions.find((item) => item.id === activeSessionId);
+    if (!session?.harness) return false;
+    const backend = dashboardState.agentBackends.find((item) => item.name === session.harness);
+    return backend?.available === true && backend.capabilities?.cancellation === true;
+  }
   async function sendInteractiveMessage(text) {
     if (activeChatMode === "direct") return dispatchDirectTask(text);
     if (!text || !activeSessionId || isSending) return;
@@ -1369,7 +1416,11 @@ ${escapeHtml(tr.output.node_reply)}</div>
     setStreamingAssistantEl(null);
     setActiveAbortController(new AbortController());
     if (sendMsgBtn) sendMsgBtn.disabled = true;
-    if (interruptMsgBtn) interruptMsgBtn.hidden = false;
+    const supportsCancellation = activeBackendSupportsCancellation();
+    if (interruptMsgBtn) {
+      interruptMsgBtn.hidden = !supportsCancellation;
+      interruptMsgBtn.disabled = false;
+    }
     if (newSessionBtn) newSessionBtn.disabled = true;
     if (agentHarnessSelect) agentHarnessSelect.disabled = true;
     agentTabs.forEach((tab) => {
@@ -1387,12 +1438,12 @@ ${escapeHtml(tr.output.node_reply)}</div>
         signal: activeAbortController.signal
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(`HTTP ${response.status}`);
       }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let streamError = "";
+      let streamError = false;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1406,27 +1457,28 @@ ${escapeHtml(tr.output.node_reply)}</div>
           try {
             const event = JSON.parse(jsonStr);
             handleStreamEvent(event);
-            if (event.type === "error") streamError = event.error || "Agent request failed";
+            if (event.type === "error") streamError = true;
           } catch (e) {
-            console.error("stream parse error", e, jsonStr);
+            console.warn("agent stream event could not be parsed");
           }
         }
       }
       await selectSession(activeSessionId);
-      if (streamError) throw new Error(streamError);
-      if (chatStatus) chatStatus.textContent = "";
-    } catch (err) {
-      if (err.name === "AbortError") {
-        if (chatStatus) chatStatus.textContent = "Interrupted.";
+      if (!streamError && chatStatus) chatStatus.textContent = "";
+    } catch (err2) {
+      if (err2.name === "AbortError") {
+        if (chatStatus) {
+          chatStatus.textContent = "The response stream closed; cancellation was not confirmed.";
+        }
         try {
           await selectSession(activeSessionId);
         } catch (e) {
         }
       } else {
-        if (chatStatus) chatStatus.textContent = "Error: " + err.message;
+        if (chatStatus) chatStatus.textContent = safeAgentErrorStatus(err2.message);
         appendMessageToChat({
           role: "assistant",
-          content: "⚠️ Error during execution: " + err.message
+          content: "The harness reported an error. Sensitive details are hidden."
         });
       }
     } finally {
@@ -1472,7 +1524,9 @@ ${escapeHtml(tr.output.node_reply)}</div>
         streamingAssistantEl.className = "chat-msg assistant";
         const meta = document.createElement("div");
         meta.className = "msg-meta";
-        meta.textContent = "🤖 Pi";
+        const session = dashboardState.sessions.find((item) => item.id === activeSessionId);
+        const harness = session?.harness || currentAgentHarness || "Agent";
+        meta.textContent = `🤖 ${harness.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())}`;
         const bubble2 = document.createElement("div");
         bubble2.className = "msg-bubble";
         streamingAssistantEl.append(meta, bubble2);
@@ -1484,24 +1538,46 @@ ${escapeHtml(tr.output.node_reply)}</div>
     } else if (event.type === "interrupted") {
       if (chatStatus) chatStatus.textContent = "Session interrupted.";
     } else if (event.type === "error") {
-      if (chatStatus) chatStatus.textContent = `Error: ${event.error}`;
+      if (chatStatus) chatStatus.textContent = safeAgentErrorStatus(event.error);
     }
+  }
+  function safeAgentErrorStatus(error) {
+    const message = String(error || "").toLowerCase();
+    if (message.includes("outcome") && (message.includes("unknown") || message.includes("unresolved"))) {
+      return "Outcome unknown. The harness may still be running; do not retry until the session is reconciled.";
+    }
+    if (message.includes("cancellation") && (message.includes("not confirmed") || message.includes("unconfirmed"))) {
+      return "Cancellation was not confirmed. The harness may still be running.";
+    }
+    if (/^http \d{3}$/.test(message)) {
+      return `The harness request failed (${message.slice(5)}). Sensitive details are hidden.`;
+    }
+    return "The harness reported an error. Sensitive details are hidden.";
   }
   interruptMsgBtn?.addEventListener("click", async () => {
     if (!isSending) return;
-    if (chatStatus) chatStatus.textContent = "Interrupting...";
+    if (activeChatMode === "direct" || !activeBackendSupportsCancellation()) return;
+    if (chatStatus) chatStatus.textContent = "Requesting cancellation...";
+    if (interruptMsgBtn) interruptMsgBtn.disabled = true;
+    let requestAccepted = false;
     if (activeChatMode !== "direct" && activeSessionId) {
       try {
-        await fetchJSON(`/api/agent/sessions/${encodeURIComponent(activeSessionId)}/interrupt`, {
+        const result = await fetchJSON(`/api/agent/sessions/${encodeURIComponent(activeSessionId)}/interrupt`, {
           method: "POST"
         });
-      } catch (err) {
-        console.error("interrupt agent session failed", err);
+        if (result.interrupted === true) {
+          requestAccepted = true;
+          if (chatStatus) chatStatus.textContent = "Stop request accepted; cancellation is not independently confirmed.";
+        } else if (chatStatus) {
+          chatStatus.textContent = "Cancellation was not confirmed; work may still be running. Wait for reconciliation before retrying.";
+        }
+      } catch (err2) {
+        if (chatStatus) chatStatus.textContent = "Cancellation could not be confirmed; work may still be running.";
       }
+    } else {
+      activeAbortController?.abort();
     }
-    if (activeAbortController) {
-      activeAbortController.abort();
-    }
+    if (interruptMsgBtn && isSending && !requestAccepted) interruptMsgBtn.disabled = false;
   });
   sendMsgBtn?.addEventListener("click", () => {
     sendInteractiveMessage(chatInput.value.trim());
@@ -1564,9 +1640,9 @@ ${escapeHtml(tr.output.node_reply)}</div>
       const sessionID = sessions.some((session) => session.id === rememberedID) ? rememberedID : sessions[0]?.id;
       if (sessionID) await selectSession(sessionID);
       else await createNewSession();
-    } catch (err) {
-      console.error("failed to switch agent tab", err);
-      if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not switch agent: ${err.message}`;
+    } catch {
+      console.error("failed to switch agent tab");
+      if (agentHarnessStatus) agentHarnessStatus.textContent = "Could not switch harness. Sensitive details are hidden.";
       setActiveChatMode(previousMode);
       setAgentConsoleMode(previousMode);
       agentTabs.forEach((tab) => {
@@ -1687,8 +1763,8 @@ ${escapeHtml(tr.output.node_reply)}</div>
       pairingConnectDialog?.close();
       await loadPairingStatus();
       await refresh();
-    } catch (err) {
-      pairingStatus.textContent = `Pairing failed: ${err.message}`;
+    } catch (err2) {
+      pairingStatus.textContent = `Pairing failed: ${err2.message}`;
     } finally {
       pairingConnectButton.disabled = false;
     }
@@ -1818,8 +1894,8 @@ ${escapeHtml(tr.output.node_reply)}</div>
       }
       await loadPairingStatus();
       if (pairingState) pairingState.textContent = "New PIN generated. Enter it only on the node you intend to pair.";
-    } catch (err) {
-      if (pairingState) pairingState.textContent = `Could not generate a new PIN: ${err.message}`;
+    } catch (err2) {
+      if (pairingState) pairingState.textContent = `Could not generate a new PIN: ${err2.message}`;
     } finally {
       pairingPinRegenerateBtn.disabled = false;
       pairingPinRegenerateBtn.textContent = "Generate / replace pairing PIN";
@@ -1847,9 +1923,9 @@ ${escapeHtml(tr.output.node_reply)}</div>
       if (pairingPolicyState) {
         pairingPolicyState.textContent = saved.require_pairing_verification ? "Strict mode is on. New joins and re-pairs require both checks; existing trust is unchanged." : "Strict mode is off. Nodes on a connected local subnet may auto-join; existing trust is unchanged.";
       }
-    } catch (err) {
+    } catch (err2) {
       pairingRequireVerification.checked = !required;
-      if (pairingPolicyState) pairingPolicyState.textContent = `Could not save pairing policy: ${err.message}`;
+      if (pairingPolicyState) pairingPolicyState.textContent = `Could not save pairing policy: ${err2.message}`;
     } finally {
       pairingPolicyPending = false;
       pairingRequireVerification.disabled = false;
@@ -1916,8 +1992,8 @@ ${escapeHtml(tr.output.node_reply)}</div>
           dashboardState.pairing.dialogAutoOpened = false;
         }
       }
-    } catch (err) {
-      if (pairingState) pairingState.textContent = `Could not load pairing status: ${err.message}`;
+    } catch (err2) {
+      if (pairingState) pairingState.textContent = `Could not load pairing status: ${err2.message}`;
       if (pairingNodeConnect) pairingNodeConnect.hidden = false;
       if (pairingConnectOpenBtn) pairingConnectOpenBtn.hidden = false;
     }
@@ -1955,8 +2031,8 @@ ${escapeHtml(tr.output.node_reply)}</div>
       if (pairingInvitationStatus) pairingInvitationStatus.textContent = accept ? `Paired with ${result.orchestrator_id} at ${result.orchestrator_addr}.` : "Invitation declined.";
       await loadPairingStatus();
       await refresh();
-    } catch (err) {
-      if (pairingInvitationStatus) pairingInvitationStatus.textContent = `${accept ? "Could not join cluster" : "Could not decline invitation"}: ${err.message}`;
+    } catch (err2) {
+      if (pairingInvitationStatus) pairingInvitationStatus.textContent = `${accept ? "Could not join cluster" : "Could not decline invitation"}: ${err2.message}`;
     } finally {
       pairingInvitationAcceptBtn.disabled = false;
       pairingInvitationDeclineBtn.disabled = false;
@@ -2132,9 +2208,9 @@ ${escapeHtml(tr.output.node_reply)}</div>
           button.disabled = true;
           try {
             await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/resume`, { method: "POST" });
-          } catch (err) {
+          } catch (err2) {
             button.disabled = false;
-            if (submitStatus) submitStatus.textContent = `Unable to resume ${t.id}: ${err.message}`;
+            if (submitStatus) submitStatus.textContent = `Unable to resume ${t.id}: ${err2.message}`;
           }
         });
         detailsRow.querySelector(".cancel-task-btn")?.addEventListener("click", async (event) => {
@@ -2142,8 +2218,8 @@ ${escapeHtml(tr.output.node_reply)}</div>
           button.disabled = true;
           try {
             await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
-          } catch (err) {
-            if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err.message}`;
+          } catch (err2) {
+            if (submitStatus) submitStatus.textContent = `Unable to cancel ${t.id}: ${err2.message}`;
           }
         });
         detailsRow.querySelector(".approve-task-btn")?.addEventListener("click", async (event) => {
@@ -2151,9 +2227,9 @@ ${escapeHtml(tr.output.node_reply)}</div>
           button.disabled = true;
           try {
             await fetchJSON(`/api/tasks/${encodeURIComponent(t.id)}/approve`, { method: "POST" });
-          } catch (err) {
+          } catch (err2) {
             button.disabled = false;
-            if (submitStatus) submitStatus.textContent = `Unable to approve ${t.id}: ${err.message}`;
+            if (submitStatus) submitStatus.textContent = `Unable to approve ${t.id}: ${err2.message}`;
           }
         });
         detailsRow.querySelectorAll("[data-copy-output]").forEach((button) => {
@@ -2249,7 +2325,7 @@ ${escapeHtml(tr.output.node_reply)}</div>
       setTimeout(() => {
         button.textContent = original;
       }, 1200);
-    } catch (err) {
+    } catch (err2) {
       button.textContent = "Copy failed";
     }
   }
@@ -2293,8 +2369,8 @@ ${s.output || s.error || ""}`)
           }
           const models = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/models`);
           return { node, engines, models, refreshed, error: "" };
-        } catch (err) {
-          return { node, engines: [], models: [], refreshed: false, error: err.message };
+        } catch (err2) {
+          return { node, engines: [], models: [], refreshed: false, error: err2.message };
         }
       }));
       let readyCount = 0;
@@ -2324,8 +2400,8 @@ ${s.output || s.error || ""}`)
         readyCount === nodes.length ? "ready" : "attention"
       );
       await refresh();
-    } catch (err) {
-      setSetupStatus(`Readiness check failed: ${err.message}`, "error");
+    } catch (err2) {
+      setSetupStatus(`Readiness check failed: ${err2.message}`, "error");
     } finally {
       if (setupCheckBtn) {
         setupCheckBtn.disabled = false;
@@ -2343,8 +2419,8 @@ ${s.output || s.error || ""}`)
       ]);
       setModelCatalogEntries(modelCatalogEntriesValue);
       renderModelCatalog();
-    } catch (err) {
-      catalogStatus.textContent = `Could not load model catalog: ${err.message}`;
+    } catch (err2) {
+      catalogStatus.textContent = `Could not load model catalog: ${err2.message}`;
       catalogResults.innerHTML = "";
     }
   }
@@ -2379,8 +2455,8 @@ ${s.output || s.error || ""}`)
       if (catalogEngines.some((item) => item.name === currentEngine)) catalogEngineSelect.value = currentEngine;
       catalogStatus.textContent = catalogEngines.length ? `Target: ${nodeId} · ${catalogEngineSelect.value || "Select an engine"}. Installed models are marked usable or disabled for scheduling.` : `No configured engine on ${nodeId} supports model downloads.`;
       renderModelCatalog();
-    } catch (err) {
-      catalogStatus.textContent = `Could not inspect ${nodeId}: ${err.message}`;
+    } catch (err2) {
+      catalogStatus.textContent = `Could not inspect ${nodeId}: ${err2.message}`;
       catalogResults.innerHTML = "";
     }
   }
@@ -2431,8 +2507,8 @@ ${s.output || s.error || ""}`)
       catalogStatus.textContent = `Installed ${model} on ${nodeId} using ${engineName}.`;
       renderModelCatalog();
       await refresh();
-    } catch (err) {
-      catalogStatus.textContent = `Could not install ${model} on ${nodeId} using ${engineName}: ${err.message}`;
+    } catch (err2) {
+      catalogStatus.textContent = `Could not install ${model} on ${nodeId} using ${engineName}: ${err2.message}`;
       button.disabled = false;
       button.textContent = `Retry on ${nodeId} · ${engineName}`;
     }
@@ -3374,10 +3450,10 @@ ${s.output || s.error || ""}`)
       });
       button.textContent = action === "drain" ? "Draining…" : `${action} requested`;
       await refresh();
-    } catch (err) {
+    } catch (err2) {
       button.disabled = false;
       button.textContent = original;
-      window.alert(`Unable to ${action} ${nodeId}: ${err.message}`);
+      window.alert(`Unable to ${action} ${nodeId}: ${err2.message}`);
     }
   }
   function renderSetupNodes(nodes) {
@@ -3446,8 +3522,8 @@ ${s.output || s.error || ""}`)
       const available = await fetchJSON(`/api/nodes/${encodeURIComponent(node.id)}/models`);
       models.innerHTML = available.map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ${escapeHtml(m.engine)}</option>`).join("");
       status2.textContent = available.length ? "Ready" : "No locally served models";
-    } catch (err) {
-      status2.textContent = "Model discovery failed: " + err.message;
+    } catch (err2) {
+      status2.textContent = "Model discovery failed: " + err2.message;
     }
     document.getElementById("node-terminal-input")?.focus();
   }
@@ -3486,12 +3562,12 @@ ${s.output || s.error || ""}`)
       const response = await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues/${encodeURIComponent(terminalDialogueId)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }), signal: terminalAbortController.signal });
       appendTerminalMessage("assistant", response.reply || response.error || "No response");
       status2.textContent = `${response.model || model} · ${response.duration_ms || 0}ms`;
-    } catch (err) {
-      if (err.name === "AbortError") {
+    } catch (err2) {
+      if (err2.name === "AbortError") {
         appendTerminalMessage("assistant", "⚠️ Dialogue turn interrupted.");
         status2.textContent = "Interrupted";
       } else {
-        appendTerminalMessage("assistant", "Error: " + err.message);
+        appendTerminalMessage("assistant", "Error: " + err2.message);
         status2.textContent = "Request failed";
       }
     } finally {
@@ -3505,8 +3581,8 @@ ${s.output || s.error || ""}`)
         await fetchJSON(`/api/nodes/${encodeURIComponent(terminalNode.id)}/dialogues/${encodeURIComponent(terminalDialogueId)}/interrupt`, {
           method: "POST"
         });
-      } catch (err) {
-        console.error("interrupt node dialogue failed", err);
+      } catch (err2) {
+        console.error("interrupt node dialogue failed", err2);
       }
     }
     if (terminalAbortController) {
@@ -3562,8 +3638,8 @@ ${s.output || s.error || ""}`)
       document.getElementById("node-properties-subtitle").textContent = "Edit node properties and persistent startup settings. Startup changes apply after restart.";
       status2.textContent = "";
       form2.elements.namedItem("advertise_addr")?.focus();
-    } catch (err) {
-      status2.textContent = "Unable to load properties: " + err.message;
+    } catch (err2) {
+      status2.textContent = "Unable to load properties: " + err2.message;
     }
   }
   function closeNodeProperties() {
@@ -3618,8 +3694,8 @@ ${s.output || s.error || ""}`)
       status2.textContent = "Saved";
       await refresh();
       setTimeout(closeNodeProperties, 500);
-    } catch (err) {
-      status2.textContent = "Error: " + err.message;
+    } catch (err2) {
+      status2.textContent = "Error: " + err2.message;
     }
   }
   async function refreshNodeModels(nodeId) {
@@ -3629,8 +3705,8 @@ ${s.output || s.error || ""}`)
       await fetchJSON(`/api/nodes/${encodeURIComponent(nodeId)}/models/refresh`, { method: "POST" });
       lastFetchedModels.delete(nodeId);
       await refresh();
-    } catch (err) {
-      console.error("model refresh failed", err);
+    } catch (err2) {
+      console.error("model refresh failed", err2);
       if (button) button.textContent = "Refresh failed";
     }
   }
@@ -3641,9 +3717,9 @@ ${s.output || s.error || ""}`)
       await fetchJSON("/api/nodes/models/refresh", { method: "POST" });
       await refresh();
       refreshAllModelsBtn.textContent = "Rescan complete";
-    } catch (err) {
+    } catch (err2) {
       refreshAllModelsBtn.textContent = "Refresh failed";
-      console.error("all-node model refresh failed", err);
+      console.error("all-node model refresh failed", err2);
     } finally {
       setTimeout(() => {
         refreshAllModelsBtn.disabled = false;
@@ -3738,8 +3814,8 @@ ${s.output || s.error || ""}`)
       lastFetchedModels.set(nodeId, models);
       const node = dashboardState.nodes.find((item) => item.id === nodeId);
       renderModelPanel(nodeId, models, node?.engines || []);
-    } catch (err) {
-      panel.innerHTML = `<p style="color:var(--bad)">Failed to load models: ${escapeHtml(err.message)}</p>`;
+    } catch (err2) {
+      panel.innerHTML = `<p style="color:var(--bad)">Failed to load models: ${escapeHtml(err2.message)}</p>`;
     }
   }
   function renderModelPanel(nodeId, models, engines = []) {
@@ -3812,8 +3888,8 @@ ${s.output || s.error || ""}`)
       if (statusEl) statusEl.textContent = "Saved";
       lastFetchedModels.delete(nodeId);
       refresh();
-    } catch (err) {
-      if (statusEl) statusEl.textContent = "Error: " + err.message;
+    } catch (err2) {
+      if (statusEl) statusEl.textContent = "Error: " + err2.message;
     }
   }
 
@@ -4114,8 +4190,8 @@ ${s.output || s.error || ""}`)
       renderFacts(facts, memoryHistoryPages.facts.hasMore, memoryHistoryPages.facts.loading);
       renderExperiences(experiences, memoryHistoryPages.experiences.hasMore, memoryHistoryPages.experiences.loading);
       renderTranscripts(dialogues, memoryHistoryPages.dialogues.hasMore, memoryHistoryPages.dialogues.loading);
-    } catch (err) {
-      console.error("memory refresh failed", err);
+    } catch (err2) {
+      console.error("memory refresh failed", err2);
     }
   }
   async function fetchMemoryHistoryPage(name, baseURL, reset = false) {
@@ -4161,8 +4237,8 @@ ${s.output || s.error || ""}`)
     if (!state || state.loading || !state.hasMore || !state.nextCursor) return;
     try {
       await fetchMemoryHistoryPage(name, state.url);
-    } catch (err) {
-      console.error(`loading more ${name} failed`, err);
+    } catch (err2) {
+      console.error(`loading more ${name} failed`, err2);
     }
     if (name === "facts") renderFacts(state.items, state.hasMore, state.loading);
     if (name === "experiences") renderExperiences(state.items, state.hasMore, state.loading);
@@ -4316,8 +4392,8 @@ ${s.output || s.error || ""}`)
       factKey.value = "";
       factValue.value = "";
       refreshMemory();
-    } catch (err) {
-      console.error("failed to save fact", err);
+    } catch (err2) {
+      console.error("failed to save fact", err2);
     }
   });
   var memorySearchTimer = null;
@@ -4654,8 +4730,8 @@ ${s.output || s.error || ""}`)
       const tasks = normalizeHistoryPage(taskResponse).items;
       applySnapshot({ nodes, tasks, discovery: peers, build_version: build.version });
       markDashboardSynced();
-    } catch (err) {
-      console.error(err);
+    } catch (err2) {
+      console.error(err2);
     } finally {
       refreshInFlight = false;
     }
@@ -4713,8 +4789,8 @@ ${s.output || s.error || ""}`)
         taskHistoryPage2.hasMore ||= page.has_more;
       }
       taskHistoryPage2.initialized = true;
-    } catch (err) {
-      console.error("task history refresh failed", err);
+    } catch (err2) {
+      console.error("task history refresh failed", err2);
     } finally {
       if (generation === taskHistoryPage2.generation) {
         taskHistoryPage2.loading = false;
@@ -4743,8 +4819,8 @@ ${s.output || s.error || ""}`)
       taskHistoryPage2.items = sortTaskHistory([...updated.values()]);
       taskHistoryPage2.nextCursor = page.next_cursor;
       taskHistoryPage2.hasMore = page.has_more;
-    } catch (err) {
-      console.error("loading more task history failed", err);
+    } catch (err2) {
+      console.error("loading more task history failed", err2);
     } finally {
       if (generation === taskHistoryPage2.generation) {
         taskHistoryPage2.loading = false;
@@ -4786,8 +4862,8 @@ ${s.output || s.error || ""}`)
         } else {
           throw new Error("security status response omitted a recognized discovery authentication mode");
         }
-      } catch (err) {
-        console.error("local network security status refresh failed", err);
+      } catch (err2) {
+        console.error("local network security status refresh failed", err2);
       }
       applySnapshot({
         nodes: dashboardState2.nodes || [],
@@ -4795,8 +4871,8 @@ ${s.output || s.error || ""}`)
         discovery,
         discovery_authentication: discoveryAuthentication
       });
-    } catch (err) {
-      console.error("local network refresh failed", err);
+    } catch (err2) {
+      console.error("local network refresh failed", err2);
     }
   }
   setInterval(() => {
@@ -5280,8 +5356,8 @@ ${s.output || s.error || ""}`)
     try {
       await refreshActiveView();
       markDashboardSynced();
-    } catch (err) {
-      console.error("refreshing the active view failed", err);
+    } catch (err2) {
+      console.error("refreshing the active view failed", err2);
     } finally {
       refreshViewBtn.disabled = false;
       refreshViewBtn.textContent = "↻ Refresh view";

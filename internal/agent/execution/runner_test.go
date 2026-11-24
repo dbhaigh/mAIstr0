@@ -37,6 +37,13 @@ func TestExecutionProcessHelper(t *testing.T) {
 	case "large-stderr":
 		_, _ = fmt.Fprint(os.Stderr, strings.Repeat("x", 4096))
 		_, _ = fmt.Fprint(processHelperOutput, `{}`)
+	case "lines":
+		_, _ = fmt.Fprintln(processHelperOutput, `{"event":"one"}`)
+		_, _ = fmt.Fprintln(processHelperOutput, `{"event":"two"}`)
+	case "fast-lines":
+		_, _ = fmt.Fprintln(processHelperOutput, `{"event":"one"}`)
+		time.Sleep(10 * time.Millisecond)
+		_, _ = fmt.Fprintln(processHelperOutput, `{"event":"two"}`)
 	case "sensitive-stderr":
 		_, _ = fmt.Fprintln(os.Stderr, args[0])
 		_, _ = fmt.Fprint(processHelperOutput, "{malformed")
@@ -197,6 +204,104 @@ func TestRunnerUsesArgvStdinAndApprovedWorkspace(t *testing.T) {
 	}
 	if workspaceResult.Workspace != workspaceRunner.workspace {
 		t.Fatalf("working directory = %q, want approved directory %q", workspaceResult.Workspace, workspaceRunner.workspace)
+	}
+}
+
+func TestRunnerStreamsBoundedLinesAndSelectedEnvironment(t *testing.T) {
+	const secret = "unselected-parent-environment-value"
+	t.Setenv("MAISTR0_PROCESS_SECRET_SENTINEL", secret)
+	configured := DefaultConfig()
+	configured.Enabled = true
+	configured.ApprovedWorkspace = t.TempDir()
+	configured.Executable, _ = os.Executable()
+	configured.Args = []string{
+		"-test.run=^TestExecutionProcessHelper$", "--", "--execution-helper", "lines",
+	}
+	configured.Environment = map[string]string{"MAISTR0_RUNNER_SELECTED": "selected-value"}
+	runner, err := NewRunner(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := runner.Close(); err != nil {
+			t.Errorf("close runner: %v", err)
+		}
+	}()
+	var lines []string
+	err = runner.RunLines(context.Background(), []string{"extra", "argument"}, []byte("prompt"), func(line []byte) error {
+		lines = append(lines, string(line))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream lines: %v", err)
+	}
+	if strings.Join(lines, ",") != `{"event":"one"},{"event":"two"}` {
+		t.Fatalf("streamed lines = %#v", lines)
+	}
+
+	environmentConfig := configured
+	environmentConfig.Args = []string{
+		"-test.run=^TestExecutionProcessHelper$", "--", "--execution-helper", "environment",
+	}
+	environmentRunner, err := NewRunner(environmentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = environmentRunner.Close() }()
+	var environmentLine []byte
+	if err := environmentRunner.RunLines(context.Background(), nil, nil, func(line []byte) error {
+		environmentLine = append([]byte(nil), line...)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var environmentResponse struct {
+		Environment []string `json:"environment"`
+	}
+	if err := json.Unmarshal(environmentLine, &environmentResponse); err != nil {
+		t.Fatal(err)
+	}
+	environmentText := strings.Join(environmentResponse.Environment, "\n")
+	if !strings.Contains(environmentText, "MAISTR0_RUNNER_SELECTED=selected-value") ||
+		strings.Contains(environmentText, secret) {
+		t.Fatalf("child environment did not preserve the explicit allowlist: %s", environmentText)
+	}
+	if err := environmentRunner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if environmentRunner.config.Environment["MAISTR0_RUNNER_SELECTED"] != "" {
+		t.Fatal("runner retained configured environment data after Close")
+	}
+
+	failedCallback := testRunner(t, "lines")
+	if err := failedCallback.RunLines(context.Background(), nil, nil, func([]byte) error {
+		return errors.New("sensitive callback detail")
+	}); !errors.Is(err, ErrOutputCallback) || strings.Contains(err.Error(), "sensitive callback detail") {
+		t.Fatalf("callback failure was not generic: %v", err)
+	}
+
+	large := testRunner(t, "large")
+	large.config.MaxOutputBytes = 128
+	if err := large.RunLines(context.Background(), nil, nil, func([]byte) error { return nil }); !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("oversized streamed output error = %v", err)
+	}
+}
+
+func TestRunnerDrainsLineOutputAfterFastProcessExit(t *testing.T) {
+	runner := testRunner(t, "fast-lines")
+	var lines []string
+	err := runner.RunLines(context.Background(), nil, nil, func(line []byte) error {
+		lines = append(lines, string(line))
+		if len(lines) == 1 {
+			time.Sleep(50 * time.Millisecond)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(lines, ",") != `{"event":"one"},{"event":"two"}` {
+		t.Fatalf("lines drained after fast process exit = %#v", lines)
 	}
 }
 

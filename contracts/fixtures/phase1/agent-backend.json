@@ -33,6 +33,12 @@
           "workspace_isolation": false,
           "model_selection": true,
           "tool_access": true
+        },
+        "execution": {
+          "location": "local",
+          "workspace": "Not configured",
+          "isolation": "No workspace isolation; tools may dispatch work to cluster nodes.",
+          "approval_limitations": "No per-action approval interaction."
         }
       },
       {
@@ -46,6 +52,12 @@
           "workspace_isolation": false,
           "model_selection": true,
           "tool_access": true
+        },
+        "execution": {
+          "location": "local",
+          "workspace": "Not configured",
+          "isolation": "No workspace isolation; tools may dispatch work to cluster nodes.",
+          "approval_limitations": "No per-action approval interaction."
         }
       }
     ]

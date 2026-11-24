@@ -5,9 +5,11 @@ import {
   activeChatMode,
   activeSessionId,
   activeSessionIds,
+  agentBackendList,
   agentHarnessSelect,
   agentHarnessStatus,
   agentModelSelect,
+  agentSessionStatus,
   agentSettingsTitle,
   chatInput,
   agentStepsSelect,
@@ -41,8 +43,53 @@ function backendLabel(name) {
 }
 
 function sessionIsAvailable(session) {
-  const backend = backendAvailability.get(session.harness || "pi");
-  return session.available !== false && backend?.available !== false;
+  if (!session.harness) return false;
+  const backend = backendAvailability.get(session.harness);
+  return session.available !== false && backend?.available === true;
+}
+
+function renderAgentBackendList(backends) {
+  if (!agentBackendList) return;
+  const capabilityLabels = [
+    ["session_resume", "Resume"],
+    ["streaming", "Streaming"],
+    ["cancellation", "Cancellation"],
+    ["approvals", "Approvals"],
+    ["workspace_isolation", "Workspace isolation"],
+    ["model_selection", "Model selection"],
+    ["tool_access", "Tool access"],
+  ];
+  agentBackendList.innerHTML = backends.map((backend) => {
+    const execution = backend.execution || {};
+    const location = execution.location === "local" ? "Local"
+      : execution.location === "remote" ? "Remote" : "Unknown";
+    const capabilities = backend.capabilities
+      ? capabilityLabels.map(([key, label]) =>
+        `${label}: ${backend.capabilities[key] === true ? "Yes" : backend.capabilities[key] === false ? "No" : "Unknown"}`
+      ).join(" · ")
+      : "Capabilities: not reported";
+    const availability = backend.available === true ? "Available" : "Unavailable / not registered";
+    const workspace = execution.workspace || "Not configured or not reported";
+    const isolation = execution.isolation || "Not reported";
+    const approvals = execution.approval_limitations || "Not reported";
+    return `
+      <article class="agent-backend-card">
+        <h4>${escapeHtml(backendLabel(backend.name))}<span class="agent-backend-availability ${backend.available === true ? "available" : "unavailable"}">${availability}</span></h4>
+        <small>${escapeHtml(capabilities)}</small>
+        <small>Execution: ${location} · Workspace: ${escapeHtml(workspace)}</small>
+        <small>Isolation: ${escapeHtml(isolation)}</small>
+        <small>Approvals: ${escapeHtml(approvals)}</small>
+        ${backend.available === true ? "" : "<small>Stored conversations keep their owner and history; no other harness is substituted.</small>"}
+      </article>
+    `;
+  }).join("");
+}
+
+function updateSessionOutcome(session) {
+  if (!agentSessionStatus) return;
+  agentSessionStatus.textContent = session?.active === true
+    ? "This harness reports active work. Completion or cancellation is not confirmed; work may still be running."
+    : "";
 }
 
 function updateNewSessionAvailability() {
@@ -67,17 +114,17 @@ export async function loadAgentTools() {
       `;
       agentToolsList.appendChild(div);
     }
-  } catch (err) {
-    console.error("failed to load agent tools", err);
+  } catch {
+    console.error("failed to load agent tools");
   }
 }
 
 export async function loadAgentBackend() {
   try {
     applyAgentBackend(await fetchJSON("/api/agent/backend"));
-  } catch (err) {
-    console.error("failed to load agent backend", err);
-    if (agentHarnessStatus) agentHarnessStatus.textContent = `Could not load harness: ${err.message}`;
+  } catch {
+    console.error("failed to load agent backend status");
+    if (agentHarnessStatus) agentHarnessStatus.textContent = "Could not load backend status. Sensitive details are hidden.";
   }
 }
 
@@ -87,14 +134,19 @@ export function applyAgentBackend(backend) {
     ? backend.backends
     : (backend.harnesses || []).map((name) => ({
       name,
-      available: true,
-      capabilities: { model_selection: Boolean(backend.supports_coordinator_model), tool_access: true },
+      available: name === backend.name
+        ? backend.available !== false
+        : name === "pi" || name === "deepseek",
+      capabilities: name === backend.name ? backend.capabilities || null : null,
+      execution: { location: "unknown" },
     }));
   dashboardState.agentBackends = backends;
   backendAvailability = new Map(backends.map((item) => [item.name, item]));
   dashboardState.agentCapabilities = backend.capabilities || null;
-  activeBackendAvailable = backend.available !== false;
+  const activeBackend = backendAvailability.get(backend.name);
+  activeBackendAvailable = backend.available !== false && activeBackend?.available === true;
   dashboardState.activeBackendAvailable = activeBackendAvailable;
+  renderAgentBackendList(backends);
   const capabilities = backend.capabilities || {};
   const supportsModelSelection = backend.capabilities
     ? Boolean(capabilities.model_selection)
@@ -109,17 +161,11 @@ export function applyAgentBackend(backend) {
   });
   if (agentHarnessSelect) {
     agentHarnessSelect.replaceChildren();
-    for (const item of backends.filter((candidate) => candidate.available)) {
+    for (const item of backends) {
       const option = document.createElement("option");
       option.value = item.name;
-      option.textContent = backendLabel(item.name);
-      agentHarnessSelect.appendChild(option);
-    }
-    if (!activeBackendAvailable) {
-      const option = document.createElement("option");
-      option.value = backend.name;
-      option.textContent = `${backendLabel(backend.name)} (unavailable)`;
-      option.disabled = true;
+      option.textContent = `${backendLabel(item.name)}${item.available === true ? "" : " (unavailable)"}`;
+      option.disabled = item.available !== true;
       agentHarnessSelect.appendChild(option);
     }
     agentHarnessSelect.value = backend.name;
@@ -165,7 +211,7 @@ export async function loadClusterModels() {
       agentModelSelect.appendChild(opt);
     }
     clusterModelsLoaded = true;
-  } catch (err) {
+  } catch {
     console.error("failed to load cluster models", err);
   }
 }
@@ -193,7 +239,7 @@ export async function loadSessions() {
 }
 
 export function sessionsForHarness(harness) {
-  return dashboardState.sessions.filter((session) => (session.harness || "pi") === harness);
+  return dashboardState.sessions.filter((session) => session.harness === harness);
 }
 
 export function renderSessionList() {
@@ -206,8 +252,8 @@ export function renderSessionList() {
   for (const s of [...selectedSessions, ...unavailableSessions]) {
     const available = sessionIsAvailable(s);
     const harnessLabel = available
-      ? backendLabel(s.harness || "pi")
-      : `Unavailable · ${backendLabel(s.harness || "pi")}`;
+      ? backendLabel(s.harness)
+      : `Unavailable · ${backendLabel(s.harness || "Unknown harness")}`;
     const div = document.createElement("div");
     div.className = "session-item" + (s.id === activeSessionId ? " active" : "");
     div.setAttribute("role", "button");
@@ -242,20 +288,24 @@ export async function selectSession(id) {
   setActiveSessionId(id);
   const sessionInfo = dashboardState.sessions.find((session) => session.id === id);
   if (sessionInfo) {
-    activeSessionIds.set(sessionInfo.harness || "pi", id);
+    if (sessionInfo.harness) activeSessionIds.set(sessionInfo.harness, id);
     const available = sessionIsAvailable(sessionInfo);
     if (chatInput) chatInput.disabled = !available;
     if (sendMsgBtn) sendMsgBtn.disabled = !available;
     if (!available && agentHarnessStatus) {
-      agentHarnessStatus.textContent = `This ${backendLabel(sessionInfo.harness || "pi")} session is unavailable. Its stored history is preserved; select its backend when it is available to continue.`;
+      agentHarnessStatus.textContent = `This ${backendLabel(sessionInfo.harness || "Unknown harness")} session is unavailable. Its stored history is preserved; select its backend when it is available to continue.`;
     } else if (agentHarnessStatus && activeBackendAvailable) {
       agentHarnessStatus.textContent = `New conversations use ${backendLabel(currentAgentHarness)}; existing conversations stay on their harness.`;
     }
+    updateSessionOutcome(sessionInfo);
   }
   renderSessionList();
   try {
     const session = await fetchJSON(`/api/agent/sessions/${encodeURIComponent(id)}`);
-    if (activeSessionId === id) renderChatMessages(session);
+    if (activeSessionId === id) {
+      updateSessionOutcome(session);
+      renderChatMessages(session);
+    }
   } catch (err) {
     console.error("failed to load session", id, err);
   }
@@ -276,8 +326,8 @@ export async function createNewSession(title = "") {
     dashboardState.sessions.unshift(session);
     activeSessionIds.set(currentAgentHarness, session.id);
     await selectSession(session.id);
-  } catch (err) {
-    console.error("failed to create session", err);
+  } catch {
+    console.error("failed to create agent session");
   }
 }
 

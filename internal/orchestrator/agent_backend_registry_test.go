@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,7 @@ type namedControlledHarness struct {
 	*controlledHarnessBackend
 	name           string
 	interruptCalls atomic.Int32
+	deleteFails    bool
 }
 
 func (b *namedControlledHarness) Name() string { return b.name }
@@ -38,6 +40,13 @@ func (b *namedControlledHarness) InterruptSession(string) bool {
 	return false
 }
 
+func (b *namedControlledHarness) DeleteSession(id string) bool {
+	if b.deleteFails {
+		return false
+	}
+	return b.controlledHarnessBackend.DeleteSession(id)
+}
+
 func TestOptionalBackendSelectionHonorsDeclaredCapabilities(t *testing.T) {
 	srv := newTestServer(t)
 	backend := &namedControlledHarness{
@@ -45,8 +54,13 @@ func TestOptionalBackendSelectionHonorsDeclaredCapabilities(t *testing.T) {
 		name:                     "external",
 	}
 	capabilities := agent.Capabilities{SessionResume: false}
+	execution := agent.ExecutionProfile{
+		Location: agent.ExecutionRemote, Workspace: "/srv/approved",
+		Isolation:           "Workspace-scoped; not an OS sandbox.",
+		ApprovalLimitations: "No approval interaction.",
+	}
 	if err := srv.harness.registry.Register(agent.BackendRegistration{
-		Backend: backend, Capabilities: capabilities,
+		Backend: backend, Capabilities: capabilities, Execution: execution,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +75,7 @@ func TestOptionalBackendSelectionHonorsDeclaredCapabilities(t *testing.T) {
 		Name         string             `json:"name"`
 		Available    bool               `json:"available"`
 		Capabilities agent.Capabilities `json:"capabilities"`
+		Backends     []agentBackendView `json:"backends"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
@@ -70,6 +85,16 @@ func TestOptionalBackendSelectionHonorsDeclaredCapabilities(t *testing.T) {
 		status.Capabilities.Cancellation || status.Capabilities.Approvals ||
 		status.Capabilities.WorkspaceIsolation || status.Capabilities.ToolAccess {
 		t.Fatalf("backend status misreported capabilities: %+v", status)
+	}
+	foundExecution := false
+	for _, registered := range status.Backends {
+		if registered.Name == "external" {
+			foundExecution = registered.Available && registered.Execution == execution
+			break
+		}
+	}
+	if !foundExecution || strings.Contains(response.Body.String(), "secret") {
+		t.Fatalf("backend execution profile was missing or exposed sensitive configuration: %s", response.Body.String())
 	}
 
 	for _, path := range []string{"/api/agent/tools", "/api/agent/models"} {
@@ -133,6 +158,54 @@ func TestOptionalBackendSelectionHonorsDeclaredCapabilities(t *testing.T) {
 	}
 	turn.finish <- nil
 	awaitHandler(t, done)
+}
+
+func TestBackendDeleteFailurePreservesPersistedSession(t *testing.T) {
+	srv := newTestServer(t)
+	backend := &namedControlledHarness{
+		controlledHarnessBackend: newControlledHarnessBackend("external-session"),
+		name:                     "external",
+		deleteFails:              true,
+	}
+	if err := srv.harness.registry.Register(agent.BackendRegistration{Backend: backend}); err != nil {
+		t.Fatal(err)
+	}
+	selectBackend := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(selectBackend, httptest.NewRequest(http.MethodPatch, "/api/agent/backend",
+		strings.NewReader(`{"harness":"external"}`)))
+	if selectBackend.Code != http.StatusOK {
+		t.Fatalf("select optional backend returned %d: %s", selectBackend.Code, selectBackend.Body.String())
+	}
+
+	create := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/agent/sessions",
+		strings.NewReader(`{"title":"keep history"}`)))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create optional-backend session returned %d: %s", create.Code, create.Body.String())
+	}
+	var session agent.Session
+	if err := json.Unmarshal(create.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	session.Messages = []agent.Message{{Role: agent.RoleUser, Content: "preserve this transcript"}}
+	backend.mu.Lock()
+	backend.sessions[session.ID].Messages = session.Messages
+	backend.mu.Unlock()
+	if err := srv.persistAgentSession(&session); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete,
+		"/api/agent/sessions/"+session.ID, nil))
+	if deleted.Code == http.StatusNoContent {
+		t.Fatalf("backend refused deletion but API returned success: %s", deleted.Body.String())
+	}
+	saved, exists := srv.agentSession(session.ID)
+	if !exists || saved.Harness != "external" || len(saved.Messages) != 1 ||
+		saved.Messages[0].Content != "preserve this transcript" {
+		t.Fatalf("backend deletion failure lost persisted session history: %+v", saved)
+	}
 }
 
 func TestMissingOptionalBackendRetainsReadableSessionAndOwnership(t *testing.T) {
@@ -271,6 +344,349 @@ func TestBackendWithoutResumeRetainsSessionAsUnavailable(t *testing.T) {
 	if _, _, available := restarted.agentForSession(session.ID); available {
 		t.Fatal("non-resumable session was exposed for sending")
 	}
+}
+
+func TestClaudeCodeEnvironmentOptInFailureIsReported(t *testing.T) {
+	t.Setenv("MAISTR0_CLAUDE_CODE_EXECUTABLE", "")
+	t.Setenv("MAISTR0_CLAUDE_CODE_WORKSPACE", "")
+	t.Setenv("MAISTR0_CODEX_EXECUTABLE", "")
+	t.Setenv("MAISTR0_CODEX_WORKSPACE", "")
+	t.Setenv("MAISTR0_CODEX_HOME", "")
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "orchestrator.db")
+	if _, err := NewWithConfig(cfg); err == nil ||
+		!strings.Contains(err.Error(), "configure Claude Code backend") ||
+		!strings.Contains(err.Error(), "requires both MAISTR0_CLAUDE_CODE_EXECUTABLE") {
+		t.Fatalf("invalid Claude Code opt-in error = %v", err)
+	}
+}
+
+func TestCodexEnvironmentOptInFailureIsReported(t *testing.T) {
+	unsetEnvironmentVariable(t, "MAISTR0_CLAUDE_CODE_EXECUTABLE")
+	unsetEnvironmentVariable(t, "MAISTR0_CLAUDE_CODE_WORKSPACE")
+	t.Setenv("MAISTR0_CODEX_EXECUTABLE", "configured")
+	t.Setenv("MAISTR0_CODEX_WORKSPACE", "")
+	t.Setenv("MAISTR0_CODEX_HOME", "")
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "orchestrator.db")
+	if _, err := NewWithConfig(cfg); err == nil ||
+		!strings.Contains(err.Error(), "configure Codex backend") ||
+		!strings.Contains(err.Error(), "requires MAISTR0_CODEX_EXECUTABLE") {
+		t.Fatalf("invalid Codex opt-in error = %v", err)
+	}
+}
+
+func TestOpenCodeEnvironmentOptInFailureIsReported(t *testing.T) {
+	for _, name := range []string{
+		"MAISTR0_CLAUDE_CODE_EXECUTABLE", "MAISTR0_CLAUDE_CODE_WORKSPACE",
+		"MAISTR0_CODEX_EXECUTABLE", "MAISTR0_CODEX_WORKSPACE", "MAISTR0_CODEX_HOME",
+	} {
+		unsetEnvironmentVariable(t, name)
+	}
+	t.Setenv("MAISTR0_OPENCODE_MODE", "connect")
+	for _, name := range []string{
+		"MAISTR0_OPENCODE_EXECUTABLE", "MAISTR0_OPENCODE_WORKSPACE", "MAISTR0_OPENCODE_HOME",
+		"MAISTR0_OPENCODE_SERVER_URL", "MAISTR0_OPENCODE_SERVER_PASSWORD", "MAISTR0_OPENCODE_SESSION_DIR",
+	} {
+		unsetEnvironmentVariable(t, name)
+	}
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "orchestrator.db")
+	if _, err := NewWithConfig(cfg); err == nil ||
+		!strings.Contains(err.Error(), "configure OpenCode backend") ||
+		!strings.Contains(err.Error(), "MAISTR0_OPENCODE_SERVER_URL") {
+		t.Fatalf("invalid OpenCode opt-in error = %v", err)
+	}
+}
+
+func TestOpenCodeBackendIsRegisteredWithOnlySupportedCapabilities(t *testing.T) {
+	const password = "test-only-opencode-password"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if user, got, ok := r.BasicAuth(); !ok || user != "opencode" || got != password {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/info":
+			_ = json.NewEncoder(w).Encode(map[string]string{"version": "2.3.2"})
+		case "/api/plugin", "/api/mcp":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	for _, name := range []string{
+		"MAISTR0_CLAUDE_CODE_EXECUTABLE", "MAISTR0_CLAUDE_CODE_WORKSPACE",
+		"MAISTR0_CODEX_EXECUTABLE", "MAISTR0_CODEX_WORKSPACE", "MAISTR0_CODEX_HOME",
+	} {
+		unsetEnvironmentVariable(t, name)
+	}
+	for _, name := range []string{
+		"MAISTR0_OPENCODE_EXECUTABLE", "MAISTR0_OPENCODE_HOME",
+	} {
+		t.Setenv(name, "")
+	}
+	workspace := t.TempDir()
+	t.Setenv("MAISTR0_OPENCODE_MODE", "connect")
+	t.Setenv("MAISTR0_OPENCODE_WORKSPACE", workspace)
+	t.Setenv("MAISTR0_OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("MAISTR0_OPENCODE_SERVER_PASSWORD", password)
+	t.Setenv("MAISTR0_OPENCODE_SESSION_DIR", filepath.Join(t.TempDir(), "sessions"))
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "orchestrator.db")
+	srv, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("start orchestrator with OpenCode backend: %v", err)
+	}
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close orchestrator: %v", err)
+		}
+	}()
+
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/agent/backend", nil))
+	var status struct {
+		Backends []struct {
+			Name         string             `json:"name"`
+			Available    bool               `json:"available"`
+			Capabilities agent.Capabilities `json:"capabilities"`
+		} `json:"backends"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &status) != nil {
+		t.Fatalf("backend status response = %d %s", response.Code, response.Body.String())
+	}
+	for _, backend := range status.Backends {
+		if backend.Name == "opencode" {
+			capabilities := backend.Capabilities
+			if !backend.Available || !capabilities.SessionResume || !capabilities.Cancellation ||
+				capabilities.Streaming || capabilities.Approvals || capabilities.WorkspaceIsolation ||
+				capabilities.ModelSelection || capabilities.ToolAccess {
+				t.Fatalf("OpenCode backend capabilities = %+v, available=%t", capabilities, backend.Available)
+			}
+			return
+		}
+	}
+	t.Fatal("OpenCode backend was not registered")
+}
+
+func TestOpenHandsEnvironmentOptInFailureIsReported(t *testing.T) {
+	for _, name := range []string{
+		"MAISTR0_CLAUDE_CODE_EXECUTABLE", "MAISTR0_CLAUDE_CODE_WORKSPACE",
+		"MAISTR0_CODEX_EXECUTABLE", "MAISTR0_CODEX_WORKSPACE", "MAISTR0_CODEX_HOME",
+		"MAISTR0_OPENCODE_MODE", "MAISTR0_OPENCODE_EXECUTABLE", "MAISTR0_OPENCODE_WORKSPACE",
+		"MAISTR0_OPENCODE_HOME", "MAISTR0_OPENCODE_SERVER_URL",
+		"MAISTR0_OPENCODE_SERVER_PASSWORD", "MAISTR0_OPENCODE_SESSION_DIR",
+		"MAISTR0_GEMINI_EXECUTABLE", "MAISTR0_GEMINI_WORKSPACE", "MAISTR0_GEMINI_HOME",
+		"MAISTR0_GEMINI_SANDBOX", "MAISTR0_GEMINI_AUTH_MODE",
+		"MAISTR0_HERMES_SERVER_URL", "MAISTR0_HERMES_API_KEY", "MAISTR0_HERMES_SESSION_DIR",
+	} {
+		unsetEnvironmentVariable(t, name)
+	}
+	t.Setenv("MAISTR0_OPENHANDS_SERVER_URL", "https://openhands.example")
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "orchestrator.db")
+	if _, err := NewWithConfig(cfg); err == nil ||
+		!strings.Contains(err.Error(), "configure OpenHands backend") ||
+		!strings.Contains(err.Error(), "MAISTR0_OPENHANDS_SESSION_API_KEY") {
+		t.Fatalf("invalid OpenHands opt-in error = %v", err)
+	}
+}
+
+func TestOpenHandsBackendIsRegisteredWithDeclaredCapabilities(t *testing.T) {
+	const sessionKey = "test-openhands-key"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/server_info":
+			_ = json.NewEncoder(w).Encode(map[string]string{"version": "1.63.1"})
+		case "/api/conversations/count":
+			if r.Header.Get("X-Session-API-Key") == sessionKey {
+				_ = json.NewEncoder(w).Encode(map[string]int{"count": 0})
+				return
+			}
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	for _, name := range []string{
+		"MAISTR0_CLAUDE_CODE_EXECUTABLE", "MAISTR0_CLAUDE_CODE_WORKSPACE",
+		"MAISTR0_CODEX_EXECUTABLE", "MAISTR0_CODEX_WORKSPACE", "MAISTR0_CODEX_HOME",
+		"MAISTR0_OPENCODE_MODE", "MAISTR0_OPENCODE_EXECUTABLE", "MAISTR0_OPENCODE_WORKSPACE",
+		"MAISTR0_OPENCODE_HOME", "MAISTR0_OPENCODE_SERVER_URL",
+		"MAISTR0_OPENCODE_SERVER_PASSWORD", "MAISTR0_OPENCODE_SESSION_DIR",
+		"MAISTR0_GEMINI_EXECUTABLE", "MAISTR0_GEMINI_WORKSPACE", "MAISTR0_GEMINI_HOME",
+		"MAISTR0_GEMINI_SANDBOX", "MAISTR0_GEMINI_AUTH_MODE",
+		"MAISTR0_HERMES_SERVER_URL", "MAISTR0_HERMES_API_KEY", "MAISTR0_HERMES_SESSION_DIR",
+	} {
+		unsetEnvironmentVariable(t, name)
+	}
+	t.Setenv("MAISTR0_OPENHANDS_SERVER_URL", server.URL)
+	t.Setenv("MAISTR0_OPENHANDS_SESSION_API_KEY", sessionKey)
+	t.Setenv("MAISTR0_OPENHANDS_WORKSPACE", t.TempDir())
+	t.Setenv("MAISTR0_OPENHANDS_MODEL", "test/model")
+	t.Setenv("MAISTR0_OPENHANDS_SESSION_DIR", filepath.Join(t.TempDir(), "sessions"))
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "orchestrator.db")
+	srv, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("start orchestrator with OpenHands backend: %v", err)
+	}
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close orchestrator: %v", err)
+		}
+	}()
+
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/agent/backend", nil))
+	var status struct {
+		Backends []struct {
+			Name         string             `json:"name"`
+			Available    bool               `json:"available"`
+			Capabilities agent.Capabilities `json:"capabilities"`
+		} `json:"backends"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &status) != nil {
+		t.Fatalf("backend status response = %d %s", response.Code, response.Body.String())
+	}
+	for _, backend := range status.Backends {
+		if backend.Name == "openhands" {
+			capabilities := backend.Capabilities
+			if !backend.Available || !capabilities.SessionResume || !capabilities.Streaming ||
+				!capabilities.Cancellation || capabilities.Approvals ||
+				capabilities.WorkspaceIsolation || capabilities.ModelSelection || capabilities.ToolAccess {
+				t.Fatalf("OpenHands capabilities = %+v, available=%t", capabilities, backend.Available)
+			}
+			return
+		}
+	}
+	t.Fatal("OpenHands backend was not registered")
+}
+
+func TestHermesEnvironmentOptInFailureIsReported(t *testing.T) {
+	for _, name := range []string{
+		"MAISTR0_CLAUDE_CODE_EXECUTABLE", "MAISTR0_CLAUDE_CODE_WORKSPACE",
+		"MAISTR0_CODEX_EXECUTABLE", "MAISTR0_CODEX_WORKSPACE", "MAISTR0_CODEX_HOME",
+		"MAISTR0_OPENCODE_MODE", "MAISTR0_OPENCODE_EXECUTABLE", "MAISTR0_OPENCODE_WORKSPACE",
+		"MAISTR0_OPENCODE_HOME", "MAISTR0_OPENCODE_SERVER_URL",
+		"MAISTR0_OPENCODE_SERVER_PASSWORD", "MAISTR0_OPENCODE_SESSION_DIR",
+		"MAISTR0_GEMINI_EXECUTABLE", "MAISTR0_GEMINI_WORKSPACE", "MAISTR0_GEMINI_HOME",
+		"MAISTR0_GEMINI_SANDBOX", "MAISTR0_GEMINI_AUTH_MODE",
+		"MAISTR0_OPENHANDS_SERVER_URL", "MAISTR0_OPENHANDS_SESSION_API_KEY",
+		"MAISTR0_OPENHANDS_WORKSPACE", "MAISTR0_OPENHANDS_MODEL", "MAISTR0_OPENHANDS_SESSION_DIR",
+		"MAISTR0_HERMES_API_KEY", "MAISTR0_HERMES_SESSION_DIR",
+	} {
+		unsetEnvironmentVariable(t, name)
+	}
+	t.Setenv("MAISTR0_HERMES_SERVER_URL", "https://hermes.example")
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "orchestrator.db")
+	if _, err := NewWithConfig(cfg); err == nil ||
+		!strings.Contains(err.Error(), "configure Hermes backend") ||
+		!strings.Contains(err.Error(), "requires MAISTR0_HERMES_API_KEY") {
+		t.Fatalf("invalid Hermes opt-in error = %v", err)
+	}
+}
+
+func TestHermesBackendIsRegisteredWithDeclaredCapabilities(t *testing.T) {
+	const apiKey = "test-hermes-api-key"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "ok", "platform": "hermes-agent", "version": "0.23.3",
+			})
+		case "/v1/capabilities":
+			if r.Header.Get("Authorization") != "Bearer "+apiKey {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "hermes.api_server.capabilities", "platform": "hermes-agent",
+				"auth": map[string]any{"type": "bearer", "required": true},
+				"features": map[string]any{
+					"run_submission": true, "run_status": true, "run_events_sse": true, "run_stop": true,
+					"runs_idempotency": map[string]any{"supported": true, "durable": true},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	for _, name := range []string{
+		"MAISTR0_CLAUDE_CODE_EXECUTABLE", "MAISTR0_CLAUDE_CODE_WORKSPACE",
+		"MAISTR0_CODEX_EXECUTABLE", "MAISTR0_CODEX_WORKSPACE", "MAISTR0_CODEX_HOME",
+		"MAISTR0_OPENCODE_MODE", "MAISTR0_OPENCODE_EXECUTABLE", "MAISTR0_OPENCODE_WORKSPACE",
+		"MAISTR0_OPENCODE_HOME", "MAISTR0_OPENCODE_SERVER_URL",
+		"MAISTR0_OPENCODE_SERVER_PASSWORD", "MAISTR0_OPENCODE_SESSION_DIR",
+		"MAISTR0_GEMINI_EXECUTABLE", "MAISTR0_GEMINI_WORKSPACE", "MAISTR0_GEMINI_HOME",
+		"MAISTR0_GEMINI_SANDBOX", "MAISTR0_GEMINI_AUTH_MODE",
+		"MAISTR0_OPENHANDS_SERVER_URL", "MAISTR0_OPENHANDS_SESSION_API_KEY",
+		"MAISTR0_OPENHANDS_WORKSPACE", "MAISTR0_OPENHANDS_MODEL", "MAISTR0_OPENHANDS_SESSION_DIR",
+	} {
+		unsetEnvironmentVariable(t, name)
+	}
+	t.Setenv("MAISTR0_HERMES_SERVER_URL", server.URL)
+	t.Setenv("MAISTR0_HERMES_API_KEY", apiKey)
+	t.Setenv("MAISTR0_HERMES_SESSION_DIR", filepath.Join(t.TempDir(), "sessions"))
+	cfg := config.DefaultOrchestratorConfig()
+	cfg.MemoryPath = filepath.Join(t.TempDir(), "orchestrator.db")
+	srv, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("start orchestrator with Hermes backend: %v", err)
+	}
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close orchestrator: %v", err)
+		}
+	}()
+
+	response := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/agent/backend", nil))
+	var status struct {
+		Backends []struct {
+			Name         string             `json:"name"`
+			Available    bool               `json:"available"`
+			Capabilities agent.Capabilities `json:"capabilities"`
+		} `json:"backends"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &status) != nil {
+		t.Fatalf("backend status response = %d %s", response.Code, response.Body.String())
+	}
+	for _, backend := range status.Backends {
+		if backend.Name == "hermes" {
+			capabilities := backend.Capabilities
+			if !backend.Available || !capabilities.SessionResume || !capabilities.Streaming ||
+				!capabilities.Cancellation || capabilities.Approvals ||
+				capabilities.WorkspaceIsolation || !capabilities.ModelSelection || capabilities.ToolAccess {
+				t.Fatalf("Hermes capabilities = %+v, available=%t", capabilities, backend.Available)
+			}
+			return
+		}
+	}
+	t.Fatal("Hermes backend was not registered")
+}
+
+func unsetEnvironmentVariable(t *testing.T, name string) {
+	t.Helper()
+	value, exists := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if exists {
+			_ = os.Setenv(name, value)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+	})
 }
 
 var _ agent.Backend = (*namedControlledHarness)(nil)

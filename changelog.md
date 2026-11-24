@@ -2,21 +2,62 @@
 
 ## Unreleased
 
-- Bumped the release version to `0.1.1.18`.
+- Bumped the release version to `0.1.1.19`.
 - Replaced harness-name checks with a capability-aware agent backend registry.
   Pi remains the default; optional registrations declare resume, streaming,
   cancellation, approvals, workspace isolation, model selection, and tool
   access. Missing backends no longer block startup or hide stored session
   history, and sessions are never silently rerouted.
-- Added an opt-in bounded stdio process runner for future external backend
-  adapters. It requires an explicit executable and approved working directory,
-  limits JSON input/output, runtime, and concurrency, and joins process trees
-  on cancellation and shutdown. It does not provide a sandbox, stream events,
-  load a harness, or define a harness-specific protocol.
+- Added an opt-in bounded stdio process runner for external backend adapters.
+  It requires an explicit executable and approved working directory,
+  limits input/output, runtime, and concurrency, and joins process trees on
+  cancellation and shutdown. Its JSON and line-stream interfaces do not provide
+  a sandbox or define a harness-specific protocol.
+- Added an opt-in Claude Code CLI backend, enabled only by explicit executable,
+  workspace, and Anthropic API-key environment settings. It pins and checks the
+  supported CLI range, maps session resume and streamed text/final results, and
+  runs with tools/MCP disabled and restricted configuration. It does not claim
+  approvals, workspace isolation, or mAIstr0 inference access.
+- Added an opt-in Codex CLI backend using `codex exec --json` and native thread
+  resume. It requires the documented 0.171.x CLI policy flags and runs with a
+  read-only sandbox and no approval prompts; local Codex authentication and
+  transcripts stay in the configured `CODEX_HOME`. It does not use mAIstr0's
+  Chat Completions endpoint or claim workspace isolation.
+- Added an opt-in OpenCode server backend with explicit managed/connect
+  ownership, workspace-scoped permissions, transcript reconciliation, and
+  server-confirmed cancellation. It requires OpenCode server API 2.3.2.x,
+  rejects loaded plugins/MCP servers, and does not claim OS-level isolation,
+  streaming, or mAIstr0 provider compatibility.
+- Added an opt-in Gemini CLI backend using headless `stream-json`, native
+  session resume, streamed assistant/tool events, and the shared bounded
+  process runner. It pins Gemini CLI 0.70.x, requires explicit Google
+  authentication and a sandbox provider, and disables hooks, extensions, MCP,
+  and skills through generated system settings. Gemini CLI is not routed through
+  mAIstr0 inference.
+- Added an opt-in OpenHands Agent Server backend using the resumable session
+  WebSocket and durable event replay. It requires authenticated operator-managed
+  server version 1.63.1, binds sessions to an explicitly configured
+  LocalWorkspace, and confirms cancellation through server state. It does not
+  launch or own the server, claim OS-level isolation, or claim mAIstr0 provider
+  compatibility.
+- Added an opt-in Hermes Agent API Server backend using the durable Runs API,
+  SSE replay, idempotent admission, and status-confirmed cancellation. It
+  requires authenticated API Server version 0.23.3; sessions and runs remain
+  gateway-owned, and Hermes execution policy remains operator-controlled.
 - Added a version-sourced model endpoint compatibility matrix for Claude Code,
   Codex, OpenCode, Gemini CLI, OpenHands, and Hermes. Direct translated
   compatibility endpoints now reject unknown or unsupported request fields
   rather than silently dropping them.
+- Added an evidence-based qualification procedure and 12-entry status register
+  for the six managed-agent and model-endpoint-client integration paths. The
+  register distinguishes fake contract coverage from real qualification;
+  credentialed smoke tests remain opt-in, and no new real-harness or hardware
+  support claim is made.
+- Added dashboard status for registered agent backends, including availability,
+  declared capabilities, execution location, configured workspace, isolation,
+  and approval limitations. Stop requests are shown only for backends declaring
+  cancellation support and are not mistaken for confirmation that work stopped;
+  uncertain outcomes are shown without exposing raw error details.
 - Replaced automatic peer update polling with opt-in central updates: the
   elected orchestrator verifies and applies a signed release catalog to itself
   before announcing it to healthy nodes, which download their own

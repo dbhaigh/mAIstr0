@@ -5,7 +5,7 @@ across trusted LAN machines. It includes a web dashboard, worker nodes,
 interactive agents, and synchronized cluster memory; a cloud service is not
 required.
 
-Current version: **0.1.1.18**. See the [changelog](./changelog.md#unreleased)
+Current version: **0.1.1.19**. See the [changelog](./changelog.md#unreleased)
 and the [documentation index](./docs/README.md).
 
 ## Quick start
@@ -133,6 +133,7 @@ Start with the [documentation index](./docs/README.md). Key references:
 - [Dashboard](./docs/dashboard.md)
 - [Configuration](./docs/configuration.md)
 - [Engines and deployment support](./docs/engines.md)
+- [Harness integration qualification](./docs/harness-qualification.md)
 - [Memory and task synchronization](./docs/sync.md)
 - [Pairing and security](./docs/pairing-and-security.md)
 - [Architecture](./docs/architecture.md)
